@@ -13,6 +13,7 @@
 
 pub mod devices;
 pub mod push;
+pub mod spend;
 pub mod store;
 
 use axum::extract::{Path, Query, Request, State};
@@ -117,6 +118,9 @@ pub fn router(state: AppState) -> Router {
         .route("/devices", get(list_devices))
         .route("/devices/{id}/remove", post(remove_device))
         .route("/push/key", get(push_key))
+        .route("/spend", get(get_spend))
+        .route("/spend/cap", post(set_cap))
+        .route("/apps/{id}/pay-per-use", post(set_pay_per_use))
         .route("/push/subscribe", post(push_subscribe))
         .layer(middleware::from_fn_with_state(state.clone(), require_key));
     Router::new()
@@ -577,8 +581,16 @@ async fn runner_claim(
         return forbidden("runner calls are runner-only; this");
     }
     match st.store.claim(&r.runner).await {
-        Ok(Some(claim)) => Json(claim).into_response(),
-        Ok(None) => StatusCode::NO_CONTENT.into_response(),
+        Ok(store::ClaimOutcome::Work(claim)) => Json(claim).into_response(),
+        Ok(store::ClaimOutcome::Nothing) => StatusCode::NO_CONTENT.into_response(),
+        Ok(store::ClaimOutcome::CapReached(t)) => {
+            if let Some(p) = st.push.clone() {
+                let store = st.store.clone();
+                let body = t.title.chars().take(80).collect::<String>();
+                tokio::spawn(async move { p.notify(&store, "Spending cap reached", &body).await });
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => ApiError(e).into_response(),
     }
 }
@@ -627,6 +639,49 @@ async fn push_subscribe(
             .into_response();
     };
     match st.store.save_push(device, &sub).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn get_spend(State(st): State<AppState>) -> ApiResult<decurion_proto::Spend> {
+    Ok(Json(st.store.spend().await?))
+}
+
+#[derive(Deserialize)]
+struct Cap {
+    cap_usd: f64,
+}
+
+async fn set_cap(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Json(b): Json<Cap>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("changing the spending cap");
+    }
+    match st.store.set_cap(b.cap_usd).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct OnOff {
+    on: bool,
+}
+
+async fn set_pay_per_use(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+    Json(b): Json<OnOff>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("choosing how an app is billed");
+    }
+    match st.store.set_pay_per_use(id, b.on).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => ApiError(e).into_response(),
     }

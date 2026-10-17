@@ -27,6 +27,16 @@ pub enum StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
+/// What the runner gets when it asks for work.
+#[derive(Debug)]
+pub enum ClaimOutcome {
+    Nothing,
+    Work(Claim),
+    /// The next piece of work runs on pay-per-use and the month's cap is used
+    /// up. It was moved to Needs you.
+    CapReached(Thread),
+}
+
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
@@ -55,6 +65,7 @@ fn app_from(row: &SqliteRow) -> Result<App> {
         name: row.try_get("name")?,
         repo_path: row.try_get("repo_path")?,
         profile: Profile::from_str(&profile).map_err(|e| StoreError::Invalid(e.to_string()))?,
+        pay_per_use: row.try_get("pay_per_use")?,
     })
 }
 
@@ -83,12 +94,13 @@ impl Store {
         check_app_name(&a.name)?;
         check_repo_path(&a.repo_path)?;
         let row = sqlx::query(
-            "INSERT INTO apps (name, repo_path, profile) VALUES (?, ?, ?)
-             RETURNING id, name, repo_path, profile",
+            "INSERT INTO apps (name, repo_path, profile, pay_per_use) VALUES (?, ?, ?, ?)
+             RETURNING id, name, repo_path, profile, pay_per_use",
         )
         .bind(&a.name)
         .bind(&a.repo_path)
         .bind(a.profile.as_str())
+        .bind(a.pay_per_use)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| match e.as_database_error() {
@@ -101,18 +113,20 @@ impl Store {
     }
 
     pub async fn apps(&self) -> Result<Vec<App>> {
-        let rows = sqlx::query("SELECT id, name, repo_path, profile FROM apps ORDER BY name")
-            .fetch_all(&self.pool)
-            .await?;
+        let rows =
+            sqlx::query("SELECT id, name, repo_path, profile, pay_per_use FROM apps ORDER BY name")
+                .fetch_all(&self.pool)
+                .await?;
         rows.iter().map(app_from).collect()
     }
 
     pub async fn app(&self, id: i64) -> Result<App> {
-        let row = sqlx::query("SELECT id, name, repo_path, profile FROM apps WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or(StoreError::NotFound)?;
+        let row =
+            sqlx::query("SELECT id, name, repo_path, profile, pay_per_use FROM apps WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or(StoreError::NotFound)?;
         app_from(&row)
     }
 
@@ -185,6 +199,9 @@ impl Store {
         if done.rows_affected() != 1 {
             return Err(StoreError::Conflict);
         }
+        if from == ThreadState::Running {
+            crate::spend::close_open_run(&mut tx, id).await?;
+        }
         audit(&mut tx, id, actor, from, to, note).await?;
         tx.commit().await?;
         self.thread(id).await
@@ -194,7 +211,7 @@ impl Store {
     /// whose agent already produced activity was paused mid-run, so the runner
     /// resumes that session; otherwise it starts it (reusing the session id if
     /// one was assigned before a failed start).
-    pub async fn claim(&self, runner: &str) -> Result<Option<Claim>> {
+    pub async fn claim(&self, runner: &str) -> Result<ClaimOutcome> {
         let actor = runner_actor(runner)?;
         let mut tx = self.pool.begin().await?;
         let Some(row) = sqlx::query(&format!(
@@ -203,9 +220,42 @@ impl Store {
         .fetch_optional(&mut *tx)
         .await?
         else {
-            return Ok(None);
+            return Ok(ClaimOutcome::Nothing);
         };
         let t = thread_from(&row)?;
+        let (profile, pay_per_use): (String, bool) =
+            sqlx::query_as("SELECT profile, pay_per_use FROM apps WHERE id = ?")
+                .bind(t.app_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        let account = if pay_per_use {
+            "api".to_owned()
+        } else {
+            profile
+        };
+        let Some(reserved) = crate::spend::open_run(&mut tx, t.id, &account).await? else {
+            // The month's pay-per-use money is used up: a hard stop for the owner.
+            let cap = crate::spend::to_usd(crate::spend::cap_micros(&mut tx).await?);
+            sqlx::query(
+                "UPDATE threads SET state = 'needs_you', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ? AND state = 'queued'",
+            )
+            .bind(t.id)
+            .execute(&mut *tx)
+            .await?;
+            let note = format!("monthly pay-per-use cap of ${cap:.2} reached");
+            audit(
+                &mut tx,
+                t.id,
+                &actor,
+                ThreadState::Queued,
+                ThreadState::NeedsYou,
+                Some(&note),
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(ClaimOutcome::CapReached(self.thread(t.id).await?));
+        };
         let started: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM events WHERE thread_id = ?
                      AND json_extract(body, '$.kind') IN ('message', 'tool'))",
@@ -249,10 +299,11 @@ impl Store {
         tx.commit().await?;
         let thread = self.thread(t.id).await?;
         let app = self.app(thread.app_id).await?;
-        Ok(Some(Claim {
+        Ok(ClaimOutcome::Work(Claim {
             thread,
             app,
             resume,
+            budget_usd: pay_per_use.then(|| crate::spend::to_usd(reserved)),
         }))
     }
 
@@ -282,12 +333,24 @@ impl Store {
     pub async fn add_event(&self, thread_id: i64, e: &RunEvent) -> Result<i64> {
         self.thread(thread_id).await?;
         let body = serde_json::to_string(e).map_err(|e| StoreError::Invalid(e.to_string()))?;
+        let mut tx = self.pool.begin().await?;
         let id =
             sqlx::query_scalar("INSERT INTO events (thread_id, body) VALUES (?, ?) RETURNING id")
                 .bind(thread_id)
                 .bind(body)
-                .fetch_one(&self.pool)
+                .fetch_one(&mut *tx)
                 .await?;
+        if let RunEvent::Finished {
+            cost_usd: Some(cost),
+            input_tokens,
+            output_tokens,
+            ..
+        } = e
+        {
+            crate::spend::record_cost(&mut tx, thread_id, *cost, *input_tokens, *output_tokens)
+                .await?;
+        }
+        tx.commit().await?;
         Ok(id)
     }
 

@@ -34,6 +34,8 @@
   #log { max-height:60vh; overflow:auto; font:13px/1.4 Consolas, monospace; white-space:pre-wrap; }
   .actions { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
   .err { color:var(--bad); padding:0 16px; }
+  .spend { font-size:13px; padding:3px 10px; border-radius:99px; background:var(--card); border:1px solid var(--line); }
+  .spend.near { border-color:var(--warn); color:var(--warn); }
   .hint { color:var(--muted); font-size:13px; margin:8px 0; }
   .qr svg { background:#fff; padding:8px; border-radius:8px; margin-top:10px; }
   .qr a { display:block; font-size:12px; color:var(--muted); word-break:break-all; margin-top:6px; }
@@ -44,7 +46,7 @@
 </style>
 </head>
 <body>
-<header><h1>Decurion</h1><span class="status" id="status">Loading…</span></header>
+<header><h1>Decurion</h1><span class="spend" id="spend"></span><span class="status" id="status">Loading…</span></header>
 <form id="add-thread">
   <select id="app" required aria-label="App"></select>
   <input id="title" placeholder="Title" required aria-label="Title">
@@ -56,7 +58,16 @@
     <input id="app-name" placeholder="Name" required aria-label="App name">
     <input id="app-path" placeholder="C:\path\to\repo" required aria-label="Repo path">
     <select id="app-profile" aria-label="Claude account"><option>A</option><option>B</option></select>
+    <label class="hint"><input type="checkbox" id="app-ppu"> Pay-per-use instead of a Max account</label>
     <button>Add app</button>
+  </form>
+  <ul id="apps" class="devices"></ul>
+</details>
+<details style="padding:0 16px 12px"><summary>Spending</summary>
+  <p class="hint">Pay-per-use work stops and asks you when this month's total reaches the cap. Each run can spend at most $10 of what is left.</p>
+  <form id="cap-form" style="padding:0">
+    <label>Monthly cap $ <input id="cap" type="number" min="0" step="1" style="width:7em" aria-label="Monthly cap in dollars"></label>
+    <button>Save</button>
   </form>
 </details>
 <details style="padding:0 16px 12px" id="phones"><summary>Phones and browsers</summary>
@@ -99,6 +110,17 @@ async function refresh() {
       return col;
     }));
     $("status").textContent = `${threads.length} pieces of work · updated ${new Date().toLocaleTimeString()}`;
+    const sp = await api("/spend");
+    const money = n => "$" + n.toFixed(2);
+    $("spend").textContent = `Pay-per-use this month: ${money(sp.pay_per_use_usd)} of ${money(sp.cap_usd)} · Max accounts used ${money(sp.max_equivalent_usd)} worth`;
+    $("spend").classList.toggle("near", sp.pay_per_use_usd >= 0.8 * sp.cap_usd);
+    if (document.activeElement !== $("cap")) $("cap").value = sp.cap_usd;
+    $("apps").replaceChildren(...a.map(x => {
+      const li = el("li"); const span = el("span", {}, `${x.name} · ${x.pay_per_use ? "pay-per-use" : "Max account " + x.profile}`);
+      const b = el("button", { type: "button" }, x.pay_per_use ? `Switch to Max ${x.profile}` : "Switch to pay-per-use");
+      b.onclick = async () => { await api(`/apps/${x.id}/pay-per-use`, { method: "POST", body: JSON.stringify({ on: !x.pay_per_use }) }); refresh(); };
+      li.append(span, b); return li;
+    }));
     $("err").textContent = "";
   } catch (e) { $("err").textContent = e.message; }
 }
@@ -123,7 +145,7 @@ $("add-thread").onsubmit = async e => { e.preventDefault();
   try { await api("/threads", { method: "POST", body: JSON.stringify({ app_id: +$("app").value, title: $("title").value, prompt: $("prompt").value }) });
         $("title").value = ""; $("prompt").value = ""; refresh(); } catch (x) { $("err").textContent = x.message; } };
 $("add-app").onsubmit = async e => { e.preventDefault();
-  try { await api("/apps", { method: "POST", body: JSON.stringify({ name: $("app-name").value, repo_path: $("app-path").value, profile: $("app-profile").value }) });
+  try { await api("/apps", { method: "POST", body: JSON.stringify({ name: $("app-name").value, repo_path: $("app-path").value, profile: $("app-profile").value, pay_per_use: $("app-ppu").checked }) });
         e.target.reset(); refresh(); } catch (x) { $("err").textContent = x.message; } };
 async function loadDevices() {
   const list = await api("/devices");
@@ -145,6 +167,9 @@ $("pair").onclick = async () => {
     setTimeout(loadDevices, 15000);
   } catch (e) { $("err").textContent = e.message; }
 };
+$("cap-form").onsubmit = async e => { e.preventDefault();
+  try { await api("/spend/cap", { method: "POST", body: JSON.stringify({ cap_usd: +$("cap").value }) }); $("cap").blur(); refresh(); }
+  catch (x) { $("err").textContent = x.message; } };
 refresh(); setInterval(refresh, 3000);
 </script>
 </body>

@@ -27,8 +27,31 @@ pub const DOCKER_CLI_ENV: &[&str] = &[
     "DOCKER_CONFIG",
 ];
 
-/// The only credential an agent gets: its profile's Claude token.
-pub const TOKEN_VAR: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+/// The one credential an agent gets: its Max profile's Claude token, or the
+/// pay-per-use API key. Never both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Credential {
+    Max(Profile),
+    PayPerUse,
+}
+
+impl Credential {
+    /// The environment variable Claude Code reads it from.
+    pub fn var(self) -> &'static str {
+        match self {
+            Credential::Max(_) => "CLAUDE_CODE_OAUTH_TOKEN",
+            Credential::PayPerUse => "ANTHROPIC_API_KEY",
+        }
+    }
+
+    /// Where it is kept in Windows Credential Manager.
+    pub fn target(self) -> String {
+        match self {
+            Credential::Max(p) => format!("decurion/claude-profile-{}", p.as_str()),
+            Credential::PayPerUse => "decurion/anthropic-api".to_owned(),
+        }
+    }
+}
 
 pub fn container_name(thread_id: i64) -> String {
     format!("decurion-thread-{thread_id}")
@@ -36,10 +59,6 @@ pub fn container_name(thread_id: i64) -> String {
 
 pub fn home_volume(thread_id: i64) -> String {
     format!("decurion-home-{thread_id}")
-}
-
-pub fn credential_target(p: Profile) -> String {
-    format!("decurion/claude-profile-{}", p.as_str())
 }
 
 const RULES: &str = "You are working in your own copy of the code on its own branch. \
@@ -64,6 +83,8 @@ pub fn run_args(
     worktree: &Path,
     session_id: &str,
     resume: bool,
+    cred: Credential,
+    budget_usd: Option<f64>,
 ) -> anyhow::Result<Vec<String>> {
     let src = worktree.display().to_string();
     // docker reads --mount as comma-separated fields.
@@ -89,7 +110,7 @@ pub fn run_args(
         "--pids-limit",
         "1024",
         "-e",
-        TOKEN_VAR,
+        cred.var(),
         "-e",
         "GIT_CONFIG_COUNT=1",
         "-e",
@@ -117,6 +138,11 @@ pub fn run_args(
     .collect();
     a.push(if resume { "--resume" } else { "--session-id" }.into());
     a.push(session_id.into());
+    if let Some(b) = budget_usd {
+        // Claude Code stops itself at this amount; the hub set it aside.
+        a.push("--max-budget-usd".into());
+        a.push(format!("{b:.2}"));
+    }
     Ok(a)
 }
 
@@ -186,6 +212,9 @@ pub fn parse_line(line: &str) -> Vec<RunEvent> {
         Some("result") => vec![RunEvent::Finished {
             ok: v["subtype"] == "success" && v["is_error"] != true,
             summary: clip(v["result"].as_str().unwrap_or(""), 2000),
+            cost_usd: v["total_cost_usd"].as_f64(),
+            input_tokens: v["usage"]["input_tokens"].as_u64(),
+            output_tokens: v["usage"]["output_tokens"].as_u64(),
         }],
         _ => vec![],
     }
@@ -197,11 +226,20 @@ mod tests {
 
     #[test]
     fn token_is_passed_by_name_and_no_host_paths_are_mounted() {
-        let a =
-            run_args(7, Path::new("C:\\data\\worktrees\\demo 7"), "sid", false).unwrap_or_default();
+        let a = run_args(
+            7,
+            Path::new("C:\\data\\worktrees\\demo 7"),
+            "sid",
+            false,
+            Credential::Max(Profile::A),
+            None,
+        )
+        .unwrap_or_default();
         assert!(a.contains(&"-i".to_string()));
         let joined = a.join(" ");
-        assert!(a.windows(2).any(|w| w[0] == "-e" && w[1] == TOKEN_VAR));
+        assert!(a
+            .windows(2)
+            .any(|w| w[0] == "-e" && w[1] == "CLAUDE_CODE_OAUTH_TOKEN"));
         assert!(!joined.contains("sk-ant"));
         let mounts: Vec<&String> = a
             .windows(2)
@@ -221,7 +259,15 @@ mod tests {
 
     #[test]
     fn resume_uses_the_same_session() {
-        let a = run_args(7, Path::new("/w"), "sid", true).unwrap_or_default();
+        let a = run_args(
+            7,
+            Path::new("/w"),
+            "sid",
+            true,
+            Credential::Max(Profile::A),
+            None,
+        )
+        .unwrap_or_default();
         assert_eq!(
             a[a.len() - 2..],
             ["--resume".to_string(), "sid".to_string()]
@@ -229,8 +275,52 @@ mod tests {
     }
 
     #[test]
+    fn pay_per_use_runs_get_the_api_key_and_a_budget_only() {
+        let a = run_args(
+            7,
+            Path::new("/w"),
+            "sid",
+            false,
+            Credential::PayPerUse,
+            Some(9.5),
+        )
+        .unwrap_or_default();
+        assert!(a
+            .windows(2)
+            .any(|w| w[0] == "-e" && w[1] == "ANTHROPIC_API_KEY"));
+        assert!(!a.iter().any(|x| x == "CLAUDE_CODE_OAUTH_TOKEN"));
+        assert!(a
+            .windows(2)
+            .any(|w| w[0] == "--max-budget-usd" && w[1] == "9.50"));
+        let m = run_args(
+            7,
+            Path::new("/w"),
+            "sid",
+            false,
+            Credential::Max(Profile::B),
+            None,
+        )
+        .unwrap_or_default();
+        assert!(!m
+            .iter()
+            .any(|x| x == "ANTHROPIC_API_KEY" || x == "--max-budget-usd"));
+        assert_eq!(
+            Credential::Max(Profile::B).target(),
+            "decurion/claude-profile-B"
+        );
+    }
+
+    #[test]
     fn mount_paths_with_commas_are_refused() {
-        assert!(run_args(7, Path::new("C:\\a,b\\demo-7"), "sid", false).is_err());
+        assert!(run_args(
+            7,
+            Path::new("C:\\a,b\\demo-7"),
+            "sid",
+            false,
+            Credential::Max(Profile::A),
+            None
+        )
+        .is_err());
     }
 
     #[test]
@@ -248,12 +338,15 @@ mod tests {
                 }
             ]
         );
-        let ok = r#"{"type":"result","subtype":"success","is_error":false,"result":"DONE"}"#;
+        let ok = r#"{"type":"result","subtype":"success","is_error":false,"result":"DONE","total_cost_usd":0.0421,"usage":{"input_tokens":1200,"output_tokens":340}}"#;
         assert_eq!(
             parse_line(ok),
             vec![RunEvent::Finished {
                 ok: true,
-                summary: "DONE".into()
+                summary: "DONE".into(),
+                cost_usd: Some(0.0421),
+                input_tokens: Some(1200),
+                output_tokens: Some(340),
             }]
         );
         let bad = r#"{"type":"result","subtype":"success","is_error":true,"result":"Failed to authenticate"}"#;

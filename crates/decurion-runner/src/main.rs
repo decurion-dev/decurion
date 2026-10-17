@@ -1,7 +1,7 @@
 use anyhow::{bail, Context};
-use decurion_proto::{Claim, MoveRequest, Profile, RunEvent, ThreadState};
+use decurion_proto::{Claim, MoveRequest, RunEvent, ThreadState};
 use decurion_runner::{
-    container_name, credential_target, parse_line, prompt_for, run_args, DOCKER_CLI_ENV, TOKEN_VAR,
+    container_name, parse_line, prompt_for, run_args, Credential, DOCKER_CLI_ENV,
 };
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -69,21 +69,25 @@ fn data_dir() -> anyhow::Result<PathBuf> {
     Ok(PathBuf::from(base).join("decurion"))
 }
 
-/// The profile's Claude token, from Windows Credential Manager
-/// (`decurion/claude-profile-A`). Set with `claude setup-token` once per profile.
-fn claude_token(p: Profile) -> anyhow::Result<String> {
+/// The run's one credential, from Windows Credential Manager: a Max profile's
+/// token (`claude setup-token`, saved as `decurion/claude-profile-A`) or the
+/// pay-per-use API key (`decurion/anthropic-api`).
+fn secret(cred: Credential) -> anyhow::Result<String> {
+    let target = cred.target();
     #[cfg(windows)]
     {
-        let target = credential_target(p);
         let entry = keyring::Entry::new_with_target(&target, "decurion", "claude")?;
         entry
             .get_password()
-            .with_context(|| format!("no Claude token saved as {target}"))
+            .with_context(|| format!("nothing saved in Credential Manager as {target}"))
     }
     #[cfg(not(windows))]
     {
-        let var = format!("DECURION_CLAUDE_TOKEN_{}", p.as_str());
-        std::env::var(&var).with_context(|| format!("{} not set ({})", var, credential_target(p)))
+        let var = format!(
+            "DECURION_{}",
+            target.replace(['/', '-'], "_").to_ascii_uppercase()
+        );
+        std::env::var(&var).with_context(|| format!("{var} not set ({target})"))
     }
 }
 
@@ -267,11 +271,16 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
         .await;
 
     let wt = workspace(data, &c).await?;
-    let token = claude_token(c.app.profile)?;
+    let cred = if c.budget_usd.is_some() {
+        Credential::PayPerUse
+    } else {
+        Credential::Max(c.app.profile)
+    };
+    let token = secret(cred)?;
     let prompt = prompt_for(&c.thread.prompt, c.resume);
     let mut child = docker()
-        .env(TOKEN_VAR, token)
-        .args(run_args(id, &wt, &session, c.resume)?)
+        .env(cred.var(), token)
+        .args(run_args(id, &wt, &session, c.resume, cred, c.budget_usd)?)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -310,7 +319,7 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
     let mut finished: Option<(bool, String)> = None;
     while let Some(line) = read_capped_line(&mut out).await? {
         for e in parse_line(&line) {
-            if let RunEvent::Finished { ok, summary } = &e {
+            if let RunEvent::Finished { ok, summary, .. } = &e {
                 finished = Some((*ok, summary.clone()));
             }
             hub.event(id, &e).await;
@@ -416,6 +425,9 @@ async fn main() -> anyhow::Result<()> {
                         &RunEvent::Finished {
                             ok: false,
                             summary: err.to_string(),
+                            cost_usd: None,
+                            input_tokens: None,
+                            output_tokens: None,
                         },
                     )
                     .await;
