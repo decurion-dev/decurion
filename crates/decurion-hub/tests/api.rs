@@ -1653,3 +1653,163 @@ async fn an_app_cap_limits_that_apps_paid_work_only() {
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default()
+}
+
+async fn usage(r: &axum::Router, id: i64, reading: Value) -> StatusCode {
+    let mut body = reading;
+    body["kind"] = json!("usage");
+    call(
+        r,
+        "POST",
+        &format!("/api/threads/{id}/events"),
+        Some(RUNNER),
+        body,
+    )
+    .await
+    .0
+}
+
+async fn accounts(r: &axum::Router) -> Value {
+    call(r, "GET", "/api/accounts", Some(OWNER), Value::Null)
+        .await
+        .1
+}
+
+#[tokio::test]
+async fn max_plan_usage_fills_its_meter_without_cluttering_the_log() {
+    let (r, _) = hub().await;
+    let id = seed(&r).await;
+    let (_, c) = claim_one(&r).await;
+    assert_eq!(c["account"], "A");
+    let before = accounts(&r).await;
+    assert!(before[0]["seen_at"].is_null() && before[0]["week_pct"].is_null());
+
+    let hour = unix_now() + 3600;
+    let week = unix_now() + 3 * 86400;
+    let s = usage(
+        &r,
+        id,
+        json!({"window":"five_hour","used_pct":31.0,"resets_at":hour,"status":"allowed"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    usage(
+        &r,
+        id,
+        json!({"window":"seven_day","used_pct":42.0,"resets_at":week}),
+    )
+    .await;
+    let acc = accounts(&r).await;
+    let a = &acc[0];
+    assert_eq!(a["account"], "A");
+    assert_eq!(a["week_pct"], 42.0);
+    assert_eq!(a["five_hour_pct"], 31.0);
+    assert_eq!(a["limited"], false);
+    assert!(a["seen_at"].is_string());
+    // The fullest allowance is the week, so its reset is the one shown.
+    let shown = a["resets_at"].as_str().unwrap_or_default().to_owned();
+    assert!(shown.ends_with('Z'), "{shown}");
+    assert_eq!(a["week_resets_at"], json!(shown));
+    assert!(a["five_hour_resets_at"]
+        .as_str()
+        .is_some_and(|t| t.ends_with('Z') && t != shown));
+    let (_, ev) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{id}/events"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(ev, json!([]));
+    // Plan B was not used and has nothing to show.
+    assert!(acc[1]["seen_at"].is_null() && acc[1]["week_pct"].is_null());
+
+    // The plan runs out for the week; the meter says so but the work is left
+    // where it is.
+    usage(
+        &r,
+        id,
+        json!({"window":"seven_day","used_pct":100.0,"resets_at":week,"status":"rejected"}),
+    )
+    .await;
+    let a = &accounts(&r).await[0];
+    assert_eq!(a["limited"], true);
+    assert_eq!(a["week_pct"], 100.0);
+    assert_eq!(a["resets_at"], json!(shown));
+    let (_, t) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{id}"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(t["state"], "running");
+    // A later reading says it is fine again.
+    usage(&r, id, json!({"window":"five_hour","status":"allowed"})).await;
+    let a = &accounts(&r).await[0];
+    assert_eq!(a["limited"], false);
+    assert_eq!(
+        a["five_hour_pct"], 31.0,
+        "a reading without a figure keeps the last"
+    );
+}
+
+#[tokio::test]
+async fn usage_counts_only_for_a_running_max_plan_run() {
+    let (r, _) = hub().await;
+    let week = unix_now() + 86400;
+    let paid = ppu_app(&r).await;
+    let id = add_work(&r, paid, "paid").await;
+    let (_, c) = claim_one(&r).await;
+    assert_eq!(c["account"], "api");
+    let s = usage(
+        &r,
+        id,
+        json!({"window":"seven_day","used_pct":50.0,"resets_at":week}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let acc = accounts(&r).await;
+    assert!(acc[0]["seen_at"].is_null() && acc[1]["seen_at"].is_null());
+
+    // Without a run going, a reading has no plan to go to.
+    finish(&r, id, None).await;
+    let max = seed(&r).await;
+    usage(&r, max, json!({"window":"seven_day","used_pct":50.0})).await;
+    assert!(accounts(&r).await[0]["seen_at"].is_null());
+
+    // Only the runner reports usage, and odd values are tamed.
+    claim_one(&r).await;
+    let (s, _) = call(
+        &r,
+        "POST",
+        &format!("/api/threads/{max}/events"),
+        Some(OWNER),
+        json!({"kind":"usage","window":"seven_day","used_pct":5.0}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    usage(&r, max, json!({"window":"seven_day","used_pct":250.0})).await;
+    usage(&r, max, json!({"window":"Seven Day!","used_pct":1.0})).await;
+    assert_eq!(accounts(&r).await[0]["week_pct"], 100.0);
+
+    // A week that has already renewed starts again from zero, and an old
+    // "out" no longer holds.
+    usage(
+        &r,
+        max,
+        json!({"window":"seven_day","used_pct":100.0,"resets_at":1_700_000_000,"status":"rejected"}),
+    )
+    .await;
+    let a = &accounts(&r).await[0];
+    assert_eq!(a["week_pct"], 0.0);
+    assert_eq!(a["limited"], false);
+}

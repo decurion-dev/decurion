@@ -13,7 +13,7 @@
   }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui, "Segoe UI", sans-serif; }
-  header { display:flex; align-items:center; gap:16px; padding:14px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header { display:flex; align-items:center; gap:10px 16px; padding:14px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
   header h1 { font-size:18px; margin:0; }
   header .status { color:var(--muted); font-size:13px; margin-left:auto; }
   main { display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); gap:12px; padding:16px; }
@@ -21,39 +21,59 @@
   @media (max-width: 600px) { main { grid-template-columns:1fr; } }
   .col h2 { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:0 0 8px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:8px; cursor:pointer; }
-  .card .app { font-size:12px; color:var(--muted); }
+  .card .app { font-size:12px; color:var(--muted); display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
   .card[data-state="running"] { border-left:3px solid var(--accent); }
   .card[data-state="needs_you"] { border-left:3px solid var(--warn); }
   .card[data-state="failed"] { border-left:3px solid var(--bad); }
   .card[data-state="done"] { border-left:3px solid var(--ok); }
+  .pill { font-size:11px; line-height:1.5; padding:0 7px; border-radius:99px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
   form { display:flex; gap:8px; flex-wrap:wrap; padding:0 16px 16px; }
-  input, select, textarea, button { font:inherit; color:var(--ink); background:var(--card); border:1px solid var(--line); border-radius:8px; padding:7px 10px; }
+  input, select, textarea, button { font:inherit; color:var(--ink); background:var(--card); border:1px solid var(--line); border-radius:8px; padding:7px 10px; max-width:100%; }
   textarea { flex:1 1 320px; min-height:38px; }
   button { cursor:pointer; background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.quiet { background:var(--card); color:var(--ink); border-color:var(--line); }
   dialog { background:var(--card); color:var(--ink); border:1px solid var(--line); border-radius:12px; width:min(720px, 94vw); }
   #log { max-height:60vh; overflow:auto; font:13px/1.4 Consolas, monospace; white-space:pre-wrap; }
   .actions { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
   .err { color:var(--bad); padding:0 16px; }
-  .spend { font-size:13px; padding:3px 10px; border-radius:99px; background:var(--card); border:1px solid var(--line); }
-  .spend.near { border-color:var(--warn); color:var(--warn); }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip { font-size:13px; padding:3px 10px; border-radius:99px; background:var(--card); border:1px solid var(--line); white-space:nowrap; cursor:default; }
+  .chip.near { border-color:var(--warn); color:var(--warn); }
+  .chip.out { border-color:var(--bad); color:var(--bad); }
+  .chip.none { color:var(--muted); }
   .hint { color:var(--muted); font-size:13px; margin:8px 0; }
   .qr svg { background:#fff; padding:8px; border-radius:8px; margin-top:10px; }
   .qr a { display:block; font-size:12px; color:var(--muted); word-break:break-all; margin-top:6px; }
   .devices { list-style:none; padding:0; margin:10px 0 0; }
-  .devices li { display:flex; gap:10px; align-items:center; padding:6px 0; border-top:1px solid var(--line); }
-  .devices li span { flex:1; }
-  .devices button { background:var(--card); color:var(--bad); border-color:var(--line); }
+  .devices li { display:flex; gap:8px 10px; align-items:center; flex-wrap:wrap; padding:6px 0; border-top:1px solid var(--line); }
+  .devices li > span { flex:1 1 200px; }
+  .devices button.remove { background:var(--card); color:var(--bad); border-color:var(--line); }
+  .devices input[type=number] { width:6.5em; }
+  .acct-name { font-weight:600; flex:0 0 9em; }
+  .meters { flex:1 1 240px; min-width:0; }
+  .meter { font-size:13px; margin-bottom:6px; }
+  .bar { height:8px; background:var(--line); border-radius:99px; overflow:hidden; margin-top:3px; }
+  .bar > div { height:100%; background:var(--accent); }
+  .bar.near > div { background:var(--warn); }
+  .bar.out > div { background:var(--bad); }
+  .note { font-size:12px; color:var(--muted); }
+  .note.out { color:var(--bad); }
 </style>
 </head>
 <body>
-<header><h1>Decurion</h1><span class="spend" id="spend"></span><span class="status" id="status">Loading…</span></header>
+<header><h1>Decurion</h1><span class="chips" id="meters"></span><span class="status" id="status">Loading…</span></header>
 <form id="add-thread">
   <select id="app" required aria-label="App"></select>
+  <select id="ai" aria-label="Which AI does the work">
+    <option value="claude">Claude (app's account)</option>
+    <option value="chatgpt">ChatGPT</option>
+    <option value="grok">Grok</option>
+  </select>
   <input id="title" placeholder="Title" required aria-label="Title">
   <textarea id="prompt" placeholder="What should the agent do?" required aria-label="Task"></textarea>
   <button>Add work</button>
 </form>
-<details style="padding:0 16px 12px"><summary>Add an app</summary>
+<details style="padding:0 16px 12px"><summary>Apps</summary>
   <form id="add-app" style="padding:8px 0 0">
     <input id="app-name" placeholder="Name" required aria-label="App name">
     <input id="app-path" placeholder="C:\path\to\repo" required aria-label="Repo path">
@@ -61,14 +81,14 @@
     <label class="hint"><input type="checkbox" id="app-ppu"> Pay-per-use instead of a Max account</label>
     <button>Add app</button>
   </form>
+  <p class="hint">An app can have its own monthly limit on pay-per-use money, across Claude, ChatGPT and Grok. Leave it empty to use only the accounts' limits.</p>
   <ul id="apps" class="devices"></ul>
 </details>
-<details style="padding:0 16px 12px"><summary>Spending</summary>
-  <p class="hint">Pay-per-use work stops and asks you when this month's total reaches the cap. Each run can spend at most $10 of what is left.</p>
-  <form id="cap-form" style="padding:0">
-    <label>Monthly cap $ <input id="cap" type="number" min="0" step="1" style="width:7em" aria-label="Monthly cap in dollars"></label>
-    <button>Save</button>
-  </form>
+<details style="padding:0 16px 12px"><summary>Accounts</summary>
+  <p class="hint">Claude A and Claude B are flat-rate Max plans. Their bars show how much of this week's allowance and of the current five-hour allowance is used, as Claude last said while working.
+    The other accounts are billed per use: work on them stops and asks you when the month's total reaches that account's cap. Each run can spend at most $10 of what is left.</p>
+  <ul id="accounts" class="devices"></ul>
+  <p class="hint" id="max-worth"></p>
 </details>
 <details style="padding:0 16px 12px" id="phones"><summary>Phones and browsers</summary>
   <p class="hint">Pair your phone to get the inbox there. The code works once, for a few minutes.</p>
@@ -85,6 +105,8 @@ const COLS = [["queued","Queued"],["running","Running"],["needs_you","Needs you"
 const OWNER_MOVES = { in_review:[["done","Accept"],["queued","Send back"],["failed","Reject"]],
                       needs_you:[["queued","Continue"],["failed","Stop"]], failed:[["queued","Retry"]],
                       queued:[["failed","Cancel"]] };
+// A Max plan reading older than this is shown with its age.
+const OLD_MS = 60 * 60 * 1000;
 let apps = {};
 const $ = id => document.getElementById(id);
 async function api(path, opts = {}) {
@@ -94,38 +116,138 @@ async function api(path, opts = {}) {
   return r.status === 204 ? null : r.json();
 }
 function el(tag, attrs = {}, text = "") { const e = document.createElement(tag); Object.assign(e, attrs); e.textContent = text; return e; }
+function numberInput(value, label, placeholder = "") {
+  const i = el("input", { type: "number", min: 0, step: 1, value, placeholder }); i.setAttribute("aria-label", label); return i;
+}
+const money = n => "$" + n.toFixed(2);
+// Which account an app's Claude work runs on.
+const claudeLabel = app => !app ? "Claude" : app.pay_per_use ? "Claude pay-per-use" : `Claude ${app.profile}`;
+const aiLabel = t => t.ai === "chatgpt" ? "ChatGPT" : t.ai === "grok" ? "Grok" : claudeLabel(apps[t.app_id]);
+const when = iso => new Date(iso).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+function ago(iso) {
+  const m = (Date.now() - Date.parse(iso)) / 60000;
+  return m < 2 ? "just now" : m < 90 ? `${Math.round(m)} minutes ago` : m < 36 * 60 ? `${Math.round(m / 60)} hours ago` : `${Math.round(m / 1440)} days ago`;
+}
+const pct = n => `${Math.round(n)}%`;
+// near at 80% or more; out when Claude said the plan is used up.
+const level = (used, out) => out ? "out" : used >= 80 ? "near" : "";
+// Nothing in the lists is redrawn while the owner is typing in one of them.
+const busy = id => $(id).contains(document.activeElement) && document.activeElement.tagName === "INPUT";
+function bar(used, cls) {
+  const b = el("div", { className: `bar ${cls}` }); const fill = el("div");
+  fill.style.width = `${Math.max(0, Math.min(100, used))}%`; b.append(fill); return b;
+}
+function meterChip(a) {
+  if (!a.seen_at) return el("span", { className: "chip none", title: `${a.label}: nothing reported yet. It shows up after work runs on this plan.` }, `${a.label}: no data yet`);
+  const week = a.week_pct, five = a.five_hour_pct;
+  const used = Math.max(week ?? 0, five ?? 0);
+  let text = a.limited ? `${a.label} used up${a.resets_at ? ` until ${when(a.resets_at)}` : ""}`
+    : week != null ? `${a.label} ${pct(week)} of week` : five != null ? `${a.label} ${pct(five)} of 5 hours` : `${a.label}: no figures yet`;
+  const old = Date.now() - Date.parse(a.seen_at) > OLD_MS;
+  if (old) text += ` · as of ${ago(a.seen_at)}`;
+  const tip = [week != null ? `${a.label}: ${pct(week)} of this week` : `${a.label}: weekly figure not reported yet`];
+  if (a.week_resets_at) tip[0] += `, resets ${when(a.week_resets_at)}`;
+  if (five != null) tip.push(`Current five hours: ${pct(five)} used${a.five_hour_resets_at ? `, resets ${when(a.five_hour_resets_at)}` : ""}`);
+  if (a.limited) tip.push("Claude said this plan is used up for now.");
+  tip.push(`Last reported ${ago(a.seen_at)}`);
+  return el("span", { className: `chip ${level(used, a.limited)}`, title: tip.join("\n") }, text);
+}
+function maxRow(a) {
+  const li = el("li"); li.append(el("span", { className: "acct-name" }, a.label));
+  const box = el("div", { className: "meters" });
+  if (!a.seen_at) box.append(el("div", { className: "note" }, "No reading yet. It shows up after work runs on this plan."));
+  for (const [name, used, renews] of [["This week", a.week_pct, a.week_resets_at], ["Current five hours", a.five_hour_pct, a.five_hour_resets_at]]) {
+    if (used == null) continue;
+    const m = el("div", { className: "meter" }, `${name}: ${pct(used)} used${renews ? ` · renews ${when(renews)}` : ""}`);
+    m.append(bar(used, level(used, a.limited && used >= 100))); box.append(m);
+  }
+  if (a.limited) box.append(el("div", { className: "note out" }, `Used up for now${a.resets_at ? `, back ${when(a.resets_at)}` : ""}.`));
+  if (a.seen_at) box.append(el("div", { className: "note" }, `Last reported ${ago(a.seen_at)}.`));
+  li.append(box); return li;
+}
+function paidRow(a) {
+  const li = el("li"); li.append(el("span", { className: "acct-name" }, a.label));
+  const box = el("div", { className: "meters" });
+  const used = a.cap_usd > 0 ? 100 * a.spent_usd / a.cap_usd : a.spent_usd > 0 ? 100 : 0;
+  const m = el("div", { className: "meter" }, `${money(a.spent_usd)} of ${money(a.cap_usd)} this month`);
+  m.append(bar(used, level(used, used >= 100))); box.append(m);
+  const input = numberInput(a.cap_usd, `${a.label} monthly cap in dollars`);
+  const save = el("button", { type: "button" }, "Save cap");
+  save.onclick = async () => {
+    const v = input.value.trim();
+    if (v === "" || !(+v >= 0)) { $("err").textContent = `Enter a monthly cap in dollars for ${a.label}.`; return; }
+    try { await api("/spend/cap", { method: "POST", body: JSON.stringify({ account: a.account, cap_usd: +v }) }); input.blur(); refresh(); }
+    catch (x) { $("err").textContent = x.message; }
+  };
+  const cap = el("label", { className: "note" }, "Monthly cap $ "); cap.append(input);
+  li.append(box, cap, save); return li;
+}
+function appRow(x, sp) {
+  const li = el("li");
+  const mine = sp && (sp.spent_usd > 0 || sp.cap_usd != null) ? `paid work this month ${money(sp.spent_usd)}${sp.cap_usd != null ? ` of its own ${money(sp.cap_usd)} cap` : ""}` : "";
+  li.append(el("span", {}, `${x.name} · Claude work on ${x.pay_per_use ? "pay-per-use" : "Max plan " + x.profile}${mine ? " · " + mine : ""}`));
+  const sw = el("button", { type: "button", className: "quiet" }, x.pay_per_use ? `Switch to Max ${x.profile}` : "Switch to pay-per-use");
+  sw.onclick = async () => { try { await api(`/apps/${x.id}/pay-per-use`, { method: "POST", body: JSON.stringify({ on: !x.pay_per_use }) }); refresh(); } catch (e) { $("err").textContent = e.message; } };
+  const input = numberInput(x.monthly_cap_usd ?? "", `${x.name} monthly cap in dollars`, "No cap");
+  const setCap = async cap_usd => {
+    try { await api(`/apps/${x.id}/cap`, { method: "POST", body: JSON.stringify({ cap_usd }) }); input.blur(); refresh(); }
+    catch (e) { $("err").textContent = e.message; }
+  };
+  const save = el("button", { type: "button" }, "Save cap");
+  save.onclick = () => {
+    const v = input.value.trim();
+    if (v === "") return setCap(null);
+    if (!(+v >= 0)) { $("err").textContent = `Enter a monthly cap in dollars for ${x.name}, or leave it empty.`; return; }
+    setCap(+v);
+  };
+  const cap = el("label", { className: "note" }, "Own cap $ "); cap.append(input);
+  li.append(cap, save);
+  if (x.monthly_cap_usd != null) {
+    const clear = el("button", { type: "button", className: "quiet" }, "Remove cap");
+    clear.onclick = () => setCap(null); li.append(clear);
+  }
+  li.append(sw); return li;
+}
 async function refresh() {
   try {
     const [a, threads] = await Promise.all([api("/apps"), api("/threads")]);
     apps = Object.fromEntries(a.map(x => [x.id, x]));
     const sel = $("app"); const keep = sel.value; sel.replaceChildren(...a.map(x => el("option", { value: x.id }, x.name))); if (keep) sel.value = keep;
+    showClaudeChoice();
     $("board").replaceChildren(...COLS.map(([st, label]) => {
       const col = el("section", { className: "col" }); const mine = threads.filter(t => t.state === st);
       col.append(el("h2", {}, `${label} (${mine.length})`));
       for (const t of mine) {
         const c = el("div", { className: "card" }); c.dataset.state = t.state;
-        c.append(el("div", { className: "app" }, apps[t.app_id]?.name ?? ""), el("div", {}, t.title));
+        const top = el("div", { className: "app" }); top.append(el("span", {}, apps[t.app_id]?.name ?? ""), el("span", { className: "pill" }, aiLabel(t)));
+        c.append(top, el("div", {}, t.title));
         c.onclick = () => openThread(t); col.append(c);
       }
       return col;
     }));
     $("status").textContent = `${threads.length} pieces of work · updated ${new Date().toLocaleTimeString()}`;
-    const sp = await api("/spend");
-    const money = n => "$" + n.toFixed(2);
-    $("spend").textContent = `Pay-per-use this month: ${money(sp.pay_per_use_usd)} of ${money(sp.cap_usd)} · Max accounts used ${money(sp.max_equivalent_usd)} worth`;
-    $("spend").classList.toggle("near", sp.pay_per_use_usd >= 0.8 * sp.cap_usd);
-    if (document.activeElement !== $("cap")) $("cap").value = sp.cap_usd;
-    $("apps").replaceChildren(...a.map(x => {
-      const li = el("li"); const span = el("span", {}, `${x.name} · ${x.pay_per_use ? "pay-per-use" : "Max account " + x.profile}`);
-      const b = el("button", { type: "button" }, x.pay_per_use ? `Switch to Max ${x.profile}` : "Switch to pay-per-use");
-      b.onclick = async () => { await api(`/apps/${x.id}/pay-per-use`, { method: "POST", body: JSON.stringify({ on: !x.pay_per_use }) }); refresh(); };
-      li.append(span, b); return li;
-    }));
+    const [sp, accounts] = await Promise.all([api("/spend"), api("/accounts")]);
+    // Top bar: each Max plan in use or with a reading, then pay-per-use money.
+    const used = new Set(a.filter(x => !x.pay_per_use).map(x => x.profile));
+    const paid = accounts.filter(x => x.cap_usd != null);
+    const total = paid.reduce((s, x) => s + x.spent_usd, 0);
+    const nearCap = paid.some(x => x.spent_usd >= 0.8 * x.cap_usd);
+    $("meters").replaceChildren(
+      ...accounts.filter(x => x.cap_usd == null && (x.seen_at || used.has(x.account))).map(meterChip),
+      el("span", { className: `chip ${nearCap ? "near" : ""}`, title: paid.map(x => `${x.label}: ${money(x.spent_usd)} of ${money(x.cap_usd)}`).join("\n") },
+         `Pay-per-use this month: ${money(total)}`));
+    if (!busy("accounts")) $("accounts").replaceChildren(...accounts.map(x => x.cap_usd == null ? maxRow(x) : paidRow(x)));
+    $("max-worth").textContent = `This month's work on the Max plans would have cost ${money(sp.max_equivalent_usd)} on pay-per-use. You are not billed for it.`;
+    const appSpend = Object.fromEntries((sp.apps ?? []).map(x => [x.app_id, x]));
+    if (!busy("apps")) $("apps").replaceChildren(...a.map(x => appRow(x, appSpend[x.id])));
     $("err").textContent = "";
   } catch (e) { $("err").textContent = e.message; }
 }
+// The Claude choice names the account the chosen app's Claude work runs on.
+function showClaudeChoice() { $("ai").options[0].textContent = `Claude (${claudeLabel(apps[$("app").value])})`; }
+$("app").onchange = showClaudeChoice;
 async function openThread(t) {
-  $("d-title").textContent = `${t.title} · ${t.state.replace("_", " ")}`;
+  $("d-title").textContent = `${t.title} · ${t.state.replace("_", " ")} · ${aiLabel(t)}`;
   // Events come in pages of 500; fetch them all so the outcome is never cut off.
   let ev = [], page;
   do { page = await api(`/threads/${t.id}/events?after=${ev.length ? ev[ev.length - 1].id : 0}`); ev = ev.concat(page); }
@@ -143,7 +265,7 @@ async function openThread(t) {
   $("detail").showModal();
 }
 $("add-thread").onsubmit = async e => { e.preventDefault();
-  try { await api("/threads", { method: "POST", body: JSON.stringify({ app_id: +$("app").value, title: $("title").value, prompt: $("prompt").value }) });
+  try { await api("/threads", { method: "POST", body: JSON.stringify({ app_id: +$("app").value, ai: $("ai").value, title: $("title").value, prompt: $("prompt").value }) });
         $("title").value = ""; $("prompt").value = ""; refresh(); } catch (x) { $("err").textContent = x.message; } };
 $("add-app").onsubmit = async e => { e.preventDefault();
   try { await api("/apps", { method: "POST", body: JSON.stringify({ name: $("app-name").value, repo_path: $("app-path").value, profile: $("app-profile").value, pay_per_use: $("app-ppu").checked }) });
@@ -152,7 +274,7 @@ async function loadDevices() {
   const list = await api("/devices");
   $("devices").replaceChildren(...list.map(d => {
     const li = el("li"); li.append(el("span", {}, `${d.name}${d.has_push ? " · notifications on" : ""} · last used ${d.last_seen ? d.last_seen.slice(0, 16).replace("T", " ") : "never"}`));
-    const b = el("button", { type: "button" }, "Remove");
+    const b = el("button", { type: "button", className: "remove" }, "Remove");
     b.onclick = async () => { if (confirm(`Sign out "${d.name}"? It will need a new pairing code.`)) { await api(`/devices/${d.id}/remove`, { method: "POST" }); loadDevices(); } };
     li.append(b); return li;
   }));
@@ -168,11 +290,6 @@ $("pair").onclick = async () => {
     setTimeout(loadDevices, 15000);
   } catch (e) { $("err").textContent = e.message; }
 };
-$("cap-form").onsubmit = async e => { e.preventDefault();
-  const v = $("cap").value.trim();
-  if (v === "" || !(+v >= 0)) { $("err").textContent = "Enter a monthly cap in dollars."; return; }
-  try { await api("/spend/cap", { method: "POST", body: JSON.stringify({ cap_usd: +v }) }); $("cap").blur(); refresh(); }
-  catch (x) { $("err").textContent = x.message; } };
 refresh(); setInterval(refresh, 3000);
 </script>
 </body>

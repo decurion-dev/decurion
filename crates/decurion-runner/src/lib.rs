@@ -248,8 +248,62 @@ pub fn parse_line(line: &str) -> Vec<RunEvent> {
                 output_tokens: u["output_tokens"].as_u64(),
             }]
         }
+        Some("rate_limit_event") => usage_events(&v["rate_limit_info"]),
         _ => vec![],
     }
+}
+
+/// Unix seconds, whether Claude Code wrote them as a whole number or not.
+fn unix_secs(v: &Value) -> Option<i64> {
+    v.as_i64()
+        .or_else(|| v.as_f64().filter(|f| f.is_finite()).map(|f| f as i64))
+}
+
+/// Turns a Max plan's `rate_limit_event` into meter readings, one per
+/// allowance it mentions.
+///
+/// Checked against Claude Code 2.1.289 (`SDKRateLimitInfo` in the agent SDK's
+/// `sdk.d.ts`, and the CLI that builds it): `status` is the plan's state,
+/// `rateLimitType` names the allowance that status is about, `utilization` is
+/// a fraction (0.42 is 42%) and `resetsAt` is in Unix seconds. The CLI also
+/// sends an undocumented `unifiedWindows` with the five-hour and weekly
+/// readings side by side; it is used when present.
+fn usage_events(info: &Value) -> Vec<RunEvent> {
+    if !info.is_object() {
+        return vec![];
+    }
+    let status = info["status"].as_str().map(|s| clip(s, 40));
+    let main = info["rateLimitType"].as_str();
+    let pct = |w: &Value| {
+        w["utilization"]
+            .as_f64()
+            .filter(|u| u.is_finite())
+            .map(|u| u * 100.0)
+    };
+    let mut out = Vec::new();
+    let mut status_sent = false;
+    if let Some(windows) = info["unifiedWindows"].as_object() {
+        for (name, w) in windows.iter().take(8) {
+            let is_main = Some(name.as_str()) == main;
+            status_sent |= is_main;
+            out.push(RunEvent::Usage {
+                window: Some(clip(name, 40)),
+                used_pct: pct(w).or_else(|| pct(info).filter(|_| is_main)),
+                resets_at: unix_secs(&w["resetsAt"])
+                    .or_else(|| unix_secs(&info["resetsAt"]).filter(|_| is_main)),
+                status: status.clone().filter(|_| is_main),
+            });
+        }
+    }
+    if !status_sent {
+        out.push(RunEvent::Usage {
+            window: main.map(|m| clip(m, 40)),
+            used_pct: pct(info),
+            resets_at: unix_secs(&info["resetsAt"]),
+            status,
+        });
+    }
+    out
 }
 
 #[cfg(test)]
@@ -417,6 +471,50 @@ mod tests {
                 text: "token is [redacted] ok".into()
             }]
         );
+    }
+
+    #[test]
+    fn plan_usage_becomes_meter_readings() {
+        // As Claude Code 2.1.289 prints it on a Max plan, mid-week.
+        let l = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1760954400,"rateLimitType":"five_hour","utilization":0.31,"isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.31,"resetsAt":1760954400},"seven_day":{"utilization":0.42,"resetsAt":1761300000}}},"uuid":"0b3c4b8e-1111-4222-8333-944455556666","session_id":"5e0a2c1d-aaaa-4bbb-8ccc-ddddeeeeffff"}"#;
+        let got = parse_line(l);
+        assert_eq!(got.len(), 2);
+        assert!(got.contains(&RunEvent::Usage {
+            window: Some("five_hour".into()),
+            used_pct: Some(31.0),
+            resets_at: Some(1760954400),
+            status: Some("allowed".into()),
+        }));
+        assert!(got.iter().any(|e| matches!(e,
+            RunEvent::Usage { window: Some(w), used_pct: Some(p), resets_at: Some(1761300000), status: None }
+                if w == "seven_day" && (p - 42.0).abs() < 1e-9)));
+    }
+
+    #[test]
+    fn a_used_up_plan_reads_as_rejected() {
+        // Without the per-window detail: just the limit that was hit.
+        let l = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1761300000,"rateLimitType":"seven_day","utilization":1.0,"overageStatus":"rejected","overageDisabledReason":"overage_not_provisioned"},"uuid":"u","session_id":"s"}"#;
+        assert_eq!(
+            parse_line(l),
+            vec![RunEvent::Usage {
+                window: Some("seven_day".into()),
+                used_pct: Some(100.0),
+                resets_at: Some(1761300000),
+                status: Some("rejected".into()),
+            }]
+        );
+        // A bare status still gets through.
+        let l = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning"}}"#;
+        assert_eq!(
+            parse_line(l),
+            vec![RunEvent::Usage {
+                window: None,
+                used_pct: None,
+                resets_at: None,
+                status: Some("allowed_warning".into()),
+            }]
+        );
+        assert!(parse_line(r#"{"type":"rate_limit_event"}"#).is_empty());
     }
 
     #[test]

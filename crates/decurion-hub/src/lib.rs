@@ -15,6 +15,7 @@ pub mod devices;
 pub mod push;
 pub mod spend;
 pub mod store;
+pub mod usage;
 
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -548,6 +549,13 @@ async fn add_event(
 ) -> Response {
     if c != Caller::Runner {
         return (StatusCode::FORBIDDEN, "events come from the runner").into_response();
+    }
+    // Plan usage readings feed the meters, not the activity log.
+    if matches!(e, RunEvent::Usage { .. }) {
+        return match st.store.record_usage(id, &e).await {
+            Ok(_) => StatusCode::NO_CONTENT.into_response(),
+            Err(e) => ApiError(e).into_response(),
+        };
     }
     match st.store.add_event(id, &e).await {
         Ok(eid) => (StatusCode::CREATED, Json(eid)).into_response(),

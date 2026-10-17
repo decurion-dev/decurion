@@ -270,7 +270,7 @@ impl Store {
             } else {
                 (None, None)
             };
-            out.push(AccountMeter {
+            let mut meter = AccountMeter {
                 account,
                 label: account.label().to_owned(),
                 spent_usd,
@@ -278,9 +278,15 @@ impl Store {
                 week_pct: None,
                 five_hour_pct: None,
                 resets_at: None,
+                week_resets_at: None,
+                five_hour_resets_at: None,
                 limited: false,
                 seen_at: None,
-            });
+            };
+            if !account.is_paid() {
+                crate::usage::fill_meter(&mut tx, &mut meter).await?;
+            }
+            out.push(meter);
         }
         tx.commit().await?;
         Ok(out)

@@ -333,6 +333,12 @@ pub struct AccountMeter {
     /// Max plans: when the limit that is closest to running out resets.
     #[serde(default)]
     pub resets_at: Option<String>,
+    /// Max plans: when the weekly allowance shown in `week_pct` renews.
+    #[serde(default)]
+    pub week_resets_at: Option<String>,
+    /// Max plans: when the current five-hour allowance renews.
+    #[serde(default)]
+    pub five_hour_resets_at: Option<String>,
     /// Max plans: the last report said this plan is out for now.
     #[serde(default)]
     pub limited: bool,
@@ -363,6 +369,26 @@ pub enum RunEvent {
         input_tokens: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output_tokens: Option<u64>,
+    },
+    /// Claude reported how much of a Max plan's allowance is used. The hub
+    /// keeps the latest reading per plan and window for the meters; it is
+    /// not part of the activity log. Every field is optional so a reading
+    /// Claude Code shapes differently in future still gets through.
+    Usage {
+        /// Which allowance, as Claude names it: `five_hour`, `seven_day`, ...
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window: Option<String>,
+        /// Share of that allowance used, 0 to 100.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        used_pct: Option<f64>,
+        /// When that allowance renews, in Unix seconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resets_at: Option<i64>,
+        /// The plan as a whole: `allowed`, `allowed_warning` or `rejected`
+        /// (out for now). Only set on the reading for the allowance Claude is
+        /// reporting the status of.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
     },
 }
 
@@ -418,5 +444,29 @@ mod tests {
         let v = serde_json::to_value(&e).unwrap_or_default();
         assert_eq!(v["kind"], "finished");
         assert_eq!(v["ok"], true);
+    }
+
+    #[test]
+    fn usage_events_tolerate_missing_fields() {
+        let e: Option<RunEvent> = serde_json::from_str(r#"{"kind":"usage"}"#).ok();
+        assert_eq!(
+            e,
+            Some(RunEvent::Usage {
+                window: None,
+                used_pct: None,
+                resets_at: None,
+                status: None
+            })
+        );
+        let e = RunEvent::Usage {
+            window: Some("seven_day".into()),
+            used_pct: Some(42.0),
+            resets_at: Some(1_760_000_000),
+            status: None,
+        };
+        let v = serde_json::to_value(&e).unwrap_or_default();
+        assert_eq!(v["kind"], "usage");
+        assert_eq!(v["used_pct"], 42.0);
+        assert!(v.get("status").is_none());
     }
 }

@@ -365,6 +365,11 @@ impl Store {
     }
 
     pub async fn add_event(&self, thread_id: i64, e: &RunEvent) -> Result<i64> {
+        if matches!(e, RunEvent::Usage { .. }) {
+            return Err(StoreError::Invalid(
+                "usage readings are recorded with record_usage".into(),
+            ));
+        }
         self.thread(thread_id).await?;
         let body = serde_json::to_string(e).map_err(|e| StoreError::Invalid(e.to_string()))?;
         let mut tx = self.pool.begin().await?;
