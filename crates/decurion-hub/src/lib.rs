@@ -12,6 +12,7 @@
 //! be removed from the board.
 
 pub mod devices;
+pub mod limits;
 pub mod push;
 pub mod spend;
 pub mod store;
@@ -119,6 +120,8 @@ pub fn router(state: AppState) -> Router {
         .route("/devices/{id}/remove", post(remove_device))
         .route("/push/key", get(push_key))
         .route("/spend", get(get_spend))
+        .route("/limits", get(get_limits))
+        .route("/limits/{profile}/pay-per-use", post(overflow))
         .route("/spend/cap", post(set_cap))
         .route("/apps/{id}/pay-per-use", post(set_pay_per_use))
         .route("/push/subscribe", post(push_subscribe))
@@ -568,7 +571,23 @@ async fn add_event(
         return (StatusCode::FORBIDDEN, "events come from the runner").into_response();
     }
     match st.store.add_event(id, &e).await {
-        Ok(eid) => (StatusCode::CREATED, Json(eid)).into_response(),
+        Ok((eid, new_outage)) => {
+            if let (true, Some(p)) = (new_outage, st.push.clone()) {
+                let store = st.store.clone();
+                tokio::spawn(async move {
+                    // One alert per account, with the work now waiting on it.
+                    if let Ok(Some(l)) = store.limit_for_thread(id).await {
+                        let title = format!("Claude Max {} is out of usage", l.profile.as_str());
+                        let body = format!(
+                            "{} waiting; they restart on their own when it resets. Open to continue on pay-per-use.",
+                            if l.waiting == 1 { "1 job".to_owned() } else { format!("{} jobs", l.waiting) }
+                        );
+                        p.notify(&store, &title, &body).await;
+                    }
+                });
+            }
+            (StatusCode::CREATED, Json(eid)).into_response()
+        }
         Err(e) => ApiError(e).into_response(),
     }
 }
@@ -722,6 +741,29 @@ async fn set_pay_per_use(
     }
     match st.store.set_pay_per_use(id, b.on).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn get_limits(State(st): State<AppState>) -> ApiResult<Vec<decurion_proto::Limit>> {
+    Ok(Json(st.store.limits().await?))
+}
+
+/// The one tap that moves work waiting on an exhausted Max account to
+/// pay-per-use (still under the monthly cap).
+async fn overflow(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(profile): Path<String>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("moving work to pay-per-use");
+    }
+    let Ok(p) = profile.parse::<decurion_proto::Profile>() else {
+        return (StatusCode::BAD_REQUEST, "unknown account").into_response();
+    };
+    match st.store.overflow_to_pay_per_use(p).await {
+        Ok(n) => Json(serde_json::json!({ "moved": n })).into_response(),
         Err(e) => ApiError(e).into_response(),
     }
 }

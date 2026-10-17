@@ -2,6 +2,7 @@ use anyhow::{bail, Context};
 use decurion_proto::{Claim, MoveRequest, RunEvent, ThreadState};
 use decurion_runner::{
     container_name, parse_line, prompt_for, run_args, Credential, BUDGET_STOP, DOCKER_CLI_ENV,
+    LIMIT_STOP,
 };
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -323,17 +324,29 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
     // fake result: its cost is then not trusted and the hub charges the whole
     // amount set aside.
     let mut result: Option<RunEvent> = None;
+    // A usage-limit report is held the same way: an agent could print a fake
+    // one to freeze its account, so only Claude's real, final result counts.
+    let mut limit: Option<Option<i64>> = None;
     let mut after_result = false;
     while let Some(line) = read_capped_line(&mut out).await? {
         if result.is_some() && !line.trim().is_empty() {
             after_result = true;
         }
-        for e in parse_line(&line) {
-            if matches!(e, RunEvent::Finished { .. }) {
-                result = Some(e);
-                after_result = false;
-            } else {
-                hub.event(id, &e).await;
+        let events = parse_line(&line);
+        if events
+            .iter()
+            .any(|e| matches!(e, RunEvent::Finished { .. }))
+        {
+            limit = None;
+        }
+        for e in events {
+            match e {
+                RunEvent::Finished { .. } => {
+                    result = Some(e);
+                    after_result = false;
+                }
+                RunEvent::LimitHit { reset_epoch } => limit = Some(reset_epoch),
+                _ => hub.event(id, &e).await,
             }
         }
     }
@@ -362,6 +375,7 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
         }
         _ => None,
     };
+    let max_limit = limit.filter(|_| !after_result && c.budget_usd.is_none());
     let err = stderr_task.await.unwrap_or_default();
     // The agent's own "done" is not enough: work only goes to review if it
     // actually left commits on its branch.
@@ -383,6 +397,21 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
             ThreadState::Failed,
             format!("container exited with {status} after the agent reported: {summary}"),
         ),
+        // The Max account is out: back to the queue, where it waits for the
+        // reset (or the owner moves it to pay-per-use). Only for a Max run,
+        // and only when the report was Claude's last line; anything else
+        // goes to the owner rather than looping.
+        Some((false, summary)) if summary == LIMIT_STOP => {
+            if max_limit.is_some() {
+                (ThreadState::Queued, summary)
+            } else {
+                (
+                    ThreadState::NeedsYou,
+                    "Claude reported a usage limit that Decurion could not confirm; check the account."
+                        .to_owned(),
+                )
+            }
+        }
         // Out of money for this run, not broken: the owner can give it more.
         Some((false, summary)) if summary == BUDGET_STOP => (ThreadState::NeedsYou, summary),
         Some((false, summary)) => (ThreadState::Failed, summary),
@@ -394,7 +423,17 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
             ),
         ),
     };
-    hub.move_to(id, to, &note).await
+    if let (ThreadState::Queued, Some(reset_epoch)) = (to, max_limit) {
+        // The hub saves the outage and requeues the work in one step.
+        hub.post(
+            &format!("/threads/{id}/events"),
+            &RunEvent::LimitHit { reset_epoch },
+        )
+        .await
+        .map(|_| ())
+    } else {
+        hub.move_to(id, to, &note).await
+    }
 }
 
 #[tokio::main]
