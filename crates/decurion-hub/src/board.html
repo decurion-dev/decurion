@@ -290,6 +290,7 @@
     <a class="brand" href="#board" id="brand"><span id="mark"></span><span>Decurion</span></a>
     <nav class="nav main-nav" aria-label="Pages">
       <a class="nav-item" href="#board" data-route="board" data-key="nav-board"></a>
+      <a class="nav-item" href="/goals" id="nav-goals"></a>
       <a class="nav-item" href="#settings" data-route="settings" data-key="nav-settings"></a>
     </nav>
     <nav class="nav apps" aria-label="Filter by app" id="app-nav"></nav>
@@ -446,6 +447,7 @@
   $("mark").append(D.mark(28));
   document.querySelector('[data-route="board"]').append(icon("board"), el("span", { className: "nm" }, "Board"));
   document.querySelector('[data-route="settings"]').append(icon("settings"), el("span", { className: "nm" }, "Settings"));
+  $("nav-goals").append(icon("send"), el("span", { className: "nm" }, "Goals"));
   for (const s of document.querySelectorAll("[data-icon]")) s.append(icon(s.dataset.icon, "l"));
   $("new-work").append(icon("plus"), "New work");
   $("start").append("Start work", icon("send"));
