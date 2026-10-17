@@ -3,7 +3,7 @@
 //! in the same transaction.
 
 use decurion_proto::{
-    App, Claim, EventRecord, NewApp, NewThread, Profile, RunEvent, Thread, ThreadState,
+    App, Claim, EventRecord, NewApp, NewThread, Place, Profile, RunEvent, Thread, ThreadState,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
 use sqlx::{Row, SqlitePool};
@@ -21,6 +21,9 @@ pub enum StoreError {
     Invalid(String),
     #[error("{0}")]
     Duplicate(String),
+    /// Not possible right now, for a reason the owner can fix.
+    #[error("{0}")]
+    Refused(String),
     #[error(transparent)]
     Db(#[from] sqlx::Error),
 }
@@ -41,10 +44,11 @@ pub struct Store {
     pool: SqlitePool,
 }
 
-const THREAD_COLS: &str = "id, app_id, title, prompt, state, session_id, branch, updated_at";
+const THREAD_COLS: &str = "id, app_id, title, prompt, state, session_id, branch, place, updated_at";
 
 fn thread_from(row: &SqliteRow) -> Result<Thread> {
     let state: String = row.try_get("state")?;
+    let place: String = row.try_get("place")?;
     Ok(Thread {
         id: row.try_get("id")?,
         app_id: row.try_get("app_id")?,
@@ -53,6 +57,7 @@ fn thread_from(row: &SqliteRow) -> Result<Thread> {
         state: ThreadState::from_str(&state).map_err(|e| StoreError::Invalid(e.to_string()))?,
         session_id: row.try_get("session_id")?,
         branch: row.try_get("branch")?,
+        place: Place::from_str(&place).map_err(|e| StoreError::Invalid(e.to_string()))?,
         updated_at: row.try_get("updated_at")?,
     })
 }
@@ -134,12 +139,17 @@ impl Store {
             return Err(StoreError::Invalid("title and prompt are required".into()));
         }
         self.app(t.app_id).await?;
+        if t.place == Place::Cloud && !self.has_cloud_worker().await? {
+            return Err(StoreError::Refused(crate::workers::NO_CLOUD_WORKER.into()));
+        }
         let row = sqlx::query(&format!(
-            "INSERT INTO threads (app_id, title, prompt) VALUES (?, ?, ?) RETURNING {THREAD_COLS}"
+            "INSERT INTO threads (app_id, title, prompt, place) VALUES (?, ?, ?, ?)
+             RETURNING {THREAD_COLS}"
         ))
         .bind(t.app_id)
         .bind(t.title.trim())
         .bind(t.prompt.trim())
+        .bind(t.place.as_str())
         .fetch_one(&self.pool)
         .await?;
         thread_from(&row)
@@ -164,7 +174,8 @@ impl Store {
     /// Moves a thread to `to` if that move is allowed from its current state.
     /// With `expect`, the move only happens if the thread is still in that
     /// state. The update is conditional on the state read, so two racing moves
-    /// cannot both succeed.
+    /// cannot both succeed. A runner (actor `runner:<name>`) can only move work
+    /// it is running itself, so one computer can never end another's run.
     pub async fn move_thread(
         &self,
         id: i64,
@@ -182,6 +193,16 @@ impl Store {
         let from = ThreadState::from_str(&from).map_err(|e| StoreError::Invalid(e.to_string()))?;
         if expect.is_some_and(|e| e != from) {
             return Err(StoreError::Conflict);
+        }
+        if actor.starts_with("runner:") {
+            let holder: Option<String> =
+                sqlx::query_scalar("SELECT runner FROM threads WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            if from != ThreadState::Running || holder.as_deref() != Some(actor) {
+                return Err(StoreError::Conflict);
+            }
         }
         if !from.can_move_to(to) {
             return Err(StoreError::BadMove { from, to });
@@ -214,7 +235,9 @@ impl Store {
     /// Pay-per-use work that no longer fits in the month's cap is moved to
     /// Needs you on the way, and the next thread is tried, so capped work never
     /// holds up work on a Max account.
-    pub async fn claim(&self, runner: &str) -> Result<ClaimOutcome> {
+    ///
+    /// A runner only gets work placed on its own kind of computer.
+    pub async fn claim(&self, runner: &str, place: Place) -> Result<ClaimOutcome> {
         let actor = runner_actor(runner)?;
         // IMMEDIATE takes the write lock up front, so a claim never fails
         // halfway because an event was being written at the same moment.
@@ -222,8 +245,10 @@ impl Store {
         let mut capped = Vec::new();
         loop {
             let Some(row) = sqlx::query(&format!(
-                "SELECT {THREAD_COLS} FROM threads WHERE state = 'queued' ORDER BY id LIMIT 1"
+                "SELECT {THREAD_COLS} FROM threads WHERE state = 'queued' AND place = ?
+                 ORDER BY id LIMIT 1"
             ))
+            .bind(place.as_str())
             .fetch_optional(&mut *tx)
             .await?
             else {
@@ -317,11 +342,13 @@ impl Store {
             tx.commit().await?;
             let thread = self.thread(t.id).await?;
             let app = self.app(thread.app_id).await?;
+            let checkpoint = self.latest_checkpoint(t.id).await?;
             return Ok(ClaimOutcome {
                 work: Some(Claim {
                     thread,
                     app,
                     resume,
+                    checkpoint,
                     budget_usd: pay_per_use
                         .then(|| crate::spend::claude_budget_usd(prior, reserved)),
                 }),
@@ -353,10 +380,23 @@ impl Store {
         Ok(ids)
     }
 
-    pub async fn add_event(&self, thread_id: i64, e: &RunEvent) -> Result<i64> {
-        self.thread(thread_id).await?;
+    /// Records what happened in a run. Only the runner the work is running on
+    /// may report it (`runner` is its name).
+    pub async fn add_event(&self, thread_id: i64, runner: &str, e: &RunEvent) -> Result<i64> {
         let body = serde_json::to_string(e).map_err(|e| StoreError::Invalid(e.to_string()))?;
         let mut tx = self.pool.begin().await?;
+        let held: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT state, runner FROM threads WHERE id = ?")
+                .bind(thread_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        match held {
+            None => return Err(StoreError::NotFound),
+            Some((state, holder))
+                if state == ThreadState::Running.as_str()
+                    && holder.as_deref() == Some(runner_actor(runner)?.as_str()) => {}
+            Some(_) => return Err(StoreError::Conflict),
+        }
         let id =
             sqlx::query_scalar("INSERT INTO events (thread_id, body) VALUES (?, ?) RETURNING id")
                 .bind(thread_id)
@@ -471,7 +511,7 @@ fn check_repo_path(path: &str) -> Result<()> {
 
 /// Runner names are recorded as `runner:<name>`, so a runner can never write
 /// an audit row that looks like the owner's.
-fn runner_actor(name: &str) -> Result<String> {
+pub(crate) fn runner_actor(name: &str) -> Result<String> {
     let ok = (1..=32).contains(&name.len())
         && name
             .bytes()
@@ -483,7 +523,7 @@ fn runner_actor(name: &str) -> Result<String> {
     }
 }
 
-async fn audit(
+pub(crate) async fn audit(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     thread_id: i64,
     actor: &str,

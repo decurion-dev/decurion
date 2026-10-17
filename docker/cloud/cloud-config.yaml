@@ -1,0 +1,52 @@
+#cloud-config
+# Decurion cloud worker: setup text for {{SERVER_NAME}}.
+# Paste all of this into the "user data" (or "cloud-init") box when you create
+# an Ubuntu 24.04 server. It contains a Tailscale key and a one-time Decurion
+# code, so do not share it. Both work only once.
+# The server joins your Tailscale network, installs what it needs, builds
+# Decurion and then connects to your PC. That takes about 10 to 20 minutes.
+# Progress: /var/log/cloud-init-output.log, then: journalctl -fu decurion-runner
+
+write_files:
+  # Used once by setup.sh, then deleted.
+  - path: /etc/decurion/setup.env
+    permissions: "0600"
+    content: |
+      TAILSCALE_AUTH_KEY={{TAILSCALE_AUTH_KEY}}
+      SERVER_NAME={{SERVER_NAME}}
+      REPO={{REPO}}
+      HUB_COMMIT={{HUB_COMMIT}}
+  # Read by systemd for decurion-runner.service. Only root can read it.
+  - path: /etc/decurion/runner.env
+    permissions: "0600"
+    content: |
+      DECURION_HUB={{HUB_URL}}
+      DECURION_PLACE=cloud
+      DECURION_DATA=/var/lib/decurion
+      DECURION_JOIN_CODE={{JOIN_CODE}}
+  # Agent containers look up names with public DNS servers, never the
+  # server's own or the hosting company's (the walls block those).
+  - path: /etc/docker/daemon.json
+    content: |
+      {{FILE:daemon.json}}
+  - path: /opt/decurion/setup.sh
+    permissions: "0755"
+    content: |
+      {{FILE:setup.sh}}
+  - path: /opt/decurion/update.sh
+    permissions: "0755"
+    content: |
+      {{FILE:update.sh}}
+  - path: /opt/decurion/walls.sh
+    permissions: "0755"
+    content: |
+      {{FILE:walls.sh}}
+  - path: /etc/systemd/system/decurion-walls.service
+    content: |
+      {{FILE:decurion-walls.service}}
+  - path: /etc/systemd/system/decurion-runner.service
+    content: |
+      {{FILE:decurion-runner.service}}
+
+runcmd:
+  - [bash, /opt/decurion/setup.sh]

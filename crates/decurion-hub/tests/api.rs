@@ -54,6 +54,19 @@ async fn call(
     (status, v)
 }
 
+async fn claim(r: &axum::Router) -> Value {
+    let (s, c) = call(
+        r,
+        "POST",
+        "/api/runner/claim",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{c}");
+    c
+}
+
 async fn seed(r: &axum::Router) -> i64 {
     let (s, app) = call(
         r,
@@ -233,11 +246,11 @@ async fn runner_restart_resumes_the_same_session() {
         "POST",
         "/api/runner/hello",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(paused, json!([id]));
+    assert_eq!(paused["paused"], json!([id]));
     assert_eq!(
         store.thread(id).await.expect("thread").state,
         decurion_proto::ThreadState::Queued
@@ -262,6 +275,7 @@ async fn runner_restart_resumes_the_same_session() {
 async fn events_come_only_from_the_runner() {
     let (r, _) = hub().await;
     let id = seed(&r).await;
+    claim(&r).await;
     let ev = json!({"kind":"message","text":"hello"});
     let (s, _) = call(
         &r,
@@ -511,30 +525,25 @@ async fn app_names_and_paths_are_checked() {
 async fn runner_cannot_write_owner_audit_rows() {
     let (r, store) = hub().await;
     let id = seed(&r).await;
-    let (s, _) = call(
-        &r,
-        "POST",
-        "/api/runner/claim",
-        Some(RUNNER),
-        json!({"runner":"owner"}),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    // A runner's name comes from its key, not from what it says.
+    for name in ["owner", "Owner Key", "cloud-1"] {
+        let (s, _) = call(
+            &r,
+            "POST",
+            "/api/runner/claim",
+            Some(RUNNER),
+            json!({ "runner": name }),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{name}");
+    }
+    claim(&r).await;
     let actor: String = sqlx::query_scalar("SELECT actor FROM audit WHERE thread_id = ?")
         .bind(id)
         .fetch_one(store.pool())
         .await
         .expect("audit row");
-    assert_eq!(actor, "runner:owner");
-    let (s, _) = call(
-        &r,
-        "POST",
-        "/api/runner/claim",
-        Some(RUNNER),
-        json!({"runner":"Owner Key"}),
-    )
-    .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(actor, "runner:local");
 }
 
 #[tokio::test]
@@ -922,6 +931,7 @@ async fn a_new_pairing_code_retires_the_old_one() {
 async fn the_inbox_can_ask_for_the_latest_events() {
     let (r, _) = hub().await;
     let id = seed(&r).await;
+    claim(&r).await;
     for i in 0..30 {
         call(
             &r,
@@ -1187,11 +1197,11 @@ async fn unknown_cost_counts_as_spent_only_if_the_agent_ran() {
         "POST",
         "/api/runner/hello",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(paused, json!([b]));
+    assert_eq!(paused["paused"], json!([b]));
     assert_eq!(spend(&r).await["pay_per_use_usd"], 10.0);
     // The run was really closed and charged, not just left open.
     let (open, cost): (i64, i64) = sqlx::query_as(

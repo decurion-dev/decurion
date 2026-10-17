@@ -3,7 +3,11 @@
 
 use decurion_proto::{Profile, RunEvent};
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+pub mod handover;
+pub mod identity;
 
 pub const IMAGE: &str = "decurion/claude-worker:dev";
 
@@ -69,19 +73,109 @@ pub fn home_volume(thread_id: i64) -> String {
     format!("decurion-home-{thread_id}")
 }
 
+/// A file next to the workspace folder, outside the container's mount, so
+/// the agent cannot change it: `<workspace>.<ext>`. Appended rather than
+/// swapped in with `with_extension`, which would cut an app name with a dot.
+pub fn sibling(dir: &Path, ext: &str) -> PathBuf {
+    let mut name = dir.file_name().unwrap_or_default().to_os_string();
+    name.push(".");
+    name.push(ext);
+    dir.with_file_name(name)
+}
+
 const RULES: &str = "You are working in your own copy of the code on its own branch. \
 Commit your work to this branch as you go. Do not push and do not open pull requests; \
-Decurion does that after review.";
+Decurion does that after review. \
+A private Chromium browser is available through the Playwright browser tools for testing web pages you build.";
 
-pub fn prompt_for(task: &str, resume: bool) -> String {
-    if resume {
-        "Your container was restarted. Continue the same task from where it stopped. \
-Check `git status` and `git log` first and do not redo finished steps."
-            .to_owned()
-    } else {
-        format!("{task}\n\n{RULES}")
+/// How a run begins, which decides what the agent is told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Start {
+    /// A new session: the agent gets the task.
+    Fresh,
+    /// The same computer's copy, after a stop: the agent picks up its session.
+    Restarted,
+    /// Rebuilt from a checkpoint another computer (or an older copy) saved.
+    Moved,
+}
+
+impl Start {
+    /// `rebuilt` is whether the runner had to rebuild the copy from the hub
+    /// instead of reusing its own. A rebuild without a checkpoint has no
+    /// session to resume, so it starts over with the task.
+    pub fn pick(resume: bool, rebuilt: bool, has_checkpoint: bool) -> Start {
+        match (resume, rebuilt, has_checkpoint) {
+            (false, _, _) | (true, true, false) => Start::Fresh,
+            (true, false, _) => Start::Restarted,
+            (true, true, true) => Start::Moved,
+        }
+    }
+
+    /// Whether Claude Code continues the saved session.
+    pub fn resumes(self) -> bool {
+        self != Start::Fresh
     }
 }
+
+pub fn prompt_for(task: &str, start: Start) -> String {
+    match start {
+        Start::Fresh => format!("{task}\n\n{RULES}"),
+        Start::Restarted => {
+            "Your container was restarted. Continue the same task from where it stopped. \
+Check `git status` and `git log` first and do not redo finished steps."
+                .to_owned()
+        }
+        Start::Moved => "This work was moved to another computer. \
+Continue the same task from where it stopped. \
+Unfinished changes were saved in a commit named 'Decurion: saved unfinished work before moving'. \
+Check `git status` and `git log` first and do not redo finished steps."
+            .to_owned(),
+    }
+}
+
+/// Whether a failed hub call is worth repeating: the hub was unreachable
+/// (`None`, e.g. the owner's PC is asleep) or had a passing problem. A
+/// refusal is final.
+pub fn retriable(status: Option<u16>) -> bool {
+    match status {
+        None => true,
+        Some(s) => s >= 500 || s == 408 || s == 429,
+    }
+}
+
+/// The wait before retry number `attempt` (from 0): 5s, doubling, at most a
+/// minute.
+pub fn backoff(attempt: u32) -> Duration {
+    Duration::from_secs(5u64.saturating_mul(1 << attempt.min(4)).min(60))
+}
+
+/// The workspace, mounted at `/work`.
+pub fn work_mount(worktree: &Path) -> anyhow::Result<String> {
+    let src = worktree.display().to_string();
+    // docker reads --mount as comma-separated fields.
+    if src.contains([',', '"']) {
+        anyhow::bail!("workspace path {src} contains a comma or quote");
+    }
+    Ok(format!("type=bind,src={src},dst=/work"))
+}
+
+/// The agent's home volume, mounted at `/home/agent`. It holds Claude Code's
+/// session files, which is what lets a run resume.
+pub fn home_mount(thread_id: i64) -> String {
+    format!("type=volume,src={},dst=/home/agent", home_volume(thread_id))
+}
+
+/// Settings every git inside the agent's box gets: the bind-mounted folder is
+/// owned by another user, and commits need a name.
+pub const GIT_ENV: &[&str] = &[
+    "GIT_CONFIG_COUNT=1",
+    "GIT_CONFIG_KEY_0=safe.directory",
+    "GIT_CONFIG_VALUE_0=/work",
+    "GIT_AUTHOR_NAME=decurion-agent",
+    "GIT_AUTHOR_EMAIL=agent@decurion.invalid",
+    "GIT_COMMITTER_NAME=decurion-agent",
+    "GIT_COMMITTER_EMAIL=agent@decurion.invalid",
+];
 
 /// Arguments for `docker run`. The token is passed by name only, so it never
 /// appears on a command line, and the task goes in on stdin (`-i`), so a long
@@ -94,11 +188,7 @@ pub fn run_args(
     cred: Credential,
     budget_usd: Option<f64>,
 ) -> anyhow::Result<Vec<String>> {
-    let src = worktree.display().to_string();
-    // docker reads --mount as comma-separated fields.
-    if src.contains([',', '"']) {
-        anyhow::bail!("workspace path {src} contains a comma or quote");
-    }
+    let work = work_mount(worktree)?;
     let mut a: Vec<String> = [
         "run",
         "-i",
@@ -106,9 +196,9 @@ pub fn run_args(
         "--name",
         &container_name(thread_id),
         "--mount",
-        &format!("type=bind,src={src},dst=/work"),
+        &work,
         "--mount",
-        &format!("type=volume,src={},dst=/home/agent", home_volume(thread_id)),
+        &home_mount(thread_id),
         "--cap-drop",
         "ALL",
         "--security-opt",
@@ -117,33 +207,36 @@ pub fn run_args(
         "4g",
         "--pids-limit",
         "1024",
+        // Chromium needs more shared memory than Docker's 64 MB default.
+        "--shm-size",
+        "1g",
         "-e",
         cred.var(),
-        "-e",
-        "GIT_CONFIG_COUNT=1",
-        "-e",
-        "GIT_CONFIG_KEY_0=safe.directory",
-        "-e",
-        "GIT_CONFIG_VALUE_0=/work",
-        "-e",
-        "GIT_AUTHOR_NAME=decurion-agent",
-        "-e",
-        "GIT_AUTHOR_EMAIL=agent@decurion.invalid",
-        "-e",
-        "GIT_COMMITTER_NAME=decurion-agent",
-        "-e",
-        "GIT_COMMITTER_EMAIL=agent@decurion.invalid",
-        IMAGE,
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--permission-mode",
-        "bypassPermissions",
     ]
     .iter()
     .map(|s| s.to_string())
     .collect();
+    for e in GIT_ENV {
+        a.push("-e".into());
+        a.push((*e).into());
+    }
+    a.extend(
+        [
+            IMAGE,
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "bypassPermissions",
+            // Only Decurion's browser tool; never MCP servers a repo brings along.
+            "--mcp-config",
+            "/etc/decurion/mcp.json",
+            "--strict-mcp-config",
+        ]
+        .iter()
+        .map(|s| s.to_string()),
+    );
     a.push(if resume { "--resume" } else { "--session-id" }.into());
     a.push(session_id.into());
     if let Some(b) = budget_usd {
@@ -287,6 +380,50 @@ mod tests {
                 && !joined.contains("docker.sock")
         );
         assert!(joined.contains("--session-id sid"));
+        let image = a.iter().position(|x| x == IMAGE).unwrap_or(0);
+        let shm = a
+            .iter()
+            .position(|x| x == "--shm-size")
+            .unwrap_or(usize::MAX);
+        assert!(shm < image && a[shm + 1] == "1g");
+        let mcp = a.iter().position(|x| x == "--mcp-config").unwrap_or(0);
+        assert!(mcp > image && a[mcp + 1] == "/etc/decurion/mcp.json");
+        let strict = a.iter().position(|x| x == "--strict-mcp-config");
+        assert!(strict.is_some_and(|i| i > image));
+    }
+
+    #[test]
+    fn prompts_follow_how_the_run_starts() {
+        assert_eq!(Start::pick(false, true, false), Start::Fresh);
+        assert_eq!(Start::pick(false, false, true), Start::Fresh);
+        assert_eq!(Start::pick(true, false, true), Start::Restarted);
+        assert_eq!(Start::pick(true, false, false), Start::Restarted);
+        assert_eq!(Start::pick(true, true, true), Start::Moved);
+        // Nothing saved to resume from: start the task again.
+        assert_eq!(Start::pick(true, true, false), Start::Fresh);
+        assert!(prompt_for("Fix it", Start::Fresh).starts_with("Fix it\n\n"));
+        assert!(prompt_for("Fix it", Start::Fresh).contains("Playwright"));
+        assert!(prompt_for("x", Start::Moved).contains("moved to another computer"));
+        assert!(!prompt_for("x", Start::Restarted).contains("moved"));
+        assert!(Start::Moved.resumes() && !Start::Fresh.resumes());
+    }
+
+    #[test]
+    fn side_files_keep_the_whole_folder_name() {
+        assert_eq!(
+            sibling(Path::new("/d/workspaces/my.app-7"), "checkpoint"),
+            Path::new("/d/workspaces/my.app-7.checkpoint")
+        );
+    }
+
+    #[test]
+    fn only_outages_are_retried_with_growing_waits() {
+        assert!(retriable(None) && retriable(Some(502)) && retriable(Some(429)));
+        assert!(!retriable(Some(409)) && !retriable(Some(403)));
+        assert_eq!(backoff(0), Duration::from_secs(5));
+        assert_eq!(backoff(1), Duration::from_secs(10));
+        assert_eq!(backoff(4), Duration::from_secs(60));
+        assert_eq!(backoff(40), Duration::from_secs(60));
     }
 
     #[test]

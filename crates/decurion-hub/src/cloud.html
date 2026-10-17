@@ -1,0 +1,634 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Decurion · Cloud worker</title>
+<style>
+  :root { --bg:#f5f4f0; --card:#fff; --ink:#1d1c19; --muted:#6f6b61; --line:#e2dfd6;
+          --accent:#3b5bdb; --ok:#2b8a3e; --warn:#c77700; --bad:#c92a2a; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#151513; --card:#1f1e1b; --ink:#ecebe6; --muted:#9a968b; --line:#33312c;
+            --accent:#7b93f0; --ok:#59c26d; --warn:#f0a43a; --bad:#f06464; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui, "Segoe UI", sans-serif; }
+  header { display:flex; align-items:center; gap:16px; padding:14px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; }
+  header a { color:var(--accent); font-size:14px; margin-left:auto; }
+  main { max-width:760px; margin:0 auto; padding:16px; }
+  a { color:var(--accent); }
+  h2 { font-size:17px; margin:0 0 6px; display:flex; align-items:center; gap:10px; }
+  .num { display:inline-grid; place-items:center; width:26px; height:26px; flex:none; border-radius:50%; background:var(--accent); color:#fff; font-size:14px; }
+  .step, .box { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:14px; }
+  .step p, .box p { margin:8px 0; }
+  ol { margin:8px 0; padding-left:22px; }
+  li { margin:3px 0; }
+  input, textarea, button { font:inherit; color:var(--ink); background:var(--card); border:1px solid var(--line); border-radius:8px; padding:7px 10px; }
+  input { width:100%; }
+  textarea { width:100%; min-height:220px; font:12px/1.4 Consolas, monospace; white-space:pre; overflow:auto; }
+  button { cursor:pointer; background:var(--accent); color:#fff; border-color:var(--accent); }
+  button:disabled { opacity:.6; cursor:default; }
+  button.quiet { background:var(--card); color:var(--bad); border-color:var(--line); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  .hint { color:var(--muted); font-size:13px; }
+  .safe { border-left:3px solid var(--ok); padding-left:10px; }
+  .stop { border-left:3px solid var(--warn); padding:8px 10px; background:var(--bg); border-radius:6px; }
+  .err { color:var(--bad); }
+  .done { color:var(--ok); font-weight:600; }
+  .check { display:inline-grid; place-items:center; width:22px; height:22px; border-radius:50%; background:var(--ok); color:#fff; font-size:14px; margin-right:6px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--muted); margin-right:6px; }
+  .dot.on { background:var(--ok); }
+  .workers { list-style:none; padding:0; margin:8px 0 0; }
+  .workers li { display:flex; gap:10px; align-items:center; padding:8px 0; border-top:1px solid var(--line); }
+  .workers li span { flex:1; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<header><h1>Decurion</h1><span>Cloud worker</span><a href="/">Back to the board</a></header>
+<main>
+  <p>A cloud worker is a small server you rent. Your agents can work there while your PC is off or busy.
+     Work moves between your PC and the cloud: open a card on the board and press <b>Move to cloud</b> or <b>Move to PC</b>.</p>
+  <p class="hint">Setting it up takes three steps and about half an hour, most of it waiting.</p>
+
+  <section class="box" id="list-box" hidden>
+    <h2>Your cloud workers</h2>
+    <ul class="workers" id="workers"></ul>
+  </section>
+
+  <section class="step">
+    <h2><span class="num">1</span>Make a Tailscale key</h2>
+    <p>Tailscale is the private network that already lets your phone reach your PC. The new server joins it the same way, with a key.</p>
+    <ol>
+      <li>Open <a href="https://login.tailscale.com/admin/settings/keys" target="_blank" rel="noopener noreferrer">your Tailscale keys page</a>.</li>
+      <li>Press <b>Generate auth key</b>. Leave the settings as they are: a key that works once is right.</li>
+      <li>Press <b>Generate key</b>, copy it, and paste it here.</li>
+    </ol>
+    <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="tskey-auth-…" aria-label="Tailscale key">
+    <p class="hint safe">The key stays on this page. Decurion never sends it anywhere: it only goes into the setup text in step 2, and it is forgotten when you close this page.</p>
+  </section>
+
+  <section class="step">
+    <h2><span class="num">2</span>Create a server</h2>
+    <p>Rent a small server from any hosting company that offers Ubuntu and a <b>user data</b> box, for example
+       <a href="https://www.hetzner.com/cloud" target="_blank" rel="noopener noreferrer">Hetzner</a> or
+       <a href="https://www.digitalocean.com" target="_blank" rel="noopener noreferrer">DigitalOcean</a>. Choose:</p>
+    <ul>
+      <li><b>Ubuntu 24.04</b></li>
+      <li><b>2 CPUs and 4 GB memory</b> (more is fine)</li>
+    </ul>
+    <p class="hint">That costs about $5 to $25 a month, depending on the company.</p>
+    <div class="row"><button type="button" id="make">Make setup text</button></div>
+    <p class="err" id="make-err"></p>
+    <div class="stop" id="no-tailscale" hidden>
+      <p><b>Phone access comes first.</b> The cloud server reaches your PC the same way your phone does, over Tailscale, and that is not set up yet on this PC.</p>
+      <p>Set up phone access over Tailscale, then come back to this page.</p>
+    </div>
+    <div id="setup" hidden>
+      <p>Copy this setup text. While you create the server, look for the advanced options and paste it into the box called
+         <b>User data</b> or <b>Cloud config</b> (Hetzner: "Cloud config"; DigitalOcean: "Advanced options", then "Add initialization scripts").</p>
+      <textarea id="setup-text" readonly aria-label="Setup text" spellcheck="false"></textarea>
+      <div class="row"><button type="button" id="copy">Copy</button><span class="hint" id="copied"></span></div>
+      <p class="hint">This setup text works once, within <span id="valid-for">24 hours</span>. It holds your Tailscale key and a one-time Decurion code, so do not share it.</p>
+    </div>
+  </section>
+
+  <section class="step">
+    <h2><span class="num">3</span>Wait for it to connect</h2>
+    <p>Once the server is created, it sets itself up: it joins Tailscale, builds Decurion and then connects to your PC.
+       <b>The first time takes about 10 to 20 minutes.</b> You can close this page and come back.</p>
+    <p id="wait-status" class="hint">Waiting for a setup text from step 2.</p>
+    <p class="hint">If it has not connected after 40 minutes, delete the server at the hosting company and start again with a new setup text.</p>
+  </section>
+</main>
+
+<!-- Setup text pieces. These are copies of the files in docker/cloud/ (edit those, then run
+     docker/cloud/check-template.sh --fix). The page fills in the values in the browser. -->
+<script type="text/plain" data-file="cloud-config.yaml">
+#cloud-config
+# Decurion cloud worker: setup text for {{SERVER_NAME}}.
+# Paste all of this into the "user data" (or "cloud-init") box when you create
+# an Ubuntu 24.04 server. It contains a Tailscale key and a one-time Decurion
+# code, so do not share it. Both work only once.
+# The server joins your Tailscale network, installs what it needs, builds
+# Decurion and then connects to your PC. That takes about 10 to 20 minutes.
+# Progress: /var/log/cloud-init-output.log, then: journalctl -fu decurion-runner
+
+write_files:
+  # Used once by setup.sh, then deleted.
+  - path: /etc/decurion/setup.env
+    permissions: "0600"
+    content: |
+      TAILSCALE_AUTH_KEY={{TAILSCALE_AUTH_KEY}}
+      SERVER_NAME={{SERVER_NAME}}
+      REPO={{REPO}}
+      HUB_COMMIT={{HUB_COMMIT}}
+  # Read by systemd for decurion-runner.service. Only root can read it.
+  - path: /etc/decurion/runner.env
+    permissions: "0600"
+    content: |
+      DECURION_HUB={{HUB_URL}}
+      DECURION_PLACE=cloud
+      DECURION_DATA=/var/lib/decurion
+      DECURION_JOIN_CODE={{JOIN_CODE}}
+  # Agent containers look up names with public DNS servers, never the
+  # server's own or the hosting company's (the walls block those).
+  - path: /etc/docker/daemon.json
+    content: |
+      {{FILE:daemon.json}}
+  - path: /opt/decurion/setup.sh
+    permissions: "0755"
+    content: |
+      {{FILE:setup.sh}}
+  - path: /opt/decurion/update.sh
+    permissions: "0755"
+    content: |
+      {{FILE:update.sh}}
+  - path: /opt/decurion/walls.sh
+    permissions: "0755"
+    content: |
+      {{FILE:walls.sh}}
+  - path: /etc/systemd/system/decurion-walls.service
+    content: |
+      {{FILE:decurion-walls.service}}
+  - path: /etc/systemd/system/decurion-runner.service
+    content: |
+      {{FILE:decurion-runner.service}}
+
+runcmd:
+  - [bash, /opt/decurion/setup.sh]
+</script>
+<script type="text/plain" data-file="daemon.json">
+{
+  "dns": ["1.1.1.1", "8.8.8.8"]
+}
+</script>
+<script type="text/plain" data-file="setup.sh">
+#!/bin/bash
+# First-boot setup of a Decurion cloud server (Ubuntu 24.04).
+#
+# The setup text from Decurion's "Add cloud worker" page puts this script and
+# the other files from docker/cloud/ on the server, writes
+# /etc/decurion/setup.env and /etc/decurion/runner.env, and runs this once.
+# Its output is in /var/log/cloud-init-output.log.
+#
+# What it does:
+#   1. joins the owner's Tailscale network (so it can reach the hub),
+#   2. installs Docker, git, build tools and Rust,
+#   3. creates the `decurion` user and its folders,
+#   4. downloads Decurion from GitHub at the hub's version,
+#   5. turns on the walls and the runner. The runner's first start builds
+#      everything (update.sh), then it joins the hub with the one-time code.
+set -euo pipefail
+
+# Values from the setup page: TAILSCALE_AUTH_KEY, SERVER_NAME, REPO, HUB_COMMIT.
+# shellcheck source=/dev/null
+. /etc/decurion/setup.env
+
+BUILD=/opt/decurion/build
+export DEBIAN_FRONTEND=noninteractive
+
+log() { echo "decurion-setup: $*"; }
+
+# Tries a command up to 5 times; the network is sometimes slow on first boot.
+retry() {
+  local n
+  for n in 1 2 3 4 5; do
+    "$@" && return 0
+    log "attempt $n of: $1 failed, trying again in 15 seconds"
+    sleep 15
+  done
+  return 1
+}
+
+apt_get() { apt-get -o DPkg::Lock::Timeout=600 -y "$@"; }
+
+log "1/5 joining Tailscale as $SERVER_NAME"
+if ! command -v tailscale >/dev/null; then
+  retry sh -c 'curl -fsSL https://tailscale.com/install.sh | sh'
+fi
+# --shields-up: other devices on the Tailscale network cannot connect to this
+# server. It only connects out (to the hub).
+retry tailscale up --auth-key="$TAILSCALE_AUTH_KEY" --hostname="$SERVER_NAME" --shields-up
+
+log "2/5 installing Docker, git and build tools"
+retry apt_get update
+retry apt_get install --no-install-recommends \
+  docker.io docker-buildx git build-essential pkg-config ca-certificates curl iptables
+systemctl enable --now docker
+
+log "3/5 creating the decurion user and folders"
+id decurion >/dev/null 2>&1 \
+  || useradd --system --create-home --home-dir /home/decurion --shell /usr/sbin/nologin decurion
+usermod -aG docker decurion
+install -d -o root -g root -m 0755 /opt/decurion /opt/decurion/bin
+install -d -o decurion -g decurion -m 0755 "$BUILD"
+install -d -o decurion -g decurion -m 0700 /var/lib/decurion
+chown root:root /etc/decurion/runner.env
+chmod 0600 /etc/decurion/runner.env
+# The version to build first. Later the runner updates this file itself.
+if [ ! -s /var/lib/decurion/wanted-commit ] && [ -n "$HUB_COMMIT" ]; then
+  echo "$HUB_COMMIT" > /var/lib/decurion/wanted-commit
+  chown decurion:decurion /var/lib/decurion/wanted-commit
+fi
+
+as_decurion() {
+  runuser -u decurion -- env HOME=/home/decurion \
+    RUSTUP_HOME="$BUILD/rustup" CARGO_HOME="$BUILD/cargo" \
+    PATH="$BUILD/cargo/bin:/usr/local/bin:/usr/bin:/bin" "$@"
+}
+
+log "4/5 installing Rust and downloading Decurion"
+if [ ! -x "$BUILD/cargo/bin/cargo" ]; then
+  retry as_decurion sh -c 'curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path'
+fi
+if [ ! -d "$BUILD/src/.git" ]; then
+  retry as_decurion git clone --quiet "$REPO" "$BUILD/src"
+fi
+
+log "5/5 turning on the walls and the runner"
+systemctl daemon-reload
+systemctl enable --now decurion-walls.service
+# --no-block: the first start builds Decurion, which takes a while.
+systemctl enable --now --no-block decurion-runner.service
+
+# The Tailscale key was single-use and is spent; remove it anyway.
+rm -f /etc/decurion/setup.env
+log "done. The runner is building Decurion now; follow it with: journalctl -fu decurion-runner"
+</script>
+<script type="text/plain" data-file="update.sh">
+#!/bin/bash
+# Brings the cloud server's Decurion up to the version the hub wants.
+#
+# Runs as root before every start of decurion-runner.service. The runner
+# writes the hub's commit to /var/lib/decurion/wanted-commit when the hub says
+# it is out of date; this script then downloads that commit from GitHub
+# (or the newest main if that commit is not on GitHub), builds the runner and
+# the agent image as the `decurion` user, and installs them.
+#
+# It must never leave the server without a working runner: if anything fails
+# while a working version is installed, it logs the problem and keeps the old
+# version (exit 0). Only when nothing has ever been built does it fail, so
+# systemd tries again 10 seconds later.
+set -uo pipefail
+
+BUILD=/opt/decurion/build                 # owned by decurion: source, Rust, build output
+SRC=$BUILD/src
+BIN=/opt/decurion/bin/decurion-runner     # owned by root: the runner cannot replace itself
+BUILT_FILE=/opt/decurion/built-commit
+WANTED_FILE=/var/lib/decurion/wanted-commit
+IMAGE=decurion/claude-worker:dev
+
+log() { echo "decurion-update: $*"; }
+
+# Runs a command as the decurion user with the Rust tools on PATH.
+as_decurion() {
+  runuser -u decurion -- env HOME=/home/decurion \
+    RUSTUP_HOME="$BUILD/rustup" CARGO_HOME="$BUILD/cargo" \
+    PATH="$BUILD/cargo/bin:/usr/local/bin:/usr/bin:/bin" "$@"
+}
+
+have_working_version() {
+  [ -x "$BIN" ] && [ -s "$BUILT_FILE" ] && docker image inspect "$IMAGE" >/dev/null 2>&1
+}
+
+# Something went wrong: keep what is installed, or fail if there is nothing yet.
+give_up() {
+  log "$*"
+  if have_working_version; then
+    log "keeping the version that is already installed ($(cat "$BUILT_FILE"))"
+    exit 0
+  fi
+  log "nothing is installed yet; will try again shortly"
+  exit 1
+}
+
+# One update at a time.
+exec 9>/run/decurion-update.lock
+flock 9
+
+# The wanted commit comes from the hub via the runner: only accept a full sha.
+wanted=$(tr -d '[:space:]' < "$WANTED_FILE" 2>/dev/null || true)
+if ! [[ $wanted =~ ^[0-9a-f]{40}$ ]]; then
+  [ -n "$wanted" ] && log "ignoring wanted-commit, it is not a commit id"
+  wanted=""
+fi
+built=$(cat "$BUILT_FILE" 2>/dev/null || true)
+
+# Nothing to do: the wanted version (or, with no wish, any version) is installed.
+if have_working_version && { [ -z "$wanted" ] || [ "$wanted" = "$built" ]; }; then
+  exit 0
+fi
+
+[ -d "$SRC/.git" ] || give_up "the Decurion source is missing from $SRC"
+
+log "downloading updates"
+as_decurion git -C "$SRC" fetch --quiet --prune origin '+refs/heads/*:refs/remotes/origin/*' \
+  || give_up "could not download updates from GitHub"
+
+target=""
+if [ -n "$wanted" ]; then
+  # A commit that is not on a branch (for example a pull request) can still be
+  # fetched by its id.
+  as_decurion git -C "$SRC" cat-file -e "$wanted^{commit}" 2>/dev/null \
+    || as_decurion git -C "$SRC" fetch --quiet origin "$wanted" 2>/dev/null
+  if as_decurion git -C "$SRC" cat-file -e "$wanted^{commit}" 2>/dev/null; then
+    target=$wanted
+  else
+    log "commit $wanted is not on GitHub; using the newest main instead"
+  fi
+fi
+if [ -z "$target" ]; then
+  target=$(as_decurion git -C "$SRC" rev-parse --verify --quiet 'refs/remotes/origin/main^{commit}') \
+    || give_up "could not find the main branch"
+fi
+
+if have_working_version && [ "$target" = "$built" ]; then
+  exit 0
+fi
+
+log "building $target (this can take a while)"
+as_decurion git -C "$SRC" -c advice.detachedHead=false checkout --quiet --force --detach "$target" \
+  || give_up "could not switch to $target"
+
+# 1. The runner. Built in place; installed only after the image also builds.
+as_decurion cargo build --quiet --release --locked --manifest-path "$SRC/Cargo.toml" -p decurion-runner \
+  || give_up "building the runner failed"
+
+# 2. The agent image, first under a temporary name so a failed build leaves
+#    the current image alone.
+#    The agent gets the runner's user id, so both can write the work folder.
+as_decurion docker build --build-arg "AGENT_UID=$(id -u decurion)" \
+    --tag "$IMAGE-next" "$SRC/docker/claude-worker" \
+  || give_up "building the agent image failed"
+
+# 3. Install both. The binary is swapped in one step (rename), so a crash
+#    here never leaves half a file.
+install -d -o root -g root -m 0755 "$(dirname "$BIN")"
+if ! { install -o root -g root -m 0755 "$SRC/target/release/decurion-runner" "$BIN.new" \
+       && mv -f "$BIN.new" "$BIN"; }; then
+  give_up "installing the runner failed"
+fi
+docker tag "$IMAGE-next" "$IMAGE" || give_up "installing the agent image failed"
+docker rmi "$IMAGE-next" >/dev/null 2>&1 || true
+echo "$target" > "$BUILT_FILE.new" && mv -f "$BUILT_FILE.new" "$BUILT_FILE"
+
+# Old image layers are no longer needed.
+docker image prune --force >/dev/null 2>&1 || true
+log "installed $target"
+</script>
+<script type="text/plain" data-file="walls.sh">
+#!/bin/bash
+# Decurion walls for the cloud server.
+#
+# Agent containers may reach the public internet, but nothing private:
+#   - the hosting company's metadata address (169.254.0.0/16), which can hand
+#     out the server's setup text and other secrets,
+#   - the Tailscale network (100.64.0.0/10, fd7a:115c:a1e0::/48), which is
+#     where the owner's PC and phones are,
+#   - private networks the server may be attached to (10/8, 172.16/12,
+#     192.168/16, fc00::/7, fe80::/10),
+#   - the server itself (its own addresses, including its Tailscale one).
+#
+# Traffic from containers passes Docker's DOCKER-USER chain (on its way out)
+# or the INPUT chain (when it is addressed to the server itself). We hang our
+# own chains off both, and only for packets that come in on a Docker bridge
+# (docker0 or br-*), so the server's own traffic is never touched.
+#
+# Safe to run again and again: every rule is checked with -C before it is
+# added. decurion-walls.service runs this at boot and every time Docker
+# starts, because Docker rebuilds its firewall rules when it starts.
+set -euo pipefail
+
+V4_BLOCKED=(169.254.0.0/16 100.64.0.0/10 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16)
+V6_BLOCKED=(fd7a:115c:a1e0::/48 fc00::/7 fe80::/10)
+BRIDGES=(docker0 br-+)
+
+# ensure TOOL CHAIN RULE...: add RULE to CHAIN (at the end) unless it is there.
+ensure() {
+  local tool=$1 chain=$2; shift 2
+  "$tool" -w -C "$chain" "$@" 2>/dev/null || "$tool" -w -A "$chain" "$@"
+}
+
+# ensure_first TOOL CHAIN RULE...: put RULE at the top of CHAIN unless it is there.
+ensure_first() {
+  local tool=$1 chain=$2; shift 2
+  "$tool" -w -C "$chain" "$@" 2>/dev/null || "$tool" -w -I "$chain" 1 "$@"
+}
+
+# ensure_chain TOOL CHAIN: create CHAIN if it does not exist yet.
+ensure_chain() {
+  "$1" -w -n -L "$2" >/dev/null 2>&1 || "$1" -w -N "$2"
+}
+
+wall() {
+  local tool=$1 reject=$2; shift 2
+  local ranges=("$@") bridge range
+
+  # Docker normally makes DOCKER-USER itself; making it here too is harmless
+  # and means the rules are ready even before the first container starts.
+  ensure_chain "$tool" DOCKER-USER
+  ensure_chain "$tool" DECURION-OUT
+  ensure_chain "$tool" DECURION-IN
+
+  # Leaving the server: refuse private destinations.
+  for range in "${ranges[@]}"; do
+    ensure "$tool" DECURION-OUT -d "$range" -j REJECT --reject-with "$reject"
+  done
+
+  # Talking to the server itself: allow replies, refuse everything else.
+  # (Containers get DNS from public servers, see /etc/docker/daemon.json,
+  # so they never need to talk to the server.)
+  ensure "$tool" DECURION-IN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+  ensure "$tool" DECURION-IN -j REJECT --reject-with "$reject"
+
+  for bridge in "${BRIDGES[@]}"; do
+    ensure_first "$tool" DOCKER-USER -i "$bridge" -j DECURION-OUT
+    ensure_first "$tool" INPUT -i "$bridge" -j DECURION-IN
+  done
+}
+
+wall iptables icmp-port-unreachable "${V4_BLOCKED[@]}"
+wall ip6tables icmp6-port-unreachable "${V6_BLOCKED[@]}"
+echo "decurion-walls: walls are up"
+</script>
+<script type="text/plain" data-file="decurion-walls.service">
+# Keeps agent containers away from private addresses (see walls.sh).
+# PartOf + WantedBy docker.service: whenever Docker starts or restarts, this
+# runs again right after it, because Docker rebuilds its firewall rules on start.
+[Unit]
+Description=Decurion walls (agents cannot reach private networks)
+Requires=docker.service
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/decurion/walls.sh
+
+[Install]
+WantedBy=multi-user.target docker.service
+</script>
+<script type="text/plain" data-file="decurion-runner.service">
+# The Decurion runner on the cloud server.
+# Before every start, update.sh builds the version the hub asked for (if it
+# changed). The first start builds everything, which can take 20 minutes or
+# more on a small server, hence the long start timeout. A failed build keeps
+# the version that is already installed.
+# WantedBy docker.service: if Docker restarts, the runner comes back with it.
+[Unit]
+Description=Decurion runner
+Wants=network-online.target
+After=network-online.target tailscaled.service docker.service decurion-walls.service
+Requires=docker.service decurion-walls.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=decurion
+Group=decurion
+SupplementaryGroups=docker
+EnvironmentFile=/etc/decurion/runner.env
+WorkingDirectory=/var/lib/decurion
+# "+" runs update.sh as root; it does the actual building as the decurion user
+# and installs the result where the runner itself cannot change it.
+ExecStartPre=+/opt/decurion/update.sh
+ExecStart=/opt/decurion/bin/decurion-runner
+TimeoutStartSec=90min
+Restart=always
+RestartSec=10
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target docker.service
+</script>
+
+<script>
+const $ = id => document.getElementById(id);
+async function api(path, opts = {}) {
+  const r = await fetch("/api" + path, { headers: { "content-type": "application/json" }, ...opts });
+  if (r.status === 401) throw new Error("Not signed in. Open the login link the hub printed when it started.");
+  if (!r.ok) throw new Error(await r.text());
+  return r.status === 204 ? null : r.json();
+}
+function el(tag, attrs = {}, text = "") { const e = document.createElement(tag); Object.assign(e, attrs); e.textContent = text; return e; }
+
+// The name of the worker we are waiting for (from the last setup text), and when we started.
+let waitingFor = null, waitStart = 0;
+
+// The text of one docker/cloud/ file, as copied into this page.
+function piece(name) {
+  const s = document.querySelector(`script[type="text/plain"][data-file="${name}"]`);
+  if (!s) throw new Error(`This page is missing ${name}.`);
+  return s.textContent.replace(/^\n/, "");
+}
+
+// Builds the setup text: each {{FILE:name}} line becomes that file, indented
+// like the line; each {{NAME}} becomes its value. Same steps as
+// docker/cloud/check-template.sh --render.
+function render(values) {
+  const text = piece("cloud-config.yaml").replace(/^( *)\{\{FILE:([\w.-]+)\}\}$/gm, (_, indent, name) =>
+    piece(name).replace(/\n$/, "").split("\n").map(l => l ? indent + l : "").join("\n"));
+  return text.replace(/\{\{([A-Z_]+)\}\}/g, (_, k) => {
+    if (!(k in values)) throw new Error(`Missing value ${k}.`);
+    return values[k];
+  });
+}
+
+// Everything that goes into the setup text must be plain, so nothing in it
+// can break out of its line on the server.
+function check(value, pattern, what) {
+  if (typeof value !== "string" || !pattern.test(value)) throw new Error(`The hub sent an unexpected ${what}. Please try again.`);
+  return value;
+}
+
+$("make").onclick = async () => {
+  $("make-err").textContent = "";
+  const key = $("key").value.trim();
+  if (!key) { $("make-err").textContent = "Paste your Tailscale key in step 1 first."; $("key").focus(); return; }
+  if (!/^tskey-[A-Za-z0-9_-]+$/.test(key)) { $("make-err").textContent = "That does not look like a Tailscale key. It starts with tskey-. Copy it again from the Tailscale keys page."; $("key").focus(); return; }
+  $("make").disabled = true;
+  try {
+    const j = await api("/workers/join-code", { method: "POST" });
+    if (!j.hub_url) { $("no-tailscale").hidden = false; $("setup").hidden = true; return; }
+    $("no-tailscale").hidden = true;
+    const name = check(j.name, /^[a-z0-9][a-z0-9-]{0,40}$/, "worker name");
+    $("setup-text").value = render({
+      TAILSCALE_AUTH_KEY: key,
+      SERVER_NAME: "decurion-" + name,
+      REPO: check(j.repo, /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "download address"),
+      // An unknown version is fine: the server then builds the newest one.
+      HUB_COMMIT: /^[0-9a-f]{40}$/.test(j.hub_commit ?? "") ? j.hub_commit : "",
+      HUB_URL: check(j.hub_url, /^https:\/\/[A-Za-z0-9.-]+(:[0-9]+)?(\/[A-Za-z0-9._~\/-]*)?$/, "address"),
+      JOIN_CODE: check(j.code, /^[A-Za-z0-9_-]{8,200}$/, "code"),
+    });
+    const hours = Math.round((j.minutes ?? 1440) / 60);
+    $("valid-for").textContent = hours >= 2 ? `${hours} hours` : `${j.minutes} minutes`;
+    $("setup").hidden = false; $("copied").textContent = "";
+    waitingFor = name; waitStart = Date.now();
+    loadWorkers();
+  } catch (e) { $("make-err").textContent = e.message; }
+  finally { $("make").disabled = false; }
+};
+
+$("copy").onclick = async () => {
+  const t = $("setup-text");
+  try { await navigator.clipboard.writeText(t.value); }
+  catch { t.focus(); t.select(); document.execCommand("copy"); }
+  $("copied").textContent = "Copied. Now paste it at the hosting company.";
+};
+
+function ago(s) {
+  if (s == null) return "not heard from yet";
+  if (s < 90) return "last heard from a moment ago";
+  if (s < 5400) return `last heard from ${Math.round(s / 60)} minutes ago`;
+  if (s < 172800) return `last heard from ${Math.round(s / 3600)} hours ago`;
+  return `last heard from ${Math.round(s / 86400)} days ago`;
+}
+
+async function loadWorkers() {
+  let list;
+  try { list = await api("/workers"); }
+  catch (e) { $("wait-status").textContent = e.message; $("wait-status").className = "err"; return; }
+  const cloud = list.filter(w => w.place === "cloud");
+  $("list-box").hidden = cloud.length === 0;
+  $("workers").replaceChildren(...cloud.map(w => {
+    const li = el("li");
+    const span = el("span");
+    span.append(el("span", { className: "dot" + (w.online ? " on" : "") }), `${w.name} · ${w.online ? "connected" : ago(w.seconds_ago)}`);
+    li.append(span);
+    if (w.id != null) {
+      const b = el("button", { type: "button", className: "quiet" }, "Remove");
+      b.onclick = async () => {
+        if (!confirm(`Remove ${w.name}? It stops getting work, and anything running there goes back to your PC. Delete the server at the hosting company too, so you stop paying for it.`)) return;
+        try { await api(`/workers/${w.id}/remove`, { method: "POST" }); loadWorkers(); }
+        catch (e) { alert(e.message); }
+      };
+      li.append(b);
+    }
+    return li;
+  }));
+
+  // Step 3: the worker from this page's setup text, or else any cloud worker.
+  const st = $("wait-status");
+  const mine = waitingFor ? cloud.find(w => w.name === waitingFor) : cloud.find(w => w.online);
+  if (mine && mine.online) {
+    st.className = "done"; st.replaceChildren(el("span", { className: "check" }, "✓"), `Connected: ${mine.name} is ready for work.`);
+  } else if (waitingFor) {
+    const min = Math.floor((Date.now() - waitStart) / 60000);
+    st.className = "hint";
+    st.textContent = `Waiting for ${waitingFor} to connect… (${min} ${min === 1 ? "minute" : "minutes"} so far. This page checks every few seconds.)`;
+  } else if (cloud.length) {
+    st.className = "hint"; st.textContent = "Your cloud worker is not connected right now. If you just created it, give it 10 to 20 minutes.";
+  } else {
+    st.className = "hint"; st.textContent = "Waiting for a setup text from step 2.";
+  }
+}
+
+loadWorkers(); setInterval(loadWorkers, 5000);
+</script>
+</body>
+</html>

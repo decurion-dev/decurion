@@ -43,14 +43,21 @@
   .devices li { display:flex; gap:10px; align-items:center; padding:6px 0; border-top:1px solid var(--line); }
   .devices li span { flex:1; }
   .devices button { background:var(--card); color:var(--bad); border-color:var(--line); }
+  .where { float:right; font-size:11px; color:var(--muted); border:1px solid var(--line); border-radius:99px; padding:0 7px; }
+  .workers { font-size:13px; color:var(--muted); }
+  .workers a { color:var(--accent); }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--muted); margin:0 4px 0 8px; }
+  .dot.on { background:var(--ok); }
+  button.quiet { background:var(--card); color:var(--accent); }
 </style>
 </head>
 <body>
-<header><h1>Decurion</h1><span class="spend" id="spend"></span><span class="status" id="status">Loading…</span></header>
+<header><h1>Decurion</h1><span class="spend" id="spend"></span><span class="workers" id="workers"></span><span class="status" id="status">Loading…</span></header>
 <form id="add-thread">
   <select id="app" required aria-label="App"></select>
   <input id="title" placeholder="Title" required aria-label="Title">
   <textarea id="prompt" placeholder="What should the agent do?" required aria-label="Task"></textarea>
+  <select id="place" aria-label="Run on" hidden><option value="pc">On my PC</option><option value="cloud">In the cloud</option></select>
   <button>Add work</button>
 </form>
 <details style="padding:0 16px 12px"><summary>Add an app</summary>
@@ -86,6 +93,8 @@ const OWNER_MOVES = { in_review:[["done","Accept"],["queued","Send back"],["fail
                       needs_you:[["queued","Continue"],["failed","Stop"]], failed:[["queued","Retry"]],
                       queued:[["failed","Cancel"]] };
 let apps = {};
+let hasCloud = false;
+const PLACE = { pc: "PC", cloud: "Cloud" };
 const $ = id => document.getElementById(id);
 async function api(path, opts = {}) {
   const r = await fetch("/api" + path, { headers: { "content-type": "application/json" }, ...opts });
@@ -104,7 +113,9 @@ async function refresh() {
       col.append(el("h2", {}, `${label} (${mine.length})`));
       for (const t of mine) {
         const c = el("div", { className: "card" }); c.dataset.state = t.state;
-        c.append(el("div", { className: "app" }, apps[t.app_id]?.name ?? ""), el("div", {}, t.title));
+        const app = el("div", { className: "app" }, apps[t.app_id]?.name ?? "");
+        if (hasCloud) app.append(el("span", { className: "where" }, PLACE[t.place] ?? ""));
+        c.append(app, el("div", {}, t.title));
         c.onclick = () => openThread(t); col.append(c);
       }
       return col;
@@ -121,11 +132,23 @@ async function refresh() {
       b.onclick = async () => { await api(`/apps/${x.id}/pay-per-use`, { method: "POST", body: JSON.stringify({ on: !x.pay_per_use }) }); refresh(); };
       li.append(span, b); return li;
     }));
+    await loadWorkers();
     $("err").textContent = "";
   } catch (e) { $("err").textContent = e.message; }
 }
+async function loadWorkers() {
+  const w = await api("/workers");
+  hasCloud = w.some(x => x.place === "cloud");
+  $("place").hidden = !hasCloud;
+  if (!hasCloud) $("place").value = "pc";
+  const box = $("workers"); box.replaceChildren();
+  for (const x of w) {
+    box.append(el("span", { className: "dot" + (x.online ? " on" : "") }), `${x.place === "pc" ? "PC" : "Cloud"} ${x.online ? "online" : "offline"}`);
+  }
+  box.append(" · ", el("a", { href: "/cloud" }, hasCloud ? "Cloud worker" : "Add cloud worker"));
+}
 async function openThread(t) {
-  $("d-title").textContent = `${t.title} · ${t.state.replace("_", " ")}`;
+  $("d-title").textContent = `${t.title} · ${t.state.replace("_", " ")}${hasCloud ? " · on " + (t.place === "cloud" ? "the cloud" : "the PC") : ""}`;
   // Events come in pages of 500; fetch them all so the outcome is never cut off.
   let ev = [], page;
   do { page = await api(`/threads/${t.id}/events?after=${ev.length ? ev[ev.length - 1].id : 0}`); ev = ev.concat(page); }
@@ -135,15 +158,23 @@ async function openThread(t) {
     if (e.kind === "started") return `${time}  Agent's box started`;
     return e.kind === "message" ? `${time}  ${e.text}` : e.kind === "tool" ? `${time}  [${e.name}] ${e.summary}` : `${time}  FINISHED ${e.ok ? "ok" : "failed"}${e.cost_usd != null ? ` ($${e.cost_usd.toFixed(2)} so far)` : ""}: ${e.summary}`;
   }).join("\n") || "No activity yet.";
-  $("d-actions").replaceChildren(...(OWNER_MOVES[t.state] ?? []).map(([to, label]) => {
+  const moves = (OWNER_MOVES[t.state] ?? []).map(([to, label]) => {
     const b = el("button", { type: "button" }, label);
     b.onclick = async () => { try { await api(`/threads/${t.id}/move`, { method: "POST", body: JSON.stringify({ to }) }); $("detail").close(); refresh(); } catch (e) { alert(e.message); } };
     return b;
-  }), Object.assign(el("button", { type: "button" }, "Close"), { onclick: () => $("detail").close() }));
+  });
+  // Work can move between the PC and the cloud worker at any point before it is done.
+  if (hasCloud && t.state !== "done") {
+    const other = t.place === "cloud" ? "pc" : "cloud";
+    const b = el("button", { type: "button", className: "quiet" }, other === "cloud" ? "Move to cloud" : "Move to PC");
+    b.onclick = async () => { try { await api(`/threads/${t.id}/place`, { method: "POST", body: JSON.stringify({ place: other }) }); $("detail").close(); refresh(); } catch (e) { alert(e.message); } };
+    moves.push(b);
+  }
+  $("d-actions").replaceChildren(...moves, Object.assign(el("button", { type: "button" }, "Close"), { onclick: () => $("detail").close() }));
   $("detail").showModal();
 }
 $("add-thread").onsubmit = async e => { e.preventDefault();
-  try { await api("/threads", { method: "POST", body: JSON.stringify({ app_id: +$("app").value, title: $("title").value, prompt: $("prompt").value }) });
+  try { await api("/threads", { method: "POST", body: JSON.stringify({ app_id: +$("app").value, title: $("title").value, prompt: $("prompt").value, place: $("place").value }) });
         $("title").value = ""; $("prompt").value = ""; refresh(); } catch (x) { $("err").textContent = x.message; } };
 $("add-app").onsubmit = async e => { e.preventDefault();
   try { await api("/apps", { method: "POST", body: JSON.stringify({ name: $("app-name").value, repo_path: $("app-path").value, profile: $("app-profile").value, pay_per_use: $("app-ppu").checked }) });

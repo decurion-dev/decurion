@@ -4,6 +4,12 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
+/// The version of the rules every runner must follow: how an agent's box is
+/// built and how work is handed between computers. The hub refuses a runner
+/// built with a different number, so a PC and a cloud worker can never run
+/// the same work under different rules. Bump it whenever either changes.
+pub const RULES_VERSION: u32 = 2;
+
 /// Where a piece of work is. A thread is in exactly one state at a time, and
 /// only the moves in [`ThreadState::can_move_to`] are allowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -110,6 +116,36 @@ impl FromStr for Profile {
     }
 }
 
+/// Which computer a piece of work runs on. The owner moves work between them
+/// with one menu choice; the rules are the same on both.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Place {
+    #[default]
+    Pc,
+    Cloud,
+}
+
+impl Place {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pc => "pc",
+            Self::Cloud => "cloud",
+        }
+    }
+}
+
+impl FromStr for Place {
+    type Err = UnknownState;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pc" => Ok(Self::Pc),
+            "cloud" => Ok(Self::Cloud),
+            other => Err(UnknownState(other.to_owned())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct App {
     pub id: i64,
@@ -142,6 +178,10 @@ pub struct Thread {
     /// Claude Code session id, set on the first run so a restart resumes it.
     pub session_id: Option<String>,
     pub branch: Option<String>,
+    /// Where the work runs. A runner only picks up work for its own place,
+    /// and hands running work over when the owner moves it.
+    #[serde(default)]
+    pub place: Place,
     pub updated_at: String,
 }
 
@@ -150,6 +190,14 @@ pub struct NewThread {
     pub app_id: i64,
     pub title: String,
     pub prompt: String,
+    #[serde(default)]
+    pub place: Place,
+}
+
+/// The owner's "Move to PC / Move to cloud" choice.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaceRequest {
+    pub place: Place,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +219,64 @@ pub struct Claim {
     /// start.
     #[serde(default)]
     pub budget_usd: Option<f64>,
+    /// The latest saved copy of this work (code and the agent's session) held
+    /// by the hub. A runner whose own copy is not this one rebuilds from it,
+    /// which is how work continues on another computer.
+    #[serde(default)]
+    pub checkpoint: Option<i64>,
+}
+
+/// What a runner says when it starts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunnerHello {
+    pub runner: String,
+    pub rules_version: u32,
+}
+
+/// The hub's answer to [`RunnerHello`]. Sent with 200 when the runner may
+/// work, and with 409 when its rules version differs, so it can update itself
+/// to `hub_commit` and start again.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HelloReply {
+    /// Work this runner had in flight when it stopped, now queued to resume.
+    #[serde(default)]
+    pub paused: Vec<i64>,
+    pub rules_version: u32,
+    /// The git commit the hub was built from, or "unknown".
+    pub hub_commit: String,
+}
+
+/// A saved copy the runner finished uploading.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewCheckpoint {
+    /// The branch head inside the uploaded code bundle.
+    pub head: String,
+    /// The starting commit the runner's copy was made from. Work started
+    /// before Phase 2 has no starting commit on the hub yet; this sets it, so
+    /// another computer rebuilds the copy from the same place.
+    #[serde(default)]
+    pub base: Option<String>,
+}
+
+/// The credential a run needs, handed to a runner that has no local copy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunCredential {
+    /// The environment variable Claude Code reads it from.
+    pub var: String,
+    pub value: String,
+}
+
+/// A cloud worker's sign-up: the one-time code from the setup page, swapped
+/// for its own long-lived key on first start.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinRequest {
+    pub code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinReply {
+    pub name: String,
+    pub token: String,
 }
 
 /// This month's spending, for the board.
@@ -248,6 +354,20 @@ mod tests {
             assert_eq!(json, format!("\"{}\"", st.as_str()));
         }
         assert!("paused".parse::<ThreadState>().is_err());
+    }
+
+    #[test]
+    fn place_defaults_to_pc_and_round_trips() {
+        let t: NewThread =
+            serde_json::from_str(r#"{"app_id":1,"title":"t","prompt":"p"}"#).expect("json");
+        assert_eq!(t.place, Place::Pc);
+        for p in [Place::Pc, Place::Cloud] {
+            assert_eq!(p.as_str().parse::<Place>().ok(), Some(p));
+            assert_eq!(
+                serde_json::to_string(&p).unwrap_or_default(),
+                format!("\"{}\"", p.as_str())
+            );
+        }
     }
 
     #[test]

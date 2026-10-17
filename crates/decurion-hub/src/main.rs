@@ -56,7 +56,9 @@ async fn main() -> anyhow::Result<()> {
     println!("Open the board: http://decurion.localhost:{port}/login?code={code}");
     let public_url = std::env::var("DECURION_PUBLIC_URL").ok();
     let pusher = decurion_hub::push::Pusher::load_or_create(&dir)?;
-    let state = AppState::new(store, keys, code, public_url).with_push(pusher);
+    let state = AppState::new(store, keys, code, public_url)
+        .with_push(pusher)
+        .with_files(dir.join("saved-work"));
     axum::serve(listener, router(state))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;

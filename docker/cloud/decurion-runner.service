@@ -1,0 +1,31 @@
+# The Decurion runner on the cloud server.
+# Before every start, update.sh builds the version the hub asked for (if it
+# changed). The first start builds everything, which can take 20 minutes or
+# more on a small server, hence the long start timeout. A failed build keeps
+# the version that is already installed.
+# WantedBy docker.service: if Docker restarts, the runner comes back with it.
+[Unit]
+Description=Decurion runner
+Wants=network-online.target
+After=network-online.target tailscaled.service docker.service decurion-walls.service
+Requires=docker.service decurion-walls.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=decurion
+Group=decurion
+SupplementaryGroups=docker
+EnvironmentFile=/etc/decurion/runner.env
+WorkingDirectory=/var/lib/decurion
+# "+" runs update.sh as root; it does the actual building as the decurion user
+# and installs the result where the runner itself cannot change it.
+ExecStartPre=+/opt/decurion/update.sh
+ExecStart=/opt/decurion/bin/decurion-runner
+TimeoutStartSec=90min
+Restart=always
+RestartSec=10
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target docker.service
