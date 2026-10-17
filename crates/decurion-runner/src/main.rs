@@ -82,12 +82,15 @@ fn secret(cred: Credential) -> anyhow::Result<String> {
         let entry = keyring::Entry::new_with_target(&target, "decurion", "claude")?;
         entry
             .get_password()
+            .map(|s| s.trim().to_owned())
             .with_context(|| format!("nothing saved in Credential Manager as {target}"))
     }
     #[cfg(not(windows))]
     {
         let var = cred.env_fallback();
-        std::env::var(&var).with_context(|| format!("{var} not set ({target})"))
+        std::env::var(&var)
+            .map(|s| s.trim().to_owned())
+            .with_context(|| format!("{var} not set ({target})"))
     }
 }
 
@@ -282,22 +285,31 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
     } else {
         Credential::Max(c.app.profile)
     };
+    if cred == Credential::PayPerUse && !gate.keeper.is_alive() {
+        // Without the gatekeeper the run could only fail, and a failed
+        // pay-per-use run is charged its whole budget. Stop before starting.
+        bail!("the gatekeeper has stopped; restart the runner before running pay-per-use work");
+    }
     let token = secret(cred)?;
     let mut cmd = docker();
     // A pay-per-use container gets a token for the gatekeeper, never the key.
     // The grant is revoked when it drops, on every way out of this function.
-    let grant = match cred {
+    let (grant, values) = match cred {
         Credential::PayPerUse => {
             let g = gate.keeper.grant(token);
-            cmd.env("ANTHROPIC_API_KEY", g.token())
-                .env("ANTHROPIC_BASE_URL", &gate.url);
-            Some(g)
+            let v = vec![g.token().to_owned(), gate.url.clone()];
+            (Some(g), v)
         }
-        Credential::Max(_) => {
-            cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
-            None
-        }
+        Credential::Max(_) => (None, vec![token]),
     };
+    // Names come from the same list run_args passes to docker with `-e`.
+    anyhow::ensure!(
+        values.len() == cred.vars().len(),
+        "credential variables out of step"
+    );
+    for (name, value) in cred.vars().iter().zip(values) {
+        cmd.env(name, value);
+    }
     let prompt = prompt_for(&c.thread.prompt, c.resume);
     // Tell the hub before launching: from here the run may cost money, and if
     // the hub cannot be told, the run does not start.
@@ -503,7 +515,11 @@ async fn main() -> anyhow::Result<()> {
             .as_str()
             .context("keys.json has no runner key")?
             .to_owned(),
-        http: reqwest::Client::new(),
+        // A stalled hub must not hold up the end of a run (and with it the
+        // revoking of its gatekeeper token).
+        http: reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()?,
     };
     // Containers left by a runner that died keep working, and spending, with
     // nobody listening. Stop them all before taking on any work.

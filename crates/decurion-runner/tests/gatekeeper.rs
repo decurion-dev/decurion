@@ -83,7 +83,7 @@ async fn rig() -> Rig {
     let (feed, rx) = mpsc::channel(4);
     let upstream = serve(
         Router::new()
-            .route("/v1/stream", get(stream))
+            .route("/v1/models", get(stream))
             .fallback(any(record))
             .with_state((seen.clone(), Arc::new(Mutex::new(Some(rx))))),
     )
@@ -186,7 +186,7 @@ async fn streams_pass_through_as_they_arrive() {
         .expect("feed");
     let mut resp = r
         .http
-        .get(r.url("/v1/stream"))
+        .get(r.url("/v1/models"))
         .header("x-api-key", grant.token())
         .send()
         .await
@@ -250,4 +250,119 @@ async fn client_credentials_are_not_passed_on() {
     assert_eq!(headers["x-api-key"], REAL_KEY);
     assert!(headers.get("authorization").is_none());
     assert!(headers.get("proxy-authorization").is_none());
+}
+
+#[tokio::test]
+async fn only_the_calls_claude_code_makes_are_forwarded() {
+    let r = rig().await;
+    let grant = r.gate.grant(REAL_KEY.into());
+    // Batches keep billing after the run; the Files API reaches other runs.
+    for (method, path) in [
+        ("POST", "/v1/messages/batches"),
+        ("GET", "/v1/messages/batches"),
+        ("GET", "/v1/files"),
+        ("POST", "/v1/files"),
+        ("DELETE", "/v1/files/file_123"),
+        ("GET", "/v1/messages"),
+        ("DELETE", "/v1/messages"),
+        ("POST", "/v1/models"),
+        ("GET", "/v1/models/a%2Fb"),
+        ("GET", "/v1/models/../files"),
+        ("POST", "/v1/complete"),
+    ] {
+        let resp = r
+            .http
+            .request(method.parse().expect("method"), r.url(path))
+            .header("x-api-key", grant.token())
+            .send()
+            .await
+            .expect("send");
+        assert_eq!(resp.status(), 404, "{method} {path}");
+    }
+    assert_eq!(r.calls(), 0);
+    for (method, path) in [
+        ("POST", "/v1/messages"),
+        ("POST", "/v1/messages/count_tokens"),
+        ("GET", "/v1/models/claude-sonnet-x"),
+    ] {
+        let resp = r
+            .http
+            .request(method.parse().expect("method"), r.url(path))
+            .header("x-api-key", grant.token())
+            .send()
+            .await
+            .expect("send");
+        assert_eq!(resp.status(), 200, "{method} {path}");
+    }
+    assert_eq!(r.calls(), 3);
+}
+
+#[tokio::test]
+async fn oversized_requests_are_refused() {
+    let r = rig().await;
+    let grant = r.gate.grant(REAL_KEY.into());
+    let resp = r
+        .http
+        .post(r.url("/v1/messages"))
+        .header("x-api-key", grant.token())
+        .body(vec![b'x'; (32 << 20) + 1])
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), 413);
+    assert_eq!(r.calls(), 0);
+}
+
+/// Paths sent to the gatekeeper exactly as written, without a client
+/// normalising them first.
+#[tokio::test]
+async fn raw_traversal_paths_are_refused() {
+    use tower::ServiceExt;
+    let r = rig().await;
+    let grant = r.gate.grant(REAL_KEY.into());
+    for path in [
+        "/v1/../api/hello",
+        "/v1/messages/../files",
+        "/v1/%2e%2e/api/hello",
+        "/v1/messages%2Fbatches",
+        "/v1\\messages",
+    ] {
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("x-api-key", grant.token())
+            .body(axum::body::Body::empty())
+            .expect("request");
+        let resp = r.gate.router().oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), 404, "{path}");
+    }
+    assert_eq!(r.calls(), 0);
+}
+
+#[tokio::test]
+async fn a_streaming_answer_stops_when_its_run_ends() {
+    let r = rig().await;
+    let grant = r.gate.grant(REAL_KEY.into());
+    r.feed
+        .send(Bytes::from_static(b"event: one\n\n"))
+        .await
+        .expect("feed");
+    let mut resp = r
+        .http
+        .get(r.url("/v1/models"))
+        .header("x-api-key", grant.token())
+        .send()
+        .await
+        .expect("send");
+    let first = resp.chunk().await.expect("chunk");
+    assert_eq!(first.as_deref(), Some(&b"event: one\n\n"[..]));
+    drop(grant);
+    r.feed
+        .send(Bytes::from_static(b"event: two\n\n"))
+        .await
+        .expect("feed");
+    let rest = tokio::time::timeout(std::time::Duration::from_secs(5), resp.chunk())
+        .await
+        .expect("stream did not end");
+    assert!(!matches!(rest, Ok(Some(ref b)) if b.as_ref() == b"event: two\n\n"));
 }

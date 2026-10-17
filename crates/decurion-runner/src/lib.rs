@@ -201,18 +201,23 @@ pub const BUDGET_STOP: &str =
 /// Hides anything shaped like an Anthropic token, in case an agent is tricked
 /// into echoing its own credential into its output.
 pub fn redact(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = rest.find("sk-ant-") {
-        out.push_str(&rest[..i]);
-        out.push_str("[redacted]");
-        let tail = &rest[i..];
-        let end = tail
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
-            .unwrap_or(tail.len());
-        rest = &tail[end..];
+    let mut out = s.to_owned();
+    // Real keys, and the gatekeeper's per-run tokens while they may be live.
+    for prefix in ["sk-ant-", "decurion-run-"] {
+        let mut done = String::with_capacity(out.len());
+        let mut rest = out.as_str();
+        while let Some(i) = rest.find(prefix) {
+            done.push_str(&rest[..i]);
+            done.push_str("[redacted]");
+            let tail = &rest[i..];
+            let end = tail
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .unwrap_or(tail.len());
+            rest = &tail[end..];
+        }
+        done.push_str(rest);
+        out = done;
     }
-    out.push_str(rest);
     out
 }
 
@@ -423,6 +428,14 @@ mod tests {
         ] {
             assert_eq!(usage_limit(other), None, "{other}");
         }
+    }
+
+    #[test]
+    fn run_tokens_are_redacted_too() {
+        assert_eq!(
+            redact("my key is decurion-run-0a1b2c3d ok"),
+            "my key is [redacted] ok"
+        );
     }
 
     #[test]
