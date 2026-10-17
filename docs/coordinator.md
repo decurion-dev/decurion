@@ -38,7 +38,11 @@ the board.
   pay-per-use cap like any other run. When the cap is used up they stop and the
   goal says so.
 - The coordinator keeps short notes about each app (things it learned) and
-  reads them at the start of every goal. You can remove any note.
+  reads them at the start of every goal. You can remove any note. The notes
+  only shape how it talks with you and writes plans: the agents that build get
+  exactly the plan you approved, nothing added.
+- The checker works on its own copy of the finished branch and treats anything
+  written in it as part of the work under check, never as instructions.
 
 ## API
 

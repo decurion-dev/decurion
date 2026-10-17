@@ -336,8 +336,9 @@ async fn a_goal_becomes_reviewed_work() {
     let thread = work["thread"]["id"].as_i64().expect("thread");
     assert_eq!(work["thread"]["title"], "Reset link");
     let task = work["thread"]["prompt"].as_str().expect("prompt");
+    // Exactly the approved brief: app notes the owner never saw stay out.
     assert!(
-        task.contains("Add a reset flow in src/auth.") && task.contains("Tests run with npm test")
+        task.contains("Add a reset flow in src/auth.") && !task.contains("Tests run with npm test")
     );
     ok(
         &r,
@@ -521,7 +522,8 @@ async fn messages_wait_for_the_running_turn_and_restarts_requeue_it() {
     )
     .await;
     no_helper(&r).await;
-    // The runner restarts: the running turn goes back in the queue.
+    // The runner restarts: the turn already waiting picks up everything, in a
+    // fresh session, since the killed one may be half-written.
     ok(
         &r,
         "POST",
@@ -545,8 +547,7 @@ async fn messages_wait_for_the_running_turn_and_restarts_requeue_it() {
         prompt.contains("Owner: First") && prompt.contains("Owner: Third"),
         "{prompt}"
     );
-    let claim = helper(&r, "coordinator", r#"{"say": "Anything else?"}"#, None).await;
-    assert_eq!(claim["resume"], true);
+    assert_eq!(claim["resume"], false);
     no_helper(&r).await;
 }
 
@@ -682,4 +683,232 @@ async fn helpers_wait_while_their_max_account_is_out() {
         .await
         .expect("clear");
     helper(&r, "coordinator", r#"{"say": "Back."}"#, None).await;
+}
+
+/// One approved piece whose agent finished, so its check is waiting.
+async fn approved_one_piece(r: &axum::Router) -> (i64, i64) {
+    let app = app(r, false).await;
+    let g = ok(
+        r,
+        "POST",
+        "/api/goals",
+        OWNER,
+        json!({"app_id": app, "text": "Go"}),
+    )
+    .await;
+    let goal = g["id"].as_i64().expect("goal");
+    helper(r, "coordinator", PLAN, None).await;
+    let v = view(r, goal).await;
+    let plan_id = last_message(&v)["id"].as_i64().expect("plan");
+    ok(
+        r,
+        "POST",
+        &format!("/api/goals/{goal}/approve"),
+        OWNER,
+        json!({"plan_message_id": plan_id}),
+    )
+    .await;
+    helper(r, "design", "done", Some("<h1>x</h1>")).await;
+    let work = ok(
+        r,
+        "POST",
+        "/api/runner/claim",
+        RUNNER,
+        json!({"runner":"local"}),
+    )
+    .await;
+    let thread = work["thread"]["id"].as_i64().expect("thread");
+    ok(
+        r,
+        "POST",
+        &format!("/api/threads/{thread}/events"),
+        RUNNER,
+        json!({"kind":"message","text":"w"}),
+    )
+    .await;
+    ok(
+        r,
+        "POST",
+        &format!("/api/threads/{thread}/move"),
+        RUNNER,
+        json!({"to":"in_review"}),
+    )
+    .await;
+    (goal, thread)
+}
+
+#[tokio::test]
+async fn big_pages_fit_through() {
+    let (r, _) = hub().await;
+    let (goal, _) = approved_one_piece(&r).await;
+    let page = format!("<p>{}</p>", "a".repeat(3 << 20));
+    helper(
+        &r,
+        "review",
+        r#"{"pass": true, "summary": "Works."}"#,
+        Some(&page),
+    )
+    .await;
+    let v = view(&r, goal).await;
+    assert_eq!(v["pieces"][0]["review"], "passed");
+    assert_eq!(v["pages"].as_array().map(Vec::len), Some(2));
+}
+
+#[tokio::test]
+async fn what_the_owner_says_during_a_retry_reaches_the_lead() {
+    let (r, _) = hub().await;
+    let app = app(&r, false).await;
+    let g = ok(
+        &r,
+        "POST",
+        "/api/goals",
+        OWNER,
+        json!({"app_id": app, "text": "First"}),
+    )
+    .await;
+    let goal = g["id"].as_i64().expect("goal");
+    helper(&r, "coordinator", "no json here", None).await;
+    ok(
+        &r,
+        "POST",
+        &format!("/api/goals/{goal}/say"),
+        OWNER,
+        json!({"text": "Leave billing alone"}),
+    )
+    .await;
+    let claim = helper(&r, "coordinator", r#"{"say": "Fixed."}"#, None).await;
+    let prompt = claim["prompt"].as_str().expect("prompt");
+    assert!(
+        prompt.contains("could not be used") && prompt.contains("Leave billing alone"),
+        "{prompt}"
+    );
+    no_helper(&r).await;
+}
+
+#[tokio::test]
+async fn talking_after_a_failed_write_up_writes_it_again() {
+    let (r, _) = hub().await;
+    let (goal, _) = approved_one_piece(&r).await;
+    helper(&r, "review", r#"{"pass": true, "summary": "Works."}"#, None).await;
+    let claim = ok(
+        &r,
+        "POST",
+        "/api/runner/helper/claim",
+        RUNNER,
+        json!({"runner":"local"}),
+    )
+    .await;
+    let id = claim["job_id"].as_i64().expect("job");
+    ok(
+        &r,
+        "POST",
+        &format!("/api/runner/helper/{id}/finish"),
+        RUNNER,
+        json!({"ok": false, "text": "boom"}),
+    )
+    .await;
+    ok(
+        &r,
+        "POST",
+        &format!("/api/goals/{goal}/say"),
+        OWNER,
+        json!({"text": "How is it going?"}),
+    )
+    .await;
+    helper(&r, "coordinator", r#"{"say": "All good."}"#, None).await;
+    helper(
+        &r,
+        "coordinator",
+        r#"{"say": "Here is what was done."}"#,
+        None,
+    )
+    .await;
+    assert_eq!(view(&r, goal).await["goal"]["state"], "for_review");
+}
+
+#[tokio::test]
+async fn a_restart_does_not_rerun_checks_for_a_stopped_goal() {
+    let (r, _) = hub().await;
+    let (goal, _) = approved_one_piece(&r).await;
+    let claim = ok(
+        &r,
+        "POST",
+        "/api/runner/helper/claim",
+        RUNNER,
+        json!({"runner":"local"}),
+    )
+    .await;
+    assert_eq!(claim["kind"], "review");
+    ok(
+        &r,
+        "POST",
+        &format!("/api/goals/{goal}/stop"),
+        OWNER,
+        json!({}),
+    )
+    .await;
+    ok(
+        &r,
+        "POST",
+        "/api/runner/hello",
+        RUNNER,
+        json!({"runner":"local"}),
+    )
+    .await;
+    no_helper(&r).await;
+}
+
+#[tokio::test]
+async fn sending_a_piece_back_during_its_check_checks_the_new_code() {
+    let (r, _) = hub().await;
+    let (goal, thread) = approved_one_piece(&r).await;
+    // The owner sends it back while its check waits: that check is dropped.
+    ok(
+        &r,
+        "POST",
+        &format!("/api/threads/{thread}/move"),
+        OWNER,
+        json!({"to":"queued"}),
+    )
+    .await;
+    no_helper(&r).await;
+    assert_eq!(view(&r, goal).await["pieces"][0]["review"], "building");
+    let work = ok(
+        &r,
+        "POST",
+        "/api/runner/claim",
+        RUNNER,
+        json!({"runner":"local"}),
+    )
+    .await;
+    assert_eq!(work["thread"]["id"], thread);
+    ok(
+        &r,
+        "POST",
+        &format!("/api/threads/{thread}/move"),
+        RUNNER,
+        json!({"to":"in_review"}),
+    )
+    .await;
+    helper(&r, "review", r#"{"pass": true, "summary": "Works."}"#, None).await;
+    helper(&r, "coordinator", r#"{"say": "Done."}"#, None).await;
+    assert_eq!(view(&r, goal).await["goal"]["state"], "for_review");
+}
+
+#[tokio::test]
+async fn a_check_missed_in_a_crash_is_queued_again() {
+    let (r, store) = hub().await;
+    let (goal, thread) = approved_one_piece(&r).await;
+    // As if the hub stopped right after the thread reached review.
+    sqlx::query("DELETE FROM helper_jobs WHERE kind = 'review'")
+        .execute(store.pool())
+        .await
+        .expect("delete");
+    sqlx::query("UPDATE goal_pieces SET review = 'building' WHERE thread_id = ?")
+        .bind(thread)
+        .execute(store.pool())
+        .await
+        .expect("update");
+    helper(&r, "review", r#"{"pass": true, "summary": "Works."}"#, None).await;
+    assert_eq!(view(&r, goal).await["pieces"][0]["review"], "passed");
 }

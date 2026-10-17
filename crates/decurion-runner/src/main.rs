@@ -3,17 +3,39 @@ use decurion_proto::goal::{HelperClaim, HelperResult, HelperSource};
 use decurion_proto::{App, Claim, MoveRequest, RunEvent, ThreadState};
 use decurion_runner::{
     check_home_volume, container_name, design_home_volume, goal_home_volume, helper_container_name,
-    helper_run_args, parse_line, parse_result, prompt_for, read_page, run_args, valid_branch,
-    Credential, Sandbox, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
+    helper_run_args, parse_line, parse_result, prompt_for, read_page, run_args, split_result,
+    valid_branch, Credential, FirstResult, Sandbox, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
 };
+use reqwest::StatusCode;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 
 const RUNNER: &str = "local";
+
+/// The hub answered, but not with success.
+#[derive(Debug)]
+struct HubRefused {
+    path: String,
+    status: StatusCode,
+    body: String,
+}
+
+impl std::fmt::Display for HubRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "hub {}: {} {}", self.path, self.status, self.body)
+    }
+}
+
+impl std::error::Error for HubRefused {}
+
+/// The status the hub answered with, if the error is the hub saying no.
+fn hub_status(err: &anyhow::Error) -> Option<StatusCode> {
+    err.downcast_ref::<HubRefused>().map(|e| e.status)
+}
 
 /// Cheap to clone: the work loop and the helper loop each hold one.
 #[derive(Clone)]
@@ -36,12 +58,14 @@ impl Hub {
             .json(body)
             .send()
             .await?;
-        if !r.status().is_success() {
-            bail!(
-                "hub {path}: {} {}",
-                r.status(),
-                r.text().await.unwrap_or_default()
-            );
+        let status = r.status();
+        if !status.is_success() {
+            return Err(HubRefused {
+                path: path.to_owned(),
+                status,
+                body: r.text().await.unwrap_or_default(),
+            }
+            .into());
         }
         Ok(r)
     }
@@ -98,6 +122,30 @@ async fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
     let out = Command::new("git")
         .env("GIT_NO_LAZY_FETCH", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .await?;
+    if !out.status.success() {
+        bail!(
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// Like [`git`], but ignoring the PC's system and user git settings, for
+/// commands that handle files an agent wrote.
+async fn git_isolated(dir: &Path, args: &[&str], null: &str) -> anyhow::Result<String> {
+    let out = Command::new("git")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", null)
+        .env("GIT_LFS_SKIP_SMUDGE", "1")
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -264,11 +312,11 @@ fn docker() -> Command {
 }
 
 /// Starts an agent's container and hands it its prompt on stdin.
-async fn spawn_agent(
+fn spawn_agent(
     cred: Credential,
     token: String,
     args: Vec<String>,
-    prompt: &str,
+    prompt: String,
 ) -> anyhow::Result<Child> {
     use tokio::io::AsyncWriteExt;
     let mut child = docker()
@@ -281,9 +329,15 @@ async fn spawn_agent(
         .spawn()
         .context("could not start docker")?;
     let mut stdin = child.stdin.take().context("no stdin")?;
-    stdin.write_all(prompt.as_bytes()).await?;
-    // Dropping stdin closes it, which tells Claude the task is complete.
-    drop(stdin);
+    // Written from its own task, so the caller can read stdout and stderr
+    // meanwhile: a big prompt and a chatty docker could otherwise each wait
+    // on the other's full pipe.
+    tokio::spawn(async move {
+        if let Err(err) = stdin.write_all(prompt.as_bytes()).await {
+            tracing::warn!(%err, "could not hand the agent its prompt");
+        }
+        // Dropping stdin closes it, which tells Claude the task is complete.
+    });
     Ok(child)
 }
 
@@ -338,42 +392,30 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
         .await
         .context("could not tell the hub the run is starting")?;
     let args = run_args(id, &wt, &session, c.resume, cred, c.budget_usd)?;
-    let mut child = spawn_agent(cred, token, args, &prompt).await?;
+    let mut child = spawn_agent(cred, token, args, prompt)?;
     let stderr_task = stderr_tail(&mut child)?;
     let stdout = child.stdout.take().context("no stdout")?;
     let mut out = BufReader::new(stdout);
-    // Claude Code's result is the last line it prints. Anything after it, or a
-    // container that does not exit cleanly, means the agent may have printed a
-    // fake result: its cost is then not trusted and the hub charges the whole
-    // amount set aside.
-    let mut result: Option<RunEvent> = None;
+    // Claude Code prints one result, as its last line. A second result, output
+    // after it, or a container that does not exit cleanly means the agent may
+    // have printed a fake one: the first still counts, but its cost is not
+    // trusted and the hub charges the whole amount set aside.
     // A usage-limit report is held the same way: an agent could print a fake
-    // one to freeze its account, so only Claude's real, final result counts.
-    let mut limit: Option<Option<i64>> = None;
-    let mut after_result = false;
+    // one to freeze its account, so only a result that stands alone counts.
+    let mut watch = FirstResult::default();
     while let Some(line) = read_capped_line(&mut out).await? {
-        if result.is_some() && !line.trim().is_empty() {
-            after_result = true;
+        let (board, result) = split_result(parse_line(&line));
+        for e in board {
+            hub.event(id, &e).await;
         }
-        let events = parse_line(&line);
-        if events
-            .iter()
-            .any(|e| matches!(e, RunEvent::Finished { .. }))
-        {
-            limit = None;
-        }
-        for e in events {
-            match e {
-                RunEvent::Finished { .. } => {
-                    result = Some(e);
-                    after_result = false;
-                }
-                RunEvent::LimitHit { reset_epoch } => limit = Some(reset_epoch),
-                _ => hub.event(id, &e).await,
-            }
-        }
+        watch.push(&line, result);
     }
     let status = child.wait().await?;
+    let alone = watch.trusted();
+    let (result, limit) = match watch.result {
+        Some(r) => (Some(r.finished), r.limit),
+        None => (None, None),
+    };
     let finished = match result {
         Some(RunEvent::Finished {
             ok,
@@ -382,7 +424,7 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
             input_tokens,
             output_tokens,
         }) => {
-            let trusted = status.success() && !after_result;
+            let trusted = status.success() && alone;
             hub.event(
                 id,
                 &RunEvent::Finished {
@@ -398,7 +440,7 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
         }
         _ => None,
     };
-    let max_limit = limit.filter(|_| !after_result && c.budget_usd.is_none());
+    let max_limit = limit.filter(|_| alone && c.budget_usd.is_none());
     let err = stderr_task.await.unwrap_or_default();
     // The agent's own "done" is not enough: work only goes to review if it
     // actually left commits on its branch.
@@ -575,9 +617,46 @@ async fn branch_copy(
         bail!("no review copy of thread {thread_id}'s commits");
     }
     std::fs::create_dir_all(dir.parent().context("check copy parent")?)?;
-    clone_into(&bare.to_string_lossy(), dir, Some(branch)).await?;
+    // The checkout writes files the building agent chose onto this PC, so
+    // nothing in them may make git do more: no hooks, no filters (Git for
+    // Windows turns on LFS, whose .lfsconfig could point anywhere), and none of
+    // the PC's own git settings.
+    let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    let hooks = format!("core.hooksPath={null}");
+    let safe = [
+        "-c",
+        &hooks,
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "filter.lfs.smudge=",
+        "-c",
+        "filter.lfs.process=",
+        "-c",
+        "filter.lfs.required=false",
+        "-c",
+        "protocol.allow=never",
+        "-c",
+        "protocol.file.allow=always",
+    ];
+    let to = dir.to_string_lossy().into_owned();
+    let from = bare.to_string_lossy().into_owned();
+    let mut args: Vec<&str> = safe.to_vec();
+    args.extend([
+        "clone",
+        "--quiet",
+        "--no-hardlinks",
+        "--branch",
+        branch,
+        "--",
+        &from,
+        &to,
+    ]);
+    git_isolated(Path::new("."), &args, null).await?;
     // The last git command run here: the agent has not started yet.
-    git(dir, &["branch", "decurion-base", base]).await?;
+    let mut args: Vec<&str> = safe.to_vec();
+    args.extend(["branch", "decurion-base", base]);
+    git_isolated(dir, &args, null).await?;
     Ok(())
 }
 
@@ -595,6 +674,9 @@ async fn run_helper(hub: &Hub, data: &Path, job: &HelperClaim) -> anyhow::Result
     hb.clean().await;
     r
 }
+
+/// The longest a helper job may run before it is stopped.
+const HELPER_TIME_LIMIT: Duration = Duration::from_secs(60 * 60);
 
 async fn helper_container(
     hub: &Hub,
@@ -644,27 +726,42 @@ async fn helper_container(
     )
     .await
     .context("could not tell the hub the job is starting")?;
-    let mut child = spawn_agent(cred, token, args, &job.prompt).await?;
+    let mut child = spawn_agent(cred, token, args, job.prompt.clone())?;
     let stderr_task = stderr_tail(&mut child)?;
     let mut out = BufReader::new(child.stdout.take().context("no stdout")?);
-    // Same trust rule as `run`: a cost only counts from the last line of a
-    // container that exited cleanly.
-    let mut result: Option<HelperResult> = None;
-    let mut after_result = false;
-    while let Some(line) = read_capped_line(&mut out).await? {
-        if result.is_some() && !line.trim().is_empty() {
-            after_result = true;
+    // Same trust rule as `run`, except that two results fail the job: a cost
+    // only counts from Claude's one result in a container that exited cleanly.
+    let ran = tokio::time::timeout(HELPER_TIME_LIMIT, async {
+        let mut watch = FirstResult::default();
+        while let Some(line) = read_capped_line(&mut out).await? {
+            let parsed = parse_result(&line);
+            watch.push(&line, parsed);
         }
-        if let Some(r) = parse_result(&line) {
-            result = Some(r);
-            after_result = false;
-        }
-    }
-    let status = child.wait().await?;
+        let status = child.wait().await?;
+        anyhow::Ok((watch.helper_answer(), status))
+    })
+    .await;
+    let Ok(ran) = ran else {
+        let _ = docker().args(["rm", "-f", name]).output().await;
+        let _ = child.kill().await;
+        stderr_task.abort();
+        return Ok(HelperResult {
+            ok: false,
+            text: format!(
+                "The job took too long and was stopped after {} minutes.",
+                HELPER_TIME_LIMIT.as_secs() / 60
+            ),
+            cost_usd: None,
+            input_tokens: None,
+            output_tokens: None,
+            page_html: None,
+        });
+    };
+    let (result, status) = ran?;
     let err = stderr_task.await.unwrap_or_default();
     let mut r = match result {
         Some(mut r) => {
-            if !status.success() || after_result {
+            if !status.success() {
                 r.cost_usd = None;
             }
             if r.ok && !status.success() {
@@ -688,35 +785,52 @@ async fn helper_container(
             page_html: None,
         },
     };
-    // The container is gone, so the page cannot change while it is read.
+    // Make sure the container is gone, so the page cannot change while it is
+    // read, even if the docker client exited before the container did.
+    let _ = docker().args(["rm", "-f", name]).output().await;
     if let Some(dir) = &hb.out {
         r.page_html = read_page(dir);
     }
     Ok(r)
 }
 
-/// Reports a helper job's end, trying again for a while if the hub is down.
-/// If it never gets through, the hub hands the job out again once this
-/// runner says hello after a restart.
-async fn finish_helper(hub: &Hub, id: i64, r: &HelperResult) {
+/// How long a helper job's end keeps being retried while the hub is down
+/// or failing.
+const FINISH_RETRY_FOR: Duration = Duration::from_secs(60 * 60);
+
+/// Reports a helper job's end, trying again for a while if the hub is down or
+/// failing. If it never gets through, the hub hands the job out again once
+/// this runner says hello after a restart.
+async fn finish_helper(hub: &Hub, id: i64, mut r: HelperResult) {
     let path = format!("/runner/helper/{id}/finish");
-    let mut waits = [2, 4, 8].into_iter();
+    let give_up = Instant::now() + FINISH_RETRY_FOR;
+    let mut wait = Duration::from_secs(2);
     loop {
-        let Err(err) = hub.post(&path, r).await else {
+        let Err(err) = hub.post(&path, &r).await else {
             return;
         };
-        // A hub that answered and said no will say no again.
-        let unreachable = err.downcast_ref::<reqwest::Error>().is_some();
-        match waits.next() {
-            Some(secs) if unreachable => {
-                tracing::warn!(%err, id, "could not report helper job; retrying");
-                tokio::time::sleep(Duration::from_secs(secs)).await;
-            }
-            _ => {
-                tracing::error!(%err, id, "could not report helper job");
-                return;
-            }
+        let status = hub_status(&err);
+        // A page too big for the hub must not keep the job open.
+        if status == Some(StatusCode::PAYLOAD_TOO_LARGE) && r.page_html.is_some() {
+            tracing::warn!(id, "hub refused the page as too big; reporting without it");
+            r.page_html = None;
+            continue;
         }
+        // A hub that answered and said no will say no again; one that is
+        // down or failing may recover.
+        let retry = match status {
+            Some(s) => s.is_server_error(),
+            None => err
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(|e| !e.is_builder()),
+        };
+        if !retry || Instant::now() + wait > give_up {
+            tracing::error!(%err, id, "could not report helper job");
+            return;
+        }
+        tracing::warn!(%err, id, "could not report helper job; retrying");
+        tokio::time::sleep(wait).await;
+        wait = (wait * 2).min(Duration::from_secs(60));
     }
 }
 
@@ -760,7 +874,7 @@ async fn helper_loop(hub: Hub, data: PathBuf) {
                         }
                     }
                 };
-                finish_helper(&hub, id, &result).await;
+                finish_helper(&hub, id, result).await;
             }
             Err(err) => {
                 tracing::warn!(%err, "hub unreachable for helper jobs; retrying");

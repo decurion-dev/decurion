@@ -534,7 +534,7 @@ pub(crate) fn runner_actor(name: &str) -> Result<String> {
     }
 }
 
-async fn audit(
+pub(crate) async fn audit(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     thread_id: i64,
     actor: &str,

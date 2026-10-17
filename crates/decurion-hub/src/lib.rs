@@ -141,7 +141,13 @@ pub fn router(state: AppState) -> Router {
         .route("/apps/{id}/notes/{note}/remove", post(goals::remove_note))
         .route("/runner/helper/claim", post(goals::helper_claim))
         .route("/runner/helper/{id}/started", post(goals::helper_started))
-        .route("/runner/helper/{id}/finish", post(goals::helper_finish))
+        .route(
+            "/runner/helper/{id}/finish",
+            // Room for a page of screenshots and a long answer, escaped inside JSON.
+            post(goals::helper_finish).layer(axum::extract::DefaultBodyLimit::max(
+                decurion_proto::goal::MAX_PAGE_BYTES * 2 + (1 << 20),
+            )),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), require_key));
     Router::new()
         .route("/", get(board))
