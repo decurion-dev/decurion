@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Built-in help pages that explain each part of Decurion in plain language.
 - A design for add-ons, so new kinds of agents and tools can plug in later.
 - Contribution guide, security policy, code of conduct, issue and pull request templates, and a cargo-deny configuration for dependency license and source checks.
+- **Website limits for agents.** Each agent's container is on its own closed network whose only way out is a small gate. The gate lets through only Claude, the package stores (npm, PyPI, crates.io) and the websites you add for each app in Settings. Anything else is turned away and shows in the work's activity as a blocked visit. Agents can no longer reach your PC, home network or Tailscale devices. Installers build the gate the first time Decurion starts.
 
 ## [0.1.0] - Unreleased
 
