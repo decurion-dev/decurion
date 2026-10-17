@@ -1,7 +1,8 @@
 use anyhow::{bail, Context};
-use decurion_proto::{Account, Claim, MoveRequest, Profile, RunEvent, ThreadState};
+use decurion_proto::{Claim, MoveRequest, RunEvent, ThreadState};
 use decurion_runner::{
-    container_name, parse_line, prompt_for, run_args, Credential, BUDGET_STOP, DOCKER_CLI_ENV,
+    container_name, over_budget, parse_line, pi_run_args, prompt_for, run_args, Credential, PiRun,
+    BUDGET_STOP, DOCKER_CLI_ENV,
 };
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -70,8 +71,9 @@ fn data_dir() -> anyhow::Result<PathBuf> {
 }
 
 /// The run's one credential, from Windows Credential Manager: a Max profile's
-/// token (`claude setup-token`, saved as `decurion/claude-profile-A`) or the
-/// pay-per-use API key (`decurion/anthropic-api`).
+/// token (`claude setup-token`, saved as `decurion/claude-profile-A`), the
+/// pay-per-use API key (`decurion/anthropic-api`), or the OpenAI or xAI key
+/// (`decurion/openai-api`, `decurion/xai-api`).
 fn secret(cred: Credential) -> anyhow::Result<String> {
     let target = cred.target();
     #[cfg(windows)]
@@ -252,6 +254,74 @@ fn docker() -> Command {
     cmd
 }
 
+/// Reads Claude Code's output to the end, posting its events, and returns its
+/// result and whether anything came after it.
+async fn claude_output<R: tokio::io::AsyncBufRead + Unpin>(
+    hub: &Hub,
+    id: i64,
+    out: &mut R,
+) -> std::io::Result<(Option<RunEvent>, bool)> {
+    // Claude Code's result is the last line it prints. Anything after it, or a
+    // container that does not exit cleanly, means the agent may have printed a
+    // fake result: its cost is then not trusted and the hub charges the whole
+    // amount set aside.
+    let mut result: Option<RunEvent> = None;
+    let mut after_result = false;
+    while let Some(line) = read_capped_line(out).await? {
+        if result.is_some() && !line.trim().is_empty() {
+            after_result = true;
+        }
+        for e in parse_line(&line) {
+            if matches!(e, RunEvent::Finished { .. }) {
+                result = Some(e);
+                after_result = false;
+            } else {
+                hub.event(id, &e).await;
+            }
+        }
+    }
+    Ok((result, after_result))
+}
+
+/// Reads pi's output to the end, posting its events, and returns its result,
+/// if it has one, and whether the runner stopped it at its budget.
+///
+/// pi has no spending limit of its own, so the runner keeps the running total
+/// of what pi reports and removes the container once it reaches the budget.
+/// The hub held back part of the money set aside for the call in flight.
+async fn pi_output<R: tokio::io::AsyncBufRead + Unpin>(
+    hub: &Hub,
+    id: i64,
+    out: &mut R,
+    budget_usd: Option<f64>,
+) -> std::io::Result<(Option<RunEvent>, bool)> {
+    let mut run = PiRun::default();
+    let mut stopped = false;
+    while let Some(line) = read_capped_line(out).await? {
+        let events = run.parse_line(&line);
+        if stopped {
+            // Still counted: money spent on a call that was in flight.
+            continue;
+        }
+        for e in &events {
+            hub.event(id, e).await;
+        }
+        if over_budget(run.cost_usd(), budget_usd) {
+            stopped = true;
+            tracing::info!(id, cost = run.cost_usd(), "stopping a run at its budget");
+            let _ = docker()
+                .args(["rm", "-f", &container_name(id)])
+                .output()
+                .await;
+        }
+    }
+    Ok(if stopped {
+        (Some(run.budget_stop()), true)
+    } else {
+        (run.finished(), false)
+    })
+}
+
 /// Runs one claimed thread to the end and reports the outcome.
 async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
     let id = c.thread.id;
@@ -268,11 +338,16 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
         .await;
 
     let wt = workspace(data, &c).await?;
-    let cred = match c.account {
-        Account::A => Credential::Max(Profile::A),
-        Account::B => Credential::Max(Profile::B),
-        Account::Api => Credential::PayPerUse,
-        other => bail!("this runner cannot run {} work yet", other.label()),
+    let cred = Credential::for_account(c.account);
+    let pi = cred.pi_model().is_some();
+    if pi && c.budget_usd.is_none() {
+        // The runner is pi's only spending limit.
+        bail!("{} work came without a budget", c.account.label());
+    }
+    let args = if pi {
+        pi_run_args(id, &wt, &session, cred)?
+    } else {
+        run_args(id, &wt, &session, c.resume, cred, c.budget_usd)?
     };
     let token = secret(cred)?;
     let prompt = prompt_for(&c.thread.prompt, c.resume);
@@ -283,7 +358,7 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
         .context("could not tell the hub the run is starting")?;
     let mut child = docker()
         .env(cred.var(), token)
-        .args(run_args(id, &wt, &session, c.resume, cred, c.budget_usd)?)
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -295,7 +370,7 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
         use tokio::io::AsyncWriteExt;
         let mut stdin = child.stdin.take().context("no stdin")?;
         stdin.write_all(prompt.as_bytes()).await?;
-        // Dropping stdin closes it, which tells Claude the task is complete.
+        // Dropping stdin closes it, which tells the agent the task is complete.
     }
 
     // Drain stderr alongside stdout so a chatty container cannot fill the pipe
@@ -319,25 +394,13 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
     });
     let stdout = child.stdout.take().context("no stdout")?;
     let mut out = BufReader::new(stdout);
-    // Claude Code's result is the last line it prints. Anything after it, or a
-    // container that does not exit cleanly, means the agent may have printed a
-    // fake result: its cost is then not trusted and the hub charges the whole
-    // amount set aside.
-    let mut result: Option<RunEvent> = None;
-    let mut after_result = false;
-    while let Some(line) = read_capped_line(&mut out).await? {
-        if result.is_some() && !line.trim().is_empty() {
-            after_result = true;
-        }
-        for e in parse_line(&line) {
-            if matches!(e, RunEvent::Finished { .. }) {
-                result = Some(e);
-                after_result = false;
-            } else {
-                hub.event(id, &e).await;
-            }
-        }
-    }
+    let (result, after_result, budget_stopped) = if pi {
+        let (result, stopped) = pi_output(hub, id, &mut out, c.budget_usd).await?;
+        (result, false, stopped)
+    } else {
+        let (result, after_result) = claude_output(hub, id, &mut out).await?;
+        (result, after_result, false)
+    };
     let status = child.wait().await?;
     let finished = match result {
         Some(RunEvent::Finished {
@@ -347,7 +410,9 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
             input_tokens,
             output_tokens,
         }) => {
-            let trusted = status.success() && !after_result;
+            // The runner stopped a run at its budget itself, so its container
+            // does not exit cleanly, but what pi reported until then stands.
+            let trusted = (status.success() || budget_stopped) && !after_result;
             hub.event(
                 id,
                 &RunEvent::Finished {

@@ -13,7 +13,18 @@ One coordinator. Every agent. Your rules. Decurion is an open-source control roo
 
 To run an app on pay-per-use instead of a Max account, save an Anthropic API key with `python spike/wincred.py set api`, set a monthly spend limit on that key's Anthropic Console workspace equal to Decurion's cap, and switch the app under "Add an app". Decurion stops pay-per-use work at its own monthly cap (default $100); the Console limit is the backstop, because the agent holds the key while it runs.
 
-Each piece of work runs in its own container with its own copy of the code. The only credential inside is that profile's Claude token. Work moves to *In review* only when the agent has committed to its branch.
+### ChatGPT and Grok
+
+Work can also go to ChatGPT (your OpenAI API key) or Grok (your xAI API key). Decurion runs them through [pi](https://github.com/earendil-works/pi), an open-source coding agent, in the same kind of sealed container.
+
+1. Build the pi image: `docker build -t decurion/pi-worker:dev docker/pi-worker`
+2. Save the keys you want to use: `python spike/wincred.py set openai` and `python spike/wincred.py set xai`, then paste each key (hidden input). They are stored as `decurion/openai-api` and `decurion/xai-api`.
+3. On each provider's own site (OpenAI platform settings, xAI console), set a monthly spending limit equal to Decurion's cap for that key. Decurion's caps start at $25 a month each.
+4. When you add work on the board, choose ChatGPT or Grok.
+
+Decurion stops the work once a run reaches the money set aside for it, and stops new work at the monthly cap. The provider's own limit is the backstop, because the agent holds the key while it runs. ChatGPT work uses `gpt-5.5` and Grok work uses `grok-4.7`.
+
+Each piece of work runs in its own container with its own copy of the code. The only credential inside is the one that work runs on: a Claude token or one API key. Work moves to *In review* only when the agent has committed to its branch.
 
 Keep Docker Desktop's "Expose daemon on tcp://localhost:2375 without TLS" setting **off**. Containers can reach the host, and that port would give any agent full control of Docker.
 
@@ -21,8 +32,9 @@ Keep Docker Desktop's "Expose daemon on tcp://localhost:2375 without TLS" settin
 
 - `crates/decurion-proto` shared types and the allowed state moves
 - `crates/decurion-hub` board state (SQLite), API, board page
-- `crates/decurion-runner` starts one sealed Claude Code container per piece of work
-- `docker/claude-worker` the agent image
+- `crates/decurion-runner` starts one sealed agent container (Claude Code or pi) per piece of work
+- `docker/claude-worker` the Claude Code image
+- `docker/pi-worker` the pi image, for ChatGPT and Grok
 - `docs/spikes` what we tested and learned
 
 Licensed under Apache-2.0.

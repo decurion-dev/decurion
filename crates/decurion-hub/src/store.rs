@@ -256,7 +256,8 @@ impl Store {
             .fetch_one(&mut *tx)
             .await?;
             let resume = t.session_id.is_some() && started;
-            let prior = if resume {
+            // What earlier runs cost, when the agent's own report will count it.
+            let prior = if resume && t.ai.reports_session_cost() {
                 crate::spend::session_cost_micros(&mut tx, t.id).await?
             } else {
                 0

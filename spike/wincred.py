@@ -1,8 +1,10 @@
-"""Store or read a Claude profile token in Windows Credential Manager.
+"""Store or read an agent credential in Windows Credential Manager.
 
 Store (prompts with hidden input, prints nothing back):
-    python spike/wincred.py set A      # Max profile A, from `claude setup-token`
-    python spike/wincred.py set api    # pay-per-use Anthropic API key
+    python spike/wincred.py set A       # Max profile A, from `claude setup-token`
+    python spike/wincred.py set api     # pay-per-use Anthropic API key
+    python spike/wincred.py set openai  # OpenAI API key, for ChatGPT work
+    python spike/wincred.py set xai     # xAI API key, for Grok work
 """
 
 import ctypes
@@ -25,10 +27,18 @@ class CREDENTIAL(ctypes.Structure):
 advapi = ctypes.WinDLL("advapi32", use_last_error=True)
 
 
+# Pay-per-use keys: where each is kept, what it is called, and how it starts.
+KEYS = {
+    "api": ("decurion/anthropic-api", "pay-per-use Anthropic API key", "sk-ant-"),
+    "openai": ("decurion/openai-api", "OpenAI API key", "sk-"),
+    "xai": ("decurion/xai-api", "xAI API key", "xai-"),
+}
+
+
 def target(profile):
-    # "api" is the pay-per-use Anthropic API key; A and B are Max profiles.
-    if profile.lower() == "api":
-        return "decurion/anthropic-api"
+    # A and B are Max profiles; the rest are pay-per-use keys.
+    if profile.lower() in KEYS:
+        return KEYS[profile.lower()][0]
     return f"decurion/claude-profile-{profile}"
 
 
@@ -53,11 +63,12 @@ def read(profile):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] != "set":
+    if len(sys.argv) != 3 or sys.argv[1] != "set" or sys.argv[2].lower() not in [*KEYS, "a", "b"]:
         sys.exit(__doc__)
-    what = "pay-per-use API key" if sys.argv[2].lower() == "api" else f"token for Claude profile {sys.argv[2]}"
+    name = sys.argv[2].lower() if sys.argv[2].lower() in KEYS else sys.argv[2].upper()
+    _, what, prefix = KEYS.get(name, (None, f"token for Claude profile {name}", "sk-ant-"))
     tok = getpass.getpass(f"Paste the {what} (hidden): ").strip()
-    if not tok.startswith("sk-ant-"):
-        sys.exit("That does not look like a Claude token. Nothing saved.")
-    write(sys.argv[2], tok)
-    print(f"Saved to Windows Credential Manager as {target(sys.argv[2])}.")
+    if not tok.startswith(prefix):
+        sys.exit(f"That does not look like a {what}. Nothing saved.")
+    write(name, tok)
+    print(f"Saved to Windows Credential Manager as {target(name)}.")

@@ -131,6 +131,13 @@ impl Ai {
             Self::Grok => "grok",
         }
     }
+
+    /// Claude Code reports a resumed session's cost from the session's start,
+    /// so its limit and its cost report include earlier runs. pi reports only
+    /// what the run itself cost.
+    pub fn reports_session_cost(self) -> bool {
+        matches!(self, Self::Claude)
+    }
 }
 
 impl FromStr for Ai {
@@ -250,7 +257,7 @@ pub struct Thread {
     pub state: ThreadState,
     #[serde(default)]
     pub ai: Ai,
-    /// Claude Code session id, set on the first run so a restart resumes it.
+    /// The agent's session id, set on the first run so a restart resumes it.
     pub session_id: Option<String>,
     pub branch: Option<String>,
     pub updated_at: String,
@@ -281,10 +288,11 @@ pub struct Claim {
     pub resume: bool,
     /// Whose credential the run gets.
     pub account: Account,
-    /// Set for pay-per-use runs: the limit to give Claude Code. It is what
-    /// earlier runs of this session cost plus most of the money set aside for
-    /// this run, because Claude Code counts a resumed session's cost from the
-    /// start.
+    /// Set for pay-per-use runs: the run's spending limit, most of the money
+    /// set aside for it. For Claude Code it also includes what earlier runs of
+    /// this session cost, because Claude Code counts a resumed session's cost
+    /// from the start (see [`Ai::reports_session_cost`]). pi has no limit of
+    /// its own; the runner stops it here.
     #[serde(default)]
     pub budget_usd: Option<f64>,
 }
@@ -359,7 +367,8 @@ pub enum RunEvent {
     /// The agent used a tool.
     Tool { name: String, summary: String },
     /// The run ended. `ok` is the agent's own result, not a review. Cost and
-    /// tokens are what Claude Code reported for this run.
+    /// tokens are what the agent reported: for Claude Code, the whole
+    /// session so far; for pi, this run.
     Finished {
         ok: bool,
         summary: String,

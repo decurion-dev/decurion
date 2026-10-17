@@ -1525,6 +1525,47 @@ async fn each_ai_runs_on_its_own_account() {
 }
 
 #[tokio::test]
+async fn a_resumed_pi_run_is_budgeted_and_charged_on_its_own() {
+    let (r, _) = hub().await;
+    let app = app_with(&r, "gpt", false).await;
+    let id = work(&r, app, "chatgpt").await;
+    let (_, first) = claim_one(&r).await;
+    assert_eq!(first["budget_usd"], 9.0);
+    for body in [
+        json!({"kind":"message","text":"working"}),
+        json!({"kind":"finished","ok":false,"summary":"stopped","cost_usd":4.0}),
+    ] {
+        call(
+            &r,
+            "POST",
+            &format!("/api/threads/{id}/events"),
+            Some(RUNNER),
+            body,
+        )
+        .await;
+    }
+    for (key, to) in [(RUNNER, "needs_you"), (OWNER, "queued")] {
+        call(
+            &r,
+            "POST",
+            &format!("/api/threads/{id}/move"),
+            Some(key),
+            json!({ "to": to }),
+        )
+        .await;
+    }
+    let (_, again) = claim_one(&r).await;
+    assert_eq!(again["resume"], true);
+    // pi reports only this run, so the limit leaves out the $4 already spent.
+    assert_eq!(again["budget_usd"], 9.0);
+    // It reports $2.50 for this run; the month shows both runs.
+    finish(&r, id, Some(2.5)).await;
+    let (_, acc) = call(&r, "GET", "/api/accounts", Some(OWNER), json!(null)).await;
+    assert_eq!(acc[3]["account"], "openai");
+    assert_eq!(acc[3]["spent_usd"], 6.5);
+}
+
+#[tokio::test]
 async fn every_paid_account_has_its_own_cap() {
     let (r, _) = hub().await;
     let (_, acc) = call(&r, "GET", "/api/accounts", Some(OWNER), json!(null)).await;
