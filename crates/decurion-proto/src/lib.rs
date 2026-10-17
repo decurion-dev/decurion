@@ -1,5 +1,7 @@
 //! Types shared by the hub, the runner and the web board.
 
+pub mod goal;
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
@@ -171,6 +173,10 @@ pub struct Claim {
     /// start.
     #[serde(default)]
     pub budget_usd: Option<f64>,
+    /// Set when work was sent back to its agent, for example with a
+    /// reviewer's notes: what to do next in the resumed session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up: Option<String>,
 }
 
 /// This month's spending, for the board.

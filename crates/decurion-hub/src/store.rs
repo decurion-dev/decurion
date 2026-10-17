@@ -324,6 +324,7 @@ impl Store {
                     resume,
                     budget_usd: pay_per_use
                         .then(|| crate::spend::claude_budget_usd(prior, reserved)),
+                    follow_up: None,
                 }),
                 capped,
             });
