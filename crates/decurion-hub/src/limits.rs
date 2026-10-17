@@ -12,60 +12,76 @@ use std::str::FromStr;
 
 /// How long to wait when Claude did not say when the account resets.
 const DEFAULT_WAIT: &str = "+60 minutes";
+/// Shortest wait, so a reset time that is already (nearly) past cannot make
+/// work retry in a tight loop.
+const MIN_WAIT: &str = "+5 minutes";
+/// A limit hit again within this long of the first one is the same outage:
+/// no new phone alert.
+const SAME_OUTAGE: &str = "-6 hours";
 
-/// Marks the Max account behind a thread's current run as out of usage.
-/// Pay-per-use runs are not Max limits and are ignored.
+/// Marks the Max account behind a thread's last run as out of usage. Only a
+/// Max run that just finished counts; pay-per-use runs are not Max limits.
+/// Returns `None` when the run was not on a Max account (nothing recorded),
+/// otherwise whether this starts a new outage (worth a phone alert).
 pub(crate) async fn record_limit(
     tx: &mut Transaction<'_, Sqlite>,
     thread_id: i64,
     reset_epoch: Option<i64>,
-) -> Result<()> {
-    let account: Option<String> =
-        sqlx::query_scalar("SELECT account FROM runs WHERE thread_id = ? ORDER BY id DESC LIMIT 1")
-            .bind(thread_id)
-            .fetch_optional(&mut **tx)
-            .await?;
+) -> Result<Option<bool>> {
+    let account: Option<String> = sqlx::query_scalar(
+        "SELECT account FROM runs WHERE thread_id = ?
+             AND (finished_at IS NULL
+                  OR finished_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-10 minutes'))
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(thread_id)
+    .fetch_optional(&mut **tx)
+    .await?;
     let Some(profile) = account.filter(|a| a == "A" || a == "B") else {
-        return Ok(());
+        return Ok(None);
     };
-    // A reset time in the past or absurdly far out is not believed.
-    let until = match reset_epoch {
-        Some(e) => {
-            sqlx::query_scalar::<_, String>(
-                "SELECT CASE
-                 WHEN ? BETWEEN CAST(strftime('%s', 'now') AS INTEGER)
-                          AND CAST(strftime('%s', 'now', '+8 days') AS INTEGER)
-                 THEN strftime('%Y-%m-%dT%H:%M:%fZ', ?, 'unixepoch')
-                 ELSE strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?) END",
-            )
-            .bind(e)
-            .bind(e)
-            .bind(DEFAULT_WAIT)
-            .fetch_one(&mut **tx)
-            .await?
-        }
-        None => {
-            sqlx::query_scalar("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)")
-                .bind(DEFAULT_WAIT)
-                .fetch_one(&mut **tx)
-                .await?
-        }
-    };
+    // Believe Claude's reset time if it is within the next 8 days; never wait
+    // less than MIN_WAIT.
+    let until: String = sqlx::query_scalar(
+        "SELECT MAX(
+             CASE WHEN ?1 IS NOT NULL AND ?1 BETWEEN CAST(strftime('%s', 'now') AS INTEGER)
+                                   AND CAST(strftime('%s', 'now', '+8 days') AS INTEGER)
+                  THEN strftime('%Y-%m-%dT%H:%M:%fZ', ?1, 'unixepoch')
+                  ELSE strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?2) END,
+             strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?3))",
+    )
+    .bind(reset_epoch)
+    .bind(DEFAULT_WAIT)
+    .bind(MIN_WAIT)
+    .fetch_one(&mut **tx)
+    .await?;
+    let new_outage: bool = sqlx::query_scalar(&format!(
+        "SELECT NOT EXISTS (SELECT 1 FROM profile_limits WHERE profile = ?
+             AND hit_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '{SAME_OUTAGE}'))"
+    ))
+    .bind(&profile)
+    .fetch_one(&mut **tx)
+    .await?;
+    // An earlier, later-ending report is never shortened; the outage keeps
+    // its first hit time so repeat hits do not re-alert.
     sqlx::query(
-        "INSERT INTO profile_limits (profile, until) VALUES (?, ?)
-         ON CONFLICT (profile) DO UPDATE SET until = excluded.until,
-             hit_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+        "INSERT INTO profile_limits (profile, until) VALUES (?1, ?2)
+         ON CONFLICT (profile) DO UPDATE SET
+             until = CASE WHEN until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AND until > excluded.until
+                          THEN until ELSE excluded.until END,
+             hit_at = CASE WHEN ?3 THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE hit_at END",
     )
     .bind(&profile)
     .bind(&until)
+    .bind(new_outage)
     .execute(&mut **tx)
     .await?;
-    Ok(())
+    Ok(Some(new_outage))
 }
 
 const ACTIVE: &str = "SELECT l.profile, l.until,
         (SELECT COUNT(*) FROM threads t JOIN apps a ON a.id = t.app_id
-         WHERE t.state IN ('queued', 'running') AND a.profile = l.profile
+         WHERE t.state = 'queued' AND a.profile = l.profile
            AND a.pay_per_use = 0 AND t.pay_per_use = 0) AS waiting
      FROM profile_limits l
      WHERE l.until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
@@ -100,13 +116,17 @@ impl Store {
         row.as_ref().map(limit_from).transpose()
     }
 
-    /// Moves every piece of work waiting on `profile` to pay-per-use. Returns
-    /// how many moved. It still runs under the monthly cap.
+    /// Moves every piece of work waiting on `profile` to pay-per-use, for
+    /// its next run only. Returns how many moved; nothing moves if the account
+    /// is not actually out (a stale banner). It still runs under the monthly
+    /// cap.
     pub async fn overflow_to_pay_per_use(&self, profile: Profile) -> Result<u64> {
         let done = sqlx::query(
             "UPDATE threads SET pay_per_use = 1
              WHERE state = 'queued' AND pay_per_use = 0
-               AND app_id IN (SELECT id FROM apps WHERE profile = ? AND pay_per_use = 0)",
+               AND app_id IN (SELECT id FROM apps WHERE profile = ?1 AND pay_per_use = 0)
+               AND EXISTS (SELECT 1 FROM profile_limits WHERE profile = ?1
+                           AND until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         )
         .bind(profile.as_str())
         .execute(self.pool())

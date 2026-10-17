@@ -74,7 +74,11 @@ async function lastWords(id) {
 async function showLimits() {
   const limits = await api("/limits");
   $("limits").replaceChildren(...limits.map(l => {
-    const when = new Date(l.until).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const t = new Date(l.until);
+    // A weekly limit can reset days from now: say the day when it is not today.
+    const when = t.toDateString() === new Date().toDateString()
+      ? t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : t.toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" });
     const d = el("div", { className: "limit" });
     d.append(el("div", { className: "kind" }, "Account out of usage"),
              el("p", {}, `Claude Max ${l.profile} is out until about ${when}. ${l.waiting} waiting; they restart on their own then. Or continue them now on pay-per-use, within this month's cap.`));
@@ -85,7 +89,7 @@ async function showLimits() {
 }
 async function refresh() {
   try {
-    await showLimits();
+    showLimits().catch(() => {});
     const [apps, threads] = await Promise.all([api("/apps"), api("/threads")]);
     const names = Object.fromEntries(apps.map(a => [a.id, a.name]));
     const mine = threads.filter(t => t.state in MEANS).sort((a, b) => b.updated_at.localeCompare(a.updated_at));

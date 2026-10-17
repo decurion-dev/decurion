@@ -114,8 +114,7 @@ async function refresh() {
       return col;
     }));
     $("status").textContent = `${threads.length} pieces of work · updated ${new Date().toLocaleTimeString()}`;
-    await showLimits($("limits"), refresh);
-    const sp = await api("/spend");
+    const [sp] = await Promise.all([api("/spend"), showLimits($("limits"), refresh).catch(() => {})]);
     const money = n => "$" + n.toFixed(2);
     $("spend").textContent = `Pay-per-use this month: ${money(sp.pay_per_use_usd)} of ${money(sp.cap_usd)} · Max accounts used ${money(sp.max_equivalent_usd)} worth`;
     $("spend").classList.toggle("near", sp.pay_per_use_usd >= 0.8 * sp.cap_usd);
@@ -157,7 +156,11 @@ $("add-app").onsubmit = async e => { e.preventDefault();
 async function showLimits(box, after) {
   const limits = await api("/limits");
   box.replaceChildren(...limits.map(l => {
-    const when = new Date(l.until).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const t = new Date(l.until);
+    // A weekly limit can reset days from now: say the day when it is not today.
+    const when = t.toDateString() === new Date().toDateString()
+      ? t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : t.toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" });
     const d = el("div", { className: "limit" });
     d.append(el("span", {}, `Claude Max ${l.profile} is out of usage until about ${when}. ${l.waiting} waiting; they restart on their own then.`));
     const b = el("button", { type: "button" }, "Continue on pay-per-use");

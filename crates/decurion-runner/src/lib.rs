@@ -158,10 +158,15 @@ pub fn run_args(
 /// and when it resets if it said (the older form ends in `|<unix seconds>`).
 pub fn usage_limit(text: &str) -> Option<Option<i64>> {
     let t = text.to_ascii_lowercase();
+    // Claude's own wording for a Max plan running out. Generic API errors
+    // ("rate limit reached", "output token limit reached") and the API's
+    // spend-limit message are not this.
     let hit = [
-        "usage limit",
+        "claude ai usage limit reached",
+        "claude usage limit reached",
         "hit your limit",
-        "limit reached",
+        "5-hour limit reached",
+        "weekly limit reached",
         "out of extra usage",
     ]
     .iter()
@@ -399,6 +404,13 @@ mod tests {
         assert!(!parse_line(fine)
             .iter()
             .any(|e| matches!(e, RunEvent::LimitHit { .. })));
+        for other in [
+            "API Error: 429 rate limit reached",
+            "Output token limit reached",
+            "You have reached your specified API usage limits",
+        ] {
+            assert_eq!(usage_limit(other), None, "{other}");
+        }
     }
 
     #[test]

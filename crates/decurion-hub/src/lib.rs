@@ -551,8 +551,8 @@ async fn add_event(
         return (StatusCode::FORBIDDEN, "events come from the runner").into_response();
     }
     match st.store.add_event(id, &e).await {
-        Ok(eid) => {
-            if let (RunEvent::LimitHit { .. }, Some(p)) = (&e, st.push.clone()) {
+        Ok((eid, new_outage)) => {
+            if let (true, Some(p)) = (new_outage, st.push.clone()) {
                 let store = st.store.clone();
                 tokio::spawn(async move {
                     // One alert per account, with the work now waiting on it.

@@ -200,6 +200,14 @@ impl Store {
         }
         if from == ThreadState::Running {
             crate::spend::close_open_run(&mut tx, id).await?;
+            // A move to pay-per-use during an outage is for that run only; a
+            // pause (back to Queued) keeps it for the resumed run.
+            if to != ThreadState::Queued {
+                sqlx::query("UPDATE threads SET pay_per_use = 0 WHERE id = ?")
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
         }
         audit(&mut tx, id, actor, from, to, note).await?;
         tx.commit().await?;
@@ -225,7 +233,7 @@ impl Store {
             // unless it (or its app) runs on pay-per-use.
             let Some(row) = sqlx::query(
                 "SELECT t.id, t.app_id, t.title, t.prompt, t.state, t.session_id, t.branch,
-                        t.updated_at
+                        t.updated_at, a.profile, (a.pay_per_use = 1 OR t.pay_per_use = 1) AS ppu
                  FROM threads t JOIN apps a ON a.id = t.app_id
                  WHERE t.state = 'queued'
                    AND (t.pay_per_use = 1 OR a.pay_per_use = 1 OR NOT EXISTS (
@@ -240,13 +248,8 @@ impl Store {
                 return Ok(ClaimOutcome { work: None, capped });
             };
             let t = thread_from(&row)?;
-            let (profile, pay_per_use): (String, bool) = sqlx::query_as(
-                "SELECT a.profile, (a.pay_per_use = 1 OR t.pay_per_use = 1)
-                 FROM threads t JOIN apps a ON a.id = t.app_id WHERE t.id = ?",
-            )
-            .bind(t.id)
-            .fetch_one(&mut *tx)
-            .await?;
+            let profile: String = row.try_get("profile")?;
+            let pay_per_use: bool = row.try_get("ppu")?;
             let account = if pay_per_use {
                 "api".to_owned()
             } else {
@@ -364,7 +367,9 @@ impl Store {
         Ok(ids)
     }
 
-    pub async fn add_event(&self, thread_id: i64, e: &RunEvent) -> Result<i64> {
+    /// Saves a run event. Returns its id, and whether it started a new Max
+    /// outage (which is worth a phone alert).
+    pub async fn add_event(&self, thread_id: i64, e: &RunEvent) -> Result<(i64, bool)> {
         self.thread(thread_id).await?;
         let body = serde_json::to_string(e).map_err(|e| StoreError::Invalid(e.to_string()))?;
         let mut tx = self.pool.begin().await?;
@@ -374,8 +379,38 @@ impl Store {
                 .bind(body)
                 .fetch_one(&mut *tx)
                 .await?;
+        let mut new_outage = false;
         if let RunEvent::LimitHit { reset_epoch } = e {
-            crate::limits::record_limit(&mut tx, thread_id, *reset_epoch).await?;
+            // Only a Max run's limit counts; anything else is ignored.
+            let Some(fresh) = crate::limits::record_limit(&mut tx, thread_id, *reset_epoch).await?
+            else {
+                tx.commit().await?;
+                return Ok((id, false));
+            };
+            new_outage = fresh;
+            // Record the outage and put the work back in line in one step, so
+            // it can never restart before the wait is saved, and the alert
+            // already counts it as waiting.
+            let requeued = sqlx::query(
+                "UPDATE threads SET state = 'queued',
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ? AND state = 'running'",
+            )
+            .bind(thread_id)
+            .execute(&mut *tx)
+            .await?;
+            if requeued.rows_affected() == 1 {
+                crate::spend::close_open_run(&mut tx, thread_id).await?;
+                audit(
+                    &mut tx,
+                    thread_id,
+                    "runner",
+                    ThreadState::Running,
+                    ThreadState::Queued,
+                    Some("Max account out of usage; waits for the reset"),
+                )
+                .await?;
+            }
         }
         if let RunEvent::Finished {
             cost_usd: Some(cost),
@@ -388,7 +423,7 @@ impl Store {
                 .await?;
         }
         tx.commit().await?;
-        Ok(id)
+        Ok((id, new_outage))
     }
 
     pub async fn events(&self, thread_id: i64, after: i64) -> Result<Vec<EventRecord>> {
