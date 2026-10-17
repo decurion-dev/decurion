@@ -41,6 +41,9 @@
   .chip.near { border-color:var(--warn); color:var(--warn); }
   .chip.out { border-color:var(--bad); color:var(--bad); }
   .chip.none { color:var(--muted); }
+  .limits { padding:0 16px; }
+  .limit { display:flex; gap:12px; align-items:center; flex-wrap:wrap; border:1px solid var(--warn); border-radius:10px; padding:10px 12px; margin:0 0 10px; }
+  .limit span { flex:1 1 260px; }
   .hint { color:var(--muted); font-size:13px; margin:8px 0; }
   .qr svg { background:#fff; padding:8px; border-radius:8px; margin-top:10px; }
   .qr a { display:block; font-size:12px; color:var(--muted); word-break:break-all; margin-top:6px; }
@@ -96,6 +99,7 @@
   <div id="qr" class="qr"></div>
   <ul id="devices" class="devices"></ul>
 </details>
+<div class="limits" id="limits"></div>
 <div class="err" id="err"></div>
 <main id="board"></main>
 <dialog id="detail"><h3 id="d-title"></h3><div id="log"></div>
@@ -226,7 +230,7 @@ async function refresh() {
       return col;
     }));
     $("status").textContent = `${threads.length} pieces of work · updated ${new Date().toLocaleTimeString()}`;
-    const [sp, accounts] = await Promise.all([api("/spend"), api("/accounts")]);
+    const [sp, accounts] = await Promise.all([api("/spend"), api("/accounts"), showLimits($("limits"), refresh).catch(() => {})]);
     // Top bar: each Max plan in use or with a reading, then pay-per-use money.
     const used = new Set(a.filter(x => !x.pay_per_use).map(x => x.profile));
     const paid = accounts.filter(x => x.cap_usd != null);
@@ -255,6 +259,7 @@ async function openThread(t) {
   $("log").textContent = ev.map(r => {
     const e = r.event; const time = r.at.slice(11, 19);
     if (e.kind === "started") return `${time}  Agent's box started`;
+    if (e.kind === "limit_hit") return `${time}  Claude Max account ran out of usage`;
     return e.kind === "message" ? `${time}  ${e.text}` : e.kind === "tool" ? `${time}  [${e.name}] ${e.summary}` : `${time}  FINISHED ${e.ok ? "ok" : "failed"}${e.cost_usd != null ? ` ($${e.cost_usd.toFixed(2)} so far)` : ""}: ${e.summary}`;
   }).join("\n") || "No activity yet.";
   $("d-actions").replaceChildren(...(OWNER_MOVES[t.state] ?? []).map(([to, label]) => {
@@ -270,6 +275,21 @@ $("add-thread").onsubmit = async e => { e.preventDefault();
 $("add-app").onsubmit = async e => { e.preventDefault();
   try { await api("/apps", { method: "POST", body: JSON.stringify({ name: $("app-name").value, repo_path: $("app-path").value, profile: $("app-profile").value, pay_per_use: $("app-ppu").checked }) });
         e.target.reset(); refresh(); } catch (x) { $("err").textContent = x.message; } };
+async function showLimits(box, after) {
+  const limits = await api("/limits");
+  box.replaceChildren(...limits.map(l => {
+    const t = new Date(l.until);
+    // A weekly limit can reset days from now: say the day when it is not today.
+    const when = t.toDateString() === new Date().toDateString()
+      ? t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : t.toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" });
+    const d = el("div", { className: "limit" });
+    d.append(el("span", {}, `Claude Max ${l.profile} is out of usage until about ${when}. ${l.waiting} waiting; they restart on their own then.`));
+    const b = el("button", { type: "button" }, "Continue on pay-per-use");
+    b.onclick = async () => { b.disabled = true; try { await api(`/limits/${l.profile}/pay-per-use`, { method: "POST" }); after(); } catch (e) { $("err").textContent = e.message; b.disabled = false; } };
+    d.append(b); return d;
+  }));
+}
 async function loadDevices() {
   const list = await api("/devices");
   $("devices").replaceChildren(...list.map(d => {

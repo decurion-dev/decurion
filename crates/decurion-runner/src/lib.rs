@@ -5,6 +5,8 @@ use decurion_proto::{Account, Profile, RunEvent};
 use serde_json::Value;
 use std::path::Path;
 
+pub mod gatekeeper;
+
 pub const IMAGE: &str = "decurion/claude-worker:dev";
 /// The image for ChatGPT and Grok work: pi, an open-source coding agent that
 /// talks to many providers (`docker/pi-worker`).
@@ -30,8 +32,10 @@ pub const DOCKER_CLI_ENV: &[&str] = &[
     "DOCKER_CONFIG",
 ];
 
-/// The one credential an agent gets: its Max profile's Claude token, the
-/// pay-per-use Anthropic key, or the OpenAI or xAI key for pi. Never two.
+/// The one credential an agent gets: its Max profile's Claude token, a
+/// per-run token for the gatekeeper (which holds the pay-per-use Anthropic key
+/// on the host), or the OpenAI or xAI key for pi. Never two, and never the
+/// Anthropic API key itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Credential {
     Max(Profile),
@@ -51,13 +55,13 @@ impl Credential {
         }
     }
 
-    /// The environment variable the agent reads it from.
-    pub fn var(self) -> &'static str {
+    /// The environment variables the container gets for it.
+    pub fn vars(self) -> &'static [&'static str] {
         match self {
-            Credential::Max(_) => "CLAUDE_CODE_OAUTH_TOKEN",
-            Credential::PayPerUse => "ANTHROPIC_API_KEY",
-            Credential::OpenAi => "OPENAI_API_KEY",
-            Credential::Xai => "XAI_API_KEY",
+            Credential::Max(_) => &["CLAUDE_CODE_OAUTH_TOKEN"],
+            Credential::PayPerUse => &["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"],
+            Credential::OpenAi => &["OPENAI_API_KEY"],
+            Credential::Xai => &["XAI_API_KEY"],
         }
     }
 
@@ -116,9 +120,9 @@ Check `git status` and `git log` first and do not redo finished steps."
 }
 
 /// The `docker run` arguments every agent gets, up to and including the
-/// image. The token is passed by name only, so it never appears on a command
-/// line, and the task goes in on stdin (`-i`), so a long task cannot hit the
-/// Windows command-line limit.
+/// image. Credentials are passed by name only, so they never appear on a
+/// command line, and the task goes in on stdin (`-i`), so a long task cannot
+/// hit the Windows command-line limit.
 fn sealed_args(
     thread_id: i64,
     worktree: &Path,
@@ -130,7 +134,7 @@ fn sealed_args(
     if src.contains([',', '"']) {
         anyhow::bail!("workspace path {src} contains a comma or quote");
     }
-    Ok([
+    let mut a = [
         "run",
         "-i",
         "--rm",
@@ -148,27 +152,34 @@ fn sealed_args(
         "4g",
         "--pids-limit",
         "1024",
-        "-e",
-        cred.var(),
-        "-e",
-        "GIT_CONFIG_COUNT=1",
-        "-e",
-        "GIT_CONFIG_KEY_0=safe.directory",
-        "-e",
-        "GIT_CONFIG_VALUE_0=/work",
-        "-e",
-        "GIT_AUTHOR_NAME=decurion-agent",
-        "-e",
-        "GIT_AUTHOR_EMAIL=agent@decurion.invalid",
-        "-e",
-        "GIT_COMMITTER_NAME=decurion-agent",
-        "-e",
-        "GIT_COMMITTER_EMAIL=agent@decurion.invalid",
-        image,
     ]
     .iter()
     .map(|s| s.to_string())
-    .collect())
+    .collect::<Vec<_>>();
+    for v in cred.vars() {
+        a.extend(["-e".to_owned(), (*v).to_owned()]);
+    }
+    a.extend(
+        [
+            "-e",
+            "GIT_CONFIG_COUNT=1",
+            "-e",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "-e",
+            "GIT_CONFIG_VALUE_0=/work",
+            "-e",
+            "GIT_AUTHOR_NAME=decurion-agent",
+            "-e",
+            "GIT_AUTHOR_EMAIL=agent@decurion.invalid",
+            "-e",
+            "GIT_COMMITTER_NAME=decurion-agent",
+            "-e",
+            "GIT_COMMITTER_EMAIL=agent@decurion.invalid",
+            image,
+        ]
+        .map(str::to_owned),
+    );
+    Ok(a)
 }
 
 /// Arguments for `docker run` of Claude Code.
@@ -190,7 +201,7 @@ pub fn run_args(
             "--permission-mode",
             "bypassPermissions",
         ]
-        .map(String::from),
+        .map(str::to_owned),
     );
     a.push(if resume { "--resume" } else { "--session-id" }.into());
     a.push(session_id.into());
@@ -260,6 +271,37 @@ pub fn over_budget(spent_usd: f64, budget_usd: Option<f64>) -> bool {
     budget_usd.is_some_and(|b| spent_usd >= b)
 }
 
+/// Whether a result's text is Claude saying the Max account is out of usage,
+/// and when it resets if it said (the older form ends in `|<unix seconds>`).
+pub fn usage_limit(text: &str) -> Option<Option<i64>> {
+    let t = text.to_ascii_lowercase();
+    // Claude's own wording for a Max plan running out. Generic API errors
+    // ("rate limit reached", "output token limit reached") and the API's
+    // spend-limit message are not this.
+    let hit = [
+        "claude ai usage limit reached",
+        "claude usage limit reached",
+        "hit your limit",
+        "5-hour limit reached",
+        "weekly limit reached",
+        "out of extra usage",
+    ]
+    .iter()
+    .any(|p| t.contains(p));
+    if !hit {
+        return None;
+    }
+    let epoch = text
+        .rsplit_once('|')
+        .and_then(|(_, tail)| tail.trim().parse::<i64>().ok())
+        .filter(|e| *e > 1_000_000_000);
+    Some(epoch)
+}
+
+/// What a run reports when its Max account ran out of usage.
+pub const LIMIT_STOP: &str =
+    "The Max account is out of usage. This waits and restarts on its own when it resets.";
+
 /// What a run that used up its spending limit reports.
 pub const BUDGET_STOP: &str =
     "Stopped at this run's spending limit. Continue it to give it more of this month's budget.";
@@ -276,7 +318,9 @@ const MIN_KEY_BODY: usize = 20;
 /// the character before it.
 fn key_at(rest: &str, prev: Option<char>) -> Option<usize> {
     let len = rest.find(|c| !is_key_char(c)).unwrap_or(rest.len());
-    if rest.starts_with("sk-ant-") {
+    // Anthropic keys, and the gatekeeper's per-run tokens while they may be
+    // live, wherever they appear.
+    if rest.starts_with("sk-ant-") || rest.starts_with("decurion-run-") {
         return Some(len);
     }
     // OpenAI keys (`sk-`, `sk-proj-`, ...) and xAI keys (`xai-`) only count at
@@ -367,21 +411,30 @@ pub fn parse_line(line: &str) -> Vec<RunEvent> {
             .iter()
             .filter_map(|k| u[*k].as_u64())
             .reduce(|a, b| a + b);
+            let text = v["result"].as_str().unwrap_or("");
+            let limit = (v["is_error"] == true).then(|| usage_limit(text)).flatten();
             let summary = if v["subtype"] == "error_max_budget_usd" {
                 BUDGET_STOP.to_owned()
+            } else if limit.is_some() {
+                LIMIT_STOP.to_owned()
             } else {
-                clip(v["result"].as_str().unwrap_or(""), 2000)
+                clip(text, 2000)
             };
             // A crashed run can report $0 after doing paid work; only a clean
             // finish or a budget stop has a cost worth believing.
             let cost_known = v["subtype"] == "success" || v["subtype"] == "error_max_budget_usd";
-            vec![RunEvent::Finished {
+            let mut out = Vec::new();
+            if let Some(reset_epoch) = limit {
+                out.push(RunEvent::LimitHit { reset_epoch });
+            }
+            out.push(RunEvent::Finished {
                 ok: v["subtype"] == "success" && v["is_error"] != true,
                 summary,
                 cost_usd: v["total_cost_usd"].as_f64().filter(|_| cost_known),
                 input_tokens: input,
                 output_tokens: u["output_tokens"].as_u64(),
-            }]
+            });
+            out
         }
         Some("rate_limit_event") => usage_events(&v["rate_limit_info"]),
         _ => vec![],
@@ -658,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn pay_per_use_runs_get_the_api_key_and_a_budget_only() {
+    fn pay_per_use_runs_get_a_gatekeeper_token_and_a_budget_only() {
         let a = run_args(
             7,
             Path::new("/w"),
@@ -668,9 +721,12 @@ mod tests {
             Some(9.5),
         )
         .unwrap_or_default();
-        assert!(a
-            .windows(2)
-            .any(|w| w[0] == "-e" && w[1] == "ANTHROPIC_API_KEY"));
+        // Both by name: the values come from the docker process's environment.
+        for var in ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"] {
+            assert!(a.windows(2).any(|w| w[0] == "-e" && w[1] == var), "{var}");
+        }
+        let joined = a.join(" ");
+        assert!(!joined.contains("sk-ant") && !joined.contains("http"));
         assert!(!a.iter().any(|x| x == "CLAUDE_CODE_OAUTH_TOKEN"));
         assert!(a
             .windows(2)
@@ -684,12 +740,51 @@ mod tests {
             None,
         )
         .unwrap_or_default();
-        assert!(!m
-            .iter()
-            .any(|x| x == "ANTHROPIC_API_KEY" || x == "--max-budget-usd"));
+        assert!(!m.iter().any(|x| x == "ANTHROPIC_API_KEY"
+            || x == "ANTHROPIC_BASE_URL"
+            || x == "--max-budget-usd"));
         assert_eq!(
             Credential::Max(Profile::B).target(),
             "decurion/claude-profile-B"
+        );
+    }
+
+    #[test]
+    fn a_max_usage_limit_is_recognised_with_its_reset_time() {
+        let l = r#"{"type":"result","subtype":"success","is_error":true,"result":"Claude AI usage limit reached|1760900400"}"#;
+        assert_eq!(
+            parse_line(l)[0],
+            RunEvent::LimitHit {
+                reset_epoch: Some(1_760_900_400)
+            }
+        );
+        assert!(
+            matches!(&parse_line(l)[1], RunEvent::Finished { ok: false, summary, .. } if summary == LIMIT_STOP)
+        );
+        let newer = r#"{"type":"result","subtype":"success","is_error":true,"result":"You've hit your limit · resets 3pm (America/Phoenix)"}"#;
+        assert_eq!(
+            parse_line(newer)[0],
+            RunEvent::LimitHit { reset_epoch: None }
+        );
+        // An agent merely talking about limits in a successful result is not one.
+        let fine = r#"{"type":"result","subtype":"success","is_error":false,"result":"Added a usage limit check"}"#;
+        assert!(!parse_line(fine)
+            .iter()
+            .any(|e| matches!(e, RunEvent::LimitHit { .. })));
+        for other in [
+            "API Error: 429 rate limit reached",
+            "Output token limit reached",
+            "You have reached your specified API usage limits",
+        ] {
+            assert_eq!(usage_limit(other), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn run_tokens_are_redacted_too() {
+        assert_eq!(
+            redact("my key is decurion-run-0a1b2c3d ok"),
+            "my key is [redacted] ok"
         );
     }
 
@@ -831,10 +926,11 @@ mod tests {
             Some(9.5),
         )
         .unwrap_or_default();
+        // As on main: the pay-per-use run gets the gatekeeper token and address.
         let want = "run -i --rm --name decurion-thread-7 \
 --mount type=bind,src=/w,dst=/work --mount type=volume,src=decurion-home-7,dst=/home/agent \
 --cap-drop ALL --security-opt no-new-privileges --memory 4g --pids-limit 1024 \
--e ANTHROPIC_API_KEY -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory \
+-e ANTHROPIC_API_KEY -e ANTHROPIC_BASE_URL -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory \
 -e GIT_CONFIG_VALUE_0=/work -e GIT_AUTHOR_NAME=decurion-agent \
 -e GIT_AUTHOR_EMAIL=agent@decurion.invalid -e GIT_COMMITTER_NAME=decurion-agent \
 -e GIT_COMMITTER_EMAIL=agent@decurion.invalid decurion/claude-worker:dev \
@@ -902,7 +998,7 @@ mod tests {
         assert_eq!(o.target(), "decurion/openai-api");
         assert_eq!(o.env_fallback(), "DECURION_OPENAI_API_KEY");
         let x = Credential::for_account(Account::Xai);
-        assert_eq!(x.var(), "XAI_API_KEY");
+        assert_eq!(x.vars(), ["XAI_API_KEY"]);
         assert_eq!(x.target(), "decurion/xai-api");
         assert_eq!(x.env_fallback(), "DECURION_XAI_API_KEY");
         assert_eq!(
