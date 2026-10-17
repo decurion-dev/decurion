@@ -412,6 +412,8 @@ impl Store {
                         .then(|| crate::spend::claude_budget_usd(prior, reserved)),
                     messages,
                     interrupted,
+                    reserved_micros: pay_per_use.then_some(reserved),
+                    prior_micros: prior,
                 }),
                 capped,
             });

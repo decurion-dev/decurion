@@ -1,6 +1,6 @@
 use anyhow::{bail, Context};
 use decurion_proto::{Claim, Live, MoveRequest, RunEvent, ThreadState};
-use decurion_runner::gatekeeper::{Gatekeeper, ANTHROPIC_API};
+use decurion_runner::gatekeeper::{Gatekeeper, Grant, ANTHROPIC_API};
 use decurion_runner::{
     container_name, hide, hide_cut, is_interrupted_turn, is_turn_start, parse_line_hiding,
     part_done, prompt_for, run_args, Acks, Action, Conversation, Credential, LeakScanner, Step,
@@ -597,6 +597,15 @@ const GAVE_UP: &str = "Claude went quiet for five minutes while Decurion waited 
 next step, so Decurion stopped waiting and let the run finish. Any follow-up it had not \
 been given yet is kept for the next run.";
 
+/// What a run must hold back: test-key values never reach the hub, and once
+/// the gatekeeper has refused calls for the run's money, nothing more goes
+/// to the agent.
+#[derive(Clone, Copy)]
+struct Guard<'a> {
+    secrets: &'a [String],
+    grant: Option<&'a Grant>,
+}
+
 /// Follows a run until the agent's output ends or the owner stops it: posts
 /// what the agent does, passes owner messages to it as the [`Conversation`]
 /// decides, and acks them once Claude has read them.
@@ -607,7 +616,7 @@ async fn follow(
     to_agent: mpsc::UnboundedSender<Step>,
     mut lines: mpsc::Receiver<(Instant, String)>,
     mut wrote: mpsc::UnboundedReceiver<Wrote>,
-    secrets: &[String],
+    guard: Guard<'_>,
 ) -> Ended {
     let send = |step: Step| {
         if !step.actions.is_empty() || !step.delivered.is_empty() {
@@ -662,7 +671,7 @@ async fn follow(
                     conv.on_turn_start();
                     between_turns = false;
                 }
-                let events = parse_line_hiding(&line, secrets);
+                let events = parse_line_hiding(&line, guard.secrets);
                 let is_result = events.iter().any(|e| matches!(e, RunEvent::Finished { .. }));
                 if turn_start || is_result {
                     // Claude has read what was written before this line.
@@ -678,9 +687,12 @@ async fn follow(
                     let (ok, stop) = match &e {
                         // Out of money or out of usage: nothing more goes to
                         // the agent, whatever is waiting.
-                        RunEvent::Finished { ok, summary, .. } => {
-                            (*ok, summary == BUDGET_STOP || summary == LIMIT_STOP)
-                        }
+                        RunEvent::Finished { ok, summary, .. } => (
+                            *ok,
+                            summary == BUDGET_STOP
+                                || summary == LIMIT_STOP
+                                || guard.grant.is_some_and(Grant::used_up),
+                        ),
                         RunEvent::LimitHit { reset_epoch } => {
                             limit = Some(*reset_epoch);
                             continue;
@@ -868,7 +880,10 @@ make sure Docker Desktop is running and delete that container there",
     // The grant is revoked when it drops, on every way out of this function.
     let (grant, values) = match cred {
         Credential::PayPerUse => {
-            let g = gate.keeper.grant(token);
+            // The gatekeeper prices every answer and stops the run's calls
+            // once its set-aside money is used.
+            let budget = c.reserved_micros.map(|m| m.max(0) as u64);
+            let g = gate.keeper.grant_with_budget(token, budget);
             let v = vec![g.token().to_owned(), gate.url.clone()];
             (Some(g), v)
         }
@@ -925,24 +940,49 @@ make sure Docker Desktop is running and delete that container there",
     let stderr_task = spawn_stderr_tail(child.stderr.take().context("no stderr")?, secrets.clone());
     let (lines, reader) = spawn_reader(child.stdout.take().context("no stdout")?);
 
-    let (result, limit, after_result) =
-        match follow(hub, id, conv, to_agent, lines, wrote, &secrets).await {
-            Ended::Stopped => {
-                // The owner already moved it; the hub has the last word.
-                tracing::info!(id, "stopped by the owner");
-                kill(hub, &mut child, id).await;
-                let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
-                return Ok(());
-            }
-            Ended::Exited {
-                result,
-                limit,
-                after_result,
-            } => (result, limit, after_result),
-        };
+    let (result, limit, after_result) = match follow(
+        hub,
+        id,
+        conv,
+        to_agent,
+        lines,
+        wrote,
+        Guard {
+            secrets: &secrets,
+            grant: grant.as_ref(),
+        },
+    )
+    .await
+    {
+        Ended::Stopped => {
+            // The owner already moved it; the hub has the last word.
+            tracing::info!(id, "stopped by the owner");
+            kill(hub, &mut child, id).await;
+            let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
+            return Ok(());
+        }
+        Ended::Exited {
+            result,
+            limit,
+            after_result,
+        } => (result, limit, after_result),
+    };
     reader.await.context("stdout reader")??;
     let status = child.wait().await?;
     // The container is gone; its token goes with it.
+    // For pay-per-use, the gatekeeper's count is the cost: it saw every call,
+    // including any the agent made itself, and runs outside the container.
+    // Answers still finishing are waited for, so their cost is in; if they do
+    // not finish in time the count is not trusted and the hub charges the
+    // whole set-aside amount.
+    let metered_usd = match &grant {
+        Some(g) if g.finish(Duration::from_secs(30)).await => {
+            Some((c.prior_micros as u64 + g.spent_micros()) as f64 / 1_000_000.0)
+        }
+        _ => None,
+    };
+    let used_up = grant.as_ref().is_some_and(|g| g.used_up());
+    let pay_per_use = grant.is_some();
     drop(grant);
     // The container is gone, so the writer has nothing left to do.
     let _ = writer.await;
@@ -955,12 +995,25 @@ make sure Docker Desktop is running and delete that container there",
             output_tokens,
         }) => {
             let trusted = status.success() && !after_result;
+            let reported = cost_usd.filter(|_| trusted);
+            // The higher of the gatekeeper's count and Claude's own report;
+            // a pay-per-use run whose count is unknown reports nothing.
+            let cost = if pay_per_use {
+                metered_usd.map(|m| reported.map_or(m, |r| m.max(r)))
+            } else {
+                reported
+            };
+            let summary = if !ok && used_up {
+                BUDGET_STOP.to_owned()
+            } else {
+                summary
+            };
             hub.event(
                 id,
                 &RunEvent::Finished {
                     ok,
                     summary: summary.clone(),
-                    cost_usd: cost_usd.filter(|_| trusted),
+                    cost_usd: cost,
                     input_tokens,
                     output_tokens,
                 },
@@ -968,13 +1021,37 @@ make sure Docker Desktop is running and delete that container there",
             .await;
             Some((ok, summary))
         }
-        _ => None,
+        _ => {
+            // No result line at all: still report what the gatekeeper saw,
+            // and say so if the run was stopped by its budget.
+            let summary = if used_up {
+                BUDGET_STOP.to_owned()
+            } else {
+                String::new()
+            };
+            if let Some(cost) = metered_usd {
+                hub.event(
+                    id,
+                    &RunEvent::Finished {
+                        ok: false,
+                        summary: summary.clone(),
+                        cost_usd: Some(cost),
+                        input_tokens: None,
+                        output_tokens: None,
+                    },
+                )
+                .await;
+            }
+            used_up.then_some((false, summary))
+        }
     };
     let max_limit = limit.filter(|_| !after_result && c.budget_usd.is_none());
     let err = stderr_task.await.unwrap_or_default();
     let exit = Exit {
         status,
         stderr: &err,
+        pay_per_use,
+        used_up,
     };
     let (to, note) = outcome(data, &wt, &c, finished, max_limit, exit, keys).await;
     if let (ThreadState::Queued, Some(reset_epoch)) = (to, max_limit) {
@@ -990,10 +1067,14 @@ make sure Docker Desktop is running and delete that container there",
     }
 }
 
-/// How the container ended: its exit status and the tail of its stderr.
+/// How the container ended: its exit status, the tail of its stderr, and
+/// whether the gatekeeper ran out of the run's money.
 struct Exit<'a> {
     status: ExitStatus,
     stderr: &'a str,
+    /// A pay-per-use run, and whether the gatekeeper stopped it for money.
+    pay_per_use: bool,
+    used_up: bool,
 }
 
 /// Where the work goes after the run. The agent's own "done" is not enough:
@@ -1008,7 +1089,12 @@ async fn outcome(
     exit: Exit<'_>,
     keys: &[(String, String)],
 ) -> (ThreadState, String) {
-    let Exit { status, stderr } = exit;
+    let Exit {
+        status,
+        stderr,
+        pay_per_use,
+        used_up,
+    } = exit;
     let branch = c.thread.branch.as_deref().unwrap_or_default();
     match finished {
         Some((true, _)) if status.success() => match new_commits(data, wt, branch).await {
@@ -1059,7 +1145,11 @@ sent for review. Retry it and the agent will be asked to rewrite its branch with
             }
         }
         // Out of money for this run, not broken: the owner can give it more.
-        Some((false, summary)) if summary == BUDGET_STOP => (ThreadState::NeedsYou, summary),
+        // Decided by the gatekeeper's count, or by Claude Code's own limit on
+        // a pay-per-use run; never by text alone on a Max run.
+        Some((false, summary)) if used_up || (pay_per_use && summary == BUDGET_STOP) => {
+            (ThreadState::NeedsYou, BUDGET_STOP.to_owned())
+        }
         Some((false, summary)) => (ThreadState::Failed, summary),
         None => (
             ThreadState::Failed,

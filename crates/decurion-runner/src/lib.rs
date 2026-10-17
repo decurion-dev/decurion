@@ -7,6 +7,7 @@ use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 
 pub mod gatekeeper;
+pub mod pricing;
 
 pub const IMAGE: &str = "decurion/claude-worker:dev";
 
