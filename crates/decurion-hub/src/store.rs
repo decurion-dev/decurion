@@ -340,6 +340,8 @@ impl Store {
                     test_keys,
                     budget_usd: pay_per_use
                         .then(|| crate::spend::claude_budget_usd(prior, reserved)),
+                    reserved_micros: pay_per_use.then_some(reserved),
+                    prior_micros: prior,
                 }),
                 capped,
             });
