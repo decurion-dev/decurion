@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
-const REAL_KEY: &str = "sk-ant-test-real-key";
+const REAL_KEY: &str = "fake-upstream-key-for-tests";
 
 /// What the mock API saw: method, path and query, headers, body.
 type Seen = Arc<Mutex<Vec<(Method, String, HeaderMap, Bytes)>>>;
