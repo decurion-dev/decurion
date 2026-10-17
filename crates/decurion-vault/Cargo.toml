@@ -1,0 +1,19 @@
+[package]
+name = "decurion-vault"
+description = "Decurion vault: where apps' test keys are kept, outside the agent boxes"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[dev-dependencies]
+uuid.workspace = true
+
+[lints]
+workspace = true

@@ -401,11 +401,13 @@ impl Store {
             tx.commit().await?;
             let thread = self.thread(t.id).await?;
             let app = self.app(thread.app_id).await?;
+            let test_keys = self.test_key_names(app.id).await?;
             return Ok(ClaimOutcome {
                 work: Some(Claim {
                     thread,
                     app,
                     resume,
+                    test_keys,
                     budget_usd: pay_per_use
                         .then(|| crate::spend::claude_budget_usd(prior, reserved)),
                     messages,

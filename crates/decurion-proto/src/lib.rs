@@ -292,6 +292,19 @@ pub struct Claim {
     /// Set when a resumed run was cut off in the middle of a step.
     #[serde(default)]
     pub interrupted: Option<Interrupted>,
+    /// Names of the app's test keys. The runner reads their values from the
+    /// vault on this PC; the hub never sends them.
+    #[serde(default)]
+    pub test_keys: Vec<String>,
+}
+
+/// A saved test key as the board sees it. The value itself is never shown
+/// again after it is saved.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestKey {
+    pub name: String,
+    pub last_four: String,
+    pub added_at: String,
 }
 
 /// A Max account that is out of usage, and the work waiting for it.
