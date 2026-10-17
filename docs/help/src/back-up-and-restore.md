@@ -53,7 +53,7 @@ Paired phones keep working after a restore on the same PC. On a new PC:
 
 ## Keep the data somewhere else
 
-To keep the data in a different folder, set `DECURION_DATA` to that folder's full path before you start Decurion. On Windows, type `setx DECURION_DATA D:\decurion-data` in Command Prompt, then start Decurion again. Move your existing folder there first, or Decurion starts fresh.
+To keep the data in a different folder, set `DECURION_DATA` to that folder's full path before you start Decurion. On Windows, pick a folder inside your own user folder, such as `C:\Users\<you>\decurion-data`, and type `setx DECURION_DATA C:\Users\<you>\decurion-data` in Command Prompt. Avoid the top level of another drive like `D:\`, where other people who use the PC could read it, then start Decurion again. Move your existing folder there first, or Decurion starts fresh.
 
 ## If something goes wrong
 

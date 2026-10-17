@@ -46,9 +46,9 @@ Write-Host '  B    Claude Max account B'
 Write-Host '  api  Pay-per-use Anthropic API key'
 $choice = (Read-Host 'Type A, B or api').Trim()
 switch ($choice.ToLower()) {
-    'a' { $target = 'decurion/claude-profile-A'; $what = 'Claude account A' }
-    'b' { $target = 'decurion/claude-profile-B'; $what = 'Claude account B' }
-    'api' { $target = 'decurion/anthropic-api'; $what = 'the pay-per-use API key' }
+    'a' { $target = 'decurion/claude-profile-A'; $what = 'Claude account A'; $prefix = 'sk-ant-oat' }
+    'b' { $target = 'decurion/claude-profile-B'; $what = 'Claude account B'; $prefix = 'sk-ant-oat' }
+    'api' { $target = 'decurion/anthropic-api'; $what = 'the pay-per-use API key'; $prefix = 'sk-ant-api' }
     default { Write-Host 'Nothing saved. Please type A, B or api.' -ForegroundColor Yellow; Read-Host 'Press Enter to close'; exit 1 }
 }
 
@@ -56,7 +56,7 @@ if ($target -ne 'decurion/anthropic-api') {
     if (Get-Command claude -ErrorAction SilentlyContinue) {
         Write-Host ''
         Write-Host "Claude will open a sign-in page. Sign in with $what." -ForegroundColor Cyan
-        Write-Host 'When it shows a long code that starts with sk-ant-, copy it, then come back here.'
+        Write-Host 'When it shows a long code that starts with sk-ant-oat, copy it, then come back here.'
         Read-Host 'Press Enter to open the sign-in page'
         claude setup-token
     } else {
@@ -72,8 +72,12 @@ try {
 } finally {
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
 }
-if (-not $token.StartsWith('sk-ant-')) {
-    Write-Host 'That does not look like a Claude code. Nothing saved.' -ForegroundColor Yellow
+if (-not $token.StartsWith($prefix)) {
+    if ($prefix -eq 'sk-ant-oat') {
+        Write-Host 'That does not look like a Claude sign-in code. It should start with sk-ant-oat. Nothing saved.' -ForegroundColor Yellow
+    } else {
+        Write-Host 'That does not look like an Anthropic API key. It should start with sk-ant-api. Nothing saved.' -ForegroundColor Yellow
+    }
     Read-Host 'Press Enter to close'
     exit 1
 }

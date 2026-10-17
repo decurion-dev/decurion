@@ -5,6 +5,9 @@
 # Written for Windows PowerShell 5.1, which every Windows 10 and 11 PC has.
 
 $ErrorActionPreference = 'Continue'
+# Pick up programs installed since this window's parent started, such as
+# helpers the installer just added with winget.
+$env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Image = 'decurion/claude-worker:dev'
 $Port = 7420

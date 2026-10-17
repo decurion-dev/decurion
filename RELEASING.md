@@ -32,8 +32,10 @@ checks run on any pull request that changes `packaging/`.
 5. **Publish.** On the Releases page, open the draft and press **Publish
    release**. This is the moment it becomes public.
 6. **Help site.** Publishing a release also puts the help pages online with
-   GitHub Pages. The first time, turn Pages on: Settings > Pages > Source:
-   GitHub Actions.
+   GitHub Pages. The first time, turn Pages on (Settings > Pages > Source:
+   GitHub Actions), then allow tags to deploy: Settings > Environments >
+   github-pages > Deployment branches and tags > add a tag rule `v*`.
+   Without that rule GitHub refuses the deploy from a release tag.
 7. **winget (optional).** The workflow saves filled-in winget manifests as the
    `winget-manifests` artifact. Submitting them to
    [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) makes

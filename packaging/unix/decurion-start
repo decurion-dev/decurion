@@ -3,6 +3,9 @@
 # agent workspace image when it is missing or out of date, starts the hub and
 # the runner, and opens the board. Press Ctrl+C in this window to stop.
 set -u
+# The data folder holds the hub's keys, and its log holds the sign-in link,
+# so nothing Decurion writes should be readable by other accounts.
+umask 077
 
 here=$(cd "$(dirname "$0")" && pwd)
 share="$here/../share/decurion"
@@ -11,6 +14,7 @@ port=7420
 data=${DECURION_DATA:-$HOME/decurion}
 logs="$data/logs"
 mkdir -p "$logs"
+chmod 700 "$data"
 
 fail() {
     printf '\n%s\nLogs are in %s\n' "$1" "$logs" >&2
@@ -18,7 +22,7 @@ fail() {
 }
 
 open_url() {
-    if command -v open >/dev/null 2>&1; then
+    if [ "$(uname -s)" = Darwin ]; then
         open "$1"
     elif command -v xdg-open >/dev/null 2>&1; then
         xdg-open "$1" >/dev/null 2>&1 &

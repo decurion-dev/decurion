@@ -61,7 +61,7 @@ You need to do this each time you open a new terminal to start Decurion.
 
 ## If something goes wrong
 
-- **"That does not look like a Claude code. Nothing saved."** You copied something else. Copy the code that starts with `sk-ant-` and try again.
+- **"That does not look like a Claude sign-in code" or "That does not look like an Anthropic API key".** You copied something else, or picked the wrong letter. A Max account code starts with `sk-ant-oat`. A pay-per-use API key starts with `sk-ant-api`. Copy the right one and try again.
 - **"Claude Code is not installed."** The helper cannot open the sign-in page. Install Claude Code, or run `claude setup-token` on another PC and paste that code.
 - **Work fails with "nothing saved in Credential Manager as decurion/claude-profile-B."** The app uses Claude B, but no token is saved for B. Save one, then click **Retry** on the work.
 - **Work fails with "DECURION_CLAUDE_TOKEN_A not set."** On Mac or Linux, the token was not set in the terminal that started Decurion. Set it, then start Decurion again.
