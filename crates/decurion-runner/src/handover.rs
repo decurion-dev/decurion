@@ -162,6 +162,39 @@ pub fn is_sha(s: &str) -> bool {
     matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// The null device, for settings that must point at nothing.
+pub const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+
+/// Environment for every git the runner runs on the host. Only the runner's
+/// own settings count: no system-wide or user config, no Git LFS downloads,
+/// no password prompts and no lazy fetching, so nothing an agent committed
+/// (`.gitattributes`, `.lfsconfig`) or set up on the computer can make git
+/// run other programs here.
+pub fn host_git_env() -> [(&'static str, &'static str); 5] {
+    [
+        ("GIT_CONFIG_NOSYSTEM", "1"),
+        ("GIT_CONFIG_GLOBAL", NULL_DEVICE),
+        ("GIT_LFS_SKIP_SMUDGE", "1"),
+        ("GIT_TERMINAL_PROMPT", "0"),
+        ("GIT_NO_LAZY_FETCH", "1"),
+    ]
+}
+
+/// Settings put before every host git command. Command-line settings win
+/// over any repo's config: no hooks, no fsmonitor, and a fixed name in case
+/// anything commits (there is no user config to take one from).
+pub fn host_git_args() -> Vec<String> {
+    [
+        format!("core.hooksPath={NULL_DEVICE}"),
+        "core.fsmonitor=false".to_owned(),
+        "user.name=decurion".to_owned(),
+        "user.email=decurion@decurion.invalid".to_owned(),
+    ]
+    .into_iter()
+    .flat_map(|s| ["-c".to_owned(), s])
+    .collect()
+}
+
 /// The board note when work leaves this computer.
 pub fn move_note(to: Place) -> &'static str {
     match to {
@@ -273,5 +306,34 @@ mod tests {
         assert!(!is_sha("unknown") && !is_sha("--upload-pack=x") && !is_sha(&"g".repeat(40)));
         assert_eq!(move_note(Place::Cloud), "moved to the cloud");
         assert_eq!(move_note(Place::Pc), "moved to the PC");
+    }
+
+    #[test]
+    fn host_git_ignores_outside_config_hooks_and_lfs() {
+        let env = host_git_env();
+        for want in [
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+            ("GIT_CONFIG_GLOBAL", NULL_DEVICE),
+            ("GIT_LFS_SKIP_SMUDGE", "1"),
+            ("GIT_TERMINAL_PROMPT", "0"),
+            ("GIT_NO_LAZY_FETCH", "1"),
+        ] {
+            assert!(env.contains(&want), "{want:?}");
+        }
+        assert_eq!(NULL_DEVICE, if cfg!(windows) { "NUL" } else { "/dev/null" });
+        let args = host_git_args();
+        for want in [
+            format!("core.hooksPath={NULL_DEVICE}"),
+            "core.fsmonitor=false".to_owned(),
+            "user.name=decurion".to_owned(),
+            "user.email=decurion@decurion.invalid".to_owned(),
+        ] {
+            assert!(
+                args.windows(2).any(|w| w[0] == "-c" && w[1] == want),
+                "{want}"
+            );
+        }
+        // Every setting comes as `-c <key=value>`, so none is read as a command.
+        assert!(args.chunks(2).all(|p| p[0] == "-c" && p[1].contains('=')));
     }
 }

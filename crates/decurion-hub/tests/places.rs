@@ -187,7 +187,7 @@ async fn claim(h: &Hub, key: &str, name: &str) -> (StatusCode, Value) {
         "POST",
         "/api/runner/claim",
         Some(key),
-        json!({ "runner": name }),
+        json!({ "runner": name, "rules_version": decurion_proto::RULES_VERSION }),
     )
     .await
 }
@@ -336,9 +336,126 @@ async fn a_runner_on_other_rules_is_turned_away() {
     assert_eq!(s, StatusCode::CONFLICT);
     assert_eq!(reply["rules_version"], decurion_proto::RULES_VERSION);
     assert!(reply["hub_commit"].is_string());
-    // Its running work was left alone.
+    // Its running work goes back to the queue rather than waiting on a
+    // runner that must update first.
     let (_, t) = call(&h.r, "GET", "/api/threads", Some(OWNER), Value::Null).await;
-    assert_eq!(t[0]["state"], "running");
+    assert_eq!(t[0]["state"], "queued");
+    // Claims are checked too, including from a runner that does not say.
+    for body in [
+        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version": decurion_proto::RULES_VERSION + 1}),
+    ] {
+        let (s, reply) = call(&h.r, "POST", "/api/runner/claim", Some(RUNNER), body).await;
+        assert_eq!(s, StatusCode::CONFLICT);
+        assert_eq!(reply["paused"], json!([]));
+        assert_eq!(reply["rules_version"], decurion_proto::RULES_VERSION);
+        assert!(reply["hub_commit"].is_string());
+    }
+    let (_, t) = call(&h.r, "GET", "/api/threads", Some(OWNER), Value::Null).await;
+    assert_eq!(t[0]["state"], "queued");
+}
+
+#[tokio::test]
+async fn a_cloud_worker_sees_only_the_work_it_runs() {
+    let h = hub().await;
+    let app = add_app(&h, "A").await;
+    let (name, cloud) = join(&h).await;
+    let (_, pc_work) = add_work(&h, app, "pc").await;
+    let (_, cloud_work) = add_work(&h, app, "cloud").await;
+    let pc_id = pc_work["id"].as_i64().expect("id");
+    let cloud_id = cloud_work["id"].as_i64().expect("id");
+    let events = format!("/api/threads/{cloud_id}/events");
+    for path in [
+        "/api/threads",
+        "/api/apps",
+        "/api/spend",
+        "/api/workers",
+        "/api/limits",
+        "/api/devices",
+        "/api/push/key",
+        &events,
+    ] {
+        let (s, _) = call(&h.r, "GET", path, Some(&cloud), Value::Null).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{path}");
+    }
+    let (s, _) = call(
+        &h.r,
+        "POST",
+        &format!("/api/threads/{cloud_id}/place"),
+        Some(&cloud),
+        json!({"place":"pc"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Work it is not running looks like work that does not exist.
+    for id in [pc_id, cloud_id, cloud_id + 100] {
+        let (s, body) = call(
+            &h.r,
+            "GET",
+            &format!("/api/threads/{id}"),
+            Some(&cloud),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{id}");
+        assert_eq!(body, "not found");
+    }
+    let (s, _) = claim(&h, &cloud, &name).await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, t) = call(
+        &h.r,
+        "GET",
+        &format!("/api/threads/{cloud_id}"),
+        Some(&cloud),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(t["id"], cloud_id);
+    // The PC runner keeps its view of the board.
+    let (s, _) = call(&h.r, "GET", "/api/threads", Some(RUNNER), Value::Null).await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn work_from_before_saved_copies_stays_where_it_is() {
+    let h = hub().await;
+    let app = add_app(&h, "A").await;
+    join(&h).await;
+    let (_, t) = add_work(&h, app, "pc").await;
+    let id = t["id"].as_i64().expect("id");
+    claim(&h, RUNNER, "local").await;
+    let path = format!("/api/threads/{id}/place");
+    let place = |to: &'static str| call(&h.r, "POST", &path, Some(OWNER), json!({ "place": to }));
+    // Running work can move: its runner saves a copy as it hands it over.
+    let (s, _) = place("cloud").await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = place("pc").await;
+    assert_eq!(s, StatusCode::OK);
+    // Back in the queue with a branch and no saved copy, it cannot.
+    let (s, _) = call(
+        &h.r,
+        "POST",
+        "/api/runner/hello",
+        Some(RUNNER),
+        json!({"runner":"local","rules_version": decurion_proto::RULES_VERSION}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, msg) = place("cloud").await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert!(msg
+        .as_str()
+        .is_some_and(|m| m.contains("started before it could move")));
+    let (_, t) = call(
+        &h.r,
+        "GET",
+        &format!("/api/threads/{id}"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(t["place"], "pc");
 }
 
 #[tokio::test]

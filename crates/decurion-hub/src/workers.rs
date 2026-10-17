@@ -151,6 +151,29 @@ impl Store {
         if place == Place::Cloud && !self.has_cloud_worker().await? {
             return Err(StoreError::Refused(NO_CLOUD_WORKER.into()));
         }
+        // Work that ran before saved copies existed has only its PC folder;
+        // the other computer would start it over on an old branch. Running
+        // work is fine: its runner saves a copy as it hands it over.
+        let unsaved: bool = sqlx::query_scalar(
+            "SELECT branch IS NOT NULL AND state NOT IN ('running', 'done')
+                 AND NOT EXISTS (SELECT 1 FROM checkpoints c WHERE c.thread_id = threads.id)
+             FROM threads WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(self.pool())
+        .await?
+        .ok_or(StoreError::NotFound)?;
+        if unsaved {
+            return Err(StoreError::Refused(
+                "This work started before it could move between computers. Finish or retry it where it is.".into(),
+            ));
+        }
+        self.place_unchecked(id, place, actor).await
+    }
+
+    /// Moves work without the saved-copy check, for when it has to move
+    /// anyway because its computer is gone.
+    async fn place_unchecked(&self, id: i64, place: Place, actor: &str) -> Result<Thread> {
         let mut tx = self.pool().begin().await?;
         let row: Option<(String, String)> =
             sqlx::query_as("SELECT state, place FROM threads WHERE id = ?")
@@ -218,7 +241,7 @@ impl Store {
             .fetch_all(self.pool())
             .await?;
             for t in cloud {
-                self.set_place(t, Place::Pc, "owner").await?;
+                self.place_unchecked(t, Place::Pc, "owner").await?;
             }
         }
         Ok(())

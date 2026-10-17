@@ -14,7 +14,8 @@
 //! Runners sign in with their own keys: the PC runner with the runner key, a
 //! cloud worker with the key it got when it signed up. The hub knows which
 //! runner is calling from its key alone, and a runner can only report on,
-//! save or move work it is running itself.
+//! save or move work it is running itself. A cloud worker's key reaches
+//! nothing else at all: not the board, spending or other work.
 
 pub mod checkpoints;
 pub mod devices;
@@ -276,7 +277,12 @@ async fn require_key(State(st): State<AppState>, mut req: Request, next: Next) -
         }
         (Some(k), _) => match st.store.cloud_runner_for_token(k).await {
             Ok(Some(r)) => {
-                req.extensions_mut().insert(st.heard_from(r));
+                let r = st.heard_from(r);
+                let reach = cloud_reach(req.method(), req.uri().path());
+                if let Err(resp) = cloud_may_call(&st, &r, reach).await {
+                    return resp;
+                }
+                req.extensions_mut().insert(r);
                 (Caller::Runner, None)
             }
             Ok(None) => return (StatusCode::UNAUTHORIZED, "missing or wrong key").into_response(),
@@ -295,6 +301,64 @@ async fn require_key(State(st): State<AppState>, mut req: Request, next: Next) -
     req.extensions_mut().insert(caller);
     req.extensions_mut().insert(DeviceId(device));
     next.run(req).await
+}
+
+/// What a cloud worker's call reaches.
+enum CloudReach {
+    Any,
+    /// Work it must be running now. `hidden` answers "not found" otherwise,
+    /// so a worker cannot learn about other work.
+    Thread {
+        id: i64,
+        hidden: bool,
+    },
+    Refused,
+}
+
+/// A cloud worker is a rented server, not the owner's PC, so its key reaches
+/// only what running its own work needs. Anything not listed here, including
+/// routes added later, is refused.
+fn cloud_reach(method: &axum::http::Method, path: &str) -> CloudReach {
+    use axum::http::Method;
+    let path = path.strip_prefix("/api").unwrap_or(path);
+    let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
+    let thread = |id: &str, hidden| match id.parse() {
+        Ok(id) => CloudReach::Thread { id, hidden },
+        Err(_) => CloudReach::Refused,
+    };
+    match (method, parts.as_slice()) {
+        (&Method::POST, ["runner", "hello" | "claim"]) => CloudReach::Any,
+        (&Method::GET, ["threads", id]) => thread(id, true),
+        (&Method::POST, ["threads", id, "events" | "move"]) => thread(id, false),
+        (_, ["runner", "threads", id, _, ..]) => thread(id, false),
+        _ => CloudReach::Refused,
+    }
+}
+
+// Responses are what axum handlers return; boxing them buys nothing here.
+#[allow(clippy::result_large_err)]
+async fn cloud_may_call(st: &AppState, r: &RunnerId, reach: CloudReach) -> Result<(), Response> {
+    let (id, hidden) = match reach {
+        CloudReach::Any => return Ok(()),
+        CloudReach::Thread { id, hidden } => (id, hidden),
+        CloudReach::Refused => {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "cloud workers only run their own work",
+            )
+                .into_response())
+        }
+    };
+    match st.store.running_on(id, &r.name).await {
+        Ok(true) => Ok(()),
+        Ok(false) if hidden => Err(ApiError(StoreError::NotFound).into_response()),
+        Ok(false) => Err((
+            StatusCode::CONFLICT,
+            "that work is not running on this runner",
+        )
+            .into_response()),
+        Err(e) => Err(ApiError(e).into_response()),
+    }
 }
 
 impl AppState {
@@ -690,6 +754,22 @@ async fn add_event(
 #[derive(Deserialize)]
 struct RunnerName {
     runner: String,
+    /// Checked again at every claim, so a runner left on old rules after the
+    /// hub updates never starts new work.
+    #[serde(default)]
+    rules_version: Option<u32>,
+}
+
+/// The 409 a runner on other rules gets, telling it which rules and commit
+/// to update to.
+fn other_rules(r: &RunnerId, theirs: Option<u32>) -> Response {
+    tracing::warn!(runner = %r.name, ?theirs, "runner on other rules refused");
+    let reply = HelloReply {
+        paused: vec![],
+        rules_version: RULES_VERSION,
+        hub_commit: HUB_COMMIT.to_owned(),
+    };
+    (StatusCode::CONFLICT, Json(reply)).into_response()
 }
 
 /// The runner making a runner-only call. A runner names itself in some
@@ -720,24 +800,23 @@ async fn runner_hello(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let mut reply = HelloReply {
-        paused: vec![],
-        rules_version: RULES_VERSION,
-        hub_commit: HUB_COMMIT.to_owned(),
+    // Work it had running goes back to the queue either way, so a runner
+    // that must update first does not leave work stuck as Running.
+    let paused = match st.store.pause_runner_threads(&r.name).await {
+        Ok(ids) => ids,
+        Err(e) => return ApiError(e).into_response(),
     };
     // A runner on other rules must not touch any work; it updates itself to
     // the hub's commit and starts again.
     if h.rules_version != RULES_VERSION {
-        tracing::warn!(runner = %r.name, theirs = h.rules_version, "runner on other rules refused");
-        return (StatusCode::CONFLICT, Json(reply)).into_response();
+        return other_rules(&r, Some(h.rules_version));
     }
-    match st.store.pause_runner_threads(&r.name).await {
-        Ok(ids) => {
-            reply.paused = ids;
-            Json(reply).into_response()
-        }
-        Err(e) => ApiError(e).into_response(),
-    }
+    Json(HelloReply {
+        paused,
+        rules_version: RULES_VERSION,
+        hub_commit: HUB_COMMIT.to_owned(),
+    })
+    .into_response()
 }
 
 async fn runner_claim(
@@ -749,6 +828,9 @@ async fn runner_claim(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    if b.rules_version != Some(RULES_VERSION) {
+        return other_rules(&r, b.rules_version);
+    }
     match st.store.claim(&r.name, r.place).await {
         Ok(out) => {
             if let (Some(p), Some(first)) = (st.push.clone(), out.capped.first()) {

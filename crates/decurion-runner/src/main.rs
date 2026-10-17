@@ -5,8 +5,8 @@ use decurion_proto::{
 };
 use decurion_runner::gatekeeper::{Gatekeeper, ANTHROPIC_API};
 use decurion_runner::handover::{
-    bundle_spec, is_sha, move_note, reuse_workspace, save_edits_args, session_export_args,
-    session_import_args, tool_container_name, CODE_CAP, SESSION_CAP,
+    bundle_spec, host_git_args, host_git_env, is_sha, move_note, reuse_workspace, save_edits_args,
+    session_export_args, session_import_args, tool_container_name, CODE_CAP, SESSION_CAP,
 };
 use decurion_runner::identity::{
     hub_url, place_from_env, write_atomic, CloudRunner, PC_HUB, PC_NAME,
@@ -25,8 +25,9 @@ use tokio::process::Command;
 
 /// How long the last steps of a run (saving a checkpoint, reporting the
 /// outcome) keep trying while the hub is out of reach. A cloud worker's hub is
-/// the owner's PC, which may be asleep; the work must not be dropped.
-const FINAL_RETRY: Duration = Duration::from_secs(60 * 60);
+/// the owner's PC, which may be asleep or off for days; giving up would leave
+/// the work shown as running forever, so only a refusal ends these early.
+const FINAL_RETRY: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// How long a download keeps trying. The hub just handed out the work, so it
 /// is awake; this only covers a short hiccup.
 const DOWNLOAD_RETRY: Duration = Duration::from_secs(2 * 60);
@@ -200,7 +201,11 @@ async fn with_retry<T>(
         if !again || start.elapsed() + wait > limit {
             return Err(err);
         }
-        tracing::warn!(%err, what, wait_secs = wait.as_secs(), "hub unreachable; trying again");
+        tracing::warn!(
+            %err,
+            wait_secs = wait.as_secs(),
+            "could not {what} yet; waiting for the hub to answer, then trying again"
+        );
         tokio::time::sleep(wait).await;
         attempt += 1;
     }
@@ -262,10 +267,13 @@ async fn credential(hub: &Hub, id: i64, cred: Credential) -> anyhow::Result<Stri
     Ok(r.value)
 }
 
+/// Runs git on the host. It never trusts any config but the runner's own (see
+/// [`host_git_env`]), so a `.gitattributes` or `.lfsconfig` the agent
+/// committed cannot start filters or Git LFS here.
 async fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
     let out = Command::new("git")
-        .env("GIT_NO_LAZY_FETCH", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(host_git_env())
+        .args(host_git_args())
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -343,9 +351,7 @@ async fn workspace(
         return Ok((dir, false));
     }
     tracing::info!(id, checkpoint = ?c.checkpoint, "rebuilding this work's copy from the hub");
-    remove_all(&dir)?;
-    remove_all(&marker_file)?;
-    remove_all(&base_file(&dir))?;
+    set_aside(&dir)?;
     std::fs::create_dir_all(dir.parent().context("workspace parent")?)?;
     let tmp = sibling(&dir, "partial");
     remove_all(&tmp)?;
@@ -451,6 +457,41 @@ async fn workspace(
     Ok((dir, true))
 }
 
+/// Moves an out-of-date workspace (and its checkpoint and starting-commit
+/// files) to `<workspace>.previous` instead of deleting it: it may hold work
+/// that never reached the hub. Only the latest such copy is kept.
+fn set_aside(dir: &Path) -> anyhow::Result<()> {
+    let prev = sibling(dir, "previous");
+    let pairs = [
+        (dir.to_path_buf(), prev.clone()),
+        (sibling(dir, "checkpoint"), sibling(&prev, "checkpoint")),
+        (base_file(dir), base_file(&prev)),
+    ];
+    if !dir.exists() {
+        // Nothing to keep; only stray files from an older copy.
+        for (from, _) in &pairs {
+            remove_all(from)?;
+        }
+        return Ok(());
+    }
+    for (_, to) in &pairs {
+        remove_all(to)?;
+    }
+    for (from, to) in &pairs {
+        match std::fs::rename(from, to) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(e).with_context(|| format!("could not set aside {}", from.display()))
+            }
+            _ => {}
+        }
+    }
+    tracing::info!(
+        kept = %prev.display(),
+        "this computer's copy of the work was out of date; kept it aside in case it holds unsaved work"
+    );
+    Ok(())
+}
+
 /// Where the starting commit is kept: next to the workspace, outside the
 /// container's mount, so the agent cannot move it.
 fn base_file(dir: &Path) -> PathBuf {
@@ -466,21 +507,15 @@ async fn fetch_branch(data: &Path, dir: &Path, branch: &str) -> anyhow::Result<P
         std::fs::create_dir_all(&bare)?;
         git(&bare, &["init", "--quiet", "--bare"]).await?;
     }
-    let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
     let src = dir.to_string_lossy().into_owned();
     let refspec = format!("+refs/heads/{branch}:refs/heads/{branch}");
     // The source repo's config is agent-written. Command-line settings win
-    // over it and reach git's child processes: no hooks, no fsmonitor, no
-    // transports beyond plain local files, and no lazy fetching of missing
-    // objects through a planted remote.
-    let hooks = format!("core.hooksPath={null}");
+    // over it and reach git's child processes: on top of what [`git`] always
+    // turns off (hooks, fsmonitor, lazy fetching), no transports beyond plain
+    // local files.
     git(
         &bare,
         &[
-            "-c",
-            &hooks,
-            "-c",
-            "core.fsmonitor=false",
             "-c",
             "protocol.allow=never",
             "-c",
@@ -749,27 +784,55 @@ fn docker() -> Command {
     cmd
 }
 
-/// Waits until the owner moves this running work to another computer, and
-/// says where to.
-async fn watch_place(hub: &Hub, id: i64) -> Place {
+/// What changed about running work while the agent was at it.
+enum Watch {
+    /// The owner moved it to another computer.
+    Moved(Place),
+    /// It is no longer this runner's: stopped or taken back by the owner, or
+    /// this worker was removed.
+    Lost,
+}
+
+/// Waits until the running work is moved to another computer or stops being
+/// this runner's. A hub that is out of reach or briefly failing changes
+/// nothing; it is asked again.
+async fn watch_place(hub: &Hub, id: i64) -> Watch {
     loop {
         tokio::time::sleep(WATCH_EVERY).await;
         let t = match hub.get(&format!("/threads/{id}")).await {
             Ok(r) => r.json::<Thread>().await.map_err(anyhow::Error::from),
+            // The hub answers 404 to a cloud worker once the work is not
+            // running there; 401 or 403 means this worker was removed.
+            Err(HubError::Refused(
+                _,
+                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND,
+                _,
+            )) => return Watch::Lost,
             Err(e) => Err(e.into()),
         };
         match t {
-            Ok(t) if t.place != hub.place => return t.place,
+            Ok(t) if t.state != ThreadState::Running => return Watch::Lost,
+            Ok(t) if t.place != hub.place => return Watch::Moved(t.place),
             Ok(_) => {}
             Err(err) => tracing::debug!(%err, id, "could not check where the work belongs"),
         }
     }
 }
 
+/// Stops the agent's container and the docker process watching it.
+async fn stop_agent(id: i64, child: &mut tokio::process::Child) {
+    let name = container_name(id);
+    let _ = docker().args(["stop", "-t", "20", &name]).output().await;
+    let _ = docker().args(["rm", "-f", &name]).output().await;
+    let _ = child.kill().await;
+}
+
 /// Hands running work to the other computer: stop the agent, keep its
 /// unfinished edits as a commit, save a checkpoint and put the work back in
 /// the queue for the other runner. Never reports the work as failed: every
-/// problem here is logged, and the work is queued either way.
+/// problem here is logged. If the work could not be saved it is not queued,
+/// since the other computer would start from an older copy; it stays here
+/// and goes to the owner.
 async fn hand_over(
     hub: &Hub,
     data: &Path,
@@ -780,25 +843,29 @@ async fn hand_over(
     mut child: tokio::process::Child,
 ) {
     tracing::info!(id, to = to.as_str(), "work was moved; handing it over");
-    let name = container_name(id);
-    let _ = docker().args(["stop", "-t", "20", &name]).output().await;
-    let _ = docker().args(["rm", "-f", &name]).output().await;
-    let _ = child.kill().await;
+    stop_agent(id, &mut child).await;
     if let Err(err) = save_edits(id, wt).await {
         tracing::warn!(%err, id, "could not save unfinished edits");
     }
-    if let Err(err) = save_checkpoint(hub, data, id, wt, branch).await {
-        tracing::error!(%err, id, "could not save a checkpoint before moving");
-    }
-    let note = move_note(to);
+    let (state, note) = match save_checkpoint(hub, data, id, wt, branch).await {
+        Ok(_) => (ThreadState::Queued, move_note(to)),
+        Err(err) => {
+            tracing::error!(%err, id, "could not save a checkpoint before moving; keeping the work here");
+            (ThreadState::NeedsYou, UNSAVED_MOVE)
+        }
+    };
     if let Err(err) = with_retry("hand the work over", FINAL_RETRY, async || {
-        hub.move_to(id, ThreadState::Queued, note).await
+        hub.move_to(id, state, note).await
     })
     .await
     {
-        tracing::error!(%err, id, "could not put the moved work back in the queue");
+        tracing::error!(%err, id, "could not tell the hub where the moved work stands");
     }
 }
+
+/// The board note when work could not be saved for a move.
+const UNSAVED_MOVE: &str =
+    "Could not save the work before moving it, so it stayed here. Try the move again.";
 
 /// The host-side gatekeeper and the address containers reach it at.
 struct Gate {
@@ -940,8 +1007,15 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
     // While the agent works, watch for the owner moving the work elsewhere.
     let (result, limit, after_result) = tokio::select! {
         r = read => r?,
-        to = watch_place(hub, id) => {
-            hand_over(hub, data, id, &wt, &branch, to, child).await;
+        w = watch_place(hub, id) => {
+            match w {
+                Watch::Moved(to) => hand_over(hub, data, id, &wt, &branch, to, child).await,
+                // Nothing is saved or reported: the work is not ours to touch.
+                Watch::Lost => {
+                    tracing::warn!(id, "the work was taken back or this worker was removed; stopping it");
+                    stop_agent(id, &mut child).await;
+                }
+            }
             return Ok(());
         }
     };
@@ -1019,10 +1093,27 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
         ),
     };
     // Save the work whatever the outcome, so it can continue anywhere later.
-    // A failed save is logged; the outcome is still reported.
-    if let Err(err) = save_checkpoint(hub, data, id, &wt, &branch).await {
-        tracing::error!(%err, id, "could not save a checkpoint");
-    }
+    // A failed save is logged and the outcome is still reported, except that
+    // unsaved work never goes back in the queue, where another computer could
+    // pick it up from an older copy: it goes to the owner instead.
+    let (to, note) = match save_checkpoint(hub, data, id, &wt, &branch).await {
+        Ok(_) => (to, note),
+        Err(err) => {
+            tracing::error!(%err, id, "could not save a checkpoint");
+            // Only a Max usage limit queues work at the end of a run.
+            if to == ThreadState::Queued {
+                (
+                    ThreadState::NeedsYou,
+                    "The Max account is out of usage, and the work could not be saved, so it \
+                     stayed here instead of waiting in the queue. Queue it again once the \
+                     account resets."
+                        .to_owned(),
+                )
+            } else {
+                (to, note)
+            }
+        }
+    };
     with_retry("report the outcome", FINAL_RETRY, async || {
         if let (ThreadState::Queued, Some(reset_epoch)) = (to, max_limit) {
             // The hub saves the outage and requeues the work in one step.
@@ -1124,21 +1215,7 @@ async fn hello(hub: &Hub, data: &Path) -> anyhow::Result<Vec<i64>> {
                     .json()
                     .await
                     .context("hub refused this runner and gave no reason")?;
-                let commit = reply.hub_commit.trim();
-                if is_sha(commit) {
-                    write_atomic(
-                        &data.join("wanted-commit"),
-                        format!("{commit}\n").as_bytes(),
-                        false,
-                    )?;
-                }
-                tracing::error!(
-                    runner_rules = RULES_VERSION,
-                    hub_rules = reply.rules_version,
-                    hub_commit = commit,
-                    "this runner follows different rules from the hub; rebuild it at the hub's commit and start it again"
-                );
-                std::process::exit(3);
+                match rules_differ(data, &reply)? {}
             }
             Ok(r) if !retriable(Some(r.status().as_u16())) => bail!(
                 "hub refused this runner: {} {}",
@@ -1151,6 +1228,27 @@ async fn hello(hub: &Hub, data: &Path) -> anyhow::Result<Vec<i64>> {
         tokio::time::sleep(backoff(attempt)).await;
         attempt += 1;
     }
+}
+
+/// The hub follows other rules: records the commit it was built from for the
+/// cloud server's updater and exits with code 3, so the runner is rebuilt at
+/// that commit and started again.
+fn rules_differ(data: &Path, reply: &HelloReply) -> anyhow::Result<std::convert::Infallible> {
+    let commit = reply.hub_commit.trim();
+    if is_sha(commit) {
+        write_atomic(
+            &data.join("wanted-commit"),
+            format!("{commit}\n").as_bytes(),
+            false,
+        )?;
+    }
+    tracing::error!(
+        runner_rules = RULES_VERSION,
+        hub_rules = reply.rules_version,
+        hub_commit = commit,
+        "this runner follows different rules from the hub; rebuild it at the hub's commit and start it again"
+    );
+    std::process::exit(3);
 }
 
 /// On Linux the agent's files in the work folder belong to the agent's user,
@@ -1191,19 +1289,24 @@ async fn same_user_as_agent(mine: &std::fs::File) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Port the gatekeeper listens on where it cannot pick a free one: on Linux
-/// the cloud walls open exactly this port to containers.
-const LINUX_GATE_PORT: u16 = 7421;
+/// Port a cloud worker's gatekeeper listens on: the cloud walls open exactly
+/// this port to containers. Elsewhere any free port will do.
+const CLOUD_GATE_PORT: u16 = 7421;
 
 /// Starts the gatekeeper where only this computer's containers can reach it.
-async fn start_gate() -> anyhow::Result<Gate> {
+async fn start_gate(place: Place) -> anyhow::Result<Gate> {
     // Docker Desktop (Windows, Mac) forwards host.docker.internal to the
     // host's loopback, so nothing off this computer can reach it. On Linux,
     // containers reach the host at the Docker bridge's own address (run_args
     // maps host.docker.internal there), which only containers and the host
     // itself can use.
     let addr = if cfg!(target_os = "linux") {
-        std::net::SocketAddr::new(bridge_gateway().await?, LINUX_GATE_PORT)
+        let port = if place == Place::Cloud {
+            CLOUD_GATE_PORT
+        } else {
+            0
+        };
+        std::net::SocketAddr::new(wait_for_bridge().await?, port)
     } else {
         std::net::SocketAddr::from(([127, 0, 0, 1], 0))
     };
@@ -1224,6 +1327,29 @@ async fn start_gate() -> anyhow::Result<Gate> {
         }
     });
     Ok(gate)
+}
+
+/// How long the runner waits for Docker to come up at start.
+const DOCKER_WAIT: Duration = Duration::from_secs(5 * 60);
+
+/// The Docker bridge's address, waiting a while for Docker: at boot the
+/// runner can start before Docker is ready.
+async fn wait_for_bridge() -> anyhow::Result<std::net::IpAddr> {
+    let start = Instant::now();
+    let mut attempt = 0;
+    loop {
+        let err = match bridge_gateway().await {
+            Ok(ip) => return Ok(ip),
+            Err(e) => e,
+        };
+        let wait = backoff(attempt);
+        if start.elapsed() + wait > DOCKER_WAIT {
+            return Err(err);
+        }
+        tracing::warn!(%err, wait_secs = wait.as_secs(), "waiting for Docker to start");
+        tokio::time::sleep(wait).await;
+        attempt += 1;
+    }
 }
 
 /// The host's address on Docker's default bridge, which is what
@@ -1263,8 +1389,8 @@ async fn main() -> anyhow::Result<()> {
     if lock.try_lock().is_err() {
         bail!("another Decurion runner is already running on this computer");
     }
-    let gate = start_gate().await?;
     let place = place_from_env(std::env::var("DECURION_PLACE").ok().as_deref())?;
+    let gate = start_gate(place).await?;
     // A sleeping hub must not hang a call forever: give up on dead
     // connections, then retry.
     let http = reqwest::Client::builder()
@@ -1331,7 +1457,10 @@ async fn main() -> anyhow::Result<()> {
     }
     loop {
         let r = hub
-            .post("/runner/claim", &serde_json::json!({ "runner": hub.name }))
+            .post(
+                "/runner/claim",
+                &serde_json::json!({ "runner": hub.name, "rules_version": RULES_VERSION }),
+            )
             .await;
         match r {
             Ok(resp) if resp.status() == StatusCode::NO_CONTENT => {
@@ -1375,8 +1504,18 @@ async fn main() -> anyhow::Result<()> {
                     .await;
                 }
             }
+            // The hub was updated while this runner was waiting for work.
+            Err(HubError::Refused(_, s, text)) if s == StatusCode::CONFLICT => {
+                match serde_json::from_str::<HelloReply>(&text) {
+                    Ok(reply) => match rules_differ(&data, &reply)? {},
+                    Err(_) => {
+                        tracing::warn!(%text, "hub refused to hand out work; retrying");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
+                }
+            }
             Err(err) => {
-                tracing::warn!(%err, "hub unreachable; retrying");
+                tracing::warn!(%err, "could not ask the hub for work; retrying");
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }

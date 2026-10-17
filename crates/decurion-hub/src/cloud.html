@@ -421,14 +421,25 @@ as_decurion docker build --build-arg "AGENT_UID=$(id -u decurion)" \
     --tag "$IMAGE-next" "$SRC/docker/claude-worker" \
   || give_up "building the agent image failed"
 
-# 3. Install both. The binary is swapped in one step (rename), so a crash
-#    here never leaves half a file.
+# 3. Install both, image first: a new runner must never start with an old
+#    image. If the runner then fails to install, the old image is put back,
+#    so the old runner keeps its own image. The binary is swapped in one step
+#    (rename), so a crash here never leaves half a file.
+old_image=$(docker image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null || true)
+docker tag "$IMAGE-next" "$IMAGE" || give_up "installing the agent image failed"
 install -d -o root -g root -m 0755 "$(dirname "$BIN")"
 if ! { install -o root -g root -m 0755 "$SRC/target/release/decurion-runner" "$BIN.new" \
        && mv -f "$BIN.new" "$BIN"; }; then
+  rm -f "$BIN.new"
+  if [ -n "$old_image" ]; then
+    docker tag "$old_image" "$IMAGE" || log "could not put the old agent image back"
+  else
+    # There was no image before, so no working version: do not let the new
+    # image make an old runner look like one.
+    docker rmi "$IMAGE" >/dev/null 2>&1 || true
+  fi
   give_up "installing the runner failed"
 fi
-docker tag "$IMAGE-next" "$IMAGE" || give_up "installing the agent image failed"
 docker rmi "$IMAGE-next" >/dev/null 2>&1 || true
 echo "$target" > "$BUILT_FILE.new" && mv -f "$BUILT_FILE.new" "$BUILT_FILE"
 

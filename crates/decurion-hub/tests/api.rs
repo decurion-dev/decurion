@@ -60,7 +60,7 @@ async fn claim(r: &axum::Router) -> Value {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{c}");
@@ -119,7 +119,7 @@ async fn runner_cannot_add_work_or_mark_done() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -198,7 +198,7 @@ async fn claim_hands_each_thread_out_once() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -211,7 +211,7 @@ async fn claim_hands_each_thread_out_once() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(s, StatusCode::NO_CONTENT);
@@ -226,7 +226,7 @@ async fn runner_restart_resumes_the_same_session() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     let session = first["thread"]["session_id"].clone();
@@ -261,7 +261,7 @@ async fn runner_restart_resumes_the_same_session() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(again["resume"], true);
@@ -315,7 +315,7 @@ async fn audit_rows_cannot_be_changed() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert!(sqlx::query("DELETE FROM audit")
@@ -395,7 +395,7 @@ async fn retry_of_work_that_never_started_starts_fresh() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     // Fails before the agent says anything (e.g. no token saved).
@@ -422,7 +422,7 @@ async fn retry_of_work_that_never_started_starts_fresh() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(again["resume"], false);
@@ -438,7 +438,7 @@ async fn sending_back_from_review_requeues_for_the_runner() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     call(
@@ -481,7 +481,7 @@ async fn sending_back_from_review_requeues_for_the_runner() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -532,7 +532,7 @@ async fn runner_cannot_write_owner_audit_rows() {
             "POST",
             "/api/runner/claim",
             Some(RUNNER),
-            json!({ "runner": name }),
+            json!({ "runner": name, "rules_version": decurion_proto::RULES_VERSION }),
         )
         .await;
         assert_eq!(s, StatusCode::FORBIDDEN, "{name}");
@@ -1103,7 +1103,7 @@ async fn pay_per_use_work_sets_money_aside_and_stops_at_the_cap() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(first["thread"]["id"], a);
@@ -1119,7 +1119,7 @@ async fn pay_per_use_work_sets_money_aside_and_stops_at_the_cap() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(second["thread"]["id"], b);
@@ -1133,7 +1133,7 @@ async fn pay_per_use_work_sets_money_aside_and_stops_at_the_cap() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(s, StatusCode::NO_CONTENT);
@@ -1160,7 +1160,7 @@ async fn unknown_cost_counts_as_spent_only_if_the_agent_ran() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     // Failed before the agent said anything (e.g. no key saved).
@@ -1180,7 +1180,7 @@ async fn unknown_cost_counts_as_spent_only_if_the_agent_ran() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     call(
@@ -1224,7 +1224,7 @@ async fn max_account_runs_have_no_budget_and_show_as_usage() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert!(claim["budget_usd"].is_null());
@@ -1245,7 +1245,7 @@ async fn last_months_spending_does_not_count() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     finish(&r, a, Some(7.0)).await;
@@ -1308,7 +1308,7 @@ async fn a_resumed_session_is_charged_only_for_what_it_added() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     call(
@@ -1349,7 +1349,7 @@ async fn a_resumed_session_is_charged_only_for_what_it_added() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(again["resume"], true);
@@ -1380,7 +1380,7 @@ async fn capped_pay_per_use_work_does_not_hold_up_max_work() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -1403,7 +1403,7 @@ async fn an_absurd_cost_report_cannot_break_the_totals() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     finish(&r, id, Some(1e300)).await;
@@ -1417,7 +1417,7 @@ async fn an_absurd_cost_report_cannot_break_the_totals() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -1433,7 +1433,7 @@ async fn a_started_box_without_a_trusted_cost_is_charged_its_budget() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     call(
@@ -1508,7 +1508,7 @@ async fn claim_id(r: &axum::Router) -> Option<i64> {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     match s {
@@ -1620,7 +1620,7 @@ async fn one_tap_moves_waiting_work_to_pay_per_use() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(c["thread"]["id"], a1);
@@ -1752,7 +1752,7 @@ async fn the_pay_per_use_tap_does_nothing_when_no_account_is_out() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert!(c["budget_usd"].is_null());
@@ -1800,7 +1800,7 @@ async fn pay_per_use_from_an_outage_lasts_for_that_run_only() {
         "POST",
         "/api/runner/claim",
         Some(RUNNER),
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(c["thread"]["id"], a1);
