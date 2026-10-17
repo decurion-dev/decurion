@@ -447,7 +447,14 @@ async fn forward(State(g): State<Gatekeeper>, req: Request) -> Response<Body> {
     let up = match sent {
         Ok(r) => r,
         Err(err) => {
+            let connected = !err.is_connect();
             tracing::warn!(err = %err.without_url(), "gatekeeper could not reach the API");
+            // If the request went out, Anthropic may have done (and billed)
+            // work before the failure: keep the hold as the charge. Only a
+            // failure to connect at all is free.
+            if connected {
+                hold.charge_worst();
+            }
             return refuse(
                 StatusCode::BAD_GATEWAY,
                 "api_error",
@@ -501,6 +508,12 @@ struct Hold {
 }
 
 impl Hold {
+    /// Charges the call's whole worst case: its outcome is unknown.
+    fn charge_worst(&mut self) {
+        let worst = std::mem::take(&mut self.worst);
+        self.run.settle_call(worst, worst);
+    }
+
     /// Hands the hold to the meter, which swaps it for the real cost.
     fn take(&mut self) -> (Arc<Run>, u64) {
         (self.run.clone(), std::mem::take(&mut self.worst))
@@ -549,11 +562,31 @@ fn unpriced(req: &serde_json::Value) -> Option<&'static str> {
     None
 }
 
-/// The most a call could cost: every request byte as an input token at twice
-/// the input price (the dearest cache write), plus `max_tokens` of output.
+/// Searches assumed for a web search tool that does not set `max_uses`.
+const SEARCHES_ASSUMED: u64 = 20;
+
+/// The most a call could cost, for holding money before it is sent: every
+/// request byte as an input token at twice the input price (the dearest cache
+/// write), plus `max_tokens` of output, plus web searches. Documents such as
+/// PDFs can expand past their byte size; the real cost is still recorded in
+/// full when the answer arrives, so such a call is counted, just not held
+/// for exactly.
 fn worst_case_micros(req: &serde_json::Value, body_len: usize, max_tokens: u64) -> u64 {
-    let p = crate::pricing::price(req["model"].as_str().unwrap_or(""));
+    let p = crate::pricing::worst_price(req["model"].as_str().unwrap_or(""));
+    let searches: u64 = req["tools"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter(|t| {
+            t["type"]
+                .as_str()
+                .is_some_and(|k| k.starts_with("web_search"))
+        })
+        .map(|t| t["max_uses"].as_u64().unwrap_or(SEARCHES_ASSUMED))
+        .sum();
     (body_len as f64 * p.input * 2.0 + max_tokens as f64 * p.output).ceil() as u64
+        + searches * crate::pricing::WEB_SEARCH_MICROS
 }
 
 /// Reads the usage out of one answer as it passes through and, when the
@@ -677,9 +710,13 @@ impl Drop for Meter {
                 return;
             }
             if !self.finished {
-                // Cut off before the final count: Anthropic bills what it
-                // generated, up to max_tokens; assume the most.
+                // Cut off before the final count: later input (server tools)
+                // and output are unknown, so the call is charged at least its
+                // whole worst case.
                 self.usage.output = self.usage.output.max(self.max_tokens);
+                let cost = cost_micros(&self.model, &self.usage).max(self.worst);
+                self.run.settle_call(self.worst, cost);
+                return;
             }
         } else {
             match serde_json::from_slice::<serde_json::Value>(&self.body) {

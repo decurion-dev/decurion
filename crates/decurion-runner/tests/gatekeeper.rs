@@ -550,12 +550,52 @@ async fn an_answer_cut_off_before_its_final_count_is_charged_its_max_tokens() {
 }
 
 #[tokio::test]
-async fn finishing_waits_for_answers_still_streaming() {
-    let (gate, proxy, _) = priced_api().await;
+async fn finishing_waits_for_an_answer_still_streaming() {
+    // An answer whose final count only comes after half a second.
+    let slow = serve(Router::new().route(
+        "/v1/messages",
+        axum::routing::post(|| async {
+            let parts = futures_util::stream::unfold(0u8, |step| async move {
+                let chunk = match step {
+                    0 => concat!(
+                        "data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-5-5\",",
+                        "\"usage\":{\"input_tokens\":1000,\"output_tokens\":1}}}\n\n"
+                    ),
+                    1 => {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":10}}\n\n"
+                    }
+                    _ => return None,
+                };
+                Some((Ok::<_, std::convert::Infallible>(Bytes::from_static(chunk.as_bytes())), step + 1))
+            });
+            axum::http::Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(Body::from_stream(parts))
+                .expect("response")
+        }),
+    ))
+    .await;
+    let gate = Gatekeeper::new(&format!("http://{slow}")).expect("gatekeeper");
+    let proxy = serve(gate.router()).await;
     let grant = gate.grant_with_budget(REAL_KEY.into(), Some(10_000_000));
-    ask(proxy, grant.token(), "sse").await;
-    assert!(grant.finish(std::time::Duration::from_secs(2)).await);
-    assert_eq!(grant.spent_micros(), 24_000);
+    let mut resp = reqwest::Client::new()
+        .post(format!("http://{proxy}/v1/messages"))
+        .header("x-api-key", grant.token())
+        .body(r#"{"model":"claude-opus-5-5","max_tokens":100}"#)
+        .send()
+        .await
+        .expect("send");
+    // The opening chunk has arrived; the answer is still streaming.
+    resp.chunk().await.expect("chunk");
+    let reader = tokio::spawn(async move { while let Ok(Some(_)) = resp.chunk().await {} });
+    let started = std::time::Instant::now();
+    assert!(grant.finish(std::time::Duration::from_secs(5)).await);
+    // It waited for the answer to wind down and its charge to land: cut off
+    // by the run ending, it is charged at least its worst case.
+    assert!(started.elapsed() >= std::time::Duration::from_millis(300));
+    assert!(grant.spent_micros() >= 4_000 + 100 * 20);
+    reader.abort();
 }
 
 #[tokio::test]

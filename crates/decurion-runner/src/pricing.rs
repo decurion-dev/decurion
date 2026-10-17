@@ -117,6 +117,16 @@ const HAIKU_55_LONG: Price = Price {
     cache_read: 0.05,
 };
 
+/// The highest rates `model` can be charged at, for holding money before a
+/// call (Haiku 5.5's long-prompt rate included).
+pub fn worst_price(model: &str) -> Price {
+    if model.starts_with("claude-haiku-5-5") {
+        HAIKU_55_LONG
+    } else {
+        price(model)
+    }
+}
+
 /// The rates for `model` (a dated or `-fast` suffix is fine).
 pub fn price(model: &str) -> Price {
     TABLE
@@ -144,7 +154,7 @@ pub struct Usage {
 }
 
 /// Web search is billed per search: $10 per 1,000.
-const WEB_SEARCH_MICROS: u64 = 10_000;
+pub const WEB_SEARCH_MICROS: u64 = 10_000;
 
 /// What `usage` on `model` costs, in micro-dollars, rounded up.
 pub fn cost_micros(model: &str, u: &Usage) -> u64 {
@@ -161,15 +171,17 @@ pub fn cost_micros(model: &str, u: &Usage) -> u64 {
         + u.cache_read as f64 * p.cache_read
         + u.cache_write_5m as f64 * p.input * 1.25
         + u.cache_write_1h as f64 * p.input * 2.0;
-    let top = (tokens * speed * region).ceil() as u64 + u.web_searches * WEB_SEARCH_MICROS;
+    let top = (tokens * speed * region).ceil() as u64;
     // When steps are reported, each is priced at its own model; the larger of
-    // the two totals is used, so neither way of reporting can hide tokens.
+    // the two token totals is used, so neither way of reporting can hide
+    // tokens. Searches are added once, whichever reports them.
     let steps: u64 = u
         .iterations
         .iter()
         .map(|(m, it)| cost_micros(if m.is_empty() { model } else { m }, it))
         .sum();
-    top.max(steps)
+    let step_searches: u64 = u.iterations.iter().map(|(_, it)| it.web_searches).sum();
+    top.max(steps) + u.web_searches.saturating_sub(step_searches) * WEB_SEARCH_MICROS
 }
 
 /// Reads one `usage` object (a response's, or a stream event's) into `u`.
