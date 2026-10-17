@@ -581,15 +581,20 @@ async fn runner_claim(
         return forbidden("runner calls are runner-only; this");
     }
     match st.store.claim(&r.runner).await {
-        Ok(store::ClaimOutcome::Work(claim)) => Json(claim).into_response(),
-        Ok(store::ClaimOutcome::Nothing) => StatusCode::NO_CONTENT.into_response(),
-        Ok(store::ClaimOutcome::CapReached(t)) => {
-            if let Some(p) = st.push.clone() {
+        Ok(out) => {
+            if let (Some(p), Some(first)) = (st.push.clone(), out.capped.first()) {
+                // One alert, however many pieces of work it stopped.
+                let body = match out.capped.len() {
+                    1 => first.title.chars().take(80).collect::<String>(),
+                    n => format!("{n} pieces of work are waiting"),
+                };
                 let store = st.store.clone();
-                let body = t.title.chars().take(80).collect::<String>();
                 tokio::spawn(async move { p.notify(&store, "Spending cap reached", &body).await });
             }
-            StatusCode::NO_CONTENT.into_response()
+            match out.work {
+                Some(claim) => Json(claim).into_response(),
+                None => StatusCode::NO_CONTENT.into_response(),
+            }
         }
         Err(e) => ApiError(e).into_response(),
     }

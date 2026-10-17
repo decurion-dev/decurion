@@ -1097,7 +1097,8 @@ async fn pay_per_use_work_sets_money_aside_and_stops_at_the_cap() {
     )
     .await;
     assert_eq!(first["thread"]["id"], a);
-    assert_eq!(first["budget_usd"], 10.0);
+    // $10 set aside; Claude Code gets 90% of it as its own limit.
+    assert_eq!(first["budget_usd"], 9.0);
     // While it runs, its whole budget counts against the month.
     assert_eq!(spend(&r).await["pay_per_use_usd"], 10.0);
     finish(&r, a, Some(3.25)).await;
@@ -1112,7 +1113,8 @@ async fn pay_per_use_work_sets_money_aside_and_stops_at_the_cap() {
     )
     .await;
     assert_eq!(second["thread"]["id"], b);
-    assert_eq!(second["budget_usd"], 8.75);
+    // $8.75 left and set aside; 90% rounded down to the cent.
+    assert_eq!(second["budget_usd"], 7.87);
     finish(&r, b, Some(8.6)).await;
 
     // $0.15 left is under the $0.50 minimum: the third waits on the owner.
@@ -1140,7 +1142,7 @@ async fn pay_per_use_work_sets_money_aside_and_stops_at_the_cap() {
 
 #[tokio::test]
 async fn unknown_cost_counts_as_spent_only_if_the_agent_ran() {
-    let (r, _) = hub().await;
+    let (r, store) = hub().await;
     let app = ppu_app(&r).await;
     let a = add_work(&r, app, "never started").await;
     call(
@@ -1180,7 +1182,7 @@ async fn unknown_cost_counts_as_spent_only_if_the_agent_ran() {
     )
     .await;
     // The runner restarts without a cost report: assume the budget was spent.
-    call(
+    let (s, paused) = call(
         &r,
         "POST",
         "/api/runner/hello",
@@ -1188,7 +1190,19 @@ async fn unknown_cost_counts_as_spent_only_if_the_agent_ran() {
         json!({"runner":"local"}),
     )
     .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(paused, json!([b]));
     assert_eq!(spend(&r).await["pay_per_use_usd"], 10.0);
+    // The run was really closed and charged, not just left open.
+    let (open, cost): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*) FILTER (WHERE finished_at IS NULL), COALESCE(SUM(cost_micros), 0)
+         FROM runs WHERE thread_id = ?",
+    )
+    .bind(b)
+    .fetch_one(store.pool())
+    .await
+    .expect("runs");
+    assert_eq!((open, cost), (0, 10_000_000));
 }
 
 #[tokio::test]
@@ -1272,4 +1286,170 @@ async fn only_the_owner_changes_money_settings() {
     )
     .await;
     assert_eq!(s, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn a_resumed_session_is_charged_only_for_what_it_added() {
+    let (r, _) = hub().await;
+    let app = ppu_app(&r).await;
+    let id = add_work(&r, app, "long job").await;
+    call(
+        &r,
+        "POST",
+        "/api/runner/claim",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await;
+    call(
+        &r,
+        "POST",
+        &format!("/api/threads/{id}/events"),
+        Some(RUNNER),
+        json!({"kind":"message","text":"working"}),
+    )
+    .await;
+    call(
+        &r,
+        "POST",
+        &format!("/api/threads/{id}/events"),
+        Some(RUNNER),
+        json!({"kind":"finished","ok":false,"summary":"stopped","cost_usd":4.0}),
+    )
+    .await;
+    // The owner sends it back; it resumes the same Claude session.
+    call(
+        &r,
+        "POST",
+        &format!("/api/threads/{id}/move"),
+        Some(RUNNER),
+        json!({"to":"needs_you"}),
+    )
+    .await;
+    call(
+        &r,
+        "POST",
+        &format!("/api/threads/{id}/move"),
+        Some(OWNER),
+        json!({"to":"queued"}),
+    )
+    .await;
+    let (_, again) = call(
+        &r,
+        "POST",
+        "/api/runner/claim",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await;
+    assert_eq!(again["resume"], true);
+    // Claude Code counts the session from the start: $4 already, plus 90% of $10.
+    assert_eq!(again["budget_usd"], 13.0);
+    // It reports $6.50 for the whole session, so this run cost $2.50.
+    finish(&r, id, Some(6.5)).await;
+    assert_eq!(spend(&r).await["pay_per_use_usd"], 6.5);
+}
+
+#[tokio::test]
+async fn capped_pay_per_use_work_does_not_hold_up_max_work() {
+    let (r, store) = hub().await;
+    let app = ppu_app(&r).await;
+    call(
+        &r,
+        "POST",
+        "/api/spend/cap",
+        Some(OWNER),
+        json!({"cap_usd": 0.0}),
+    )
+    .await;
+    let a = add_work(&r, app, "paid one").await;
+    let b = add_work(&r, app, "paid two").await;
+    let max = seed(&r).await;
+    let (s, claim) = call(
+        &r,
+        "POST",
+        "/api/runner/claim",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(claim["thread"]["id"], max);
+    for id in [a, b] {
+        assert_eq!(
+            store.thread(id).await.expect("t").state,
+            decurion_proto::ThreadState::NeedsYou
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_absurd_cost_report_cannot_break_the_totals() {
+    let (r, _) = hub().await;
+    let app = ppu_app(&r).await;
+    let id = add_work(&r, app, "x").await;
+    call(
+        &r,
+        "POST",
+        "/api/runner/claim",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await;
+    finish(&r, id, Some(1e300)).await;
+    let (s, sp) = call(&r, "GET", "/api/spend", Some(OWNER), Value::Null).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(sp["pay_per_use_usd"], 1000.0);
+    // Claims still work afterwards.
+    seed(&r).await;
+    let (s, _) = call(
+        &r,
+        "POST",
+        "/api/runner/claim",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_started_box_without_a_trusted_cost_is_charged_its_budget() {
+    let (r, _) = hub().await;
+    let app = ppu_app(&r).await;
+    let id = add_work(&r, app, "x").await;
+    call(
+        &r,
+        "POST",
+        "/api/runner/claim",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await;
+    call(
+        &r,
+        "POST",
+        &format!("/api/threads/{id}/events"),
+        Some(RUNNER),
+        json!({"kind":"started"}),
+    )
+    .await;
+    // Finished arrives without a cost (the runner did not trust it).
+    call(
+        &r,
+        "POST",
+        &format!("/api/threads/{id}/events"),
+        Some(RUNNER),
+        json!({"kind":"finished","ok":false,"summary":"?"}),
+    )
+    .await;
+    call(
+        &r,
+        "POST",
+        &format!("/api/threads/{id}/move"),
+        Some(RUNNER),
+        json!({"to":"failed"}),
+    )
+    .await;
+    assert_eq!(spend(&r).await["pay_per_use_usd"], 10.0);
 }

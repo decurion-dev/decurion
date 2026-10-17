@@ -44,6 +44,14 @@ impl Credential {
         }
     }
 
+    /// Where it is read from on machines without Credential Manager.
+    pub fn env_fallback(self) -> String {
+        match self {
+            Credential::Max(p) => format!("DECURION_CLAUDE_TOKEN_{}", p.as_str()),
+            Credential::PayPerUse => "DECURION_ANTHROPIC_API_KEY".to_owned(),
+        }
+    }
+
     /// Where it is kept in Windows Credential Manager.
     pub fn target(self) -> String {
         match self {
@@ -146,6 +154,10 @@ pub fn run_args(
     Ok(a)
 }
 
+/// What a run that used up its spending limit reports.
+pub const BUDGET_STOP: &str =
+    "Stopped at this run's spending limit. Continue it to give it more of this month's budget.";
+
 /// Hides anything shaped like an Anthropic token, in case an agent is tricked
 /// into echoing its own credential into its output.
 pub fn redact(s: &str) -> String {
@@ -209,13 +221,33 @@ pub fn parse_line(line: &str) -> Vec<RunEvent> {
                     .collect()
             })
             .unwrap_or_default(),
-        Some("result") => vec![RunEvent::Finished {
-            ok: v["subtype"] == "success" && v["is_error"] != true,
-            summary: clip(v["result"].as_str().unwrap_or(""), 2000),
-            cost_usd: v["total_cost_usd"].as_f64(),
-            input_tokens: v["usage"]["input_tokens"].as_u64(),
-            output_tokens: v["usage"]["output_tokens"].as_u64(),
-        }],
+        Some("result") => {
+            let u = &v["usage"];
+            // Cached input is most of the input on long runs; count all of it.
+            let input = [
+                "input_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+            ]
+            .iter()
+            .filter_map(|k| u[*k].as_u64())
+            .reduce(|a, b| a + b);
+            let summary = if v["subtype"] == "error_max_budget_usd" {
+                BUDGET_STOP.to_owned()
+            } else {
+                clip(v["result"].as_str().unwrap_or(""), 2000)
+            };
+            // A crashed run can report $0 after doing paid work; only a clean
+            // finish or a budget stop has a cost worth believing.
+            let cost_known = v["subtype"] == "success" || v["subtype"] == "error_max_budget_usd";
+            vec![RunEvent::Finished {
+                ok: v["subtype"] == "success" && v["is_error"] != true,
+                summary,
+                cost_usd: v["total_cost_usd"].as_f64().filter(|_| cost_known),
+                input_tokens: input,
+                output_tokens: u["output_tokens"].as_u64(),
+            }]
+        }
         _ => vec![],
     }
 }
@@ -311,6 +343,24 @@ mod tests {
     }
 
     #[test]
+    fn a_crash_result_does_not_claim_to_be_free() {
+        let l = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"total_cost_usd":0}"#;
+        assert!(matches!(
+            &parse_line(l)[..],
+            [RunEvent::Finished { cost_usd: None, .. }]
+        ));
+    }
+
+    #[test]
+    fn a_budget_stop_explains_itself() {
+        let l = r#"{"type":"result","subtype":"error_max_budget_usd","is_error":true,"total_cost_usd":9.1}"#;
+        assert!(matches!(
+            &parse_line(l)[..],
+            [RunEvent::Finished { ok: false, summary, cost_usd: Some(_), .. }] if summary == BUDGET_STOP
+        ));
+    }
+
+    #[test]
     fn mount_paths_with_commas_are_refused() {
         assert!(run_args(
             7,
@@ -338,14 +388,14 @@ mod tests {
                 }
             ]
         );
-        let ok = r#"{"type":"result","subtype":"success","is_error":false,"result":"DONE","total_cost_usd":0.0421,"usage":{"input_tokens":1200,"output_tokens":340}}"#;
+        let ok = r#"{"type":"result","subtype":"success","is_error":false,"result":"DONE","total_cost_usd":0.0421,"usage":{"input_tokens":1200,"cache_read_input_tokens":50000,"output_tokens":340}}"#;
         assert_eq!(
             parse_line(ok),
             vec![RunEvent::Finished {
                 ok: true,
                 summary: "DONE".into(),
                 cost_usd: Some(0.0421),
-                input_tokens: Some(1200),
+                input_tokens: Some(51200),
                 output_tokens: Some(340),
             }]
         );

@@ -46,6 +46,7 @@ impl ThreadState {
         matches!(
             (self, to),
             (Queued, Running)
+                | (Queued, NeedsYou)
                 | (Queued, Failed)
                 | (Running, Queued)
                 | (Running, NeedsYou)
@@ -164,8 +165,10 @@ pub struct Claim {
     pub thread: Thread,
     pub app: App,
     pub resume: bool,
-    /// Set for pay-per-use runs: the most this run may spend. It is set aside
-    /// from the monthly cap before the run starts.
+    /// Set for pay-per-use runs: the limit to give Claude Code. It is what
+    /// earlier runs of this session cost plus most of the money set aside for
+    /// this run, because Claude Code counts a resumed session's cost from the
+    /// start.
     #[serde(default)]
     pub budget_usd: Option<f64>,
 }
@@ -186,6 +189,9 @@ pub struct Spend {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunEvent {
+    /// The runner started the agent's container. From here on, the run may
+    /// be spending money.
+    Started,
     /// The agent said something.
     Message { text: String },
     /// The agent used a tool.
