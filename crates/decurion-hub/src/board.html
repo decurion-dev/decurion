@@ -43,6 +43,15 @@
   .devices li { display:flex; gap:10px; align-items:center; padding:6px 0; border-top:1px solid var(--line); }
   .devices li span { flex:1; }
   .devices button { background:var(--card); color:var(--bad); border-color:var(--line); }
+  .card .sub { font-size:12px; color:var(--muted); margin-top:2px; }
+  .card:focus-visible, button:focus-visible, summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  select { max-width:100%; }
+  button.plain { background:var(--card); color:var(--ink); border-color:var(--line); }
+  #d-tree .devices button { color:var(--ink); }
+  #d-msg { display:block; width:100%; min-height:70px; }
+  #d-talk .hint { margin:6px 0; }
+  .waiting { color:var(--warn); font-size:13px; margin:8px 0 0; }
+  #d-err { color:var(--bad); font-size:13px; }
 </style>
 </head>
 <body>
@@ -51,6 +60,8 @@
   <select id="app" required aria-label="App"></select>
   <input id="title" placeholder="Title" required aria-label="Title">
   <textarea id="prompt" placeholder="What should the agent do?" required aria-label="Task"></textarea>
+  <label class="hint">Part of <select id="parent"></select></label>
+  <label class="hint"><input type="checkbox" id="background" disabled> Keeps going if the bigger task stops</label>
   <button>Add work</button>
 </form>
 <details style="padding:0 16px 12px"><summary>Add an app</summary>
@@ -78,37 +89,94 @@
 </details>
 <div class="err" id="err"></div>
 <main id="board"></main>
-<dialog id="detail"><h3 id="d-title"></h3><div id="log"></div>
+<dialog id="detail"><h3 id="d-title"></h3><div id="d-tree"></div><div id="log"></div>
+  <p class="waiting" id="d-waiting"></p>
+  <div id="d-talk">
+    <p class="hint"><label for="d-msg">Tell the agent something</label></p>
+    <textarea id="d-msg" maxlength="4000" placeholder="Your message to the agent"></textarea>
+    <p class="hint">Change course stops its current step. Do this next waits until it finishes what it's doing. A note just adds information without interrupting.</p>
+    <p class="hint" id="d-talk-state"></p>
+    <div class="actions">
+      <button type="button" data-kind="steer">Change course now</button>
+      <button type="button" data-kind="follow_up" class="plain">Do this next</button>
+      <button type="button" data-kind="note" class="plain">Add a note</button>
+    </div>
+  </div>
+  <div id="d-err" role="alert"></div>
   <div class="actions" id="d-actions"></div></dialog>
 <script>
 const COLS = [["queued","Queued"],["running","Running"],["needs_you","Needs you"],["in_review","In review"],["done","Done"],["failed","Failed"]];
+const STATE_NAME = Object.fromEntries(COLS);
 const OWNER_MOVES = { in_review:[["done","Accept"],["queued","Send back"],["failed","Reject"]],
                       needs_you:[["queued","Continue"],["failed","Stop"]], failed:[["queued","Retry"]],
-                      queued:[["failed","Cancel"]] };
-let apps = {};
+                      queued:[["failed","Cancel"]], running:[["failed","Stop"]] };
+const VIA = { steer: "change course", follow_up: "next", note: "note" };
+let apps = {}, threads = [];
 const $ = id => document.getElementById(id);
 async function api(path, opts = {}) {
-  const r = await fetch("/api" + path, { headers: { "content-type": "application/json" }, ...opts });
+  let r;
+  try { r = await fetch("/api" + path, { headers: { "content-type": "application/json" }, ...opts }); }
+  catch { throw Object.assign(new Error("Could not reach the hub. Check the connection and try again."), { network: true }); }
   if (r.status === 401) throw new Error("Not signed in. Open the login link the hub printed when it started.");
   if (!r.ok) throw new Error(await r.text());
   return r.status === 204 ? null : r.json();
 }
+function newReceipt() {
+  if (window.crypto?.randomUUID) return crypto.randomUUID();
+  const b = new Uint8Array(16);
+  if (window.crypto?.getRandomValues) crypto.getRandomValues(b); else b.forEach((_, i) => b[i] = Math.random() * 256);
+  return Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+}
+// Every change the owner makes carries a receipt. If the network drops, the same
+// receipt is sent once more, so the hub never does the same thing twice.
+async function send(path, body) {
+  const opts = { method: "POST", body: JSON.stringify({ ...body, receipt: newReceipt() }) };
+  try { return await api(path, opts); }
+  catch (e) { if (!e.network) throw e; await new Promise(ok => setTimeout(ok, 1000)); return api(path, opts); }
+}
 function el(tag, attrs = {}, text = "") { const e = document.createElement(tag); Object.assign(e, attrs); e.textContent = text; return e; }
+const active = t => t.state !== "done" && t.state !== "failed";
+const plural = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`;
+// The smaller tasks that stop too when this one is stopped (background ones keep going).
+const stopsToo = id => threads.filter(k => k.parent_id === id && !k.background).flatMap(k => [...(active(k) ? [k] : []), ...stopsToo(k.id)]);
+function fillParents() {
+  const sel = $("parent"); if (document.activeElement === sel) return;
+  const keep = sel.value, app = +$("app").value;
+  const open = threads.filter(t => t.app_id === app && active(t));
+  sel.replaceChildren(el("option", { value: "" }, "Nothing, it stands on its own"), ...open.map(t => el("option", { value: t.id }, t.title)));
+  sel.value = open.some(t => String(t.id) === keep) ? keep : "";
+  $("background").disabled = !sel.value; if (!sel.value) $("background").checked = false;
+}
+$("app").onchange = fillParents;
+$("parent").onchange = () => { $("background").disabled = !$("parent").value; if (!$("parent").value) $("background").checked = false; };
 async function refresh() {
   try {
-    const [a, threads] = await Promise.all([api("/apps"), api("/threads")]);
+    const [a, list] = await Promise.all([api("/apps"), api("/threads")]);
+    threads = list;
+    const byId = Object.fromEntries(threads.map(t => [t.id, t]));
     apps = Object.fromEntries(a.map(x => [x.id, x]));
     const sel = $("app"); const keep = sel.value; sel.replaceChildren(...a.map(x => el("option", { value: x.id }, x.name))); if (keep) sel.value = keep;
+    fillParents();
+    const focused = document.activeElement?.dataset?.thread;
     $("board").replaceChildren(...COLS.map(([st, label]) => {
       const col = el("section", { className: "col" }); const mine = threads.filter(t => t.state === st);
       col.append(el("h2", {}, `${label} (${mine.length})`));
       for (const t of mine) {
-        const c = el("div", { className: "card" }); c.dataset.state = t.state;
+        const c = el("div", { className: "card", tabIndex: 0 }); c.dataset.state = t.state; c.dataset.thread = t.id;
+        c.setAttribute("role", "button");
         c.append(el("div", { className: "app" }, apps[t.app_id]?.name ?? ""), el("div", {}, t.title));
-        c.onclick = () => openThread(t); col.append(c);
+        const notes = [], kids = threads.filter(k => k.parent_id === t.id).length;
+        if (t.parent_id != null) notes.push(`Part of: ${byId[t.parent_id]?.title ?? "a bigger task"}`);
+        if (t.parent_id != null && t.background) notes.push("keeps going on its own");
+        if (kids) notes.push(plural(kids, "smaller task"));
+        if (notes.length) c.append(el("div", { className: "sub" }, notes.join(" · ")));
+        c.onclick = () => openThread(t);
+        c.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openThread(t); } };
+        col.append(c);
       }
       return col;
     }));
+    if (focused) document.querySelector(`.card[data-thread="${focused}"]`)?.focus();
     $("status").textContent = `${threads.length} pieces of work · updated ${new Date().toLocaleTimeString()}`;
     const sp = await api("/spend");
     const money = n => "$" + n.toFixed(2);
@@ -124,27 +192,87 @@ async function refresh() {
     $("err").textContent = "";
   } catch (e) { $("err").textContent = e.message; }
 }
+function describe(r) {
+  const e = r.event, time = r.at.slice(11, 19);
+  switch (e.kind) {
+    case "started": return `${time}  Agent's box started`;
+    case "message": return `${time}  ${e.text}`;
+    case "tool": return `${time}  [${e.name}] ${e.summary}`;
+    case "owner": return `${time}  You (${VIA[e.via] ?? e.via}): ${e.text}`;
+    case "interrupted": return `${time}  Interrupted while running ${e.name}: ${e.summary}. ${e.safe_to_redo ? "Safe to run again." : "Checking what happened before redoing it."}`;
+    case "finished": return `${time}  FINISHED ${e.ok ? "ok" : "failed"}${e.cost_usd != null ? ` ($${e.cost_usd.toFixed(2)} so far)` : ""}: ${e.summary}`;
+    default: return `${time}  ${e.kind}`;
+  }
+}
+let shown = null; // id of the thread open in the dialog
 async function openThread(t) {
-  $("d-title").textContent = `${t.title} · ${t.state.replace("_", " ")}`;
+  if (shown !== t.id) { $("d-msg").value = ""; $("d-err").textContent = ""; }
+  shown = t.id;
+  try { await showThread(t.id); if (!$("detail").open) $("detail").showModal(); }
+  catch (e) { (($("detail").open) ? $("d-err") : $("err")).textContent = e.message; }
+}
+async function showThread(id) {
   // Events come in pages of 500; fetch them all so the outcome is never cut off.
-  let ev = [], page;
-  do { page = await api(`/threads/${t.id}/events?after=${ev.length ? ev[ev.length - 1].id : 0}`); ev = ev.concat(page); }
-  while (page.length === 500);
-  $("log").textContent = ev.map(r => {
-    const e = r.event; const time = r.at.slice(11, 19);
-    if (e.kind === "started") return `${time}  Agent's box started`;
-    return e.kind === "message" ? `${time}  ${e.text}` : e.kind === "tool" ? `${time}  [${e.name}] ${e.summary}` : `${time}  FINISHED ${e.ok ? "ok" : "failed"}${e.cost_usd != null ? ` ($${e.cost_usd.toFixed(2)} so far)` : ""}: ${e.summary}`;
-  }).join("\n") || "No activity yet.";
+  const allEvents = async () => {
+    let ev = [], page;
+    do { page = await api(`/threads/${id}/events?after=${ev.length ? ev[ev.length - 1].id : 0}`); ev = ev.concat(page); }
+    while (page.length === 500);
+    return ev;
+  };
+  const [t, ev, msgs] = await Promise.all([api(`/threads/${id}`), allEvents(), api(`/threads/${id}/messages`).catch(() => [])]);
+  if (shown !== id) return; // the owner opened another one meanwhile
+  $("d-title").textContent = `${t.title} · ${STATE_NAME[t.state] ?? t.state}`;
+  const tree = [], parent = threads.find(p => p.id === t.parent_id), kids = threads.filter(k => k.parent_id === t.id);
+  if (t.parent_id != null) {
+    const p = el("p", { className: "hint" }, "Part of: ");
+    p.append(parent ? Object.assign(el("button", { type: "button", className: "plain" }, parent.title), { onclick: () => openThread(parent) }) : "a bigger task");
+    if (t.background) p.append(" · keeps going on its own if that one stops");
+    tree.push(p);
+  }
+  if (kids.length) {
+    tree.push(el("p", { className: "hint" }, `Smaller tasks inside this one (${kids.length}):`));
+    const ul = el("ul", { className: "devices" });
+    for (const k of kids) {
+      const li = el("li"); li.append(el("span", {}, `${k.title} · ${STATE_NAME[k.state] ?? k.state}${k.background ? " · keeps going on its own" : ""}`));
+      li.append(Object.assign(el("button", { type: "button", className: "plain" }, "Open"), { onclick: () => openThread(k), ariaLabel: `Open ${k.title}` }));
+      ul.append(li);
+    }
+    tree.push(ul);
+  }
+  $("d-tree").replaceChildren(...tree);
+  $("log").textContent = ev.map(describe).join("\n") || "No activity yet.";
+  $("log").scrollTop = $("log").scrollHeight;
+  const waiting = msgs.filter(m => m.delivered_at == null).length;
+  $("d-waiting").textContent = waiting ? `Waiting to reach the agent: ${plural(waiting, "message")}` : "";
+  $("d-talk").hidden = t.state === "done";
+  $("d-talk-state").textContent = t.state === "running" ? ""
+    : t.state === "queued" ? "This work is waiting for its turn. Whatever you send reaches the agent when it starts."
+    : "The agent is not working on this right now. Change course or Do this next sends the work back to the agent with your message. A note waits for the next time it works.";
+  for (const b of $("d-talk").querySelectorAll("button")) b.onclick = () => talk(t.id, b.dataset.kind);
   $("d-actions").replaceChildren(...(OWNER_MOVES[t.state] ?? []).map(([to, label]) => {
     const b = el("button", { type: "button" }, label);
-    b.onclick = async () => { try { await api(`/threads/${t.id}/move`, { method: "POST", body: JSON.stringify({ to }) }); $("detail").close(); refresh(); } catch (e) { alert(e.message); } };
+    b.onclick = async () => {
+      const n = stopsToo(t.id).length;
+      if (to === "failed" && (t.state === "running" || n) && !confirm(`${label} this work? Smaller tasks that are part of it stop too${n ? ` (${n} right now)` : ""}, except ones set to keep going on their own.`)) return;
+      try { await send(`/threads/${t.id}/move`, { to }); $("detail").close(); refresh(); } catch (e) { $("d-err").textContent = `"${label}" did not go through: ${e.message}`; }
+    };
     return b;
-  }), Object.assign(el("button", { type: "button" }, "Close"), { onclick: () => $("detail").close() }));
-  $("detail").showModal();
+  }), Object.assign(el("button", { type: "button", className: "plain" }, "Close"), { onclick: () => $("detail").close() }));
 }
+async function talk(id, kind) {
+  const text = $("d-msg").value.trim(), btns = [...$("d-talk").querySelectorAll("button")];
+  if (!text) { $("d-err").textContent = "Type a message first."; $("d-msg").focus(); return; }
+  btns.forEach(b => b.disabled = true); $("d-err").textContent = "";
+  try { await send(`/threads/${id}/messages`, { kind, text }); $("d-msg").value = ""; refresh(); await showThread(id); }
+  catch (e) { $("d-err").textContent = `Not sent: ${e.message}`; }
+  finally { btns.forEach(b => b.disabled = false); }
+}
+$("detail").onclose = () => { shown = null; };
 $("add-thread").onsubmit = async e => { e.preventDefault();
-  try { await api("/threads", { method: "POST", body: JSON.stringify({ app_id: +$("app").value, title: $("title").value, prompt: $("prompt").value }) });
-        $("title").value = ""; $("prompt").value = ""; refresh(); } catch (x) { $("err").textContent = x.message; } };
+  const parent = $("parent").value;
+  try { await send("/threads", { app_id: +$("app").value, title: $("title").value, prompt: $("prompt").value,
+                                 parent_id: parent ? +parent : null, background: !!parent && $("background").checked });
+        $("title").value = ""; $("prompt").value = ""; $("background").checked = false; refresh(); } catch (x) { $("err").textContent = x.message; } };
 $("add-app").onsubmit = async e => { e.preventDefault();
   try { await api("/apps", { method: "POST", body: JSON.stringify({ name: $("app-name").value, repo_path: $("app-path").value, profile: $("app-profile").value, pay_per_use: $("app-ppu").checked }) });
         e.target.reset(); refresh(); } catch (x) { $("err").textContent = x.message; } };
