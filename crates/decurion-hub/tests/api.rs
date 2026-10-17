@@ -1864,3 +1864,323 @@ async fn a_reset_time_in_a_few_seconds_still_waits_five_minutes() {
     assert!(waits);
     assert_eq!(claim_id(&r).await, None);
 }
+
+/// A hub with its own folder vault, removed when the test is done.
+struct KeyHub {
+    r: axum::Router,
+    store: Store,
+    vault: decurion_vault::Vault,
+    dir: std::path::PathBuf,
+}
+
+impl Drop for KeyHub {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+async fn key_hub() -> KeyHub {
+    let store = Store::open("sqlite::memory:").await.expect("open store");
+    let dir = std::env::temp_dir().join(format!(
+        "decurion-hub-vault-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let vault = decurion_vault::Vault::in_folder(&dir);
+    let r = router(
+        AppState::new(
+            store.clone(),
+            Keys {
+                owner: OWNER.into(),
+                runner: RUNNER.into(),
+            },
+            LOGIN.into(),
+            None,
+        )
+        .with_vault(vault.clone()),
+    );
+    KeyHub {
+        r,
+        store,
+        vault,
+        dir,
+    }
+}
+
+async fn demo_app(r: &axum::Router) -> i64 {
+    let (s, app) = call(
+        r,
+        "POST",
+        "/api/apps",
+        Some(OWNER),
+        json!({"name":"demo","repo_path":"C:\\repos\\demo","profile":"A"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    app["id"].as_i64().expect("id")
+}
+
+async fn add_key(r: &axum::Router, app: i64, name: &str, value: &str) -> (StatusCode, Value) {
+    call(
+        r,
+        "POST",
+        &format!("/api/apps/{app}/test-keys"),
+        Some(OWNER),
+        json!({"name": name, "value": value}),
+    )
+    .await
+}
+
+async fn list_keys(r: &axum::Router, app: i64) -> Value {
+    let (s, v) = call(
+        r,
+        "GET",
+        &format!("/api/apps/{app}/test-keys"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    v
+}
+
+/// Everything the database holds about test keys, as one string.
+async fn key_rows(store: &Store) -> String {
+    let rows: Vec<(i64, String, String, String)> =
+        sqlx::query_as("SELECT app_id, name, last_four, added_at FROM test_keys ORDER BY name")
+            .fetch_all(store.pool())
+            .await
+            .expect("rows");
+    format!("{rows:?}")
+}
+
+#[tokio::test]
+async fn test_keys_are_added_listed_replaced_and_removed() {
+    let h = key_hub().await;
+    let app = demo_app(&h.r).await;
+    assert_eq!(list_keys(&h.r, app).await, json!([]));
+
+    let first = "sk_test_51Habc123def456";
+    let (s, k) = add_key(&h.r, app, "STRIPE_SECRET_KEY", first).await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert_eq!(k["name"], "STRIPE_SECRET_KEY");
+    assert_eq!(k["last_four"], "f456");
+    assert!(!k.to_string().contains(first));
+    let (s, _) = add_key(
+        &h.r,
+        app,
+        "SUPABASE_ANON_KEY",
+        "eyJhbGciOiJIUzI1NiJ9.anon9999",
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+
+    let list = list_keys(&h.r, app).await;
+    assert_eq!(list[0]["name"], "STRIPE_SECRET_KEY");
+    assert_eq!(list[1]["name"], "SUPABASE_ANON_KEY");
+    assert_eq!(list[1]["last_four"], "9999");
+    assert!(!list.to_string().contains(first));
+    // The value is in the vault and nowhere in the database.
+    assert_eq!(
+        h.vault
+            .get(app, "STRIPE_SECRET_KEY")
+            .ok()
+            .flatten()
+            .as_deref(),
+        Some(first)
+    );
+    assert!(!key_rows(&h.store).await.contains(first));
+
+    // Saving the name again replaces the value and its last four.
+    let second = "sk_test_51Hxyz987zyx0002";
+    let (s, k) = add_key(&h.r, app, "STRIPE_SECRET_KEY", second).await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert_eq!(k["last_four"], "0002");
+    let list = list_keys(&h.r, app).await;
+    assert_eq!(list.as_array().map(Vec::len), Some(2));
+    assert_eq!(list[0]["last_four"], "0002");
+    assert_eq!(
+        h.vault
+            .get(app, "STRIPE_SECRET_KEY")
+            .ok()
+            .flatten()
+            .as_deref(),
+        Some(second)
+    );
+    let rows = key_rows(&h.store).await;
+    assert!(!rows.contains(first) && !rows.contains(second));
+
+    // Removing forgets it on the board and in the vault, and is idempotent.
+    for _ in 0..2 {
+        let (s, _) = call(
+            &h.r,
+            "POST",
+            &format!("/api/apps/{app}/test-keys/STRIPE_SECRET_KEY/remove"),
+            Some(OWNER),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(s, StatusCode::NO_CONTENT);
+    }
+    let list = list_keys(&h.r, app).await;
+    assert_eq!(list.as_array().map(Vec::len), Some(1));
+    assert_eq!(list[0]["name"], "SUPABASE_ANON_KEY");
+    assert!(matches!(h.vault.get(app, "STRIPE_SECRET_KEY"), Ok(None)));
+}
+
+#[tokio::test]
+async fn live_keys_and_reserved_names_are_refused() {
+    let h = key_hub().await;
+    let app = demo_app(&h.r).await;
+    let live = "sk_live_51Habc123def456";
+    let (s, msg) = add_key(&h.r, app, "STRIPE_SECRET_KEY", live).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert!(msg.as_str().is_some_and(|m| m.contains("live")), "{msg}");
+    assert!(!msg.to_string().contains(live));
+    for name in ["ANTHROPIC_API_KEY", "PATH", "lower_case"] {
+        let (s, _) = add_key(&h.r, app, name, "sk_test_51Habc123def456").await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{name}");
+    }
+    assert_eq!(list_keys(&h.r, app).await, json!([]));
+    assert_eq!(key_rows(&h.store).await, "[]");
+    assert!(matches!(h.vault.get(app, "STRIPE_SECRET_KEY"), Ok(None)));
+    // Nothing was written to the vault at all.
+    assert!(!h.dir.exists());
+}
+
+#[tokio::test]
+async fn a_broken_key_request_never_echoes_the_value() {
+    let h = key_hub().await;
+    let app = demo_app(&h.r).await;
+    let value = "sk_test_51Hsecretvalue77";
+    for body in [
+        format!(r#"{{"name": "STRIPE_SECRET_KEY", "value": "{value}""#),
+        format!(r#"{{"name": 7, "value": "{value}"}}"#),
+        format!(r#"{{"value": "{value}"}}"#),
+    ] {
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/apps/{app}/test-keys"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, format!("Bearer {OWNER}"))
+            .body(Body::from(body))
+            .expect("request");
+        let resp = h.r.clone().oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+        let text = String::from_utf8_lossy(&bytes);
+        assert_eq!(text, "send a name and a value");
+    }
+}
+
+#[tokio::test]
+async fn only_the_owner_manages_test_keys() {
+    let h = key_hub().await;
+    let app = demo_app(&h.r).await;
+    let (s, _) = add_key(&h.r, app, "STRIPE_SECRET_KEY", "sk_test_51Habc123def456").await;
+    assert_eq!(s, StatusCode::CREATED);
+    let list = format!("/api/apps/{app}/test-keys");
+    let remove = format!("/api/apps/{app}/test-keys/STRIPE_SECRET_KEY/remove");
+    for (method, path, body) in [
+        ("GET", &list, Value::Null),
+        (
+            "POST",
+            &list,
+            json!({"name":"OTHER_KEY","value":"sk_test_51Habc123def456"}),
+        ),
+        ("POST", &remove, Value::Null),
+    ] {
+        let (s, _) = call(&h.r, method, path, Some(RUNNER), body).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{method} {path}");
+    }
+    assert_eq!(list_keys(&h.r, app).await.as_array().map(Vec::len), Some(1));
+}
+
+#[tokio::test]
+async fn test_keys_of_an_unknown_app_are_not_found() {
+    let h = key_hub().await;
+    let (s, _) = call(
+        &h.r,
+        "GET",
+        "/api/apps/99/test-keys",
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = add_key(&h.r, 99, "STRIPE_SECRET_KEY", "sk_test_51Habc123def456").await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = call(
+        &h.r,
+        "POST",
+        "/api/apps/99/test-keys/STRIPE_SECRET_KEY/remove",
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert!(!h.dir.exists());
+}
+
+#[tokio::test]
+async fn a_claim_names_the_apps_test_keys_but_not_their_values() {
+    let h = key_hub().await;
+    let app = demo_app(&h.r).await;
+    for (name, value) in [
+        ("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiJ9.anon9999"),
+        ("STRIPE_SECRET_KEY", "sk_test_51Habc123def456"),
+    ] {
+        let (s, _) = add_key(&h.r, app, name, value).await;
+        assert_eq!(s, StatusCode::CREATED);
+    }
+    let (s, _) = call(
+        &h.r,
+        "POST",
+        "/api/threads",
+        Some(OWNER),
+        json!({"app_id": app, "title":"t1", "prompt":"do it"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, c) = call(
+        &h.r,
+        "POST",
+        "/api/runner/claim",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        c["test_keys"],
+        json!(["STRIPE_SECRET_KEY", "SUPABASE_ANON_KEY"])
+    );
+    let text = c.to_string();
+    assert!(!text.contains("sk_test_51Habc123def456") && !text.contains("anon9999"));
+}
+
+#[tokio::test]
+async fn test_keys_need_a_key_store() {
+    let (r, _) = hub().await;
+    let app = demo_app(&r).await;
+    let (s, _) = call(
+        &r,
+        "GET",
+        &format!("/api/apps/{app}/test-keys"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+    let (s, msg) = add_key(&r, app, "STRIPE_SECRET_KEY", "sk_test_51Habc123def456").await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(msg, "the key store is not set up on this hub");
+    let (s, _) = call(
+        &r,
+        "POST",
+        &format!("/api/apps/{app}/test-keys/STRIPE_SECRET_KEY/remove"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+}

@@ -12,6 +12,7 @@ reqwest.workspace = true
 axum.workspace = true
 base64 = "0.22"
 decurion-proto = { path = "../decurion-proto" }
+decurion-vault = { path = "../decurion-vault" }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 serde.workspace = true
 serde_json.workspace = true

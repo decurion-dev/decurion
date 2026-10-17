@@ -360,6 +360,11 @@
           </form>
         </section>
 
+        <section class="scard wide live" id="set-keys" aria-labelledby="h-keys">
+          <header><span class="ic" data-icon="key"></span><div><h2 id="h-keys">Test keys</h2><p>Test keys reach this app's agents while they work. They are kept in Windows' secure store and shown again only as their last four characters. Live keys are refused.</p></div></header>
+          <div id="key-apps"><p class="hint">Loading…</p></div>
+        </section>
+
         <section class="scard live" id="set-phones" aria-labelledby="h-phones">
           <header><span class="ic" data-icon="phone"></span><div><h2 id="h-phones">Phones</h2><p>Pair your phone to get the inbox there. The code works once, for a few minutes.</p></div></header>
           <div><button type="button" class="btn" id="pair"></button></div>
@@ -449,6 +454,7 @@
     if (view === "settings") {
       renderSettings();
       loadDevices();
+      loadKeys();
       const part = h.split("/")[1];
       const target = part && $(`set-${part}`);
       if (target) requestAnimationFrame(() => target.scrollIntoView({ block: "start" }));
@@ -932,6 +938,59 @@
           b);
       }) : [el("li", { className: "empty" }, "No phones paired yet.")]));
     });
+  }
+
+  // Drawn when Settings opens and after each change, not on the timer, so a
+  // half-typed key is never wiped. Values go to the hub once and never come back.
+  async function loadKeys() {
+    let sections;
+    try {
+      const list = await D.api("/apps");
+      sections = await Promise.all(list.map(keySection));
+    } catch (e) {
+      $("key-apps").replaceChildren(el("p", { className: "field-error" }, `Couldn't load test keys. ${e.message}`));
+      return;
+    }
+    $("key-apps").replaceChildren(...(sections.length ? sections : [el("p", { className: "hint" }, "Add an app first.")]));
+  }
+  async function keySection(a) {
+    const keys = await D.api(`/apps/${a.id}/test-keys`);
+    const id = (s) => `key-${a.id}-${s}`;
+    const rows = el("ul", { className: "rows" }, ...(keys.length ? keys.map((k) => {
+      const b = el("button", { type: "button", className: "btn quiet danger-text sm" }, icon("trash"), "Remove");
+      b.onclick = async () => {
+        const ok = await D.confirm([`Remove ${k.name} from ${a.name}?`, "Its agents stop getting it from their next run.", "Remove key", "Keep it"]);
+        if (!ok) return;
+        try { await D.api(`/apps/${a.id}/test-keys/${encodeURIComponent(k.name)}/remove`, { method: "POST" }); D.toast(`Removed ${k.name}.`); await loadKeys(); }
+        catch (x) { D.toast(`Couldn't remove ${k.name}. ${x.message}`, "alert"); }
+      };
+      return el("li", {},
+        el("span", { className: "ic" }, icon("key")),
+        el("div", { className: "who" }, el("b", {}, k.name), el("span", { className: "hint" }, `••••${k.last_four}`)),
+        b);
+    }) : [el("li", { className: "empty" }, "No test keys yet.")]));
+    const name = el("input", { id: id("name"), type: "text", placeholder: "STRIPE_SECRET_KEY", autocomplete: "off", spellcheck: false });
+    const value = el("input", { id: id("value"), type: "password", placeholder: "sk_test_…", autocomplete: "off", spellcheck: false });
+    const err = el("span", { className: "field-error", id: id("err"), role: "alert" });
+    value.setAttribute("aria-describedby", id("err"));
+    const show = el("button", { type: "button", className: "btn quiet sm" }, "Show");
+    show.onclick = () => { const hidden = value.type === "password"; value.type = hidden ? "text" : "password"; show.textContent = hidden ? "Hide" : "Show"; };
+    const form = el("form", { className: "form-grid", noValidate: true },
+      el("div", { className: "field" }, el("label", { htmlFor: id("name") }, "Name"), name,
+        el("span", { className: "hint" }, "The setting your app reads it from.")),
+      el("div", { className: "field" }, el("label", { htmlFor: id("value") }, "Key"), value, show),
+      el("div", { className: "full actions" }, el("button", { className: "btn primary", type: "submit" }, "Save key"), err));
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      err.textContent = "";
+      try {
+        await D.api(`/apps/${a.id}/test-keys`, { method: "POST", body: JSON.stringify({ name: name.value.trim(), value: value.value }) });
+        value.value = "";
+        D.toast(`Saved ${name.value.trim()} for ${a.name}.`);
+        await loadKeys();
+      } catch (x) { err.textContent = x.message; }
+    };
+    return el("div", {}, el("h3", { style: "margin:8px 0" }, a.name), rows, form);
   }
 
   $("pair").onclick = async () => {
