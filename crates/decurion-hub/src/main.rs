@@ -51,10 +51,14 @@ async fn main() -> anyhow::Result<()> {
     // Valid until the hub restarts; the owner key itself is never printed.
     let code = new_secret();
     println!("Open the board: http://{addr}/login?code={code}");
-    axum::serve(listener, router(AppState::new(store, keys, code)))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await?;
+    let public_url = std::env::var("DECURION_PUBLIC_URL").ok();
+    axum::serve(
+        listener,
+        router(AppState::new(store, keys, code, public_url)),
+    )
+    .with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await?;
     Ok(())
 }

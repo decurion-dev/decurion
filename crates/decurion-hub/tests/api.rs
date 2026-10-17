@@ -18,6 +18,7 @@ async fn hub() -> (axum::Router, Store) {
             runner: RUNNER.into(),
         },
         LOGIN.into(),
+        Some("https://hub.test".into()),
     ));
     (r, store)
 }
@@ -360,7 +361,7 @@ async fn login_code_opens_a_session_without_exposing_the_owner_key() {
         .clone()
         .oneshot(
             Request::get("/api/threads")
-                .header(header::COOKIE, "decurion_session=forged")
+                .header(header::COOKIE, "decurion_device=forged")
                 .body(Body::empty())
                 .expect("req"),
         )
@@ -548,4 +549,146 @@ async fn board_sends_a_content_security_policy() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
     assert!(csp.contains("frame-ancestors 'none'"));
+}
+
+async fn get(r: &axum::Router, path: &str, cookie: Option<&str>) -> axum::response::Response {
+    let mut b = Request::get(path).header(header::USER_AGENT, "Mozilla/5.0 (Linux; Android 15)");
+    if let Some(c) = cookie {
+        b = b.header(header::COOKIE, c);
+    }
+    r.clone()
+        .oneshot(b.body(Body::empty()).expect("req"))
+        .await
+        .expect("resp")
+}
+
+fn cookie_pair(resp: &axum::response::Response) -> String {
+    resp.headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn a_phone_pairs_once_and_can_be_removed() {
+    let (r, store) = hub().await;
+    let (s, p) = call(&r, "POST", "/api/pairing", Some(OWNER), Value::Null).await;
+    assert_eq!(s, StatusCode::OK);
+    let url = p["url"].as_str().expect("url").to_owned();
+    assert!(url.starts_with("https://hub.test/pair?code="));
+    assert!(p["qr_svg"].as_str().is_some_and(|q| q.contains("<svg")));
+    let path = url.trim_start_matches("https://hub.test");
+
+    let resp = get(&r, path, None).await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        resp.headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some("/inbox")
+    );
+    let cookie = cookie_pair(&resp);
+    assert!(cookie.starts_with("decurion_device="));
+
+    // The code works only once.
+    assert_eq!(get(&r, path, None).await.status(), StatusCode::UNAUTHORIZED);
+
+    // The phone can use the API, and survives a "restart" (state lives in the DB).
+    assert_eq!(
+        get(&r, "/api/threads", Some(&cookie)).await.status(),
+        StatusCode::OK
+    );
+    let (_, devices) = call(&r, "GET", "/api/devices", Some(OWNER), Value::Null).await;
+    assert_eq!(devices[0]["name"], "Android phone");
+    let id = devices[0]["id"].as_i64().expect("id");
+
+    // Only a hash of the token is stored.
+    let token = cookie.trim_start_matches("decurion_device=");
+    let stored: String = sqlx::query_scalar("SELECT token_hash FROM devices WHERE id = ?")
+        .bind(id)
+        .fetch_one(store.pool())
+        .await
+        .expect("row");
+    assert_ne!(stored, token);
+    assert_eq!(stored.len(), 64);
+
+    let (s, _) = call(
+        &r,
+        "POST",
+        &format!("/api/devices/{id}/remove"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert_eq!(
+        get(&r, "/api/threads", Some(&cookie)).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn expired_pairing_codes_are_refused() {
+    let (r, store) = hub().await;
+    let (_, p) = call(&r, "POST", "/api/pairing", Some(OWNER), Value::Null).await;
+    sqlx::query("UPDATE pairing_codes SET expires_at = '2000-01-01T00:00:00.000Z'")
+        .execute(store.pool())
+        .await
+        .expect("expire");
+    let path = p["url"]
+        .as_str()
+        .expect("url")
+        .trim_start_matches("https://hub.test")
+        .to_owned();
+    assert_eq!(
+        get(&r, &path, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        get(&r, "/pair?code=made-up", None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn only_the_owner_pairs_or_manages_devices() {
+    let (r, _) = hub().await;
+    let (s, _) = call(&r, "POST", "/api/pairing", Some(RUNNER), Value::Null).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = call(&r, "GET", "/api/devices", Some(RUNNER), Value::Null).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = call(
+        &r,
+        "POST",
+        "/api/devices/1/remove",
+        Some(RUNNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn cookies_are_secure_behind_https() {
+    let (r, _) = hub().await;
+    let resp = r
+        .clone()
+        .oneshot(
+            Request::get(format!("/login?code={LOGIN}"))
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .expect("req"),
+        )
+        .await
+        .expect("resp");
+    let c = resp
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(c.contains("; Secure") && c.contains("Max-Age="));
 }

@@ -10,8 +10,10 @@ version.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 decurion-proto = { path = "../decurion-proto" }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

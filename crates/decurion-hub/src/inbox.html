@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f1e1b">
+<link rel="manifest" href="/manifest.webmanifest">
+<title>Decurion inbox</title>
+<style>
+  :root { --bg:#f5f4f0; --card:#fff; --ink:#1d1c19; --muted:#6f6b61; --line:#e2dfd6;
+          --accent:#3b5bdb; --ok:#2b8a3e; --warn:#c77700; --bad:#c92a2a; --radius:14px; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#151513; --card:#1f1e1b; --ink:#ecebe6; --muted:#9a968b; --line:#33312c;
+            --accent:#7b93f0; --ok:#59c26d; --warn:#f0a43a; --bad:#f06464; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.45 system-ui, "Segoe UI", sans-serif;
+         padding:16px 16px calc(24px + env(safe-area-inset-bottom)); }
+  header { display:flex; align-items:baseline; gap:10px; margin-bottom:14px; }
+  h1 { font-size:22px; margin:0; }
+  .muted { color:var(--muted); font-size:13px; }
+  .empty { text-align:center; padding:48px 12px; color:var(--muted); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:14px; margin-bottom:12px; }
+  .card[data-state="in_review"] { border-left:4px solid var(--accent); }
+  .card[data-state="needs_you"] { border-left:4px solid var(--warn); }
+  .card[data-state="failed"] { border-left:4px solid var(--bad); }
+  .kind { font-size:12px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); }
+  .title { font-size:18px; font-weight:600; margin:2px 0 6px; }
+  .means { margin:0 0 8px; }
+  .said { font-size:14px; color:var(--muted); white-space:pre-wrap; max-height:9em; overflow:auto; margin:0 0 10px; }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; }
+  button { font:inherit; font-weight:600; border-radius:10px; padding:12px 16px; min-height:44px; flex:1 1 auto;
+           border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { color:var(--bad); }
+  .bar { display:flex; gap:8px; margin:6px 0 16px; }
+  .err { color:var(--bad); margin-bottom:12px; }
+</style>
+</head>
+<body>
+<header><h1>Needs you</h1><span class="muted" id="status"></span></header>
+<div class="bar"><button id="notify" type="button" hidden>Turn on notifications</button></div>
+<div class="err" id="err"></div>
+<main id="list"></main>
+<script>
+const MEANS = {
+  in_review: ["Ready for review", "The agent finished and saved its work. Accept it, or send it back with the agent picking up where it left off."],
+  needs_you: ["Waiting on you", "The agent stopped to ask for something only you can decide."],
+  failed: ["Stopped", "This piece of work could not finish. You can retry it."],
+};
+const ACTIONS = {
+  in_review: [["done", "Accept", "primary"], ["queued", "Send back", ""], ["failed", "Reject", "danger"]],
+  needs_you: [["queued", "Continue", "primary"], ["failed", "Stop", "danger"]],
+  failed: [["queued", "Retry", "primary"]],
+};
+const $ = id => document.getElementById(id);
+function el(tag, attrs = {}, text = "") { const e = document.createElement(tag); Object.assign(e, attrs); e.textContent = text; return e; }
+async function api(path, opts = {}) {
+  const r = await fetch("/api" + path, { headers: { "content-type": "application/json" }, ...opts });
+  if (r.status === 401) throw new Error("This phone is signed out. Scan a new pairing code on the board.");
+  if (!r.ok) throw new Error(await r.text());
+  return r.status === 204 ? null : r.json();
+}
+async function lastWords(id) {
+  const ev = await api(`/threads/${id}/events?after=0`);
+  const fin = [...ev].reverse().find(r => r.event.kind === "finished") ?? [...ev].reverse().find(r => r.event.kind === "message");
+  return fin ? (fin.event.summary ?? fin.event.text ?? "") : "";
+}
+async function refresh() {
+  try {
+    const [apps, threads] = await Promise.all([api("/apps"), api("/threads")]);
+    const names = Object.fromEntries(apps.map(a => [a.id, a.name]));
+    const mine = threads.filter(t => t.state in MEANS).sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+    if (!mine.length) { $("list").replaceChildren(el("div", { className: "empty" }, "Nothing needs you right now.")); }
+    else {
+      const cards = await Promise.all(mine.map(async t => {
+        const [kind, means] = MEANS[t.state];
+        const c = el("article", { className: "card" }); c.dataset.state = t.state;
+        c.append(el("div", { className: "kind" }, `${kind} · ${names[t.app_id] ?? ""}`), el("div", { className: "title" }, t.title),
+                 el("p", { className: "means" }, means));
+        const said = await lastWords(t.id).catch(() => "");
+        if (said) c.append(el("p", { className: "said" }, said));
+        const row = el("div", { className: "actions" });
+        for (const [to, label, cls] of ACTIONS[t.state]) {
+          const b = el("button", { type: "button", className: cls }, label);
+          b.onclick = async () => { b.disabled = true; try { await api(`/threads/${t.id}/move`, { method: "POST", body: JSON.stringify({ to }) }); refresh(); } catch (e) { $("err").textContent = e.message; b.disabled = false; } };
+          row.append(b);
+        }
+        c.append(row); return c;
+      }));
+      $("list").replaceChildren(...cards);
+    }
+    $("status").textContent = `${mine.length} · ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    $("err").textContent = "";
+  } catch (e) { $("err").textContent = e.message; }
+}
+refresh(); setInterval(refresh, 5000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+</script>
+</body>
+</html>

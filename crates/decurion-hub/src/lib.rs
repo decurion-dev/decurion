@@ -1,14 +1,17 @@
-//! The Decurion hub: holds board state and serves the owner's board and the
-//! runner API.
+//! The Decurion hub: holds board state and serves the owner's board, the
+//! phone inbox and the runner API.
 //!
 //! Every `/api` call needs a key. Agents run in containers that can reach the
 //! host network, so an unauthenticated API would let an agent move its own
 //! card to Done. Containers never receive either key.
 //!
-//! The browser never holds the owner key: the hub prints a login code that is
-//! only valid until the hub restarts, and `/login` trades it for a random
-//! session id in an HttpOnly cookie.
+//! Browsers and phones never hold the owner key. The PC browser signs in with
+//! a login code the hub prints at start; a phone signs in by scanning a
+//! short-lived pairing QR code on the board. Either way the browser gets its
+//! own device token in an HttpOnly cookie, which survives hub restarts and can
+//! be removed from the board.
 
+pub mod devices;
 pub mod store;
 
 use axum::extract::{Path, Query, Request, State};
@@ -19,11 +22,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use decurion_proto::{MoveRequest, NewApp, NewThread, RunEvent};
 use serde::Deserialize;
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use store::{Store, StoreError};
 
-/// Who is calling. The owner uses the board; the runner uses its own key.
+/// Who is calling. The owner uses the board or a paired phone; the runner
+/// uses its own key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Caller {
     Owner,
@@ -39,6 +42,11 @@ impl Caller {
     }
 }
 
+/// The signed-in browser or phone making an owner call, if it came with a
+/// device cookie rather than a bearer key.
+#[derive(Clone, Copy, Debug)]
+pub struct DeviceId(pub Option<i64>);
+
 #[derive(Clone)]
 pub struct Keys {
     pub owner: String,
@@ -50,30 +58,24 @@ pub struct AppState {
     pub store: Store,
     pub keys: Keys,
     login_code: Arc<str>,
-    sessions: Arc<Mutex<HashSet<String>>>,
+    /// Address phones use to reach the hub, e.g. the Tailscale https name.
+    public_url: Option<Arc<str>>,
 }
 
 impl AppState {
-    /// `login_code` is printed for the owner at start; it opens browser
-    /// sessions until the hub restarts.
-    pub fn new(store: Store, keys: Keys, login_code: String) -> Self {
+    /// `login_code` is printed for the owner at start and signs in browsers
+    /// until the hub restarts. `public_url` goes into pairing QR codes.
+    pub fn new(store: Store, keys: Keys, login_code: String, public_url: Option<String>) -> Self {
         Self {
             store,
             keys,
             login_code: login_code.into(),
-            sessions: Arc::default(),
+            public_url: public_url.map(|u| u.trim_end_matches('/').into()),
         }
-    }
-
-    fn has_session(&self, id: &str) -> bool {
-        self.sessions
-            .lock()
-            .map(|s| s.iter().any(|known| same(known, id)))
-            .unwrap_or(false)
     }
 }
 
-const COOKIE: &str = "decurion_session";
+const COOKIE: &str = "decurion_device";
 
 /// Random 256-bit token.
 pub fn new_secret() -> String {
@@ -84,6 +86,8 @@ pub fn new_secret() -> String {
     )
 }
 
+const CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'";
+
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
         .route("/apps", get(list_apps).post(add_app))
@@ -93,10 +97,15 @@ pub fn router(state: AppState) -> Router {
         .route("/threads/{id}/events", get(list_events).post(add_event))
         .route("/runner/hello", post(runner_hello))
         .route("/runner/claim", post(runner_claim))
+        .route("/pairing", post(new_pairing))
+        .route("/devices", get(list_devices))
+        .route("/devices/{id}/remove", post(remove_device))
         .layer(middleware::from_fn_with_state(state.clone(), require_key));
     Router::new()
         .route("/", get(board))
+        .route("/inbox", get(inbox))
         .route("/login", get(login))
+        .route("/pair", get(pair))
         .route("/healthz", get(|| async { "ok" }))
         .nest("/api", api)
         .with_state(state)
@@ -109,7 +118,7 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .and_then(|v| v.strip_prefix("Bearer "))
 }
 
-fn session_cookie(headers: &HeaderMap) -> Option<String> {
+fn device_cookie(headers: &HeaderMap) -> Option<String> {
     headers
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
@@ -130,13 +139,18 @@ fn same(a: &str, b: &str) -> bool {
 }
 
 async fn require_key(State(st): State<AppState>, mut req: Request, next: Next) -> Response {
-    let caller = match (bearer(req.headers()), session_cookie(req.headers())) {
-        (Some(k), _) if same(k, &st.keys.owner) => Caller::Owner,
-        (Some(k), _) if same(k, &st.keys.runner) => Caller::Runner,
-        (None, Some(s)) if st.has_session(&s) => Caller::Owner,
+    let (caller, device) = match (bearer(req.headers()), device_cookie(req.headers())) {
+        (Some(k), _) if same(k, &st.keys.owner) => (Caller::Owner, None),
+        (Some(k), _) if same(k, &st.keys.runner) => (Caller::Runner, None),
+        (None, Some(t)) => match st.store.device_for_token(&t).await {
+            Ok(Some(id)) => (Caller::Owner, Some(id)),
+            Ok(None) => return (StatusCode::UNAUTHORIZED, "signed out").into_response(),
+            Err(e) => return ApiError(e).into_response(),
+        },
         _ => return (StatusCode::UNAUTHORIZED, "missing or wrong key").into_response(),
     };
     req.extensions_mut().insert(caller);
+    req.extensions_mut().insert(DeviceId(device));
     next.run(req).await
 }
 
@@ -171,38 +185,170 @@ fn forbidden(what: &str) -> Response {
     (StatusCode::FORBIDDEN, format!("{what} is owner-only")).into_response()
 }
 
-async fn board() -> Response {
+fn page(html: &'static str) -> Response {
     (
         [
-            (
-                header::CONTENT_SECURITY_POLICY,
-                "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
-            ),
+            (header::CONTENT_SECURITY_POLICY, CSP),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::CACHE_CONTROL, "no-store"),
         ],
-        Html(include_str!("board.html")),
+        Html(html),
     )
         .into_response()
 }
 
+async fn board() -> Response {
+    page(include_str!("board.html"))
+}
+
+async fn inbox() -> Response {
+    page(include_str!("inbox.html"))
+}
+
+/// Sets the device cookie. `Secure` whenever the hub is reached over https
+/// (Tailscale serve sets `X-Forwarded-Proto`).
+fn sign_in(headers: &HeaderMap, token: &str, to: &str) -> Response {
+    let https = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("https"));
+    let secure = if https { "; Secure" } else { "" };
+    let cookie =
+        format!("{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000{secure}");
+    ([(header::SET_COOKIE, cookie)], Redirect::to(to)).into_response()
+}
+
 #[derive(Deserialize)]
-struct LoginQuery {
+struct CodeQuery {
     code: String,
 }
 
-/// The link printed by the hub at start. Opens a browser session; the owner
-/// key itself never reaches the browser.
-async fn login(State(st): State<AppState>, Query(q): Query<LoginQuery>) -> Response {
+/// The link printed by the hub at start. Signs this browser in as a device;
+/// the owner key itself never reaches the browser.
+async fn login(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<CodeQuery>,
+) -> Response {
     if !same(&q.code, &st.login_code) {
         return (StatusCode::UNAUTHORIZED, "wrong or expired login code").into_response();
     }
-    let id = new_secret();
-    match st.sessions.lock() {
-        Ok(mut s) => s.insert(id.clone()),
+    match st.store.add_device("Browser on this PC").await {
+        Ok((_, token)) => sign_in(&headers, &token, "/"),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// A short name for a newly paired device, from its browser's description.
+fn device_name(headers: &HeaderMap) -> &'static str {
+    let ua = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if ua.contains("Android") {
+        "Android phone"
+    } else if ua.contains("iPhone") {
+        "iPhone"
+    } else if ua.contains("iPad") {
+        "iPad"
+    } else {
+        "Browser"
+    }
+}
+
+/// Where a scanned pairing QR code lands.
+async fn pair(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<CodeQuery>,
+) -> Response {
+    match st.store.redeem_pairing_code(&q.code).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Html("This pairing code is used or expired. Make a new one on the board."),
+            )
+                .into_response()
+        }
+        Err(e) => return ApiError(e).into_response(),
+    }
+    match st.store.add_device(device_name(&headers)).await {
+        Ok((_, token)) => sign_in(&headers, &token, "/inbox"),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+#[derive(serde::Serialize)]
+struct Pairing {
+    url: String,
+    qr_svg: String,
+    minutes: i64,
+}
+
+async fn new_pairing(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    headers: HeaderMap,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("pairing a phone");
+    }
+    let base = match &st.public_url {
+        Some(u) => u.to_string(),
+        None => {
+            let host = headers
+                .get(header::HOST)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("127.0.0.1:7420");
+            format!("http://{host}")
+        }
+    };
+    let code = match st.store.new_pairing_code().await {
+        Ok(c) => c,
+        Err(e) => return ApiError(e).into_response(),
+    };
+    let url = format!("{base}/pair?code={code}");
+    let qr_svg = match qrcode::QrCode::new(url.as_bytes()) {
+        Ok(q) => q
+            .render::<qrcode::render::svg::Color>()
+            .min_dimensions(220, 220)
+            .build(),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let cookie = format!("{COOKIE}={id}; HttpOnly; SameSite=Strict; Path=/");
-    ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
+    Json(Pairing {
+        url,
+        qr_svg,
+        minutes: devices::PAIRING_MINUTES,
+    })
+    .into_response()
+}
+
+async fn list_devices(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("listing devices");
+    }
+    match st.store.devices().await {
+        Ok(d) => Json(d).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn remove_device(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("removing devices");
+    }
+    match st.store.remove_device(id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
 }
 
 async fn list_apps(State(st): State<AppState>) -> ApiResult<Vec<decurion_proto::App>> {
