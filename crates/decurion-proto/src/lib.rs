@@ -289,6 +289,16 @@ pub struct Claim {
     pub interrupted: Option<Interrupted>,
 }
 
+/// A Max account that is out of usage, and the work waiting for it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Limit {
+    pub profile: Profile,
+    /// When the account is expected back (UTC). Waiting work starts again on
+    /// its own after this; if the account is still out, the time moves on.
+    pub until: String,
+    pub waiting: i64,
+}
+
 /// This month's spending, for the board.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Spend {
@@ -308,6 +318,12 @@ pub enum RunEvent {
     /// The runner started the agent's container. From here on, the run may
     /// be spending money.
     Started,
+    /// The Max account this run used is out of usage. `reset_epoch` is when
+    /// Claude said it resets (Unix seconds), if it said.
+    LimitHit {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reset_epoch: Option<i64>,
+    },
     /// The agent said something.
     Message { text: String },
     /// The agent used a tool.
