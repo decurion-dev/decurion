@@ -56,11 +56,14 @@ pub(crate) async fn cap_micros(tx: &mut Transaction<'_, Sqlite>) -> Result<i64> 
 }
 
 /// Pay-per-use money used this month: real cost where known, otherwise the
-/// amount set aside.
+/// amount set aside. Helper jobs (coordinator, designer, checker) count too.
 pub(crate) async fn api_spent_micros(tx: &mut Transaction<'_, Sqlite>) -> Result<i64> {
     Ok(sqlx::query_scalar(&format!(
-        "SELECT COALESCE(SUM(COALESCE(cost_micros, reserved_micros)), 0) FROM runs
-         WHERE account = 'api' AND (started_at >= {MONTH_START} OR finished_at IS NULL)"
+        "SELECT (SELECT COALESCE(SUM(COALESCE(cost_micros, reserved_micros)), 0) FROM runs
+                 WHERE account = 'api' AND (started_at >= {MONTH_START} OR finished_at IS NULL))
+              + (SELECT COALESCE(SUM(COALESCE(cost_micros, reserved_micros)), 0) FROM helper_jobs
+                 WHERE account = 'api' AND started_at IS NOT NULL
+                   AND (started_at >= {MONTH_START} OR finished_at IS NULL))"
     ))
     .fetch_one(&mut **tx)
     .await?)
@@ -167,8 +170,10 @@ impl Store {
         let cap = cap_micros(&mut tx).await?;
         let api = api_spent_micros(&mut tx).await?;
         let max: i64 = sqlx::query_scalar(&format!(
-            "SELECT COALESCE(SUM(cost_micros), 0) FROM runs
-             WHERE account IN ('A', 'B') AND started_at >= {MONTH_START}"
+            "SELECT (SELECT COALESCE(SUM(cost_micros), 0) FROM runs
+                     WHERE account IN ('A', 'B') AND started_at >= {MONTH_START})
+                  + (SELECT COALESCE(SUM(cost_micros), 0) FROM helper_jobs
+                     WHERE account IN ('A', 'B') AND started_at >= {MONTH_START})"
         ))
         .fetch_one(&mut *tx)
         .await?;

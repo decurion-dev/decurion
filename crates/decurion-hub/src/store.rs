@@ -75,7 +75,7 @@ fn thread_from(row: &SqliteRow) -> Result<Thread> {
     })
 }
 
-fn app_from(row: &SqliteRow) -> Result<App> {
+pub(crate) fn app_from(row: &SqliteRow) -> Result<App> {
     let profile: String = row.try_get("profile")?;
     Ok(App {
         id: row.try_get("id")?,

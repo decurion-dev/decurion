@@ -72,64 +72,10 @@ impl Store {
     /// next. With a receipt already used for a message, nothing is stored and
     /// the first message is returned; the flag is false then.
     pub async fn add_message(&self, thread_id: i64, m: &NewMessage) -> Result<(Message, bool)> {
-        let text = m.text.trim();
-        if !(1..=MAX_CHARS).contains(&text.chars().count()) {
-            return Err(StoreError::Invalid(format!(
-                "a message must be 1 to {MAX_CHARS} characters"
-            )));
-        }
-        crate::store::check_receipt(m.receipt.as_deref())?;
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
-        if let Some(id) = receipt_result(&mut tx, m.receipt.as_deref(), "message").await? {
-            let row = sqlx::query(&format!("SELECT {COLS} FROM messages WHERE id = ?"))
-                .bind(id)
-                .fetch_one(&mut *tx)
-                .await?;
-            let first = message_from(&row)?;
-            if first.thread_id != thread_id {
-                return Err(StoreError::Duplicate(RECEIPT_REUSED.into()));
-            }
-            tx.commit().await?;
-            return Ok((first, false));
-        }
-        let state = state_in(&mut tx, thread_id).await?;
-        if state == ThreadState::Done {
-            return Err(StoreError::Refused(
-                "this work is finished; add new work instead".into(),
-            ));
-        }
-        let row = sqlx::query(&format!(
-            "INSERT INTO messages (thread_id, kind, text) VALUES (?, ?, ?) RETURNING {COLS}"
-        ))
-        .bind(thread_id)
-        .bind(m.kind.as_str())
-        .bind(text)
-        .fetch_one(&mut *tx)
-        .await?;
-        let msg = message_from(&row)?;
-        let logged = RunEvent::Owner {
-            via: m.kind,
-            text: text.to_owned(),
-        };
-        insert_event(&mut tx, thread_id, &logged).await?;
-        let sends_back = matches!(
-            state,
-            ThreadState::NeedsYou | ThreadState::InReview | ThreadState::Failed
-        );
-        if m.kind != MessageKind::Note && sends_back {
-            checked_move(
-                &mut tx,
-                thread_id,
-                Some(state),
-                ThreadState::Queued,
-                OWNER,
-                Some("sent back with a message"),
-            )
-            .await?;
-        }
-        save_receipt(&mut tx, m.receipt.as_deref(), "message", msg.id).await?;
+        let out = add_message_in(&mut tx, thread_id, m, OWNER, "sent back with a message").await?;
         tx.commit().await?;
-        Ok((msg, true))
+        Ok(out)
     }
 
     /// Every message of a thread, oldest first.
@@ -183,4 +129,71 @@ impl Store {
         tx.commit().await?;
         Ok(())
     }
+}
+
+/// [`Store::add_message`] inside the caller's transaction, sent by `actor`
+/// (the owner, or the coordinator passing on a checker's notes); `why` goes
+/// in the audit log if it sends the work back.
+pub(crate) async fn add_message_in(
+    tx: &mut Transaction<'_, Sqlite>,
+    thread_id: i64,
+    m: &NewMessage,
+    actor: &str,
+    why: &str,
+) -> Result<(Message, bool)> {
+    let text = m.text.trim();
+    if !(1..=MAX_CHARS).contains(&text.chars().count()) {
+        return Err(StoreError::Invalid(format!(
+            "a message must be 1 to {MAX_CHARS} characters"
+        )));
+    }
+    crate::store::check_receipt(m.receipt.as_deref())?;
+    if let Some(id) = receipt_result(tx, m.receipt.as_deref(), "message").await? {
+        let row = sqlx::query(&format!("SELECT {COLS} FROM messages WHERE id = ?"))
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await?;
+        let first = message_from(&row)?;
+        if first.thread_id != thread_id {
+            return Err(StoreError::Duplicate(RECEIPT_REUSED.into()));
+        }
+        return Ok((first, false));
+    }
+    let state = state_in(tx, thread_id).await?;
+    if state == ThreadState::Done {
+        return Err(StoreError::Refused(
+            "this work is finished; add new work instead".into(),
+        ));
+    }
+    let row = sqlx::query(&format!(
+        "INSERT INTO messages (thread_id, kind, text) VALUES (?, ?, ?) RETURNING {COLS}"
+    ))
+    .bind(thread_id)
+    .bind(m.kind.as_str())
+    .bind(text)
+    .fetch_one(&mut **tx)
+    .await?;
+    let msg = message_from(&row)?;
+    let logged = RunEvent::Owner {
+        via: m.kind,
+        text: text.to_owned(),
+    };
+    insert_event(tx, thread_id, &logged).await?;
+    let sends_back = matches!(
+        state,
+        ThreadState::NeedsYou | ThreadState::InReview | ThreadState::Failed
+    );
+    if m.kind != MessageKind::Note && sends_back {
+        checked_move(
+            tx,
+            thread_id,
+            Some(state),
+            ThreadState::Queued,
+            actor,
+            Some(why),
+        )
+        .await?;
+    }
+    save_receipt(tx, m.receipt.as_deref(), "message", msg.id).await?;
+    Ok((msg, true))
 }

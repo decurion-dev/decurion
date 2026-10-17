@@ -1,5 +1,7 @@
 //! Types shared by the hub, the runner and the web board.
 
+pub mod goal;
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;

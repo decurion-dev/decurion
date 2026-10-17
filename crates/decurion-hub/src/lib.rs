@@ -18,6 +18,7 @@
 //! nothing else at all: not the board, spending or other work.
 
 pub mod checkpoints;
+pub mod coordinator;
 pub mod devices;
 pub mod limits;
 pub mod messages;
@@ -27,6 +28,8 @@ pub mod spend;
 pub mod store;
 pub mod test_keys;
 pub mod workers;
+
+mod goals;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
@@ -96,7 +99,7 @@ pub struct AppState {
     login_code: Arc<str>,
     /// Address phones use to reach the hub, e.g. the Tailscale https name.
     public_url: Option<Arc<str>>,
-    push: Option<push::Pusher>,
+    pub(crate) push: Option<push::Pusher>,
     /// Where apps' test keys are kept. Without one, the key endpoints refuse.
     vault: Option<decurion_vault::Vault>,
     files: Option<Arc<Files>>,
@@ -205,12 +208,33 @@ pub fn router(state: AppState) -> Router {
             get(runner_download),
         )
         .route("/runner/threads/{id}/credential", post(runner_credential))
+        .route("/goals", get(goals::list).post(goals::add))
+        .route("/goals/{id}", get(goals::view))
+        .route("/goals/{id}/say", post(goals::say))
+        .route("/goals/{id}/answer", post(goals::answer))
+        .route("/goals/{id}/approve", post(goals::approve))
+        .route("/goals/{id}/retry", post(goals::retry))
+        .route("/goals/{id}/close", post(goals::close))
+        .route("/goals/{id}/stop", post(goals::stop))
+        .route("/goals/{id}/pages/{page}", get(goals::page))
+        .route("/apps/{id}/notes", get(goals::notes))
+        .route("/apps/{id}/notes/{note}/remove", post(goals::remove_note))
+        .route("/runner/helper/claim", post(goals::helper_claim))
+        .route("/runner/helper/{id}/started", post(goals::helper_started))
+        .route(
+            "/runner/helper/{id}/finish",
+            // Room for a page of screenshots and a long answer, escaped inside JSON.
+            post(goals::helper_finish).layer(axum::extract::DefaultBodyLimit::max(
+                decurion_proto::goal::MAX_PAGE_BYTES * 2 + (1 << 20),
+            )),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), require_key));
     Router::new()
         .route("/", get(board))
         .route("/inbox", get(inbox))
         .route("/cloud", get(cloud_page))
         .route("/runner/join", post(runner_join))
+        .route("/goals", get(goals_page))
         .route("/login", get(login_page).post(login))
         .route("/pair", get(pair_page).post(pair))
         .route("/sw.js", get(service_worker))
@@ -431,7 +455,7 @@ impl IntoResponse for ApiError {
 
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
-fn forbidden(what: &str) -> Response {
+pub(crate) fn forbidden(what: &str) -> Response {
     (StatusCode::FORBIDDEN, format!("{what} is owner-only")).into_response()
 }
 
@@ -489,6 +513,10 @@ async fn board() -> Response {
 
 async fn inbox() -> Response {
     page(include_str!("inbox.html"))
+}
+
+async fn goals_page() -> Response {
+    page(include_str!("goals.html"))
 }
 
 /// Sets the device cookie. `Secure` whenever the hub is reached over https
@@ -738,8 +766,22 @@ async fn move_thread(
         .await
     {
         Ok((t, fresh)) => {
-            // Only what the agent did is news; the owner's own taps are not.
-            let news = (c == Caller::Runner && fresh)
+            // Pieces of a goal move on to their check, or settle. A repeated
+            // tap changed nothing, so there is nothing to tell the goal.
+            let piece = if fresh {
+                match st.store.piece_thread_moved(&t).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::error!(error = %e, thread = t.id, "could not update the goal");
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+            // Only what the agent did is news; the owner's own taps are not. A
+            // piece of a goal is not ready for the owner until it is checked.
+            let news = (c == Caller::Runner && fresh && !(piece && t.state == InReview))
                 .then(|| push::message_for(t.state, &t.title))
                 .flatten();
             if let (Some(p), Some((title, body))) = (st.push.clone(), news) {
@@ -828,7 +870,17 @@ async fn add_message(
         return forbidden("messaging an agent");
     }
     match st.store.add_message(id, &m).await {
-        Ok((msg, fresh)) => created_or_resent(msg, fresh),
+        Ok((msg, fresh)) => {
+            // A message can send a goal's piece back to its builder.
+            if fresh {
+                if let Ok(t) = st.store.thread(id).await {
+                    if let Err(e) = st.store.piece_thread_moved(&t).await {
+                        tracing::error!(error = %e, thread = id, "could not update the goal");
+                    }
+                }
+            }
+            created_or_resent(msg, fresh)
+        }
         Err(e) => ApiError(e).into_response(),
     }
 }
@@ -918,6 +970,9 @@ async fn runner_hello(
     };
     // Work it had running goes back to the queue either way, so a runner
     // that must update first does not leave work stuck as Running.
+    if let Err(e) = st.store.pause_runner_helpers(&r.name).await {
+        return ApiError(e).into_response();
+    }
     let paused = match st.store.pause_runner_threads(&r.name).await {
         Ok(ids) => ids,
         Err(e) => return ApiError(e).into_response(),
@@ -1166,10 +1221,18 @@ async fn runner_join(State(st): State<AppState>, Json(j): Json<JoinRequest>) -> 
 /// files. Returns the runner and the file store.
 // Responses are what axum handlers return; boxing them buys nothing here.
 #[allow(clippy::result_large_err)]
+/// Whether a runner call reads a work's saved copies or changes them.
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum Access {
+    Read,
+    Write,
+}
+
 async fn holding(
     st: &AppState,
     runner: Option<axum::Extension<RunnerId>>,
     thread: i64,
+    access: Access,
 ) -> Result<(RunnerId, Arc<Files>), Response> {
     let r = runner_only(runner, None)?;
     let files = st.files.clone().ok_or_else(|| {
@@ -1179,6 +1242,12 @@ async fn holding(
         )
             .into_response()
     })?;
+    // The PC runner checks finished work, whichever computer made it, so it
+    // may read any work's saved copies. It runs next to the hub, which keeps
+    // the owner's repos anyway.
+    if access == Access::Read && r.place == Place::Pc {
+        return Ok((r, files));
+    }
     match st.store.running_on(thread, &r.name).await {
         Ok(true) => Ok((r, files)),
         Ok(false) => Err((
@@ -1195,7 +1264,7 @@ async fn runner_base(
     runner: Option<axum::Extension<RunnerId>>,
     Path(id): Path<i64>,
 ) -> Response {
-    let (_, files) = match holding(&st, runner, id).await {
+    let (_, files) = match holding(&st, runner, id, Access::Read).await {
         Ok(h) => h,
         Err(resp) => return resp,
     };
@@ -1225,7 +1294,7 @@ async fn runner_upload(
     let Some(part) = Part::parse(&part) else {
         return (StatusCode::NOT_FOUND, "unknown part").into_response();
     };
-    let (_, files) = match holding(&st, runner, id).await {
+    let (_, files) = match holding(&st, runner, id, Access::Write).await {
         Ok(h) => h,
         Err(resp) => return resp,
     };
@@ -1245,7 +1314,7 @@ async fn runner_checkpoint(
     Path(id): Path<i64>,
     Json(c): Json<NewCheckpoint>,
 ) -> Response {
-    let (r, files) = match holding(&st, runner, id).await {
+    let (r, files) = match holding(&st, runner, id, Access::Write).await {
         Ok(h) => h,
         Err(resp) => return resp,
     };
@@ -1265,7 +1334,7 @@ async fn runner_download(
     Path((id, cp, part)): Path<(i64, i64, String)>,
 ) -> Response {
     // Only the runner now running the work may read its saved copies.
-    let (_, files) = match holding(&st, runner, id).await {
+    let (_, files) = match holding(&st, runner, id, Access::Read).await {
         Ok(h) => h,
         Err(resp) => return resp,
     };

@@ -612,6 +612,34 @@ async fn work_saved_on_one_computer_continues_on_another() {
     )
     .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
+
+    // While the cloud runs it, the PC may read its saved copies (to check
+    // the work once it is done) but not change them.
+    for path in [
+        format!("/api/runner/threads/{id}/base"),
+        format!("/api/runner/threads/{id}/checkpoint/{cp}/code"),
+    ] {
+        let r = send(&h.r, "GET", &path, Some(RUNNER), Body::empty()).await;
+        assert_eq!(r.status, StatusCode::OK, "{path}");
+    }
+    let r = send(
+        &h.r,
+        "PUT",
+        &format!("/api/runner/threads/{id}/upload/code"),
+        Some(RUNNER),
+        Body::from("PC CODE"),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    let (s, _) = call(
+        &h.r,
+        "POST",
+        &format!("/api/runner/threads/{id}/checkpoint"),
+        Some(RUNNER),
+        json!({"head": sha, "base": sha}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
 }
 
 #[tokio::test]
