@@ -34,6 +34,9 @@
   #log { max-height:60vh; overflow:auto; font:13px/1.4 Consolas, monospace; white-space:pre-wrap; }
   .actions { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
   .err { color:var(--bad); padding:0 16px; }
+  .limits { padding:0 16px; }
+  .limit { display:flex; gap:12px; align-items:center; flex-wrap:wrap; border:1px solid var(--warn); border-radius:10px; padding:10px 12px; margin:0 0 10px; }
+  .limit span { flex:1 1 260px; }
   .spend { font-size:13px; padding:3px 10px; border-radius:99px; background:var(--card); border:1px solid var(--line); }
   .spend.near { border-color:var(--warn); color:var(--warn); }
   .hint { color:var(--muted); font-size:13px; margin:8px 0; }
@@ -76,6 +79,7 @@
   <div id="qr" class="qr"></div>
   <ul id="devices" class="devices"></ul>
 </details>
+<div class="limits" id="limits"></div>
 <div class="err" id="err"></div>
 <main id="board"></main>
 <dialog id="detail"><h3 id="d-title"></h3><div id="log"></div>
@@ -110,7 +114,7 @@ async function refresh() {
       return col;
     }));
     $("status").textContent = `${threads.length} pieces of work · updated ${new Date().toLocaleTimeString()}`;
-    const sp = await api("/spend");
+    const [sp] = await Promise.all([api("/spend"), showLimits($("limits"), refresh).catch(() => {})]);
     const money = n => "$" + n.toFixed(2);
     $("spend").textContent = `Pay-per-use this month: ${money(sp.pay_per_use_usd)} of ${money(sp.cap_usd)} · Max accounts used ${money(sp.max_equivalent_usd)} worth`;
     $("spend").classList.toggle("near", sp.pay_per_use_usd >= 0.8 * sp.cap_usd);
@@ -133,6 +137,7 @@ async function openThread(t) {
   $("log").textContent = ev.map(r => {
     const e = r.event; const time = r.at.slice(11, 19);
     if (e.kind === "started") return `${time}  Agent's box started`;
+    if (e.kind === "limit_hit") return `${time}  Claude Max account ran out of usage`;
     return e.kind === "message" ? `${time}  ${e.text}` : e.kind === "tool" ? `${time}  [${e.name}] ${e.summary}` : `${time}  FINISHED ${e.ok ? "ok" : "failed"}${e.cost_usd != null ? ` ($${e.cost_usd.toFixed(2)} so far)` : ""}: ${e.summary}`;
   }).join("\n") || "No activity yet.";
   $("d-actions").replaceChildren(...(OWNER_MOVES[t.state] ?? []).map(([to, label]) => {
@@ -148,6 +153,21 @@ $("add-thread").onsubmit = async e => { e.preventDefault();
 $("add-app").onsubmit = async e => { e.preventDefault();
   try { await api("/apps", { method: "POST", body: JSON.stringify({ name: $("app-name").value, repo_path: $("app-path").value, profile: $("app-profile").value, pay_per_use: $("app-ppu").checked }) });
         e.target.reset(); refresh(); } catch (x) { $("err").textContent = x.message; } };
+async function showLimits(box, after) {
+  const limits = await api("/limits");
+  box.replaceChildren(...limits.map(l => {
+    const t = new Date(l.until);
+    // A weekly limit can reset days from now: say the day when it is not today.
+    const when = t.toDateString() === new Date().toDateString()
+      ? t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : t.toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" });
+    const d = el("div", { className: "limit" });
+    d.append(el("span", {}, `Claude Max ${l.profile} is out of usage until about ${when}. ${l.waiting} waiting; they restart on their own then.`));
+    const b = el("button", { type: "button" }, "Continue on pay-per-use");
+    b.onclick = async () => { b.disabled = true; try { await api(`/limits/${l.profile}/pay-per-use`, { method: "POST" }); after(); } catch (e) { $("err").textContent = e.message; b.disabled = false; } };
+    d.append(b); return d;
+  }));
+}
 async function loadDevices() {
   const list = await api("/devices");
   $("devices").replaceChildren(...list.map(d => {

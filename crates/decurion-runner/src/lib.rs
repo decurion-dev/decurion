@@ -277,6 +277,37 @@ fn agent_args(
     Ok(a)
 }
 
+/// Whether a result's text is Claude saying the Max account is out of usage,
+/// and when it resets if it said (the older form ends in `|<unix seconds>`).
+pub fn usage_limit(text: &str) -> Option<Option<i64>> {
+    let t = text.to_ascii_lowercase();
+    // Claude's own wording for a Max plan running out. Generic API errors
+    // ("rate limit reached", "output token limit reached") and the API's
+    // spend-limit message are not this.
+    let hit = [
+        "claude ai usage limit reached",
+        "claude usage limit reached",
+        "hit your limit",
+        "5-hour limit reached",
+        "weekly limit reached",
+        "out of extra usage",
+    ]
+    .iter()
+    .any(|p| t.contains(p));
+    if !hit {
+        return None;
+    }
+    let epoch = text
+        .rsplit_once('|')
+        .and_then(|(_, tail)| tail.trim().parse::<i64>().ok())
+        .filter(|e| *e > 1_000_000_000);
+    Some(epoch)
+}
+
+/// What a run reports when its Max account ran out of usage.
+pub const LIMIT_STOP: &str =
+    "The Max account is out of usage. This waits and restarts on its own when it resets.";
+
 /// What a run that used up its spending limit reports.
 pub const BUDGET_STOP: &str =
     "Stopped at this run's spending limit. Continue it to give it more of this month's budget.";
@@ -346,18 +377,27 @@ pub fn parse_line(line: &str) -> Vec<RunEvent> {
             .unwrap_or_default(),
         Some("result") => {
             let o = outcome(&v);
+            let text = v["result"].as_str().unwrap_or("");
+            let limit = (v["is_error"] == true).then(|| usage_limit(text)).flatten();
             let summary = if o.budget_stop {
                 BUDGET_STOP.to_owned()
+            } else if limit.is_some() {
+                LIMIT_STOP.to_owned()
             } else {
-                clip(v["result"].as_str().unwrap_or(""), 2000)
+                clip(text, 2000)
             };
-            vec![RunEvent::Finished {
+            let mut out = Vec::new();
+            if let Some(reset_epoch) = limit {
+                out.push(RunEvent::LimitHit { reset_epoch });
+            }
+            out.push(RunEvent::Finished {
                 ok: o.ok,
                 summary,
                 cost_usd: o.cost_usd,
                 input_tokens: o.input_tokens,
                 output_tokens: o.output_tokens,
-            }]
+            });
+            out
         }
         _ => vec![],
     }
@@ -550,6 +590,37 @@ mod tests {
             Credential::Max(Profile::B).target(),
             "decurion/claude-profile-B"
         );
+    }
+
+    #[test]
+    fn a_max_usage_limit_is_recognised_with_its_reset_time() {
+        let l = r#"{"type":"result","subtype":"success","is_error":true,"result":"Claude AI usage limit reached|1760900400"}"#;
+        assert_eq!(
+            parse_line(l)[0],
+            RunEvent::LimitHit {
+                reset_epoch: Some(1_760_900_400)
+            }
+        );
+        assert!(
+            matches!(&parse_line(l)[1], RunEvent::Finished { ok: false, summary, .. } if summary == LIMIT_STOP)
+        );
+        let newer = r#"{"type":"result","subtype":"success","is_error":true,"result":"You've hit your limit · resets 3pm (America/Phoenix)"}"#;
+        assert_eq!(
+            parse_line(newer)[0],
+            RunEvent::LimitHit { reset_epoch: None }
+        );
+        // An agent merely talking about limits in a successful result is not one.
+        let fine = r#"{"type":"result","subtype":"success","is_error":false,"result":"Added a usage limit check"}"#;
+        assert!(!parse_line(fine)
+            .iter()
+            .any(|e| matches!(e, RunEvent::LimitHit { .. })));
+        for other in [
+            "API Error: 429 rate limit reached",
+            "Output token limit reached",
+            "You have reached your specified API usage limits",
+        ] {
+            assert_eq!(usage_limit(other), None, "{other}");
+        }
     }
 
     #[test]
