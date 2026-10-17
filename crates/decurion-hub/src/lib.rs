@@ -12,6 +12,7 @@
 //! be removed from the board.
 
 pub mod devices;
+pub mod push;
 pub mod store;
 
 use axum::extract::{Path, Query, Request, State};
@@ -60,6 +61,7 @@ pub struct AppState {
     login_code: Arc<str>,
     /// Address phones use to reach the hub, e.g. the Tailscale https name.
     public_url: Option<Arc<str>>,
+    push: Option<push::Pusher>,
 }
 
 impl AppState {
@@ -71,7 +73,14 @@ impl AppState {
             keys,
             login_code: login_code.into(),
             public_url: public_url.map(|u| u.trim_end_matches('/').into()),
+            push: None,
         }
+    }
+
+    /// Turns on phone notifications.
+    pub fn with_push(mut self, p: push::Pusher) -> Self {
+        self.push = Some(p);
+        self
     }
 }
 
@@ -100,12 +109,16 @@ pub fn router(state: AppState) -> Router {
         .route("/pairing", post(new_pairing))
         .route("/devices", get(list_devices))
         .route("/devices/{id}/remove", post(remove_device))
+        .route("/push/key", get(push_key))
+        .route("/push/subscribe", post(push_subscribe))
         .layer(middleware::from_fn_with_state(state.clone(), require_key));
     Router::new()
         .route("/", get(board))
         .route("/inbox", get(inbox))
         .route("/login", get(login))
         .route("/pair", get(pair))
+        .route("/sw.js", get(service_worker))
+        .route("/manifest.webmanifest", get(manifest))
         .route("/healthz", get(|| async { "ok" }))
         .nest("/api", api)
         .with_state(state)
@@ -412,7 +425,15 @@ async fn move_thread(
         .move_thread(id, expect, m.to, c.actor(), m.note.as_deref())
         .await
     {
-        Ok(t) => Json(t).into_response(),
+        Ok(t) => {
+            if let (Some(p), Some((title, body))) =
+                (st.push.clone(), push::message_for(t.state, &t.title))
+            {
+                let store = st.store.clone();
+                tokio::spawn(async move { p.notify(&store, &title, &body).await });
+            }
+            Json(t).into_response()
+        }
         Err(e) => ApiError(e).into_response(),
     }
 }
@@ -476,6 +497,55 @@ async fn runner_claim(
     match st.store.claim(&r.runner).await {
         Ok(Some(claim)) => Json(claim).into_response(),
         Ok(None) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn service_worker() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        include_str!("sw.js"),
+    )
+        .into_response()
+}
+
+async fn manifest() -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/manifest+json")],
+        include_str!("manifest.webmanifest"),
+    )
+        .into_response()
+}
+
+async fn push_key(State(st): State<AppState>) -> Response {
+    match &st.push {
+        Some(p) => Json(serde_json::json!({ "key": p.public_key() })).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            "notifications are not set up on this hub",
+        )
+            .into_response(),
+    }
+}
+
+async fn push_subscribe(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    axum::Extension(DeviceId(device)): axum::Extension<DeviceId>,
+    Json(sub): Json<devices::PushSubscription>,
+) -> Response {
+    let Some(device) = device.filter(|_| c == Caller::Owner) else {
+        return (
+            StatusCode::FORBIDDEN,
+            "subscribe from a signed-in phone or browser",
+        )
+            .into_response();
+    };
+    match st.store.save_push(device, &sub).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => ApiError(e).into_response(),
     }
 }

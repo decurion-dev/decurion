@@ -8,7 +8,9 @@ version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+reqwest.workspace = true
 axum.workspace = true
+base64 = "0.22"
 decurion-proto = { path = "../decurion-proto" }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 serde.workspace = true
@@ -20,10 +22,13 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+web-push-native = "0.5"
 
 [dev-dependencies]
+base64 = "0.22"
 http-body-util = "0.1"
 tower.workspace = true
+web-push-native = "0.5"
 
 [lints]
 workspace = true

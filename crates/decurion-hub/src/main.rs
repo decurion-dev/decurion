@@ -52,13 +52,12 @@ async fn main() -> anyhow::Result<()> {
     let code = new_secret();
     println!("Open the board: http://{addr}/login?code={code}");
     let public_url = std::env::var("DECURION_PUBLIC_URL").ok();
-    axum::serve(
-        listener,
-        router(AppState::new(store, keys, code, public_url)),
-    )
-    .with_graceful_shutdown(async {
-        let _ = tokio::signal::ctrl_c().await;
-    })
-    .await?;
+    let pusher = decurion_hub::push::Pusher::load_or_create(&dir)?;
+    let state = AppState::new(store, keys, code, public_url).with_push(pusher);
+    axum::serve(listener, router(state))
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await?;
     Ok(())
 }

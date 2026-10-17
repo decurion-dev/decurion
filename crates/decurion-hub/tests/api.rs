@@ -692,3 +692,112 @@ async fn cookies_are_secure_behind_https() {
         .unwrap_or_default();
     assert!(c.contains("; Secure") && c.contains("Max-Age="));
 }
+
+type Received = std::sync::Arc<tokio::sync::Mutex<Vec<(axum::http::HeaderMap, Vec<u8>)>>>;
+
+#[tokio::test]
+async fn notifications_are_encrypted_for_the_phone_and_dead_ones_dropped() {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use web_push_native::p256;
+
+    // A pretend phone: its key pair and auth secret.
+    let ua_secret = p256::SecretKey::from_slice(&[7u8; 32]).expect("key");
+    let ua_public = ua_secret.public_key();
+    let auth = [9u8; 16];
+
+    // A pretend push service that records what it receives.
+    let got: Received = Default::default();
+    let sink = got.clone();
+    let app = axum::Router::new()
+        .route(
+            "/ok",
+            axum::routing::post(move |h: axum::http::HeaderMap, b: axum::body::Bytes| {
+                let sink = sink.clone();
+                async move {
+                    sink.lock().await.push((h, b.to_vec()));
+                    StatusCode::CREATED
+                }
+            }),
+        )
+        .route("/gone", axum::routing::post(|| async { StatusCode::GONE }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move { axum::serve(listener, app).await });
+
+    let store = Store::open("sqlite::memory:").await.expect("store");
+    let dir = std::env::temp_dir().join(format!("decurion-push-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let pusher = decurion_hub::push::Pusher::load_or_create(&dir).expect("pusher");
+    assert_eq!(
+        URL_SAFE_NO_PAD
+            .decode(pusher.public_key())
+            .expect("b64")
+            .len(),
+        65
+    );
+
+    let (phone, _) = store.add_device("Android phone").await.expect("device");
+    let (old, _) = store.add_device("Old phone").await.expect("device");
+    let p256dh = URL_SAFE_NO_PAD.encode(ua_public.to_sec1_bytes());
+    let auth_b64 = URL_SAFE_NO_PAD.encode(auth);
+    for (id, path) in [(phone.id, "ok"), (old.id, "gone")] {
+        sqlx::query("INSERT INTO push_subscriptions (device_id, endpoint, p256dh, auth) VALUES (?, ?, ?, ?)")
+            .bind(id)
+            .bind(format!("http://{addr}/{path}"))
+            .bind(&p256dh)
+            .bind(&auth_b64)
+            .execute(store.pool())
+            .await
+            .expect("insert");
+    }
+
+    pusher
+        .notify(&store, "Ready for review", "Add a hello script")
+        .await;
+
+    let got = got.lock().await;
+    assert_eq!(got.len(), 1);
+    let (headers, body) = &got[0];
+    assert!(headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("vapid t=")));
+    assert_eq!(
+        headers
+            .get("content-encoding")
+            .and_then(|v| v.to_str().ok()),
+        Some("aes128gcm")
+    );
+    let plain = web_push_native::decrypt(
+        body.clone(),
+        &ua_secret,
+        &web_push_native::Auth::clone_from_slice(&auth),
+    )
+    .expect("phone can decrypt");
+    let note: Value = serde_json::from_slice(&plain).expect("json");
+    assert_eq!(note["title"], "Ready for review");
+    assert_eq!(note["body"], "Add a hello script");
+    assert_eq!(note["url"], "/inbox");
+    assert!(!String::from_utf8_lossy(body).contains("hello"));
+
+    // The push service said the old phone is gone, so it was dropped.
+    let left = store.push_targets().await.expect("targets");
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].0, phone.id);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn only_a_signed_in_device_can_subscribe() {
+    let (r, _) = hub().await;
+    let body = json!({"endpoint":"https://push.example/x","p256dh":"a","auth":"b"});
+    let (s, _) = call(&r, "POST", "/api/push/subscribe", Some(OWNER), body.clone()).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = call(&r, "POST", "/api/push/subscribe", Some(RUNNER), body).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let resp = get(&r, "/sw.js", None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}

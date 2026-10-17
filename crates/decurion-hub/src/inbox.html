@@ -94,6 +94,33 @@ async function refresh() {
     $("err").textContent = "";
   } catch (e) { $("err").textContent = e.message; }
 }
+function b64ToBytes(b64) {
+  const s = atob(b64.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((b64.length + 3) % 4));
+  return Uint8Array.from(s, c => c.charCodeAt(0));
+}
+async function setUpNotifications() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !window.isSecureContext) return;
+  const reg = await navigator.serviceWorker.register("/sw.js");
+  const existing = await reg.pushManager.getSubscription();
+  const btn = $("notify");
+  async function subscribe() {
+    const { key } = await api("/push/key");
+    const sub = existing ?? await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+    const j = sub.toJSON();
+    await api("/push/subscribe", { method: "POST", body: JSON.stringify({ endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth }) });
+  }
+  if (Notification.permission === "granted") { await subscribe(); return; }
+  if (Notification.permission === "denied") return;
+  btn.hidden = false;
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      if (await Notification.requestPermission() === "granted") { await subscribe(); btn.hidden = true; }
+      else { btn.disabled = false; }
+    } catch (e) { $("err").textContent = e.message; btn.disabled = false; }
+  };
+}
+setUpNotifications().catch(e => $("err").textContent = e.message);
 refresh(); setInterval(refresh, 5000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 </script>
