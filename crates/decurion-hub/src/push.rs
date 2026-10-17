@@ -107,13 +107,16 @@ impl Pusher {
         for (device, sub) in targets {
             let me = self.clone();
             let payload = payload.clone();
-            sends.spawn(async move { (device, me.send_one(&sub, &payload).await) });
+            sends.spawn(async move {
+                let r = me.send_one(&sub, &payload).await;
+                (device, sub.endpoint, r)
+            });
         }
-        while let Some(Ok((device, result))) = sends.join_next().await {
+        while let Some(Ok((device, endpoint, result))) = sends.join_next().await {
             match result {
                 Ok(()) => {}
                 Err(SendError::Gone) => {
-                    let _ = store.drop_push(device).await;
+                    let _ = store.drop_push(device, &endpoint).await;
                 }
                 Err(SendError::Other(e)) => tracing::warn!(device, error = %e, "push failed"),
             }

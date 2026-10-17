@@ -64,8 +64,9 @@ async function api(path, opts = {}) {
 }
 async function lastWords(id) {
   const ev = await api(`/threads/${id}/events?tail=20`);
-  const fin = [...ev].reverse().find(r => r.event.kind === "finished") ?? [...ev].reverse().find(r => r.event.kind === "message");
-  return fin ? (fin.event.summary ?? fin.event.text ?? "") : "";
+  // The newest thing the agent said, whether its final summary or a message.
+  const last = [...ev].reverse().find(r => r.event.kind === "finished" || r.event.kind === "message");
+  return last ? (last.event.summary ?? last.event.text ?? "") : "";
 }
 async function refresh() {
   try {

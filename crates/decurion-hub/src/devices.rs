@@ -181,10 +181,19 @@ impl Store {
         Ok(Some(token))
     }
 
+    /// Saves where to notify this device. A browser has one push address, so
+    /// if another (older) device row had it, it moves here: removing this
+    /// device then really stops the notifications.
     pub async fn save_push(&self, device_id: i64, s: &PushSubscription) -> Result<()> {
         if !s.endpoint.starts_with("https://") {
             return Err(StoreError::Invalid("push endpoint must be https".into()));
         }
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("DELETE FROM push_subscriptions WHERE endpoint = ? AND device_id != ?")
+            .bind(&s.endpoint)
+            .bind(device_id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query(
             "INSERT INTO push_subscriptions (device_id, endpoint, p256dh, auth) VALUES (?, ?, ?, ?)
              ON CONFLICT (device_id) DO UPDATE SET endpoint = excluded.endpoint,
@@ -194,8 +203,9 @@ impl Store {
         .bind(&s.endpoint)
         .bind(&s.p256dh)
         .bind(&s.auth)
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -220,10 +230,12 @@ impl Store {
             .collect()
     }
 
-    /// Drops a subscription the push service says is gone.
-    pub async fn drop_push(&self, device_id: i64) -> Result<()> {
-        sqlx::query("DELETE FROM push_subscriptions WHERE device_id = ?")
+    /// Drops a subscription the push service says is gone, unless the device
+    /// has registered a new one since.
+    pub async fn drop_push(&self, device_id: i64, endpoint: &str) -> Result<()> {
+        sqlx::query("DELETE FROM push_subscriptions WHERE device_id = ? AND endpoint = ?")
             .bind(device_id)
+            .bind(endpoint)
             .execute(self.pool())
             .await?;
         Ok(())

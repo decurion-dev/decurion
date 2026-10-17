@@ -948,3 +948,63 @@ async fn the_inbox_can_ask_for_the_latest_events() {
         .collect();
     assert_eq!(texts, ["m27", "m28", "m29"]);
 }
+
+#[tokio::test]
+async fn a_signed_in_phone_survives_a_hub_restart() {
+    let dir = std::env::temp_dir().join(format!("decurion-restart-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    let url = format!("sqlite://{}", dir.join("hub.db").display());
+    let token = {
+        let store = Store::open(&url).await.expect("store");
+        let code = store.new_pairing_code().await.expect("code");
+        store
+            .pair_device(&code, "Android phone")
+            .await
+            .expect("pair")
+            .expect("token")
+    };
+    // A brand-new hub on the same database, with a new login code.
+    let store = Store::open(&url).await.expect("reopen");
+    let r = router(AppState::new(
+        store,
+        Keys {
+            owner: OWNER.into(),
+            runner: RUNNER.into(),
+        },
+        "fedcba987654".into(),
+        None,
+    ));
+    let resp = get(
+        &r,
+        "/api/threads",
+        Some(&format!("decurion_device={token}")),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    drop(r);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn re_pairing_a_browser_moves_its_notifications() {
+    let (_, store) = hub().await;
+    let (old, _) = store.add_device("Android phone").await.expect("old");
+    let (new, _) = store.add_device("Android phone").await.expect("new");
+    let sub = decurion_hub::devices::PushSubscription {
+        endpoint: "https://push.example/abc".into(),
+        p256dh: "k".into(),
+        auth: "a".into(),
+    };
+    store.save_push(old.id, &sub).await.expect("old sub");
+    store.save_push(new.id, &sub).await.expect("new sub");
+    let targets = store.push_targets().await.expect("targets");
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].0, new.id);
+    // A stale "gone" for an older address does not remove the current one.
+    store
+        .drop_push(new.id, "https://push.example/older")
+        .await
+        .expect("drop");
+    assert_eq!(store.push_targets().await.expect("targets").len(), 1);
+}
