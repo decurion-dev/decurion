@@ -1,0 +1,9 @@
+{
+  "name": "Decurion",
+  "short_name": "Decurion",
+  "start_url": "/inbox",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#151513",
+  "theme_color": "#1f1e1b"
+}

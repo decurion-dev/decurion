@@ -18,7 +18,7 @@ fn load_keys(dir: &std::path::Path) -> anyhow::Result<Keys> {
     let path = dir.join("keys.json");
     if !path.exists() {
         let v = serde_json::json!({ "owner": new_secret(), "runner": new_secret() });
-        std::fs::write(&path, serde_json::to_vec_pretty(&v)?)?;
+        decurion_hub::write_atomic(&path, &serde_json::to_vec_pretty(&v)?)?;
     }
     let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
     let get = |k: &str| {
@@ -50,8 +50,14 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(data = %dir.display(), "hub listening on http://{addr}");
     // Valid until the hub restarts; the owner key itself is never printed.
     let code = new_secret();
-    println!("Open the board: http://{addr}/login?code={code}");
-    axum::serve(listener, router(AppState::new(store, keys, code)))
+    // decurion.localhost is loopback in Chrome and Edge, and is its own site,
+    // so the board's cookie is never sent to other servers on 127.0.0.1.
+    let port = listener.local_addr()?.port();
+    println!("Open the board: http://decurion.localhost:{port}/login?code={code}");
+    let public_url = std::env::var("DECURION_PUBLIC_URL").ok();
+    let pusher = decurion_hub::push::Pusher::load_or_create(&dir)?;
+    let state = AppState::new(store, keys, code, public_url).with_push(pusher);
+    axum::serve(listener, router(state))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })
