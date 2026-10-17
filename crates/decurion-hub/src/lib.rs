@@ -523,7 +523,13 @@ async fn move_thread(
     if c == Caller::Runner && m.to == Done {
         return forbidden("marking work done");
     }
-    let expect = (c == Caller::Runner).then_some(Running);
+    // The owner's tap names the state it was made on, so a stale screen
+    // (Stop on work that has since finished) cannot do something else.
+    let expect = if c == Caller::Runner {
+        Some(Running)
+    } else {
+        m.expect
+    };
     match st
         .store
         .request_move(

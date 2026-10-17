@@ -201,7 +201,8 @@ function describe(r) {
   switch (e.kind) {
     case "started": return `${time}  Agent's box started`;
     case "limit_hit": return `${time}  Claude Max account ran out of usage`;
-    case "message": return `${time}  ${e.text}`;
+    // Labelled, so an agent cannot pass its own words off as yours or Decurion's.
+    case "message": return `${time}  Agent: ${e.text}`;
     case "tool": return `${time}  [${e.name}] ${e.summary}`;
     case "owner": return `${time}  You (${VIA[e.via] ?? e.via}): ${e.text}`;
     case "interrupted": return `${time}  Interrupted while running ${e.name}: ${e.summary}. ${e.safe_to_redo ? "Safe to run again." : "Checking what happened before redoing it."}`;
@@ -259,7 +260,7 @@ async function showThread(id) {
     b.onclick = async () => {
       const n = stopsToo(t.id).length;
       if (to === "failed" && (t.state === "running" || n) && !confirm(`${label} this work? Smaller tasks that are part of it stop too${n ? ` (${n} right now)` : ""}, except ones set to keep going on their own.`)) return;
-      try { await send(`/threads/${t.id}/move`, { to }); $("detail").close(); refresh(); } catch (e) { $("d-err").textContent = `"${label}" did not go through: ${e.message}`; }
+      try { await send(`/threads/${t.id}/move`, { to, expect: t.state }); $("detail").close(); refresh(); } catch (e) { $("d-err").textContent = `"${label}" did not go through: ${e.message}`; }
     };
     return b;
   }), Object.assign(el("button", { type: "button", className: "plain" }, "Close"), { onclick: () => $("detail").close() }));

@@ -265,6 +265,12 @@ impl Store {
         {
             to = ThreadState::Queued;
             note = Some("the owner sent more while it was finishing");
+            // This run is over, so a move to pay-per-use made for it during
+            // an outage ends here too, as it would on the way to review.
+            sqlx::query("UPDATE threads SET pay_per_use = 0 WHERE id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
         }
         checked_move(&mut tx, id, Some(from), to, actor, note).await?;
         save_receipt(&mut tx, receipt, "move", id).await?;
@@ -438,6 +444,13 @@ impl Store {
     pub async fn add_event(&self, thread_id: i64, e: &RunEvent) -> Result<(i64, bool)> {
         self.thread(thread_id).await?;
         let mut tx = self.pool.begin().await?;
+        // A box may only start for work that is running: if the owner stopped
+        // it after the claim, the runner must not launch it, unmetered.
+        if matches!(e, RunEvent::Started)
+            && state_in(&mut tx, thread_id).await? != ThreadState::Running
+        {
+            return Err(StoreError::Conflict);
+        }
         let id = insert_event(&mut tx, thread_id, e).await?;
         let mut new_outage = false;
         if let RunEvent::LimitHit { reset_epoch } = e {

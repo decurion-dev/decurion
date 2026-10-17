@@ -2559,3 +2559,59 @@ async fn the_runner_cannot_write_the_hubs_events() {
     .await;
     assert_eq!(ev, json!([]));
 }
+
+#[tokio::test]
+async fn a_tap_on_a_stale_screen_does_nothing() {
+    use decurion_proto::ThreadState::*;
+    let (r, store) = hub().await;
+    let id = seed(&r).await;
+    claim(&r).await;
+    // The board showed Stop while it ran; it has since gone to review.
+    mv(&r, id, RUNNER, json!({"to":"in_review"})).await;
+    let (s, _) = mv(&r, id, OWNER, json!({"to":"failed","expect":"running"})).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(state(&store, id).await, InReview);
+    let (s, _) = mv(&r, id, OWNER, json!({"to":"done","expect":"in_review"})).await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_box_cannot_start_for_work_that_was_stopped() {
+    let (r, _) = hub().await;
+    let id = seed(&r).await;
+    claim(&r).await;
+    mv(&r, id, OWNER, json!({"to":"failed"})).await;
+    assert_eq!(
+        event(&r, id, json!({"kind":"started"})).await,
+        StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
+async fn pay_per_use_from_an_outage_ends_with_its_run_even_when_more_was_asked() {
+    let (r, store) = hub().await;
+    let a = app_on(&r, "on-a", "A").await;
+    let a1 = add_work(&r, a, "a1").await;
+    assert_eq!(claim_id(&r).await, Some(a1));
+    hit_limit(&r, a1, None).await;
+    call(
+        &r,
+        "POST",
+        "/api/limits/A/pay-per-use",
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(claim_id(&r).await, Some(a1));
+    say(&r, a1, json!({"kind":"follow_up","text":"and the docs"})).await;
+    sqlx::query("DELETE FROM profile_limits")
+        .execute(store.pool())
+        .await
+        .expect("clear");
+    // Finishing with the follow-up waiting goes back to the queue, on Max.
+    let (_, t) = mv(&r, a1, RUNNER, json!({"to":"in_review"})).await;
+    assert_eq!(t["state"], "queued");
+    let c = claim(&r).await;
+    assert_eq!(c["thread"]["id"], a1);
+    assert!(c["budget_usd"].is_null(), "back on the Max account");
+}

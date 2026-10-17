@@ -170,7 +170,7 @@ async function refresh() {
         for (const [to, label, cls] of ACTIONS[t.state]) {
           const b = el("button", { type: "button", className: cls }, label);
           // Action errors stay until the next tap, so a failed Accept is never mistaken for a done one.
-          b.onclick = async () => { b.disabled = true; $("act-err").textContent = ""; $("act-ok").textContent = ""; try { await send(`/threads/${t.id}/move`, { to }); refresh(); } catch (e) { $("act-err").textContent = `"${label}" did not go through: ${e.message}`; b.disabled = false; } };
+          b.onclick = async () => { b.disabled = true; $("act-err").textContent = ""; $("act-ok").textContent = ""; try { await send(`/threads/${t.id}/move`, { to, expect: t.state }); refresh(); } catch (e) { $("act-err").textContent = `"${label}" did not go through: ${e.message}`; b.disabled = false; } };
           row.append(b);
         }
         c.append(row, talkBox(t)); return c;
