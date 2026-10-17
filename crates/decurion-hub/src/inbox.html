@@ -35,12 +35,20 @@
   button.danger { color:var(--bad); }
   .bar { display:flex; gap:8px; margin:6px 0 16px; }
   .err { color:var(--bad); margin-bottom:12px; }
+  .ok { color:var(--ok); margin-bottom:12px; }
+  .talk { margin-top:10px; border-top:1px solid var(--line); }
+  .talk summary { padding:12px 0; min-height:44px; cursor:pointer; font-weight:600; color:var(--accent); }
+  .talk textarea { display:block; width:100%; min-height:88px; font:inherit; padding:10px; border-radius:10px;
+                   border:1px solid var(--line); background:var(--bg); color:var(--ink); }
+  .talk .muted { margin:6px 0 8px; }
+  button:focus-visible, summary:focus-visible, textarea:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 </style>
 </head>
 <body>
 <header><h1>Needs you</h1><span class="muted" id="status"></span></header>
 <div class="bar"><button id="notify" type="button" hidden>Turn on notifications</button></div>
 <div class="err" id="act-err" role="alert"></div>
+<div class="ok" id="act-ok" role="status"></div>
 <div class="err" id="err"></div>
 <main id="list"></main>
 <script>
@@ -54,21 +62,76 @@ const ACTIONS = {
   needs_you: [["queued", "Continue", "primary"], ["failed", "Stop", "danger"]],
   failed: [["queued", "Retry", "primary"]],
 };
+const TALK = [["steer", "Change course now", "primary"], ["follow_up", "Do this next", ""], ["note", "Add a note", ""]];
+const VIA = { steer: "change course", follow_up: "next", note: "note" };
+const drafts = {}, openBoxes = new Set(); // kept across refreshes so typing is never lost
+let sending = 0;
 const $ = id => document.getElementById(id);
 function el(tag, attrs = {}, text = "") { const e = document.createElement(tag); Object.assign(e, attrs); e.textContent = text; return e; }
 async function api(path, opts = {}) {
-  const r = await fetch("/api" + path, { headers: { "content-type": "application/json" }, ...opts });
+  let r;
+  try { r = await fetch("/api" + path, { headers: { "content-type": "application/json" }, ...opts }); }
+  catch { throw Object.assign(new Error("Could not reach the hub. Check the connection and try again."), { network: true }); }
   if (r.status === 401) throw new Error("This phone is signed out. Scan a new pairing code on the board.");
   if (!r.ok) throw new Error(await r.text());
   return r.status === 204 ? null : r.json();
 }
-async function lastWords(id) {
+function newReceipt() {
+  if (window.crypto?.randomUUID) return crypto.randomUUID();
+  const b = new Uint8Array(16);
+  if (window.crypto?.getRandomValues) crypto.getRandomValues(b); else b.forEach((_, i) => b[i] = Math.random() * 256);
+  return Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+}
+// Every tap that changes something carries a receipt. If the network drops, the same
+// receipt is sent once more, so the hub never does the same thing twice.
+async function send(path, body) {
+  const opts = { method: "POST", body: JSON.stringify({ ...body, receipt: newReceipt() }) };
+  try { return await api(path, opts); }
+  catch (e) { if (!e.network) throw e; await new Promise(ok => setTimeout(ok, 1000)); return api(path, opts); }
+}
+function ownerLine(e) {
+  if (e.kind === "owner") return `You (${VIA[e.via] ?? e.via}): ${e.text}`;
+  if (e.kind === "interrupted") return `Interrupted while running ${e.name}: ${e.summary}. ${e.safe_to_redo ? "Safe to run again." : "Checking what happened before redoing it."}`;
+  return null;
+}
+async function recent(id) {
   const ev = await api(`/threads/${id}/events?tail=20`);
-  // The newest thing the agent said, whether its final summary or a message.
-  const last = [...ev].reverse().find(r => r.event.kind === "finished" || r.event.kind === "message");
-  return last ? (last.event.summary ?? last.event.text ?? "") : "";
+  // The newest thing the agent said, whether its final summary or a message,
+  // and anything you sent or that got cut off after it.
+  const i = ev.findLastIndex(r => r.event.kind === "finished" || r.event.kind === "message");
+  const said = i >= 0 ? (ev[i].event.summary ?? ev[i].event.text ?? "") : "";
+  return { said, since: ev.slice(i + 1).map(r => ownerLine(r.event)).filter(Boolean) };
+}
+function talkBox(t) {
+  const box = el("details", { className: "talk", open: openBoxes.has(t.id) });
+  box.ontoggle = () => { if (box.open) openBoxes.add(t.id); else openBoxes.delete(t.id); };
+  const ta = el("textarea", { maxLength: 4000, placeholder: "Your message to the agent", ariaLabel: `Message about ${t.title}` });
+  ta.value = drafts[t.id] ?? ""; ta.oninput = () => { drafts[t.id] = ta.value; };
+  const row = el("div", { className: "actions" });
+  for (const [kind, label, cls] of TALK) {
+    const b = el("button", { type: "button", className: cls }, label);
+    b.onclick = async () => {
+      $("act-err").textContent = ""; $("act-ok").textContent = "";
+      const text = ta.value.trim();
+      if (!text) { $("act-err").textContent = "Type a message first."; ta.focus(); return; }
+      row.querySelectorAll("button").forEach(x => x.disabled = true); sending++;
+      try {
+        await send(`/threads/${t.id}/messages`, { kind, text });
+        delete drafts[t.id]; ta.value = "";
+        $("act-ok").textContent = kind === "note" ? `Note added to "${t.title}". The agent sees it the next time it works.` : `Sent. "${t.title}" went back to the agent with your message.`;
+      } catch (e) { $("act-err").textContent = `"${label}" did not go through: ${e.message}`; row.querySelectorAll("button").forEach(x => x.disabled = false); }
+      finally { sending--; }
+      refresh();
+    };
+    row.append(b);
+  }
+  box.append(el("summary", {}, "Tell the agent something"), ta,
+             el("p", { className: "muted" }, "Change course or Do this next sends the work back to the agent with your message. A note just adds information and waits for the next time it works."), row);
+  return box;
 }
 async function refresh() {
+  // Don't rebuild the cards under someone typing or sending a message.
+  if (sending || (document.activeElement?.tagName === "TEXTAREA" && $("list").contains(document.activeElement))) return;
   try {
     const [apps, threads] = await Promise.all([api("/apps"), api("/threads")]);
     const names = Object.fromEntries(apps.map(a => [a.id, a.name]));
@@ -80,16 +143,17 @@ async function refresh() {
         const c = el("article", { className: "card" }); c.dataset.state = t.state;
         c.append(el("div", { className: "kind" }, `${kind} · ${names[t.app_id] ?? ""}`), el("div", { className: "title" }, t.title),
                  el("p", { className: "means" }, means));
-        const said = await lastWords(t.id).catch(() => "");
+        const { said, since } = await recent(t.id).catch(() => ({ said: "", since: [] }));
         if (said) c.append(el("div", { className: "kind" }, "The agent says"), el("p", { className: "said" }, said));
+        if (since.length) c.append(el("div", { className: "kind" }, said ? "Since then" : "Recently"), el("p", { className: "said" }, since.join("\n")));
         const row = el("div", { className: "actions" });
         for (const [to, label, cls] of ACTIONS[t.state]) {
           const b = el("button", { type: "button", className: cls }, label);
           // Action errors stay until the next tap, so a failed Accept is never mistaken for a done one.
-          b.onclick = async () => { b.disabled = true; $("act-err").textContent = ""; try { await api(`/threads/${t.id}/move`, { method: "POST", body: JSON.stringify({ to }) }); refresh(); } catch (e) { $("act-err").textContent = `"${label}" did not go through: ${e.message}`; b.disabled = false; } };
+          b.onclick = async () => { b.disabled = true; $("act-err").textContent = ""; $("act-ok").textContent = ""; try { await send(`/threads/${t.id}/move`, { to }); refresh(); } catch (e) { $("act-err").textContent = `"${label}" did not go through: ${e.message}`; b.disabled = false; } };
           row.append(b);
         }
-        c.append(row); return c;
+        c.append(row, talkBox(t)); return c;
       }));
       $("list").replaceChildren(...cards);
     }
