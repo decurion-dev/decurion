@@ -1,5 +1,6 @@
 //! Types shared by the hub, the runner and the web board.
 
+pub mod browser;
 pub mod goal;
 
 use serde::{Deserialize, Serialize};
