@@ -8,7 +8,8 @@
 #     where the owner's PC and phones are,
 #   - private networks the server may be attached to (10/8, 172.16/12,
 #     192.168/16, fc00::/7, fe80::/10),
-#   - the server itself (its own addresses, including its Tailscale one).
+#   - the server itself (its own addresses, including its Tailscale one),
+#     except the runner's gatekeeper on port 7421.
 #
 # Traffic from containers passes Docker's DOCKER-USER chain (on its way out)
 # or the INPUT chain (when it is addressed to the server itself). We hang our
@@ -60,6 +61,12 @@ wall() {
   # (Containers get DNS from public servers, see /etc/docker/daemon.json,
   # so they never need to talk to the server.)
   ensure "$tool" DECURION-IN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+  # The one exception: the runner's gatekeeper, which lends pay-per-use runs
+  # the API key without handing it over. It listens only on the Docker
+  # bridge's address, port 7421 (IPv4).
+  if [ "$tool" = iptables ]; then
+    ensure_first "$tool" DECURION-IN -p tcp --dport 7421 -j ACCEPT
+  fi
   ensure "$tool" DECURION-IN -j REJECT --reject-with "$reject"
 
   for bridge in "${BRIDGES[@]}"; do

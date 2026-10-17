@@ -517,14 +517,20 @@ name = "decurion-runner"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
+ "bytes",
  "decurion-proto",
+ "futures-util",
+ "http-body",
  "keyring",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

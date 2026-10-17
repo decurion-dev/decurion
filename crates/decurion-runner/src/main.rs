@@ -3,6 +3,7 @@ use decurion_proto::{
     Claim, HelloReply, JoinReply, JoinRequest, MoveRequest, NewCheckpoint, Place, RunCredential,
     RunEvent, RunnerHello, Thread, ThreadState, RULES_VERSION,
 };
+use decurion_runner::gatekeeper::{Gatekeeper, ANTHROPIC_API};
 use decurion_runner::handover::{
     bundle_spec, is_sha, move_note, reuse_workspace, save_edits_args, session_export_args,
     session_import_args, tool_container_name, CODE_CAP, SESSION_CAP,
@@ -12,7 +13,7 @@ use decurion_runner::identity::{
 };
 use decurion_runner::{
     backoff, container_name, home_volume, parse_line, prompt_for, retriable, run_args, sibling,
-    Credential, Start, BUDGET_STOP, DOCKER_CLI_ENV,
+    Credential, Start, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
 };
 use reqwest::header::{HeaderMap, CONTENT_LENGTH, CONTENT_TYPE};
 use reqwest::StatusCode;
@@ -217,7 +218,8 @@ fn data_dir() -> anyhow::Result<PathBuf> {
 
 /// The run's one credential, from Windows Credential Manager: a Max profile's
 /// token (`claude setup-token`, saved as `decurion/claude-profile-A`) or the
-/// pay-per-use API key (`decurion/anthropic-api`).
+/// pay-per-use API key (`decurion/anthropic-api`), which stays with the
+/// gatekeeper.
 fn secret(cred: Credential) -> anyhow::Result<String> {
     let target = cred.target();
     #[cfg(windows)]
@@ -225,12 +227,15 @@ fn secret(cred: Credential) -> anyhow::Result<String> {
         let entry = keyring::Entry::new_with_target(&target, "decurion", "claude")?;
         entry
             .get_password()
+            .map(|s| s.trim().to_owned())
             .with_context(|| format!("nothing saved in Credential Manager as {target}"))
     }
     #[cfg(not(windows))]
     {
         let var = cred.env_fallback();
-        std::env::var(&var).with_context(|| format!("{var} not set ({target})"))
+        std::env::var(&var)
+            .map(|s| s.trim().to_owned())
+            .with_context(|| format!("{var} not set ({target})"))
     }
 }
 
@@ -250,8 +255,9 @@ async fn credential(hub: &Hub, id: i64, cred: Credential) -> anyhow::Result<Stri
         .await
         .context("could not read the run's credential")?;
     // Only the one variable this run should get, never anything else.
-    if r.var != cred.var() {
-        bail!("hub sent {} but this run needs {}", r.var, cred.var());
+    let want = cred.vars().first().copied().unwrap_or_default();
+    if r.var != want {
+        bail!("hub sent {} but this run needs {want}", r.var);
     }
     Ok(r.value)
 }
@@ -794,8 +800,14 @@ async fn hand_over(
     }
 }
 
+/// The host-side gatekeeper and the address containers reach it at.
+struct Gate {
+    keeper: Gatekeeper,
+    url: String,
+}
+
 /// Runs one claimed thread to the end and reports the outcome.
-async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
+async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()> {
     let id = c.thread.id;
     let session = c
         .thread
@@ -817,15 +829,38 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
     } else {
         Credential::Max(c.app.profile)
     };
+    if cred == Credential::PayPerUse && !gate.keeper.is_alive() {
+        // Without the gatekeeper the run could only fail, and a failed
+        // pay-per-use run is charged its whole budget. Stop before starting.
+        bail!("the gatekeeper has stopped; restart the runner before running pay-per-use work");
+    }
     let token = credential(hub, id, cred).await?;
+    let mut cmd = docker();
+    // A pay-per-use container gets a token for the gatekeeper, never the key.
+    // The grant is revoked when it drops, on every way out of this function.
+    let (grant, values) = match cred {
+        Credential::PayPerUse => {
+            let g = gate.keeper.grant(token);
+            let v = vec![g.token().to_owned(), gate.url.clone()];
+            (Some(g), v)
+        }
+        Credential::Max(_) => (None, vec![token]),
+    };
+    // Names come from the same list run_args passes to docker with `-e`.
+    anyhow::ensure!(
+        values.len() == cred.vars().len(),
+        "credential variables out of step"
+    );
+    for (name, value) in cred.vars().iter().zip(values) {
+        cmd.env(name, value);
+    }
     let prompt = prompt_for(&c.thread.prompt, start);
     // Tell the hub before launching: from here the run may cost money, and if
     // the hub cannot be told, the run does not start.
     hub.post(&format!("/threads/{id}/events"), &RunEvent::Started)
         .await
         .context("could not tell the hub the run is starting")?;
-    let mut child = docker()
-        .env(cred.var(), token)
+    let mut child = cmd
         .args(run_args(
             id,
             &wt,
@@ -874,24 +909,36 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
     // amount set aside.
     let read = async {
         let mut result: Option<RunEvent> = None;
+        // A usage-limit report is held the same way: an agent could print a fake
+        // one to freeze its account, so only Claude's real, final result counts.
+        let mut limit: Option<Option<i64>> = None;
         let mut after_result = false;
         while let Some(line) = read_capped_line(&mut out).await? {
             if result.is_some() && !line.trim().is_empty() {
                 after_result = true;
             }
-            for e in parse_line(&line) {
-                if matches!(e, RunEvent::Finished { .. }) {
-                    result = Some(e);
-                    after_result = false;
-                } else {
-                    hub.event(id, &e).await;
+            let events = parse_line(&line);
+            if events
+                .iter()
+                .any(|e| matches!(e, RunEvent::Finished { .. }))
+            {
+                limit = None;
+            }
+            for e in events {
+                match e {
+                    RunEvent::Finished { .. } => {
+                        result = Some(e);
+                        after_result = false;
+                    }
+                    RunEvent::LimitHit { reset_epoch } => limit = Some(reset_epoch),
+                    _ => hub.event(id, &e).await,
                 }
             }
         }
-        anyhow::Ok((result, after_result))
+        anyhow::Ok((result, limit, after_result))
     };
     // While the agent works, watch for the owner moving the work elsewhere.
-    let (result, after_result) = tokio::select! {
+    let (result, limit, after_result) = tokio::select! {
         r = read => r?,
         to = watch_place(hub, id) => {
             hand_over(hub, data, id, &wt, &branch, to, child).await;
@@ -899,6 +946,8 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
         }
     };
     let status = child.wait().await?;
+    // The container is gone; its token goes with it.
+    drop(grant);
     let finished = match result {
         Some(RunEvent::Finished {
             ok,
@@ -923,6 +972,7 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
         }
         _ => None,
     };
+    let max_limit = limit.filter(|_| !after_result && c.budget_usd.is_none());
     let err = stderr_task.await.unwrap_or_default();
     // The agent's own "done" is not enough: work only goes to review if it
     // actually left commits on its branch.
@@ -942,6 +992,21 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
             ThreadState::Failed,
             format!("container exited with {status} after the agent reported: {summary}"),
         ),
+        // The Max account is out: back to the queue, where it waits for the
+        // reset (or the owner moves it to pay-per-use). Only for a Max run,
+        // and only when the report was Claude's last line; anything else
+        // goes to the owner rather than looping.
+        Some((false, summary)) if summary == LIMIT_STOP => {
+            if max_limit.is_some() {
+                (ThreadState::Queued, summary)
+            } else {
+                (
+                    ThreadState::NeedsYou,
+                    "Claude reported a usage limit that Decurion could not confirm; check the account."
+                        .to_owned(),
+                )
+            }
+        }
         // Out of money for this run, not broken: the owner can give it more.
         Some((false, summary)) if summary == BUDGET_STOP => (ThreadState::NeedsYou, summary),
         Some((false, summary)) => (ThreadState::Failed, summary),
@@ -959,7 +1024,17 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
         tracing::error!(%err, id, "could not save a checkpoint");
     }
     with_retry("report the outcome", FINAL_RETRY, async || {
-        hub.move_to(id, to, &note).await
+        if let (ThreadState::Queued, Some(reset_epoch)) = (to, max_limit) {
+            // The hub saves the outage and requeues the work in one step.
+            hub.post(
+                &format!("/threads/{id}/events"),
+                &RunEvent::LimitHit { reset_epoch },
+            )
+            .await?;
+            Ok(())
+        } else {
+            hub.move_to(id, to, &note).await
+        }
     })
     .await
 }
@@ -1116,6 +1191,62 @@ async fn same_user_as_agent(mine: &std::fs::File) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Port the gatekeeper listens on where it cannot pick a free one: on Linux
+/// the cloud walls open exactly this port to containers.
+const LINUX_GATE_PORT: u16 = 7421;
+
+/// Starts the gatekeeper where only this computer's containers can reach it.
+async fn start_gate() -> anyhow::Result<Gate> {
+    // Docker Desktop (Windows, Mac) forwards host.docker.internal to the
+    // host's loopback, so nothing off this computer can reach it. On Linux,
+    // containers reach the host at the Docker bridge's own address (run_args
+    // maps host.docker.internal there), which only containers and the host
+    // itself can use.
+    let addr = if cfg!(target_os = "linux") {
+        std::net::SocketAddr::new(bridge_gateway().await?, LINUX_GATE_PORT)
+    } else {
+        std::net::SocketAddr::from(([127, 0, 0, 1], 0))
+    };
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("could not start the gatekeeper on {addr}"))?;
+    let gate = Gate {
+        keeper: Gatekeeper::new(ANTHROPIC_API)?,
+        url: format!(
+            "http://host.docker.internal:{}",
+            listener.local_addr()?.port()
+        ),
+    };
+    let serving = gate.keeper.clone();
+    tokio::spawn(async move {
+        if let Err(err) = serving.serve(listener).await {
+            tracing::error!(%err, "gatekeeper stopped");
+        }
+    });
+    Ok(gate)
+}
+
+/// The host's address on Docker's default bridge, which is what
+/// `host-gateway` resolves to inside containers.
+async fn bridge_gateway() -> anyhow::Result<std::net::IpAddr> {
+    let out = docker()
+        .args([
+            "network",
+            "inspect",
+            "bridge",
+            "--format",
+            "{{range .IPAM.Config}}{{.Gateway}} {{end}}",
+        ])
+        .output()
+        .await
+        .context("could not start docker")?;
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .find_map(|s| s.parse::<std::net::Ipv4Addr>().ok())
+        .map(std::net::IpAddr::V4)
+        .context("could not find the Docker bridge's address; is Docker running?")
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -1132,6 +1263,7 @@ async fn main() -> anyhow::Result<()> {
     if lock.try_lock().is_err() {
         bail!("another Decurion runner is already running on this computer");
     }
+    let gate = start_gate().await?;
     let place = place_from_env(std::env::var("DECURION_PLACE").ok().as_deref())?;
     // A sleeping hub must not hang a call forever: give up on dead
     // connections, then retry.
@@ -1223,7 +1355,7 @@ async fn main() -> anyhow::Result<()> {
                     checkpoint = ?claim.checkpoint,
                     "running"
                 );
-                if let Err(err) = run(&hub, &data, claim).await {
+                if let Err(err) = run(&hub, &data, &gate, claim).await {
                     tracing::error!(%err, id, "run failed");
                     hub.event(
                         id,
