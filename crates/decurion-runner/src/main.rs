@@ -2,7 +2,7 @@ use anyhow::{bail, Context};
 use decurion_proto::{Claim, MoveRequest, RunEvent, ThreadState};
 use decurion_runner::gatekeeper::{Gatekeeper, ANTHROPIC_API};
 use decurion_runner::{
-    container_name, over_budget, parse_line, pi_run_args, prompt_for, run_args, Credential, PiRun,
+    container_name, parse_line, pi_run_args, prompt_for, redact, run_args, Credential, PiRun,
     BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
 };
 use std::path::{Path, PathBuf};
@@ -341,13 +341,29 @@ async fn pi_output<R: tokio::io::AsyncBufRead + Unpin>(
         for e in &events {
             hub.event(id, e).await;
         }
-        if over_budget(run.cost_usd(), budget_usd) {
+        if run.must_stop(budget_usd) {
             stopped = true;
             tracing::info!(id, cost = run.cost_usd(), "stopping a run at its budget");
-            let _ = docker()
-                .args(["rm", "-f", &container_name(id)])
-                .output()
-                .await;
+            // pi keeps spending until the container is gone, so try again if
+            // Docker refuses at first.
+            for attempt in 1..=3 {
+                match docker()
+                    .args(["rm", "-f", &container_name(id)])
+                    .output()
+                    .await
+                {
+                    Ok(o) if o.status.success() => break,
+                    other => {
+                        tracing::warn!(
+                            id,
+                            attempt,
+                            ?other,
+                            "could not remove a stopped run's container"
+                        );
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
         }
     }
     Ok(if stopped {
@@ -533,7 +549,7 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
             ThreadState::Failed,
             format!(
                 "container ended without a result ({status}): {}",
-                err.trim()
+                redact(err.trim())
             ),
         ),
     };

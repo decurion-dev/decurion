@@ -22,7 +22,7 @@ Work can also go to ChatGPT (your OpenAI API key) or Grok (your xAI API key). De
 3. On each provider's own site (OpenAI platform settings, xAI console), set a monthly spending limit equal to Decurion's cap for that key. Decurion's caps start at $25 a month each.
 4. When you add work on the board, choose ChatGPT or Grok.
 
-Decurion stops the work once a run reaches the money set aside for it, and stops new work at the monthly cap. The provider's own limit is the backstop, because the agent holds the key while it runs. ChatGPT work uses `gpt-5.5` and Grok work uses `grok-4.7`.
+Decurion stops new work at the monthly cap, and stops a run once pi reports it has spent the money set aside for it. That per-run stop relies on what pi reports, and the agent holds the key while it runs, so the provider's own monthly limit is the real backstop: set it. (Claude pay-per-use is different: its key stays on your PC behind the gatekeeper.) ChatGPT work uses `gpt-5.5` and Grok work uses `grok-4.7`.
 
 Each piece of work runs in its own container with its own copy of the code. The only credential inside is the one that work runs on: that profile's Claude token, on Claude pay-per-use the run's proxy token, or for ChatGPT and Grok that provider's API key. Work moves to *In review* only when the agent has committed to its branch.
 

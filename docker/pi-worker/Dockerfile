@@ -9,11 +9,12 @@ RUN apt-get update \
 # pi needs Node 22.19 or newer. It needs no install scripts, so none run.
 ARG PI_VERSION=1.3.0
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION} \
- && npm cache clean --force
+ && npm cache clean --force \
+ && test -f /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js
 
 # pi's config folder holds its prices (models.json, models-store.json), its
 # settings and its add-ons. Here every file in it belongs to root, so the agent
-# cannot make its own work look cheaper or load code into pi. The folder is
+# cannot change pi's prices or add-ons through it. The folder is
 # sticky and open to all only because pi takes its locks by making
 # `<file>.lock` next to them; anything new written there is gone when the
 # container is. Cache warming is off: its refresh requests cost money but are
@@ -33,4 +34,6 @@ ENV PI_CODING_AGENT_DIR=/opt/pi-agent \
 RUN useradd --create-home --shell /bin/bash agent
 USER agent
 WORKDIR /work
-ENTRYPOINT ["pi"]
+# Started through node so SIGUSR1 cannot open Node's debugger in pi: the agent
+# runs as the same user and could otherwise run code inside pi.
+ENTRYPOINT ["node", "--disable-sigusr1", "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"]

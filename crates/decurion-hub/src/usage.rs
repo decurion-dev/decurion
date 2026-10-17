@@ -27,6 +27,10 @@ fn window_name(w: Option<&str>) -> Option<&str> {
     }
 }
 
+/// Most windows kept per plan. Claude reports a handful; a container that
+/// forges readings must not grow the table (or the board's poll) without end.
+const MAX_WINDOWS: i64 = 12;
+
 const STATUSES: [&str; 3] = ["allowed", "allowed_warning", "rejected"];
 
 /// Reset times outside 2020-2100 are not real.
@@ -75,6 +79,17 @@ impl Store {
         else {
             return Ok(false);
         };
+        let (known, count): (bool, i64) = sqlx::query_as(
+            "SELECT COALESCE(SUM(window_name = ?), 0) > 0, COUNT(*) FROM account_usage
+             WHERE account = ?",
+        )
+        .bind(window)
+        .bind(account.as_str())
+        .fetch_one(&mut *tx)
+        .await?;
+        if !known && count >= MAX_WINDOWS {
+            return Ok(false);
+        }
         let seq: Option<i64> = match status {
             Some(_) => Some(
                 sqlx::query_scalar("SELECT COALESCE(MAX(status_seq), 0) + 1 FROM account_usage")

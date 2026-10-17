@@ -2270,3 +2270,26 @@ async fn chatgpt_and_grok_work_does_not_wait_on_a_max_outage() {
     assert_eq!(c["account"], "api");
     assert!(c["budget_usd"].is_number());
 }
+
+#[tokio::test]
+async fn forged_usage_windows_cannot_grow_the_table() {
+    let (r, store) = hub().await;
+    let id = seed(&r).await;
+    claim_one(&r).await;
+    for i in 0..30 {
+        usage(
+            &r,
+            id,
+            json!({"window": format!("seven_day_x{i}"), "used_pct": 1.0}),
+        )
+        .await;
+    }
+    // A real window already kept still updates.
+    usage(&r, id, json!({"window":"seven_day_x0","used_pct":55.0})).await;
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM account_usage")
+        .fetch_one(store.pool())
+        .await
+        .unwrap_or(-1);
+    assert_eq!(n, 12);
+    assert_eq!(accounts(&r).await[0]["week_pct"], 55.0);
+}

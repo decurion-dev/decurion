@@ -391,7 +391,7 @@ pub fn parse_line(line: &str) -> Vec<RunEvent> {
                                 .find_map(|k| input[*k].as_str())
                                 .unwrap_or("");
                             Some(RunEvent::Tool {
-                                name: p["name"].as_str().unwrap_or("tool").to_owned(),
+                                name: clip(p["name"].as_str().unwrap_or("tool"), 64),
                                 summary: clip(summary, 200),
                             })
                         }
@@ -515,7 +515,14 @@ pub struct PiRun {
     settled: Option<bool>,
     /// Something came after `agent_settled`, which pi never prints.
     after_settled: bool,
+    /// A line could not be read (pi prints only JSON, so it was cut short or
+    /// is not pi's): whatever it cost was not counted.
+    unreadable: bool,
 }
+
+/// What a pi run reports when its output could not be read.
+pub const UNREADABLE_STOP: &str =
+    "Stopped: the agent printed output Decurion could not read, so its spending could not be tracked.";
 
 /// A usage report's cost; anything that is not a sane amount counts as zero.
 fn usage_cost(u: &Value) -> f64 {
@@ -547,6 +554,7 @@ impl PiRun {
             self.after_settled = true;
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else {
+            self.unreadable |= !line.trim().is_empty();
             return vec![];
         };
         match v["type"].as_str() {
@@ -602,7 +610,7 @@ impl PiRun {
                         .find_map(|k| args[*k].as_str())
                         .unwrap_or("");
                     Some(RunEvent::Tool {
-                        name: p["name"].as_str().unwrap_or("tool").to_owned(),
+                        name: clip(p["name"].as_str().unwrap_or("tool"), 64),
                         summary: clip(summary, 200),
                     })
                 }
@@ -615,6 +623,19 @@ impl PiRun {
             m["errorMessage"].as_str().map(str::to_owned),
         ));
         events
+    }
+
+    /// Whether the runner must stop the run now: it has spent its budget and
+    /// another model call may still come, or its spending can no longer be
+    /// tracked. A last answer that pushed it over is let finish, since pi
+    /// makes no further call after an answer that did not ask for a tool.
+    pub fn must_stop(&self, budget_usd: Option<f64>) -> bool {
+        let finished_answering = self.streaming_usd == 0.0
+            && self
+                .answer
+                .as_ref()
+                .is_some_and(|(_, stop, _)| stop != "toolUse");
+        self.unreadable || (over_budget(self.cost_usd(), budget_usd) && !finished_answering)
     }
 
     /// The result of a run whose output has ended, or `None` if pi never said
@@ -637,15 +658,25 @@ impl PiRun {
         Some(RunEvent::Finished {
             ok,
             summary,
-            cost_usd: (!self.after_settled).then(|| self.cost_usd()),
+            cost_usd: (!self.after_settled && !self.unreadable).then(|| self.cost_usd()),
             input_tokens: Some(self.input_tokens),
             output_tokens: Some(self.output_tokens),
         })
     }
 
-    /// The result of a run the runner stopped at its budget. The cost is
+    /// The result of a run the runner stopped (see [`PiRun::must_stop`]). The cost is
     /// everything pi reported up to then.
     pub fn budget_stop(&self) -> RunEvent {
+        if self.unreadable {
+            // The hub charges everything set aside for the run.
+            return RunEvent::Finished {
+                ok: false,
+                summary: UNREADABLE_STOP.to_owned(),
+                cost_usd: None,
+                input_tokens: Some(self.input_tokens),
+                output_tokens: Some(self.output_tokens),
+            };
+        }
         RunEvent::Finished {
             ok: false,
             summary: BUDGET_STOP.to_owned(),
@@ -1152,6 +1183,46 @@ mod tests {
             RunEvent::Finished { ok: false, summary, cost_usd: Some(c), .. }
                 if summary == BUDGET_STOP && (c - 0.0054).abs() < 1e-12
         ));
+    }
+
+    #[test]
+    fn a_last_answer_over_budget_may_finish_but_another_call_may_not_start() {
+        // Over budget after asking for a tool: another call would follow.
+        let mut tool = PiRun::default();
+        tool.parse_line(PI_TOOL_TURN);
+        assert!(tool.must_stop(Some(0.001)));
+        // Over budget on the final answer: nothing more is coming.
+        let mut last = PiRun::default();
+        last.parse_line(PI_ANSWER);
+        assert!(last.cost_usd() > 0.001);
+        assert!(!last.must_stop(Some(0.001)));
+        // Any further call starts streaming, and is stopped.
+        last.parse_line(PI_STREAMING);
+        assert!(last.must_stop(Some(0.001)));
+        assert!(!PiRun::default().must_stop(Some(0.001)));
+    }
+
+    #[test]
+    fn unreadable_pi_output_stops_the_run_and_is_not_trusted() {
+        let mut run = PiRun::default();
+        run.parse_line(PI_TOOL_TURN);
+        assert!(!run.must_stop(Some(9.0)));
+        // A line cut short at the runner's limit: its cost is unknown.
+        run.parse_line(&PI_ANSWER[..PI_ANSWER.len() / 2]);
+        assert!(run.must_stop(Some(9.0)));
+        assert!(matches!(
+            run.budget_stop(),
+            RunEvent::Finished { ok: false, summary, cost_usd: None, .. } if summary == UNREADABLE_STOP
+        ));
+        run.parse_line(PI_SETTLED);
+        assert!(matches!(
+            run.finished(),
+            Some(RunEvent::Finished { cost_usd: None, .. })
+        ));
+        // Blank lines are fine.
+        let mut blank = PiRun::default();
+        blank.parse_line("  ");
+        assert!(!blank.must_stop(Some(9.0)));
     }
 
     #[test]
