@@ -1,7 +1,7 @@
 //! The one Claude credential a run needs, for a cloud worker that has no copy
 //! of its own. On the PC it is read from Windows Credential Manager under the
-//! same names the PC runner uses; elsewhere (tests, a hub on Linux) from
-//! environment variables. It is handed out only for work running on the
+//! same names the PC runner uses, falling back to environment variables
+//! (tests, a hub on Linux). It is handed out only for work running on the
 //! asking runner, and never stored by the hub.
 
 use decurion_proto::RunCredential;
@@ -27,17 +27,19 @@ pub fn names(account: &str) -> Option<(&'static str, String, String)> {
 pub fn read(account: &str) -> Option<RunCredential> {
     let (var, target, fallback) = names(account)?;
     #[cfg(windows)]
-    let value = keyring::Entry::new_with_target(&target, "decurion", "claude")
+    let saved = keyring::Entry::new_with_target(&target, "decurion", "claude")
         .and_then(|e| e.get_password())
         .ok();
     #[cfg(not(windows))]
-    let value = {
+    let saved: Option<String> = {
         let _ = target;
-        std::env::var(&fallback).ok()
+        None
     };
-    #[cfg(windows)]
-    let _ = fallback;
-    value
+    // The variable is the fallback everywhere, so the same setup (and the
+    // tests) work on any computer.
+    saved
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| std::env::var(&fallback).ok())
         .filter(|v| !v.trim().is_empty())
         .map(|value| RunCredential {
             var: var.to_owned(),
