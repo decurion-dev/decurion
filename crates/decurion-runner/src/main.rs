@@ -85,6 +85,7 @@ impl Hub {
             &MoveRequest {
                 to,
                 note: Some(note.to_owned()),
+                expect: None,
                 receipt: None,
             },
         )

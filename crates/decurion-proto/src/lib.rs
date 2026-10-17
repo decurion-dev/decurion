@@ -171,6 +171,11 @@ pub struct MoveRequest {
     pub to: ThreadState,
     #[serde(default)]
     pub note: Option<String>,
+    /// The state the caller saw. Set, the move only happens if the thread is
+    /// still in it, so a tap on a screen that has gone stale (Stop on work
+    /// that has since finished) is refused instead of doing something else.
+    #[serde(default)]
+    pub expect: Option<ThreadState>,
     /// See [`check_receipt`].
     #[serde(default)]
     pub receipt: Option<String>,
