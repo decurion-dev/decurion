@@ -3,7 +3,11 @@ One coordinator. Every agent. Your rules. Decurion is an open-source control roo
 
 > Early development. Windows first. Nothing here is ready for daily use yet.
 
-## Try the skeleton (Windows, Docker Desktop)
+## Install
+
+Download the installer for Windows, or the `.tar.gz` for Mac or Linux, from the [Releases page](https://github.com/decurion-dev/decurion/releases). The [help pages](docs/help/src/README.md) walk you through installing, signing in your Claude accounts and adding your first app.
+
+## Run from source (Windows, Docker Desktop)
 
 1. Build the agent image: `docker build -t decurion/claude-worker:dev docker/claude-worker`
 2. Save a Claude token for profile A: run `claude setup-token`, then `python spike/wincred.py set A` and paste it (hidden input). It is stored in Windows Credential Manager as `decurion/claude-profile-A`.
@@ -24,5 +28,9 @@ Keep Docker Desktop's "Expose daemon on tcp://localhost:2375 without TLS" settin
 - `crates/decurion-runner` starts one sealed Claude Code container per piece of work
 - `docker/claude-worker` the agent image
 - `docs/spikes` what we tested and learned
+- `docs/help` the help pages, `docs/adr` design decisions, `docs/addons` how to write an add-on
+- `packaging` the Windows installer and the Mac and Linux install scripts (see [RELEASING.md](RELEASING.md))
+
+Want to help? Read [CONTRIBUTING.md](CONTRIBUTING.md). Found a security problem? See [SECURITY.md](SECURITY.md).
 
 Licensed under Apache-2.0.

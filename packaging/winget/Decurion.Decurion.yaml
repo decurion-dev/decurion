@@ -1,0 +1,8 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.9.0.schema.json
+# Filled in by the release workflow. Submitting to winget-pkgs is a separate,
+# manual step a maintainer takes after a release is published.
+PackageIdentifier: Decurion.Decurion
+PackageVersion: ${VERSION}
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.9.0

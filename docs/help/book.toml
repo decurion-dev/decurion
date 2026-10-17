@@ -1,0 +1,14 @@
+[book]
+title = "Decurion Help"
+authors = ["Decurion contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "../../target/help-book"
+
+[output.html]
+git-repository-url = "https://github.com/decurion-dev/decurion"
+default-theme = "light"
+preferred-dark-theme = "navy"
+no-section-label = true
