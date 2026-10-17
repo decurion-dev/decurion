@@ -28,6 +28,8 @@ If an app's tests need keys (a Stripe test key, a test database key), add them o
 - Each run gets that app's test keys as environment variables, and no other app's.
 - The values are hidden from everything the board shows. If one turns up anywhere in the agent's new commits, the work stops before review instead of going to *In review*. A key that was already in the app's code before the agent started is not counted.
 
+Open a card to talk to its agent while it works. *Change course now* stops its current step and gives it your message. *Do this next* waits until it finishes what it is doing. *Add a note* passes information along without interrupting. Work can be split into smaller tasks: stopping a task stops the smaller tasks inside it, except ones set to keep going on their own. If the PC or the runner stops in the middle of a step, the agent is told which step was cut off and checks what actually happened before it repeats anything that changes files or runs commands.
+
 Keep Docker Desktop's "Expose daemon on tcp://localhost:2375 without TLS" setting **off**. Containers can reach the host, and that port would give any agent full control of Docker.
 
 ## Layout

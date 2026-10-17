@@ -13,6 +13,7 @@
 
 pub mod devices;
 pub mod limits;
+pub mod messages;
 pub mod push;
 pub mod spend;
 pub mod store;
@@ -24,7 +25,7 @@ use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use decurion_proto::{MoveRequest, NewApp, NewThread, RunEvent};
+use decurion_proto::{MoveRequest, NewApp, NewMessage, NewThread, RunEvent};
 use serde::Deserialize;
 use std::sync::Arc;
 use store::{Store, StoreError};
@@ -40,7 +41,7 @@ pub enum Caller {
 impl Caller {
     fn actor(self) -> &'static str {
         match self {
-            Caller::Owner => "owner",
+            Caller::Owner => store::OWNER,
             Caller::Runner => "runner",
         }
     }
@@ -123,6 +124,12 @@ pub fn router(state: AppState) -> Router {
         .route("/threads/{id}", get(get_thread))
         .route("/threads/{id}/move", post(move_thread))
         .route("/threads/{id}/events", get(list_events).post(add_event))
+        .route(
+            "/threads/{id}/messages",
+            get(list_messages).post(add_message),
+        )
+        .route("/threads/{id}/messages/delivered", post(messages_delivered))
+        .route("/threads/{id}/live", get(live))
         .route("/runner/hello", post(runner_hello))
         .route("/runner/claim", post(runner_claim))
         .route("/pairing", post(new_pairing))
@@ -253,9 +260,10 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let code = match &self.0 {
             StoreError::NotFound => StatusCode::NOT_FOUND,
-            StoreError::BadMove { .. } | StoreError::Conflict | StoreError::Duplicate(_) => {
-                StatusCode::CONFLICT
-            }
+            StoreError::BadMove { .. }
+            | StoreError::Conflict
+            | StoreError::Duplicate(_)
+            | StoreError::Refused(_) => StatusCode::CONFLICT,
             StoreError::Invalid(_) => StatusCode::BAD_REQUEST,
             StoreError::Db(e) => {
                 tracing::error!(error = %e, "database error");
@@ -270,6 +278,20 @@ type ApiResult<T> = Result<Json<T>, ApiError>;
 
 fn forbidden(what: &str) -> Response {
     (StatusCode::FORBIDDEN, format!("{what} is owner-only")).into_response()
+}
+
+fn runner_only(what: &str) -> Response {
+    (StatusCode::FORBIDDEN, format!("{what} is runner-only")).into_response()
+}
+
+/// 201 for something new, 200 for the answer to a resent receipt.
+fn created_or_resent<T: serde::Serialize>(value: T, fresh: bool) -> Response {
+    let code = if fresh {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    (code, Json(value)).into_response()
 }
 
 fn page(html: impl Into<String>) -> Response {
@@ -519,7 +541,7 @@ async fn add_thread(
         return forbidden("adding work");
     }
     match st.store.add_thread(&t).await {
-        Ok(t) => (StatusCode::CREATED, Json(t)).into_response(),
+        Ok((t, fresh)) => created_or_resent(t, fresh),
         Err(e) => ApiError(e).into_response(),
     }
 }
@@ -536,15 +558,28 @@ async fn move_thread(
     if c == Caller::Runner && m.to == Done {
         return forbidden("marking work done");
     }
-    let expect = (c == Caller::Runner).then_some(Running);
+    // The owner's tap names the state it was made on, so a stale screen
+    // (Stop on work that has since finished) cannot do something else.
+    let expect = if c == Caller::Runner {
+        Some(Running)
+    } else {
+        m.expect
+    };
     match st
         .store
-        .move_thread(id, expect, m.to, c.actor(), m.note.as_deref())
+        .request_move(
+            id,
+            expect,
+            m.to,
+            c.actor(),
+            m.note.as_deref(),
+            m.receipt.as_deref(),
+        )
         .await
     {
-        Ok(t) => {
+        Ok((t, fresh)) => {
             // Only what the agent did is news; the owner's own taps are not.
-            let news = (c == Caller::Runner)
+            let news = (c == Caller::Runner && fresh)
                 .then(|| push::message_for(t.state, &t.title))
                 .flatten();
             if let (Some(p), Some((title, body))) = (st.push.clone(), news) {
@@ -585,6 +620,15 @@ async fn add_event(
     if c != Caller::Runner {
         return (StatusCode::FORBIDDEN, "events come from the runner").into_response();
     }
+    // The owner's messages and cut-off steps are the hub's record; a runner
+    // writing them could put words in the owner's mouth.
+    if e.hub_only() {
+        return (
+            StatusCode::FORBIDDEN,
+            "only the hub writes this kind of event",
+        )
+            .into_response();
+    }
     match st.store.add_event(id, &e).await {
         Ok((eid, new_outage)) => {
             if let (true, Some(p)) = (new_outage, st.push.clone()) {
@@ -603,6 +647,62 @@ async fn add_event(
             }
             (StatusCode::CREATED, Json(eid)).into_response()
         }
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn list_messages(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Vec<decurion_proto::Message>> {
+    Ok(Json(st.store.messages(id).await?))
+}
+
+async fn add_message(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+    Json(m): Json<NewMessage>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("messaging an agent");
+    }
+    match st.store.add_message(id, &m).await {
+        Ok((msg, fresh)) => created_or_resent(msg, fresh),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn live(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+) -> Response {
+    if c != Caller::Runner {
+        return runner_only("checking on a run");
+    }
+    match st.store.live(id).await {
+        Ok(l) => Json(l).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct Ids {
+    ids: Vec<i64>,
+}
+
+async fn messages_delivered(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+    Json(b): Json<Ids>,
+) -> Response {
+    if c != Caller::Runner {
+        return runner_only("marking messages delivered");
+    }
+    match st.store.mark_delivered(id, &b.ids).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => ApiError(e).into_response(),
     }
 }

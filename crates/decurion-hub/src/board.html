@@ -87,6 +87,8 @@
   .composer .bar input#title:hover { background: var(--surface-2); }
   .composer .bar input#title:focus { background: var(--surface); border-color: var(--focus); }
   .composer .bar .grow { flex: 1; }
+  .composer .bar select#parent { max-width: 260px; }
+  .composer .bar .check { font-size: 13px; color: var(--muted); }
   .kbd-hint { font-size: 12px; color: var(--faint); white-space: nowrap; }
   kbd { font: 600 11px/1 var(--font); padding: 3px 5px; border-radius: 5px; border: 1px solid var(--line); background: var(--surface-2); color: var(--muted); }
   .composer .field-error { padding: 0 18px 12px; }
@@ -147,6 +149,7 @@
   .wcard .foot .working { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
   .wcard .foot .working svg.i { width: 13px; height: 13px; }
   .wcard .pro { display: flex; align-items: center; gap: 5px; }
+  .wcard .tree { font-size: 12px; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
   .wcard .pro svg.i { width: 12px; height: 12px; }
   .sk-card { height: 104px; }
 
@@ -257,12 +260,28 @@
     .composer textarea#prompt { padding: 8px 14px 6px; }
     .composer .bar { padding: 8px 10px 10px; }
     .composer .bar select, .composer .bar input#title { max-width: none; flex: 1 1 100%; }
+    .composer .bar select#parent { max-width: none; }
     .composer .bar .grow, .kbd-hint { display: none; }
     .composer .bar .btn.primary { flex: 1 1 100%; }
     .form-grid { grid-template-columns: 1fr; }
     .scard { padding: 16px; }
     .wcard .t { font-size: 15.5px; }
   }
+
+  /* ---------- Work panel: task tree and messages (same in board.html and inbox.html) ---------- */
+  .work-body .part { display: contents; }
+  .talk { display: grid; gap: 8px; }
+  .talk .section-title { display: block; margin-bottom: 0; }
+  .talk textarea { min-height: 76px; }
+  .talk .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .talk .waiting { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+  .talk .field-error:empty { display: none; }
+  .kids { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); }
+  .kids li, .tree-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .kids li { padding: 8px 10px; }
+  .kids li + li { border-top: 1px solid var(--line); }
+  .kids .nm, .tree-row .nm { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+  @media (max-width: 640px) { .talk .row .btn { flex: 1 1 100%; } }
 </style>
 </head>
 <body>
@@ -299,6 +318,8 @@
           <div class="bar">
             <select id="app" aria-label="App"></select>
             <input id="title" type="text" placeholder="Title (optional)" aria-label="Title (optional)" maxlength="120" autocomplete="off">
+            <select id="parent" aria-label="Part of other work" hidden></select>
+            <label class="check" id="bg-wrap" hidden><input type="checkbox" id="background"> Keep going if the parent stops</label>
             <span class="grow"></span>
             <span class="kbd-hint" id="kbd-hint"></span>
             <button class="btn primary" id="start" type="submit"></button>
@@ -484,6 +505,7 @@
         D.api("/limits").catch(() => [])]); // older hubs have no /limits
       apps = a; threads = th; spend = sp; limits = Array.isArray(lim) ? lim : [];
       D.setApps(a);
+      D.setThreads(th);
       await loadTails(th);
       loaded = true; loadErr = null;
     } catch (e) {
@@ -649,8 +671,26 @@
       sel.replaceChildren(...apps.map((a) => el("option", { value: String(a.id) }, a.name)));
       if (keep && apps.some((a) => String(a.id) === keep)) sel.value = keep;
     }
+    fillParents();
     $("start").disabled = D.offline;
   }
+
+  // "Part of": open work in the same app. Kept while the owner is choosing.
+  function fillParents() {
+    const sel = $("parent");
+    const app = +$("app").value;
+    const open = threads.filter((t) => t.app_id === app && ACTIVE.has(t.state));
+    if (document.activeElement !== sel && changed("parents", [app, open.map((t) => [t.id, t.title])])) {
+      const keep = sel.value;
+      sel.replaceChildren(el("option", { value: "" }, "Not part of other work"),
+        ...open.map((t) => el("option", { value: String(t.id) }, `Part of: ${t.title}`)));
+      sel.value = open.some((t) => String(t.id) === keep) ? keep : "";
+    }
+    sel.hidden = !open.length && !sel.value;
+    $("bg-wrap").hidden = !sel.value;
+    if (!sel.value) $("background").checked = false;
+  }
+  $("parent").onchange = fillParents;
 
   function deriveTitle(prompt) {
     const first = (prompt.split(/\r?\n/).find((l) => l.trim()) ?? "").trim().replace(/\s+/g, " ");
@@ -672,7 +712,7 @@
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("add-thread").requestSubmit(); }
     });
   }
-  $("app").onchange = () => D.store.set("decurion.board.lastApp", $("app").value);
+  $("app").onchange = () => { D.store.set("decurion.board.lastApp", $("app").value); fillParents(); };
 
   $("add-thread").onsubmit = async (e) => {
     e.preventDefault();
@@ -688,8 +728,11 @@
     btn.disabled = true;
     btn.replaceChildren(icon("running"), "Starting");
     try {
-      await D.api("/threads", { method: "POST", body: JSON.stringify({ app_id, title, prompt: text }) });
+      const parent = $("parent").value;
+      await D.send("/threads", { app_id, title, prompt: text,
+        parent_id: parent ? +parent : null, background: !!parent && $("background").checked });
       prompt.value = ""; $("title").value = ""; $("title").placeholder = "Title (optional)"; grow();
+      $("background").checked = false;
       D.store.set("decurion.board.lastApp", String(app_id));
       D.toast(`Started "${title}". An agent will pick it up.`);
       refresh();
@@ -746,6 +789,7 @@
         el("span", { className: "when", title: new Date(t.updated_at).toLocaleString() }, D.ago(t.updated_at))),
       el("h3", { className: "t" }, hit),
       line && el("p", { className: "says" }, line),
+      D.treeLine(t) && el("p", { className: "tree" }, D.treeLine(t)),
       D.pro && el("div", { className: "pro" }, icon("branch"), `${t.branch || "no branch yet"} · #${t.id}`),
       (acts.length || t.state === "running") && el("div", { className: "foot" },
         acts.length ? el("span", { className: "acts" }, ...acts) : null,
@@ -771,7 +815,7 @@
 
     const shown = shownThreads();
     const sig = ["board", filter, D.pro, D.offline, folds, Math.floor(Date.now() / 30000), apps.map((a) => [a.id, a.name, a.pay_per_use, a.profile]),
-      shown.map((t) => [t.id, t.state, t.updated_at, t.title, t.branch, lineOf(t)])];
+      shown.map((t) => [t.id, t.state, t.updated_at, t.title, t.branch, lineOf(t), D.treeLine(t)])];
     if (!changed("board", sig)) return;
 
     keepFocus(() => {

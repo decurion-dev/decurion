@@ -15,6 +15,7 @@
 
 - [Give your first goal](give-your-first-goal.md)
 - [Answer requests](answer-requests.md)
+- [Talk to an agent while it works](talk-to-a-running-agent.md)
 - [Review and merge work](review-and-merge.md)
 
 # When things go wrong

@@ -2184,3 +2184,766 @@ async fn test_keys_need_a_key_store() {
     .await;
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
 }
+
+// Owner messages, receipts, task trees and cut-off steps.
+
+async fn claim(r: &axum::Router) -> Value {
+    let (s, c) = call(
+        r,
+        "POST",
+        "/api/runner/claim",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    c
+}
+
+async fn mv(r: &axum::Router, id: i64, key: &str, body: Value) -> (StatusCode, Value) {
+    call(
+        r,
+        "POST",
+        &format!("/api/threads/{id}/move"),
+        Some(key),
+        body,
+    )
+    .await
+}
+
+async fn say(r: &axum::Router, id: i64, body: Value) -> (StatusCode, Value) {
+    call(
+        r,
+        "POST",
+        &format!("/api/threads/{id}/messages"),
+        Some(OWNER),
+        body,
+    )
+    .await
+}
+
+async fn event(r: &axum::Router, id: i64, body: Value) -> StatusCode {
+    call(
+        r,
+        "POST",
+        &format!("/api/threads/{id}/events"),
+        Some(RUNNER),
+        body,
+    )
+    .await
+    .0
+}
+
+async fn under(r: &axum::Router, app: i64, parent: i64, background: bool) -> (StatusCode, Value) {
+    call(
+        r,
+        "POST",
+        "/api/threads",
+        Some(OWNER),
+        json!({"app_id": app, "title": "part", "prompt": "p",
+               "parent_id": parent, "background": background}),
+    )
+    .await
+}
+
+async fn state(store: &Store, id: i64) -> decurion_proto::ThreadState {
+    store.thread(id).await.expect("thread").state
+}
+
+async fn last_note(store: &Store, id: i64) -> (String, String, Option<String>) {
+    sqlx::query_as("SELECT actor, to_state, note FROM audit WHERE thread_id = ? ORDER BY id DESC")
+        .bind(id)
+        .fetch_one(store.pool())
+        .await
+        .expect("audit")
+}
+
+async fn hello(r: &axum::Router) {
+    let (s, _) = call(
+        r,
+        "POST",
+        "/api/runner/hello",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_resent_receipt_gets_the_first_answer() {
+    use decurion_proto::ThreadState::*;
+    let (r, store) = hub().await;
+    let app = demo_app(&r).await;
+    let add = json!({"app_id": app, "title":"t", "prompt":"p", "receipt":"add-0000001"});
+    let (s, first) = call(&r, "POST", "/api/threads", Some(OWNER), add.clone()).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let id = first["id"].as_i64().expect("id");
+    let (s, again) = call(&r, "POST", "/api/threads", Some(OWNER), add).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(again["id"], id);
+    let (_, all) = call(&r, "GET", "/api/threads", Some(OWNER), Value::Null).await;
+    assert_eq!(all.as_array().map(Vec::len), Some(1));
+
+    let park = json!({"to":"needs_you", "receipt":"move-000001"});
+    let (s, t) = mv(&r, id, OWNER, park.clone()).await;
+    assert_eq!(
+        (s, t["state"].clone()),
+        (StatusCode::OK, json!("needs_you"))
+    );
+    let audits = store.audit_count(id).await.expect("audit");
+    let (s, t) = mv(&r, id, OWNER, park.clone()).await;
+    assert_eq!(
+        (s, t["state"].clone()),
+        (StatusCode::OK, json!("needs_you"))
+    );
+    assert_eq!(store.audit_count(id).await.expect("audit"), audits);
+    // Moved on since: the resend reports the thread as it is now, and does
+    // not move it back.
+    mv(&r, id, OWNER, json!({"to":"queued"})).await;
+    let (s, t) = mv(&r, id, OWNER, park).await;
+    assert_eq!((s, t["state"].clone()), (StatusCode::OK, json!("queued")));
+    assert_eq!(state(&store, id).await, Queued);
+
+    let note = json!({"kind":"note", "text":"fyi", "receipt":"msg-0000001"});
+    let (s, m) = say(&r, id, note.clone()).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, m2) = say(&r, id, note).await;
+    assert_eq!((s, m2), (StatusCode::OK, m));
+    let (_, all) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{id}/messages"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(all.as_array().map(Vec::len), Some(1));
+
+    // One tap, one action: a receipt cannot be reused for anything else.
+    let (s, _) = say(
+        &r,
+        id,
+        json!({"kind":"note","text":"x","receipt":"add-0000001"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = mv(
+        &r,
+        id,
+        OWNER,
+        json!({"to":"failed","receipt":"msg-0000001"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = call(
+        &r,
+        "POST",
+        "/api/threads",
+        Some(OWNER),
+        json!({"app_id": app, "title":"t", "prompt":"p", "receipt":"move-000001"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let other = add_work(&r, app, "other").await;
+    let (s, _) = mv(
+        &r,
+        other,
+        OWNER,
+        json!({"to":"needs_you","receipt":"move-000001"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = say(
+        &r,
+        other,
+        json!({"kind":"note","text":"x","receipt":"msg-0000001"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(state(&store, id).await, Queued);
+    assert_eq!(state(&store, other).await, Queued);
+
+    // A malformed receipt is refused rather than ignored.
+    let (s, _) = call(
+        &r,
+        "POST",
+        "/api/threads",
+        Some(OWNER),
+        json!({"app_id": app, "title":"t", "prompt":"p", "receipt":"short"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = mv(
+        &r,
+        id,
+        OWNER,
+        json!({"to":"failed","receipt":"has spaces in it"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = say(&r, id, json!({"kind":"note","text":"x","receipt":"short"})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn messages_are_logged_and_steering_sends_work_back() {
+    use decurion_proto::ThreadState::*;
+    let (r, store) = hub().await;
+    let id = seed(&r).await;
+    claim(&r).await;
+    mv(&r, id, RUNNER, json!({"to":"in_review"})).await;
+
+    // A note is only information: the work stays where it is.
+    let (s, m) = say(&r, id, json!({"kind":"note","text":"  the API changed  "})).await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert_eq!(m["text"], "the API changed");
+    assert_eq!(m["kind"], "note");
+    assert_eq!(m["delivered_at"], Value::Null);
+    assert_eq!(state(&store, id).await, InReview);
+    let (s, _) = say(&r, id, json!({"kind":"follow_up","text":"also add tests"})).await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert_eq!(state(&store, id).await, Queued);
+    assert_eq!(
+        last_note(&store, id).await,
+        (
+            "owner".into(),
+            "queued".into(),
+            Some("sent back with a message".into())
+        )
+    );
+
+    let (_, ev) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{id}/events"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    let owner: Vec<_> = ev
+        .as_array()
+        .expect("events")
+        .iter()
+        .filter(|e| e["event"]["kind"] == "owner")
+        .map(|e| (e["event"]["via"].clone(), e["event"]["text"].clone()))
+        .collect();
+    assert_eq!(
+        owner,
+        vec![
+            (json!("note"), json!("the API changed")),
+            (json!("follow_up"), json!("also add tests"))
+        ]
+    );
+
+    // From Needs you and from Failed too.
+    let app = store.thread(id).await.expect("thread").app_id;
+    let waiting = add_work(&r, app, "waiting").await;
+    mv(&r, waiting, OWNER, json!({"to":"needs_you"})).await;
+    say(&r, waiting, json!({"kind":"note","text":"hm"})).await;
+    assert_eq!(state(&store, waiting).await, NeedsYou);
+    say(
+        &r,
+        waiting,
+        json!({"kind":"steer","text":"use the other key"}),
+    )
+    .await;
+    assert_eq!(state(&store, waiting).await, Queued);
+    let stopped = add_work(&r, app, "stopped").await;
+    mv(&r, stopped, OWNER, json!({"to":"failed"})).await;
+    say(&r, stopped, json!({"kind":"note","text":"hm"})).await;
+    assert_eq!(state(&store, stopped).await, Failed);
+    say(&r, stopped, json!({"kind":"steer","text":"try again"})).await;
+    assert_eq!(state(&store, stopped).await, Queued);
+
+    let (s, all) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{id}/messages"),
+        Some(RUNNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let kinds: Vec<_> = all
+        .as_array()
+        .expect("messages")
+        .iter()
+        .map(|m| m["kind"].clone())
+        .collect();
+    assert_eq!(kinds, vec![json!("note"), json!("follow_up")]);
+
+    // Length is checked after trimming; only the owner sends.
+    let (s, _) = say(&r, id, json!({"kind":"note","text":"   "})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = say(&r, id, json!({"kind":"note","text":"é".repeat(4001)})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = say(&r, id, json!({"kind":"note","text":"é".repeat(4000)})).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, _) = say(&r, id, json!({"kind":"shout","text":"x"})).await;
+    assert!(s.is_client_error());
+    let (s, _) = call(
+        &r,
+        "POST",
+        &format!("/api/threads/{id}/messages"),
+        Some(RUNNER),
+        json!({"kind":"note","text":"x"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = say(&r, 999, json!({"kind":"note","text":"x"})).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn finished_work_takes_no_messages() {
+    let (r, _) = hub().await;
+    let id = seed(&r).await;
+    claim(&r).await;
+    mv(&r, id, RUNNER, json!({"to":"in_review"})).await;
+    mv(&r, id, OWNER, json!({"to":"done"})).await;
+    let (s, body) = say(&r, id, json!({"kind":"follow_up","text":"one more thing"})).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(body, "this work is finished; add new work instead");
+}
+
+#[tokio::test]
+async fn the_runner_checks_on_runs_and_acks_messages() {
+    let (r, _) = hub().await;
+    let id = seed(&r).await;
+    let app = demo_app_id(&r).await;
+    let other = add_work(&r, app, "other").await;
+    claim(&r).await;
+    let (_, a) = say(&r, id, json!({"kind":"note","text":"one"})).await;
+    let (_, b) = say(&r, id, json!({"kind":"steer","text":"two"})).await;
+    let (_, c) = say(&r, other, json!({"kind":"note","text":"elsewhere"})).await;
+
+    let live = format!("/api/threads/{id}/live");
+    let delivered = format!("/api/threads/{id}/messages/delivered");
+    let (s, _) = call(&r, "GET", &live, Some(OWNER), Value::Null).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = call(
+        &r,
+        "POST",
+        &delivered,
+        Some(OWNER),
+        json!({"ids":[a["id"]]}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    let (s, l) = call(&r, "GET", &live, Some(RUNNER), Value::Null).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(l["state"], "running");
+    assert_eq!(l["messages"], json!([a, b]));
+
+    // Another thread's message is not this thread's to ack.
+    let ids = json!({"ids":[a["id"], c["id"]]});
+    let (s, _) = call(&r, "POST", &delivered, Some(RUNNER), ids.clone()).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, l) = call(&r, "GET", &live, Some(RUNNER), Value::Null).await;
+    assert_eq!(l["messages"], json!([b]));
+    let (_, all) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{id}/messages"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    let when = all[0]["delivered_at"].clone();
+    assert!(when.is_string());
+    let (_, elsewhere) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{other}/messages"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(elsewhere[0]["delivered_at"], Value::Null);
+
+    // Acking twice changes nothing.
+    let (s, _) = call(&r, "POST", &delivered, Some(RUNNER), ids).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, all) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{id}/messages"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(all[0]["delivered_at"], when);
+
+    // The owner stopping the run shows up for the runner.
+    mv(&r, id, OWNER, json!({"to":"failed"})).await;
+    let (_, l) = call(&r, "GET", &live, Some(RUNNER), Value::Null).await;
+    assert_eq!(l["state"], "failed");
+}
+
+async fn demo_app_id(r: &axum::Router) -> i64 {
+    let (_, apps) = call(r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    apps[0]["id"].as_i64().expect("app")
+}
+
+#[tokio::test]
+async fn a_claim_brings_the_messages_still_waiting() {
+    let (r, _) = hub().await;
+    let id = seed(&r).await;
+    let (_, a) = say(&r, id, json!({"kind":"note","text":"one"})).await;
+    let (_, b) = say(&r, id, json!({"kind":"follow_up","text":"two"})).await;
+    let c = claim(&r).await;
+    assert_eq!(c["messages"], json!([a, b]));
+    assert_eq!(c["interrupted"], Value::Null);
+    // Handing them out is not delivering them: the runner acks that.
+    let (_, l) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{id}/live"),
+        Some(RUNNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(l["messages"].as_array().map(Vec::len), Some(2));
+}
+
+#[tokio::test]
+async fn finishing_with_a_follow_up_waiting_goes_back_to_the_queue() {
+    use decurion_proto::ThreadState::*;
+    let (r, store) = hub().await;
+    let id = seed(&r).await;
+    claim(&r).await;
+    let (_, m) = say(&r, id, json!({"kind":"follow_up","text":"then the docs"})).await;
+    assert_eq!(state(&store, id).await, Running);
+    let (s, t) = mv(&r, id, RUNNER, json!({"to":"in_review","note":"done"})).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(t["state"], "queued");
+    assert_eq!(
+        last_note(&store, id).await,
+        (
+            "runner".into(),
+            "queued".into(),
+            Some("the owner sent more while it was finishing".into())
+        )
+    );
+    let c = claim(&r).await;
+    assert_eq!(c["messages"], json!([m]));
+    call(
+        &r,
+        "POST",
+        &format!("/api/threads/{id}/messages/delivered"),
+        Some(RUNNER),
+        json!({"ids":[m["id"]]}),
+    )
+    .await;
+    // A note never holds work back.
+    say(&r, id, json!({"kind":"note","text":"fyi"})).await;
+    let (_, t) = mv(&r, id, RUNNER, json!({"to":"in_review"})).await;
+    assert_eq!(t["state"], "in_review");
+}
+
+#[tokio::test]
+async fn stopping_a_task_stops_the_work_under_it_deepest_first() {
+    use decurion_proto::ThreadState::*;
+    let (r, store) = hub().await;
+    let app = demo_app(&r).await;
+    let top = add_work(&r, app, "top").await;
+    // Out of the queue, so the runner picks up the parts below.
+    mv(&r, top, OWNER, json!({"to":"needs_you"})).await;
+    let (_, finished) = under(&r, app, top, false).await;
+    let finished = finished["id"].as_i64().expect("id");
+    claim(&r).await;
+    mv(&r, finished, RUNNER, json!({"to":"in_review"})).await;
+    mv(&r, finished, OWNER, json!({"to":"done"})).await;
+    let (s, child) = under(&r, app, top, false).await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert_eq!(child["parent_id"], top);
+    assert_eq!(child["background"], false);
+    let child = child["id"].as_i64().expect("id");
+    let (_, grandchild) = under(&r, app, child, false).await;
+    let grandchild = grandchild["id"].as_i64().expect("id");
+    let (_, bg) = under(&r, app, top, true).await;
+    assert_eq!(bg["background"], true);
+    let bg = bg["id"].as_i64().expect("id");
+    let (_, under_bg) = under(&r, app, bg, false).await;
+    let under_bg = under_bg["id"].as_i64().expect("id");
+    let c = claim(&r).await;
+    assert_eq!(c["thread"]["id"], child);
+    assert_eq!(c["thread"]["parent_id"], top);
+
+    let (s, t) = mv(&r, top, OWNER, json!({"to":"failed"})).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(t["state"], "failed");
+    assert_eq!(state(&store, child).await, Failed);
+    assert_eq!(state(&store, grandchild).await, Failed);
+    assert_eq!(state(&store, finished).await, Done);
+    assert_eq!(state(&store, bg).await, Queued);
+    assert_eq!(state(&store, under_bg).await, Queued);
+    let order: Vec<(i64, String, Option<String>)> = sqlx::query_as(
+        "SELECT thread_id, actor, note FROM audit WHERE to_state = 'failed' ORDER BY id",
+    )
+    .fetch_all(store.pool())
+    .await
+    .expect("audit");
+    let why = Some("stopped because the task it is part of was stopped".to_owned());
+    assert_eq!(
+        order,
+        vec![
+            (grandchild, "owner".into(), why.clone()),
+            (child, "owner".into(), why),
+            (top, "owner".into(), None),
+        ]
+    );
+    // The running part's run was closed, not left holding money.
+    let open: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM runs WHERE thread_id = ? AND finished_at IS NULL")
+            .bind(child)
+            .fetch_one(store.pool())
+            .await
+            .expect("runs");
+    assert_eq!(open, 0);
+    let (_, l) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{child}/live"),
+        Some(RUNNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(l["state"], "failed");
+
+    // The runner reporting a failure does not stop the work under it.
+    let top2 = add_work(&r, app, "top2").await;
+    let (_, part) = under(&r, app, top2, false).await;
+    let part = part["id"].as_i64().expect("id");
+    mv(&r, bg, OWNER, json!({"to":"needs_you"})).await;
+    mv(&r, under_bg, OWNER, json!({"to":"needs_you"})).await;
+    let c = claim(&r).await;
+    assert_eq!(c["thread"]["id"], top2);
+    mv(&r, top2, RUNNER, json!({"to":"failed"})).await;
+    assert_eq!(state(&store, part).await, Queued);
+}
+
+#[tokio::test]
+async fn work_under_a_task_must_fit_the_task() {
+    let (r, _) = hub().await;
+    let app = demo_app(&r).await;
+    let (_, other_app) = call(
+        &r,
+        "POST",
+        "/api/apps",
+        Some(OWNER),
+        json!({"name":"other","repo_path":"C:\\repos\\other","profile":"B"}),
+    )
+    .await;
+    let top = add_work(&r, app, "top").await;
+    let (s, _) = under(&r, app, 999, false).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = under(&r, other_app["id"].as_i64().expect("id"), top, false).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    // Five levels below the top is as deep as it goes.
+    let mut parent = top;
+    for _ in 0..5 {
+        let (s, t) = under(&r, app, parent, false).await;
+        assert_eq!(s, StatusCode::CREATED);
+        parent = t["id"].as_i64().expect("id");
+    }
+    let (s, body) = under(&r, app, parent, false).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "work can only be split 5 levels deep");
+
+    let (_, all) = call(&r, "GET", "/api/threads", Some(OWNER), Value::Null).await;
+    assert_eq!(all[0]["parent_id"], Value::Null);
+    assert_eq!(all[0]["background"], false);
+    assert_eq!(all[1]["parent_id"], top);
+
+    mv(&r, top, OWNER, json!({"to":"failed"})).await;
+    let (s, body) = under(&r, app, top, false).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(body, "the task this is part of is finished");
+}
+
+#[tokio::test]
+async fn a_resumed_run_hears_which_step_was_cut_off() {
+    let (r, store) = hub().await;
+    let id = seed(&r).await;
+    claim(&r).await;
+    event(&r, id, json!({"kind":"started"})).await;
+    event(
+        &r,
+        id,
+        json!({"kind":"tool","name":"Bash","summary":"cargo test"}),
+    )
+    .await;
+    hello(&r).await;
+    // The owner writing in while it is down does not hide the cut-off step.
+    say(&r, id, json!({"kind":"note","text":"while you were out"})).await;
+    let c = claim(&r).await;
+    assert_eq!(c["resume"], true);
+    let step = json!({"name":"Bash","summary":"cargo test","safe_to_redo":false});
+    assert_eq!(c["interrupted"], step);
+    // Cut off again after the box started but before the agent did
+    // anything: same step, logged once.
+    event(&r, id, json!({"kind":"started"})).await;
+    hello(&r).await;
+    let c = claim(&r).await;
+    assert_eq!(c["interrupted"], step);
+    let logged: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM events WHERE thread_id = ?
+             AND json_extract(body, '$.kind') = 'interrupted'",
+    )
+    .bind(id)
+    .fetch_one(store.pool())
+    .await
+    .expect("events");
+    assert_eq!(logged, 1);
+    let (_, tail) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{id}/events?tail=2"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    // The cut-off step, then the box that started and died again.
+    assert_eq!(tail[1]["event"]["kind"], "started");
+    assert_eq!(tail[0]["event"]["kind"], "interrupted");
+    assert_eq!(tail[0]["event"]["name"], "Bash");
+
+    // A step the agent got an answer to and talked about is not cut off.
+    let app = store.thread(id).await.expect("thread").app_id;
+    mv(&r, id, RUNNER, json!({"to":"failed"})).await;
+    let next = add_work(&r, app, "next").await;
+    claim(&r).await;
+    event(
+        &r,
+        next,
+        json!({"kind":"tool","name":"Read","summary":"a.rs"}),
+    )
+    .await;
+    event(&r, next, json!({"kind":"message","text":"read it"})).await;
+    hello(&r).await;
+    let c = claim(&r).await;
+    assert_eq!(c["thread"]["id"], next);
+    assert_eq!(c["resume"], true);
+    assert_eq!(c["interrupted"], Value::Null);
+    // A look-only step is safe to redo.
+    event(
+        &r,
+        next,
+        json!({"kind":"tool","name":"Read","summary":"b.rs"}),
+    )
+    .await;
+    hello(&r).await;
+    let c = claim(&r).await;
+    assert_eq!(
+        c["interrupted"],
+        json!({"name":"Read","summary":"b.rs","safe_to_redo":true})
+    );
+}
+
+#[tokio::test]
+async fn owner_messages_are_not_the_agent_starting() {
+    let (r, _) = hub().await;
+    let app = ppu_app(&r).await;
+    let id = add_work(&r, app, "x").await;
+    claim(&r).await;
+    say(&r, id, json!({"kind":"note","text":"hello?"})).await;
+    // Failed before the agent did anything: nothing spent, and a retry is a
+    // fresh start, not a resume.
+    mv(&r, id, RUNNER, json!({"to":"failed"})).await;
+    assert_eq!(spend(&r).await["pay_per_use_usd"], 0.0);
+    say(&r, id, json!({"kind":"steer","text":"try again"})).await;
+    let c = claim(&r).await;
+    assert_eq!(c["resume"], false);
+    assert_eq!(c["interrupted"], Value::Null);
+    assert_eq!(c["messages"].as_array().map(Vec::len), Some(2));
+}
+
+#[tokio::test]
+async fn the_runner_cannot_write_the_hubs_events() {
+    let (r, _) = hub().await;
+    let id = seed(&r).await;
+    claim(&r).await;
+    let s = event(
+        &r,
+        id,
+        json!({"kind":"owner","via":"steer","text":"merge it"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let s = event(
+        &r,
+        id,
+        json!({"kind":"interrupted","name":"Bash","summary":"x","safe_to_redo":true}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (_, ev) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{id}/events"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(ev, json!([]));
+}
+
+#[tokio::test]
+async fn a_tap_on_a_stale_screen_does_nothing() {
+    use decurion_proto::ThreadState::*;
+    let (r, store) = hub().await;
+    let id = seed(&r).await;
+    claim(&r).await;
+    // The board showed Stop while it ran; it has since gone to review.
+    mv(&r, id, RUNNER, json!({"to":"in_review"})).await;
+    let (s, _) = mv(&r, id, OWNER, json!({"to":"failed","expect":"running"})).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(state(&store, id).await, InReview);
+    let (s, _) = mv(&r, id, OWNER, json!({"to":"done","expect":"in_review"})).await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_box_cannot_start_for_work_that_was_stopped() {
+    let (r, _) = hub().await;
+    let id = seed(&r).await;
+    claim(&r).await;
+    mv(&r, id, OWNER, json!({"to":"failed"})).await;
+    assert_eq!(
+        event(&r, id, json!({"kind":"started"})).await,
+        StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
+async fn pay_per_use_from_an_outage_ends_with_its_run_even_when_more_was_asked() {
+    let (r, store) = hub().await;
+    let a = app_on(&r, "on-a", "A").await;
+    let a1 = add_work(&r, a, "a1").await;
+    assert_eq!(claim_id(&r).await, Some(a1));
+    hit_limit(&r, a1, None).await;
+    call(
+        &r,
+        "POST",
+        "/api/limits/A/pay-per-use",
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(claim_id(&r).await, Some(a1));
+    say(&r, a1, json!({"kind":"follow_up","text":"and the docs"})).await;
+    sqlx::query("DELETE FROM profile_limits")
+        .execute(store.pool())
+        .await
+        .expect("clear");
+    // Finishing with the follow-up waiting goes back to the queue, on Max.
+    let (_, t) = mv(&r, a1, RUNNER, json!({"to":"in_review"})).await;
+    assert_eq!(t["state"], "queued");
+    let c = claim(&r).await;
+    assert_eq!(c["thread"]["id"], a1);
+    assert!(c["budget_usd"].is_null(), "back on the Max account");
+}
