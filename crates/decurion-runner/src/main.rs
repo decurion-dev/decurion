@@ -1,7 +1,7 @@
 use anyhow::{bail, Context};
-use decurion_proto::{Claim, MoveRequest, Profile, RunEvent, ThreadState};
+use decurion_proto::{Claim, MoveRequest, RunEvent, ThreadState};
 use decurion_runner::{
-    container_name, credential_target, parse_line, prompt_for, run_args, DOCKER_CLI_ENV, TOKEN_VAR,
+    container_name, parse_line, prompt_for, run_args, Credential, BUDGET_STOP, DOCKER_CLI_ENV,
 };
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -69,21 +69,22 @@ fn data_dir() -> anyhow::Result<PathBuf> {
     Ok(PathBuf::from(base).join("decurion"))
 }
 
-/// The profile's Claude token, from Windows Credential Manager
-/// (`decurion/claude-profile-A`). Set with `claude setup-token` once per profile.
-fn claude_token(p: Profile) -> anyhow::Result<String> {
+/// The run's one credential, from Windows Credential Manager: a Max profile's
+/// token (`claude setup-token`, saved as `decurion/claude-profile-A`) or the
+/// pay-per-use API key (`decurion/anthropic-api`).
+fn secret(cred: Credential) -> anyhow::Result<String> {
+    let target = cred.target();
     #[cfg(windows)]
     {
-        let target = credential_target(p);
         let entry = keyring::Entry::new_with_target(&target, "decurion", "claude")?;
         entry
             .get_password()
-            .with_context(|| format!("no Claude token saved as {target}"))
+            .with_context(|| format!("nothing saved in Credential Manager as {target}"))
     }
     #[cfg(not(windows))]
     {
-        let var = format!("DECURION_CLAUDE_TOKEN_{}", p.as_str());
-        std::env::var(&var).with_context(|| format!("{} not set ({})", var, credential_target(p)))
+        let var = cred.env_fallback();
+        std::env::var(&var).with_context(|| format!("{var} not set ({target})"))
     }
 }
 
@@ -267,11 +268,21 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
         .await;
 
     let wt = workspace(data, &c).await?;
-    let token = claude_token(c.app.profile)?;
+    let cred = if c.budget_usd.is_some() {
+        Credential::PayPerUse
+    } else {
+        Credential::Max(c.app.profile)
+    };
+    let token = secret(cred)?;
     let prompt = prompt_for(&c.thread.prompt, c.resume);
+    // Tell the hub before launching: from here the run may cost money, and if
+    // the hub cannot be told, the run does not start.
+    hub.post(&format!("/threads/{id}/events"), &RunEvent::Started)
+        .await
+        .context("could not tell the hub the run is starting")?;
     let mut child = docker()
-        .env(TOKEN_VAR, token)
-        .args(run_args(id, &wt, &session, c.resume)?)
+        .env(cred.var(), token)
+        .args(run_args(id, &wt, &session, c.resume, cred, c.budget_usd)?)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -307,16 +318,50 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
     });
     let stdout = child.stdout.take().context("no stdout")?;
     let mut out = BufReader::new(stdout);
-    let mut finished: Option<(bool, String)> = None;
+    // Claude Code's result is the last line it prints. Anything after it, or a
+    // container that does not exit cleanly, means the agent may have printed a
+    // fake result: its cost is then not trusted and the hub charges the whole
+    // amount set aside.
+    let mut result: Option<RunEvent> = None;
+    let mut after_result = false;
     while let Some(line) = read_capped_line(&mut out).await? {
+        if result.is_some() && !line.trim().is_empty() {
+            after_result = true;
+        }
         for e in parse_line(&line) {
-            if let RunEvent::Finished { ok, summary } = &e {
-                finished = Some((*ok, summary.clone()));
+            if matches!(e, RunEvent::Finished { .. }) {
+                result = Some(e);
+                after_result = false;
+            } else {
+                hub.event(id, &e).await;
             }
-            hub.event(id, &e).await;
         }
     }
     let status = child.wait().await?;
+    let finished = match result {
+        Some(RunEvent::Finished {
+            ok,
+            summary,
+            cost_usd,
+            input_tokens,
+            output_tokens,
+        }) => {
+            let trusted = status.success() && !after_result;
+            hub.event(
+                id,
+                &RunEvent::Finished {
+                    ok,
+                    summary: summary.clone(),
+                    cost_usd: cost_usd.filter(|_| trusted),
+                    input_tokens,
+                    output_tokens,
+                },
+            )
+            .await;
+            Some((ok, summary))
+        }
+        _ => None,
+    };
     let err = stderr_task.await.unwrap_or_default();
     // The agent's own "done" is not enough: work only goes to review if it
     // actually left commits on its branch.
@@ -338,6 +383,8 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
             ThreadState::Failed,
             format!("container exited with {status} after the agent reported: {summary}"),
         ),
+        // Out of money for this run, not broken: the owner can give it more.
+        Some((false, summary)) if summary == BUDGET_STOP => (ThreadState::NeedsYou, summary),
         Some((false, summary)) => (ThreadState::Failed, summary),
         None => (
             ThreadState::Failed,
@@ -377,6 +424,25 @@ async fn main() -> anyhow::Result<()> {
             .to_owned(),
         http: reqwest::Client::new(),
     };
+    // Containers left by a runner that died keep working, and spending, with
+    // nobody listening. Stop them all before taking on any work.
+    if let Ok(out) = docker()
+        .args(["ps", "-aq", "--filter", "name=^decurion-thread-"])
+        .output()
+        .await
+    {
+        let ids: Vec<String> = String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        if !ids.is_empty() {
+            tracing::info!(
+                count = ids.len(),
+                "stopping containers left by a previous runner"
+            );
+            let _ = docker().arg("rm").arg("-f").args(&ids).output().await;
+        }
+    }
     let paused: Vec<i64> = hub
         .post("/runner/hello", &serde_json::json!({ "runner": RUNNER }))
         .await?
@@ -416,6 +482,9 @@ async fn main() -> anyhow::Result<()> {
                         &RunEvent::Finished {
                             ok: false,
                             summary: err.to_string(),
+                            cost_usd: None,
+                            input_tokens: None,
+                            output_tokens: None,
                         },
                     )
                     .await;

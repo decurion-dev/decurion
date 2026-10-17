@@ -1,8 +1,8 @@
 """Store or read a Claude profile token in Windows Credential Manager.
 
 Store (prompts with hidden input, prints nothing back):
-    python spike/wincred.py set A
-The token comes from `claude setup-token`, run once per Max profile.
+    python spike/wincred.py set A      # Max profile A, from `claude setup-token`
+    python spike/wincred.py set api    # pay-per-use Anthropic API key
 """
 
 import ctypes
@@ -26,6 +26,9 @@ advapi = ctypes.WinDLL("advapi32", use_last_error=True)
 
 
 def target(profile):
+    # "api" is the pay-per-use Anthropic API key; A and B are Max profiles.
+    if profile.lower() == "api":
+        return "decurion/anthropic-api"
     return f"decurion/claude-profile-{profile}"
 
 
@@ -52,7 +55,8 @@ def read(profile):
 if __name__ == "__main__":
     if len(sys.argv) != 3 or sys.argv[1] != "set":
         sys.exit(__doc__)
-    tok = getpass.getpass(f"Paste the token for Claude profile {sys.argv[2]} (hidden): ").strip()
+    what = "pay-per-use API key" if sys.argv[2].lower() == "api" else f"token for Claude profile {sys.argv[2]}"
+    tok = getpass.getpass(f"Paste the {what} (hidden): ").strip()
     if not tok.startswith("sk-ant-"):
         sys.exit("That does not look like a Claude token. Nothing saved.")
     write(sys.argv[2], tok)

@@ -46,6 +46,7 @@ impl ThreadState {
         matches!(
             (self, to),
             (Queued, Running)
+                | (Queued, NeedsYou)
                 | (Queued, Failed)
                 | (Running, Queued)
                 | (Running, NeedsYou)
@@ -116,6 +117,10 @@ pub struct App {
     /// Local path of the app's git checkout. Worktrees are cut from it.
     pub repo_path: String,
     pub profile: Profile,
+    /// Runs on the pay-per-use API key, under the monthly cap, instead of
+    /// the Max account in `profile`.
+    #[serde(default)]
+    pub pay_per_use: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +128,8 @@ pub struct NewApp {
     pub name: String,
     pub repo_path: String,
     pub profile: Profile,
+    #[serde(default)]
+    pub pay_per_use: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -158,18 +165,49 @@ pub struct Claim {
     pub thread: Thread,
     pub app: App,
     pub resume: bool,
+    /// Set for pay-per-use runs: the limit to give Claude Code. It is what
+    /// earlier runs of this session cost plus most of the money set aside for
+    /// this run, because Claude Code counts a resumed session's cost from the
+    /// start.
+    #[serde(default)]
+    pub budget_usd: Option<f64>,
+}
+
+/// This month's spending, for the board.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Spend {
+    /// Pay-per-use spending this month, counting money set aside for runs
+    /// still going.
+    pub pay_per_use_usd: f64,
+    pub cap_usd: f64,
+    /// What this month's Max-account runs would have cost on pay-per-use.
+    /// Not billed; shown so usage is visible.
+    pub max_equivalent_usd: f64,
 }
 
 /// Something that happened during a run, posted by the runner.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunEvent {
+    /// The runner started the agent's container. From here on, the run may
+    /// be spending money.
+    Started,
     /// The agent said something.
     Message { text: String },
     /// The agent used a tool.
     Tool { name: String, summary: String },
-    /// The run ended. `ok` is the agent's own result, not a review.
-    Finished { ok: bool, summary: String },
+    /// The run ended. `ok` is the agent's own result, not a review. Cost and
+    /// tokens are what Claude Code reported for this run.
+    Finished {
+        ok: bool,
+        summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost_usd: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_tokens: Option<u64>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,6 +255,9 @@ mod tests {
         let e = RunEvent::Finished {
             ok: true,
             summary: "done".into(),
+            cost_usd: None,
+            input_tokens: None,
+            output_tokens: None,
         };
         let v = serde_json::to_value(&e).unwrap_or_default();
         assert_eq!(v["kind"], "finished");
