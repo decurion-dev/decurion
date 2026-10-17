@@ -71,7 +71,7 @@ jobs:
           $setup = "dist\Decurion-Setup-$env:VERSION-x64.exe"
           Start-Process -Wait -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$PWD\dist\install.log"
           $app = Join-Path $env:LOCALAPPDATA 'Programs\Decurion'
-          foreach ($f in 'decurion-hub.exe', 'decurion-runner.exe', 'start-decurion.ps1', 'docker\claude-worker\Dockerfile', 'docker\gate\Dockerfile', 'docker\gate\crates\decurion-gate\src\main.rs', 'LICENSE') {
+          foreach ($f in 'decurion-hub.exe', 'decurion-runner.exe', 'start-decurion.ps1', 'docker\claude-worker\Dockerfile', 'docker\pi-worker\Dockerfile', 'docker\gate\Dockerfile', 'docker\gate\crates\decurion-gate\src\main.rs', 'LICENSE') {
             if (-not (Test-Path (Join-Path $app $f))) { Get-Content dist\install.log; throw "installer did not put $f in $app" }
           }
           $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Decurion.lnk'
@@ -160,7 +160,7 @@ jobs:
           cp packaging/unix/decurion-start "$stage/bin/"
           cp packaging/unix/install.sh LICENSE README.md "$stage/"
           [ -f NOTICE ] && cp NOTICE "$stage/"
-          cp -R docker/claude-worker "$stage/share/decurion/docker/"
+          cp -R docker/claude-worker docker/pi-worker "$stage/share/decurion/docker/"
           # The gate is built on the machine from its own source.
           mkdir -p "$stage/share/decurion/docker/gate/crates"
           cp docker/gate/Dockerfile Cargo.toml Cargo.lock "$stage/share/decurion/docker/gate/"
@@ -175,6 +175,7 @@ jobs:
           "$work/$NAME/install.sh" --prefix "$work/prefix"
           for b in decurion-hub decurion-runner decurion-start; do test -x "$work/prefix/bin/$b"; done
           test -f "$work/prefix/share/decurion/docker/claude-worker/Dockerfile"
+          test -f "$work/prefix/share/decurion/docker/pi-worker/Dockerfile"
           test -f "$work/prefix/share/decurion/docker/gate/crates/decurion-gate/src/main.rs"
           sh -n "$work/prefix/bin/decurion-start"
           export DECURION_DATA="$work/data" DECURION_ADDR=127.0.0.1:0

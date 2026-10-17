@@ -5,10 +5,13 @@
 //! like `stripe.com` covers that site and every address under it, such as
 //! `api.stripe.com`.
 
-/// Sites every box may reach: Claude itself, and the package stores agents
-/// install libraries from. The owner adds others per app.
+/// Sites every box may reach: the AIs Decurion runs (Claude, ChatGPT and
+/// Grok), and the package stores agents install libraries from. The owner
+/// adds others per app.
 pub const BUILT_IN: &[&str] = &[
     "api.anthropic.com",
+    "api.openai.com",
+    "api.x.ai",
     "registry.npmjs.org",
     "pypi.org",
     "files.pythonhosted.org",

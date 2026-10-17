@@ -53,6 +53,7 @@ Source: "{#BinDir}\decurion-runner.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "start-decurion.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "save-claude-sign-in.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoRoot}\docker\claude-worker\Dockerfile"; DestDir: "{app}\docker\claude-worker"; Flags: ignoreversion
+Source: "{#RepoRoot}\docker\pi-worker\Dockerfile"; DestDir: "{app}\docker\pi-worker"; Flags: ignoreversion
 ; The gate is built on the PC from its own source, like the agent image.
 Source: "{#RepoRoot}\docker\gate\Dockerfile"; DestDir: "{app}\docker\gate"; Flags: ignoreversion
 Source: "{#RepoRoot}\Cargo.toml"; DestDir: "{app}\docker\gate"; Flags: ignoreversion

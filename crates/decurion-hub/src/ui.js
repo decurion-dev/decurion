@@ -197,7 +197,9 @@
     const d = new Date(iso);
     return d.toLocaleDateString([], { month: "short", day: "numeric" });
   };
-  D.aiLabel = (app) => (!app ? "" : app.pay_per_use ? "Claude pay-per-use" : `Claude ${app.profile}`);
+  // Who does a piece of work: ChatGPT or Grok, or Claude on the app's account.
+  D.aiLabel = (app, t) => (t?.ai === "chatgpt" ? "ChatGPT" : t?.ai === "grok" ? "Grok"
+    : !app ? "" : app.pay_per_use ? "Claude pay-per-use" : `Claude ${app.profile}`);
   D.plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
   // "Blocked a visit to evil.net (not on this app's list)". The reason comes
   // from the gate in plain words; a leading "is" reads badly in brackets.
@@ -537,7 +539,7 @@
       el("h2", { id: "wk-title" }, t.title),
       el("div", { className: "meta" },
         el("span", { className: "tag" }, icon("app"), D.appName(t.app_id) || "Unknown app"),
-        app && el("span", { className: "tag dot-sep" }, icon("ai"), D.aiLabel(app)),
+        app && el("span", { className: "tag dot-sep" }, icon("ai"), D.aiLabel(app, t)),
         el("span", { className: "tag dot-sep" }, icon(D.PLACES[t.place]?.[0] ?? "pc"), D.PLACES[t.place]?.[1] ?? "Your PC"),
         el("span", { className: "tag dot-sep updated" }, `Updated ${D.ago(t.updated_at)}`)));
     p.head.replaceWith(head);

@@ -15,9 +15,9 @@ use decurion_runner::identity::{
 use decurion_runner::{
     backoff, check_home_volume, container_name, design_home_volume, goal_home_volume,
     helper_container_name, helper_run_args, hide, hide_cut, home_volume, is_interrupted_turn,
-    is_turn_start, parse_line_hiding, parse_result, part_done, prompt_for, read_page, retriable,
-    run_args, sibling, valid_branch, Acks, Action, Conversation, Credential, FirstResult,
-    LeakScanner, Sandbox, Start, Step, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
+    is_turn_start, parse_line_hiding, parse_result, part_done, pi_run_args, prompt_for, read_page,
+    redact, retriable, run_args, sibling, valid_branch, Acks, Action, Conversation, Credential,
+    FirstResult, LeakScanner, PiRun, Sandbox, Start, Step, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
 };
 use decurion_runner::{gate_args, parse_gate_line, BoxNet, GateLine, GATE_IMAGE, RELAY_URL};
 use decurion_vault::{check_name, Vault};
@@ -264,9 +264,10 @@ fn data_dir() -> anyhow::Result<PathBuf> {
 }
 
 /// The run's one credential, from Windows Credential Manager: a Max profile's
-/// token (`claude setup-token`, saved as `decurion/claude-profile-A`) or the
+/// token (`claude setup-token`, saved as `decurion/claude-profile-A`), the
 /// pay-per-use API key (`decurion/anthropic-api`), which stays with the
-/// gatekeeper.
+/// gatekeeper, or the OpenAI or xAI key (`decurion/openai-api`,
+/// `decurion/xai-api`).
 fn secret(cred: Credential) -> anyhow::Result<String> {
     let target = cred.target();
     #[cfg(windows)]
@@ -1412,6 +1413,97 @@ async fn follow(
     ended
 }
 
+/// Follows a pi run (ChatGPT or Grok work) until its output ends or the owner
+/// stops or moves it. pi takes no messages while it works: the task and the
+/// owner's messages so far went in on stdin, which is then closed, and later
+/// messages wait for the next run. Returns how it ended, and whether the
+/// runner stopped it at its budget.
+///
+/// pi has no spending limit of its own, so the runner keeps the running total
+/// of what pi reports and removes the container once it reaches the budget.
+/// The hub held back part of the money set aside for the call in flight.
+async fn follow_pi(
+    hub: &Hub,
+    id: i64,
+    child: &mut Child,
+    mut lines: mpsc::Receiver<(Instant, String)>,
+    mut wrote: mpsc::UnboundedReceiver<Wrote>,
+    budget_usd: Option<f64>,
+    secrets: &[String],
+) -> (Ended, bool) {
+    let mut run = PiRun::hiding(secrets.to_vec());
+    let mut stopped = false;
+    let mut acks: Acks<Instant> = Acks::default();
+    let mut poll = tokio::time::interval(POLL);
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut hub_down = false;
+    let ended = loop {
+        tokio::select! {
+            line = lines.recv() => {
+                let Some((at, line)) = line else {
+                    break None;
+                };
+                // pi reads all of its task before it prints anything, so any
+                // line after the write shows the owner's messages were read.
+                while let Ok((w, ids)) = wrote.try_recv() {
+                    acks.wrote(w, &ids);
+                }
+                let ids = acks.boundary(at);
+                if !ids.is_empty() {
+                    ack(hub, id, &mut acks, ids).await;
+                }
+                let events = run.parse_line(&line);
+                if stopped {
+                    // Still counted: money spent on a call that was in flight.
+                    continue;
+                }
+                for e in &events {
+                    hub.event(id, e).await;
+                }
+                if run.must_stop(budget_usd) {
+                    stopped = true;
+                    tracing::info!(id, cost = run.cost_usd(), "stopping a run at its budget");
+                    // pi keeps spending until its container is gone.
+                    kill(hub, child, id).await;
+                }
+            }
+            _ = poll.tick() => match hub.live(id).await {
+                Ok(live) if live.state != ThreadState::Running => break Some(Ended::Stopped),
+                Ok(live) if live.place != hub.place => break Some(Ended::Moved(live.place)),
+                Err(err) if lost(&err) => break Some(Ended::Stopped),
+                Ok(_) => hub_down = false,
+                Err(err) => {
+                    if !hub_down {
+                        tracing::warn!(%err, id, "could not check on the run with the hub");
+                    }
+                    hub_down = true;
+                }
+            },
+        }
+    };
+    let ids = acks.last_try();
+    if !ids.is_empty() {
+        ack(hub, id, &mut acks, ids).await;
+    }
+    if let Some(ended) = ended {
+        return (ended, false);
+    }
+    let result = if stopped {
+        Some(run.budget_stop())
+    } else {
+        run.finished()
+    };
+    // An output pi could not have its spending read from is not a budget stop.
+    let budget_stop = stopped
+        && matches!(&result, Some(RunEvent::Finished { summary, .. }) if summary == BUDGET_STOP);
+    let ended = Ended::Exited {
+        result,
+        limit: None,
+        after_result: false,
+    };
+    (ended, budget_stop)
+}
+
 /// Whether the hub said the running work is no longer this runner's.
 fn lost(err: &anyhow::Error) -> bool {
     matches!(
@@ -1502,7 +1594,7 @@ async fn run(
         BoxNet::work(c.thread.id),
         &c.app,
         Some(c.thread.id),
-        gate.relay(c.budget_usd).as_deref(),
+        gate.relay(Credential::for_account(c.account)).as_deref(),
     )
     .await?;
     let outcome = run_in_box(hub, data, gate, c, keys).await;
@@ -1541,11 +1633,12 @@ make sure Docker Desktop is running and delete that container there",
 
     let (wt, rebuilt) = workspace(hub, data, &c, &branch).await?;
     let start = Start::pick(c.resume, rebuilt, c.checkpoint.is_some());
-    let cred = if c.budget_usd.is_some() {
-        Credential::PayPerUse
-    } else {
-        Credential::Max(c.app.profile)
-    };
+    let cred = Credential::for_account(c.account);
+    let pi = cred.pi_model().is_some();
+    if pi && c.budget_usd.is_none() {
+        // The runner is pi's only spending limit.
+        bail!("{} work came without a budget", c.account.label());
+    }
     if cred == Credential::PayPerUse && !gate.keeper.is_alive() {
         // Without the gatekeeper the run could only fail, and a failed
         // pay-per-use run is charged its whole budget. Stop before starting.
@@ -1564,9 +1657,9 @@ make sure Docker Desktop is running and delete that container there",
             let v = vec![g.token().to_owned(), RELAY_URL.to_owned()];
             (Some(g), v)
         }
-        Credential::Max(_) => (None, vec![token]),
+        Credential::Max(_) | Credential::OpenAi | Credential::Xai => (None, vec![token]),
     };
-    // Names come from the same list run_args passes to docker with `-e`.
+    // Names come from the same list the docker arguments pass with `-e`.
     anyhow::ensure!(
         values.len() == cred.vars().len(),
         "credential variables out of step"
@@ -1590,8 +1683,10 @@ make sure Docker Desktop is running and delete that container there",
     hub.post(&format!("/threads/{id}/events"), &RunEvent::Started)
         .await
         .context("could not tell the hub the run is starting")?;
-    let mut child = cmd
-        .args(run_args(
+    let args = if pi {
+        pi_run_args(id, &wt, &session, cred, &c.test_keys)?
+    } else {
+        run_args(
             id,
             &wt,
             &session,
@@ -1599,7 +1694,10 @@ make sure Docker Desktop is running and delete that container there",
             cred,
             c.budget_usd,
             &c.test_keys,
-        )?)
+        )?
+    };
+    let mut child = cmd
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1607,30 +1705,36 @@ make sure Docker Desktop is running and delete that container there",
         .spawn()
         .context("could not start docker")?;
 
-    // Stdin stays open so owner messages can follow the prompt. The claim's
-    // undelivered messages are in the prompt and are acked once Claude has
-    // read it.
-    let (conv, first) = Conversation::start(&prompt, &c.messages);
     let (wrote_tx, wrote) = mpsc::unbounded_channel();
     let (to_agent, writer) = spawn_writer(id, child.stdin.take().context("no stdin")?, wrote_tx);
-    let _ = to_agent.send(first);
     let stderr_task = spawn_stderr_tail(child.stderr.take().context("no stderr")?, secrets.clone());
     let (lines, reader) = spawn_reader(child.stdout.take().context("no stdout")?);
 
-    let (result, limit, after_result) = match follow(
-        hub,
-        id,
-        conv,
-        to_agent,
-        lines,
-        wrote,
-        Guard {
+    let mut budget_stopped = false;
+    let ended = if pi {
+        // pi gets its task once, as plain text, and stdin closes behind it.
+        let _ = to_agent.send(Step {
+            actions: vec![Action::Write(prompt), Action::Close],
+            delivered: c.messages.iter().map(|m| m.id).collect(),
+        });
+        drop(to_agent);
+        let (ended, stopped) =
+            follow_pi(hub, id, &mut child, lines, wrote, c.budget_usd, &secrets).await;
+        budget_stopped = stopped;
+        ended
+    } else {
+        // Stdin stays open so owner messages can follow the prompt. The
+        // claim's undelivered messages are in the prompt and are acked once
+        // Claude has read it.
+        let (conv, first) = Conversation::start(&prompt, &c.messages);
+        let _ = to_agent.send(first);
+        let guard = Guard {
             secrets: &secrets,
             grant: grant.as_ref(),
-        },
-    )
-    .await
-    {
+        };
+        follow(hub, id, conv, to_agent, lines, wrote, guard).await
+    };
+    let (result, limit, after_result) = match ended {
         Ended::Stopped => {
             // The owner already moved it; the hub has the last word. Nothing
             // is saved: the work is not this runner's to touch any more.
@@ -1664,7 +1768,9 @@ make sure Docker Desktop is running and delete that container there",
         }
         _ => None,
     };
-    let used_up = grant.as_ref().is_some_and(|g| g.used_up());
+    // Out of the run's money: by the gatekeeper's count, or by the runner's
+    // own for pi.
+    let used_up = grant.as_ref().is_some_and(|g| g.used_up()) || budget_stopped;
     let pay_per_use = grant.is_some();
     drop(grant);
     // The container is gone, so the writer has nothing left to do.
@@ -1677,7 +1783,10 @@ make sure Docker Desktop is running and delete that container there",
             input_tokens,
             output_tokens,
         }) => {
-            let trusted = status.success() && !after_result;
+            // The runner stopped a pi run at its budget itself, so its
+            // container does not exit cleanly, but what pi reported until
+            // then stands.
+            let trusted = (status.success() || budget_stopped) && !after_result;
             let reported = cost_usd.filter(|_| trusted);
             // The higher of the gatekeeper's count and Claude's own report;
             // a pay-per-use run whose count is unknown reports nothing.
@@ -1728,7 +1837,7 @@ make sure Docker Desktop is running and delete that container there",
             used_up.then_some((false, summary))
         }
     };
-    let max_limit = limit.filter(|_| !after_result && c.budget_usd.is_none());
+    let max_limit = limit.filter(|_| !after_result && matches!(cred, Credential::Max(_)));
     let err = stderr_task.await.unwrap_or_default();
     let exit = Exit {
         status,
@@ -1864,7 +1973,7 @@ sent for review. Retry it and the agent will be asked to rewrite its branch with
             ThreadState::Failed,
             format!(
                 "container ended without a result ({status}): {}",
-                stderr.trim()
+                redact(stderr.trim())
             ),
         ),
     }
@@ -1893,10 +2002,10 @@ async fn fail(hub: &Hub, id: i64, note: &str) {
 type ContainerEnv = Vec<(&'static str, String)>;
 
 impl Gate {
-    /// Where a box's site gate relays to: the gatekeeper, for pay-per-use
-    /// boxes only. That one address is all of the PC the gate passes through.
-    fn relay(&self, budget_usd: Option<f64>) -> Option<String> {
-        budget_usd.map(|_| self.url.trim_start_matches("http://").to_owned())
+    /// Where a box's site gate relays to: the gatekeeper, for Claude
+    /// pay-per-use boxes only. That one address is all of the PC the gate passes through.
+    fn relay(&self, cred: Credential) -> Option<String> {
+        (cred == Credential::PayPerUse).then(|| self.url.trim_start_matches("http://").to_owned())
     }
 
     /// A helper container's credential. A pay-per-use container gets a token
@@ -1922,7 +2031,7 @@ impl Gate {
                 let v = vec![g.token().to_owned(), RELAY_URL.to_owned()];
                 (Some(g), v)
             }
-            Credential::Max(_) => (None, vec![token]),
+            Credential::Max(_) | Credential::OpenAi | Credential::Xai => (None, vec![token]),
         };
         // Names come from the same list helper_run_args passes with `-e`.
         anyhow::ensure!(
@@ -2213,7 +2322,11 @@ async fn run_helper(
     let _ = docker_out(&["rm", "-f", &name]).await;
     hb.clean().await;
     let net = BoxNet::helper(job.job_id);
-    let relay = gate.relay(job.budget_usd);
+    let relay = gate.relay(if job.budget_usd.is_some() {
+        Credential::PayPerUse
+    } else {
+        Credential::Max(job.app.profile)
+    });
     let r = match start_site_gate(hub, net.clone(), &job.app, None, relay.as_deref()).await {
         Ok(exit) => {
             let r = helper_container(hub, data, gate, job, &name, &net, &hb).await;

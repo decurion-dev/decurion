@@ -81,7 +81,7 @@ pub(crate) async fn record_limit(
 
 const ACTIVE: &str = "SELECT l.profile, l.until,
         (SELECT COUNT(*) FROM threads t JOIN apps a ON a.id = t.app_id
-         WHERE t.state = 'queued' AND a.profile = l.profile
+         WHERE t.state = 'queued' AND t.ai = 'claude' AND a.profile = l.profile
            AND a.pay_per_use = 0 AND t.pay_per_use = 0) AS waiting
      FROM profile_limits l
      WHERE l.until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
@@ -123,7 +123,7 @@ impl Store {
     pub async fn overflow_to_pay_per_use(&self, profile: Profile) -> Result<u64> {
         let done = sqlx::query(
             "UPDATE threads SET pay_per_use = 1
-             WHERE state = 'queued' AND pay_per_use = 0
+             WHERE state = 'queued' AND pay_per_use = 0 AND ai = 'claude'
                AND app_id IN (SELECT id FROM apps WHERE profile = ?1 AND pay_per_use = 0)
                AND EXISTS (SELECT 1 FROM profile_limits WHERE profile = ?1
                            AND until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",

@@ -28,7 +28,7 @@ The change applies to work that starts or resumes after you click.
 
 ## Choose which websites agents may use
 
-Agents work in a closed room with one door to the internet. Through it they can reach only Claude, the package stores where code libraries come from (npm, PyPI and crates.io), and the websites you add for that app. They can never reach your PC, your home network or your other devices.
+Agents work in a closed room with one door to the internet. Through it they can reach only the AIs (Claude, ChatGPT and Grok), the package stores where code libraries come from (npm, PyPI and crates.io), and the websites you add for that app. They can never reach your PC, your home network or your other devices.
 
 To let an app's agents use another website:
 

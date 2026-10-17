@@ -10,9 +10,7 @@
 //! Every helper job has its own row with the money set aside for it, so the
 //! pay-per-use cap covers helpers exactly like work runs.
 
-use crate::spend::{
-    api_spent_micros, cap_micros, claude_budget_usd, to_micros, PER_RUN_MAX_MICROS,
-};
+use crate::spend::{claude_budget_usd, to_micros};
 use crate::store::{Result, Store, StoreError};
 use decurion_proto::goal::{
     last_json_object, Answer, CoordinatorReply, Goal, GoalMessage, GoalMessageBody, GoalState,
@@ -198,16 +196,16 @@ async fn fresh_session(tx: &mut Transaction<'_, Sqlite>, goal_id: i64) -> Result
 }
 
 /// Money for a helper job. Pay-per-use sets aside up to one run's maximum,
-/// or returns `None` when the month's cap is used up.
-async fn reserve(tx: &mut Transaction<'_, Sqlite>, account: &str) -> Result<Option<i64>> {
-    if account != "api" {
-        return Ok(Some(0));
-    }
-    let left = cap_micros(tx).await? - api_spent_micros(tx).await?;
-    if left < crate::spend::MIN_RUN_MICROS {
-        return Ok(None);
-    }
-    Ok(Some(left.min(PER_RUN_MAX_MICROS)))
+/// within both the month's cap and the app's own cap, or says which is used
+/// up.
+async fn reserve(
+    tx: &mut Transaction<'_, Sqlite>,
+    app_id: i64,
+    account: &str,
+) -> Result<std::result::Result<i64, crate::spend::CapHit>> {
+    let account = decurion_proto::Account::from_str(account)
+        .map_err(|e| StoreError::Invalid(e.to_string()))?;
+    crate::spend::set_aside(tx, app_id, account).await
 }
 
 fn transcript_line(
@@ -1160,48 +1158,50 @@ impl Store {
             if out_of_usage {
                 continue;
             }
-            let Some(reserved) = reserve(&mut tx, &account).await? else {
-                let cap = crate::spend::to_usd(cap_micros(&mut tx).await?);
-                let why = format!("This month's pay-per-use limit of ${cap:.2} is used up.");
-                sqlx::query("UPDATE helper_jobs SET state = 'failed', result = ?, finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
+            let reserved = match reserve(&mut tx, app_id, &account).await? {
+                Ok(r) => r,
+                Err(hit) => {
+                    let why = format!("The spending limit is used up: {}.", hit.note());
+                    sqlx::query("UPDATE helper_jobs SET state = 'failed', result = ?, finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
                     .bind(&why)
                     .bind(job_id)
                     .execute(&mut *tx)
                     .await?;
-                match kind.as_str() {
-                    "coordinator" => {
-                        sqlx::query("UPDATE goals SET stuck = 1 WHERE id = ?")
-                            .bind(goal_id)
-                            .execute(&mut *tx)
+                    match kind.as_str() {
+                        "coordinator" => {
+                            sqlx::query("UPDATE goals SET stuck = 1 WHERE id = ?")
+                                .bind(goal_id)
+                                .execute(&mut *tx)
+                                .await?;
+                            note(
+                                &mut tx,
+                                goal_id,
+                                format!("{why} Raise it in Settings, then tap Try again."),
+                            )
                             .await?;
-                        note(
-                            &mut tx,
-                            goal_id,
-                            format!("{why} Raise it in Settings, then tap Try again."),
-                        )
-                        .await?;
-                    }
-                    "review" => {
-                        if let Some(t) = thread_id {
-                            sqlx::query("UPDATE goal_pieces SET review = 'needs_a_look', review_summary = ? WHERE thread_id = ?")
+                        }
+                        "review" => {
+                            if let Some(t) = thread_id {
+                                sqlx::query("UPDATE goal_pieces SET review = 'needs_a_look', review_summary = ? WHERE thread_id = ?")
                                 .bind(format!("Not checked: {why}"))
                                 .bind(t)
                                 .execute(&mut *tx)
                                 .await?;
-                            maybe_report(&mut tx, goal_id).await?;
+                                maybe_report(&mut tx, goal_id).await?;
+                            }
+                        }
+                        _ => {
+                            note(
+                                &mut tx,
+                                goal_id,
+                                format!("The visual plan was not drawn. {why}"),
+                            )
+                            .await?;
                         }
                     }
-                    _ => {
-                        note(
-                            &mut tx,
-                            goal_id,
-                            format!("The visual plan was not drawn. {why}"),
-                        )
-                        .await?;
-                    }
+                    news.push(("Spending cap reached".to_owned(), clip(&title, 80)));
+                    continue;
                 }
-                news.push(("Spending cap reached".to_owned(), clip(&title, 80)));
-                continue;
             };
             let (helper_kind, session_id, resume, prompt, source, disallowed, upto) = match kind
                 .as_str()

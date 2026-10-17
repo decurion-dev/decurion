@@ -9,7 +9,6 @@ $ErrorActionPreference = 'Continue'
 # helpers the installer just added with winget.
 $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Image = 'decurion/claude-worker:dev'
 $Port = 7420
 $Data = if ($env:DECURION_DATA) { $env:DECURION_DATA } else { Join-Path $env:LOCALAPPDATA 'decurion' }
 $Logs = Join-Path $Data 'logs'
@@ -32,6 +31,20 @@ function Read-Shared([string]$Path) {
 }
 
 function Test-Docker { docker info *> $null; return ($LASTEXITCODE -eq 0) }
+
+# Prepares one agent workspace image from its folder in docker\. The image is
+# rebuilt when the Dockerfile shipped with this version changes. Returns $true
+# when the image is ready.
+function Initialize-Image([string]$Image, [string]$Folder, [string]$What) {
+    $context = Join-Path $Here "docker\$Folder"
+    $want = (Get-FileHash -Algorithm SHA256 (Join-Path $context 'Dockerfile')).Hash.ToLower()
+    $have = docker image inspect -f '{{ index .Config.Labels "org.decurion.dockerfile" }}' $Image 2> $null
+    if ($LASTEXITCODE -eq 0 -and "$have".Trim() -eq $want) { return $true }
+    Write-Host "Getting $What ready. This happens once per version and takes a few minutes."
+    # Out-Host keeps the build's output on screen instead of in the return value.
+    docker build --label "org.decurion.dockerfile=$want" -t $Image $context | Out-Host
+    return ($LASTEXITCODE -eq 0)
+}
 
 function Start-Logged([string]$Exe, [string]$Name) {
     $out = Join-Path $Logs "$Name.log"
@@ -79,16 +92,16 @@ if (-not (Test-Docker)) {
     }
 }
 
-# The image is rebuilt when the Dockerfile shipped with this version changes.
-$context = Join-Path $Here 'docker\claude-worker'
-$want = (Get-FileHash -Algorithm SHA256 (Join-Path $context 'Dockerfile')).Hash.ToLower()
-$have = docker image inspect -f '{{ index .Config.Labels "org.decurion.dockerfile" }}' $Image 2> $null
-if ($LASTEXITCODE -ne 0 -or "$have".Trim() -ne $want) {
-    Write-Host 'Getting the agent workspace ready. This happens once per version and takes a few minutes.'
-    docker build --label "org.decurion.dockerfile=$want" -t $Image $context
-    if ($LASTEXITCODE -ne 0) {
-        Stop-WithMessage 'Could not prepare the agent workspace. Check that Docker Desktop is running and you are online, then try again.'
-    }
+# Claude work cannot run without its workspace, so Decurion stops if it is
+# not ready. ChatGPT and Grok work use a second workspace; if that one is not
+# ready, Claude work still runs.
+if (-not (Initialize-Image 'decurion/claude-worker:dev' 'claude-worker' 'the agent workspace')) {
+    Stop-WithMessage 'Could not prepare the agent workspace. Check that Docker Desktop is running and you are online, then try again.'
+}
+if (-not (Initialize-Image 'decurion/pi-worker:dev' 'pi-worker' 'the workspace for ChatGPT and Grok work')) {
+    Write-Host ''
+    Write-Host 'Could not prepare the workspace for ChatGPT and Grok work. Claude work runs as usual, but ChatGPT and Grok work will not run until it is ready. Decurion tries again the next time you open it.' -ForegroundColor Yellow
+    Write-Host ''
 }
 
 # The gate is each agent's only way out to the web. Its image is rebuilt

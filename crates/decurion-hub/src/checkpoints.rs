@@ -20,7 +20,7 @@ use tokio::process::Command;
 pub enum Part {
     /// The thread's branch as a git bundle.
     Code,
-    /// A tar of the agent's `.claude/projects` folder.
+    /// A tar of the agent's sessions (`.claude/projects`, or `.pi/sessions`).
     Session,
 }
 

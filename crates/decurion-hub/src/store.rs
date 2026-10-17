@@ -3,8 +3,8 @@
 //! in the same transaction.
 
 use decurion_proto::{
-    sites, App, Claim, EventRecord, Interrupted, NewApp, NewThread, Place, Profile, RunEvent,
-    Thread, ThreadState,
+    sites, Account, Ai, App, Claim, EventRecord, Interrupted, NewApp, NewThread, Place, Profile,
+    RunEvent, Thread, ThreadState,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
@@ -45,10 +45,8 @@ pub struct Store {
     pool: SqlitePool,
 }
 
-pub(crate) const APP_COLS: &str = "id, name, repo_path, profile, pay_per_use, sites";
-
 const THREAD_COLS: &str =
-    "id, app_id, title, prompt, state, session_id, branch, place, updated_at, parent_id, background";
+    "id, app_id, title, prompt, state, ai, session_id, branch, place, updated_at, parent_id, background";
 
 /// The actor recorded for the owner's own moves.
 pub const OWNER: &str = "owner";
@@ -59,8 +57,12 @@ pub const MAX_DEPTH: i64 = 5;
 
 pub(crate) const RECEIPT_REUSED: &str = "this receipt was already used for something else";
 
+pub(crate) const APP_COLS: &str =
+    "id, name, repo_path, profile, pay_per_use, monthly_cap_micros, sites";
+
 fn thread_from(row: &SqliteRow) -> Result<Thread> {
     let state: String = row.try_get("state")?;
+    let ai: String = row.try_get("ai")?;
     let place: String = row.try_get("place")?;
     Ok(Thread {
         id: row.try_get("id")?,
@@ -68,6 +70,7 @@ fn thread_from(row: &SqliteRow) -> Result<Thread> {
         title: row.try_get("title")?,
         prompt: row.try_get("prompt")?,
         state: ThreadState::from_str(&state).map_err(|e| StoreError::Invalid(e.to_string()))?,
+        ai: Ai::from_str(&ai).map_err(|e| StoreError::Invalid(e.to_string()))?,
         session_id: row.try_get("session_id")?,
         branch: row.try_get("branch")?,
         place: Place::from_str(&place).map_err(|e| StoreError::Invalid(e.to_string()))?,
@@ -87,6 +90,9 @@ pub(crate) fn app_from(row: &SqliteRow) -> Result<App> {
         pay_per_use: row.try_get("pay_per_use")?,
         sites: serde_json::from_str(row.try_get("sites")?)
             .map_err(|e| StoreError::Invalid(e.to_string()))?,
+        monthly_cap_usd: row
+            .try_get::<Option<i64>, _>("monthly_cap_micros")?
+            .map(crate::spend::to_usd),
     })
 }
 
@@ -151,6 +157,15 @@ impl Store {
         app_from(&row)
     }
 
+    async fn app_in(&self, tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, id: i64) -> Result<App> {
+        let row = sqlx::query(&format!("SELECT {APP_COLS} FROM apps WHERE id = ?"))
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        app_from(&row)
+    }
+
     /// Replaces the websites an app's agents may reach on top of the built-in
     /// ones, and returns the list as stored. Running work keeps the list it
     /// started with; the next piece of work gets this one.
@@ -194,8 +209,8 @@ impl Store {
             check_parent(&mut tx, parent, t.app_id).await?;
         }
         let row = sqlx::query(&format!(
-            "INSERT INTO threads (app_id, title, prompt, parent_id, background, place)
-             VALUES (?, ?, ?, ?, ?, ?) RETURNING {THREAD_COLS}"
+            "INSERT INTO threads (app_id, title, prompt, parent_id, background, place, ai)
+             VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING {THREAD_COLS}"
         ))
         .bind(t.app_id)
         .bind(t.title.trim())
@@ -203,6 +218,7 @@ impl Store {
         .bind(t.parent_id)
         .bind(t.background)
         .bind(t.place.as_str())
+        .bind(t.ai.as_str())
         .fetch_one(&mut *tx)
         .await?;
         let thread = thread_from(&row)?;
@@ -334,14 +350,14 @@ impl Store {
         let mut capped = Vec::new();
         loop {
             // Work on a Max account that is out of usage waits for the reset,
-            // unless it (or its app) runs on pay-per-use. A runner only gets
-            // work placed on its own kind of computer.
+            // unless it (or its app) runs on pay-per-use or another AI does it.
+            // A runner only gets work placed on its own kind of computer.
             let Some(row) = sqlx::query(
-                "SELECT t.id, t.app_id, t.title, t.prompt, t.state, t.session_id, t.branch,
-                        t.place, t.updated_at, t.parent_id, t.background, a.profile, (a.pay_per_use = 1 OR t.pay_per_use = 1) AS ppu
+                "SELECT t.id, t.app_id, t.title, t.prompt, t.state, t.ai, t.session_id, t.branch,
+                        t.place, t.updated_at, t.parent_id, t.background, t.pay_per_use AS thread_ppu
                  FROM threads t JOIN apps a ON a.id = t.app_id
                  WHERE t.state = 'queued' AND t.place = ?
-                   AND (t.pay_per_use = 1 OR a.pay_per_use = 1 OR NOT EXISTS (
+                   AND (t.ai <> 'claude' OR t.pay_per_use = 1 OR a.pay_per_use = 1 OR NOT EXISTS (
                         SELECT 1 FROM profile_limits l WHERE l.profile = a.profile
                             AND l.until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))
                  ORDER BY t.id LIMIT 1",
@@ -354,12 +370,12 @@ impl Store {
                 return Ok(ClaimOutcome { work: None, capped });
             };
             let t = thread_from(&row)?;
-            let profile: String = row.try_get("profile")?;
-            let pay_per_use: bool = row.try_get("ppu")?;
-            let account = if pay_per_use {
-                "api".to_owned()
-            } else {
-                profile
+            let app = self.app_in(&mut tx, t.app_id).await?;
+            // The owner moved this one piece of Claude work to pay-per-use
+            // while its Max account was out.
+            let account = match Account::for_work(t.ai, &app) {
+                Account::A | Account::B if row.try_get::<bool, _>("thread_ppu")? => Account::Api,
+                other => other,
             };
             let started: bool = sqlx::query_scalar(
                 "SELECT EXISTS (SELECT 1 FROM events WHERE thread_id = ?
@@ -369,39 +385,42 @@ impl Store {
             .fetch_one(&mut *tx)
             .await?;
             let resume = t.session_id.is_some() && started;
-            let prior = if resume {
+            // What earlier runs cost, when the agent's own report will count it.
+            let prior = if resume && t.ai.reports_session_cost() {
                 crate::spend::session_cost_micros(&mut tx, t.id).await?
             } else {
                 0
             };
-            let Some(reserved) = crate::spend::open_run(&mut tx, t.id, &account, prior).await?
-            else {
-                // The month's pay-per-use money is used up: a hard stop for the owner.
-                let cap = crate::spend::to_usd(crate::spend::cap_micros(&mut tx).await?);
-                let done = sqlx::query(
-                    "UPDATE threads SET state = 'needs_you',
+            let reserved =
+                match crate::spend::open_run(&mut tx, t.id, t.app_id, account, prior).await? {
+                    Ok(r) => r,
+                    Err(hit) => {
+                        // The month's pay-per-use money is used up: a hard stop for the owner.
+                        let done = sqlx::query(
+                            "UPDATE threads SET state = 'needs_you',
                          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                      WHERE id = ? AND state = 'queued'",
-                )
-                .bind(t.id)
-                .execute(&mut *tx)
-                .await?;
-                if done.rows_affected() != 1 {
-                    return Err(StoreError::Conflict);
-                }
-                let note = format!("monthly pay-per-use cap of ${cap:.2} reached");
-                audit(
-                    &mut tx,
-                    t.id,
-                    &actor,
-                    ThreadState::Queued,
-                    ThreadState::NeedsYou,
-                    Some(&note),
-                )
-                .await?;
-                capped.push(t);
-                continue;
-            };
+                        )
+                        .bind(t.id)
+                        .execute(&mut *tx)
+                        .await?;
+                        if done.rows_affected() != 1 {
+                            return Err(StoreError::Conflict);
+                        }
+                        let note = hit.note();
+                        audit(
+                            &mut tx,
+                            t.id,
+                            &actor,
+                            ThreadState::Queued,
+                            ThreadState::NeedsYou,
+                            Some(&note),
+                        )
+                        .await?;
+                        capped.push(t);
+                        continue;
+                    }
+                };
             let session = t
                 .session_id
                 .clone()
@@ -450,13 +469,15 @@ impl Store {
                     thread,
                     app,
                     resume,
+                    account,
                     checkpoint,
                     test_keys,
-                    budget_usd: pay_per_use
+                    budget_usd: account
+                        .is_paid()
                         .then(|| crate::spend::claude_budget_usd(prior, reserved)),
                     messages,
                     interrupted,
-                    reserved_micros: pay_per_use.then_some(reserved),
+                    reserved_micros: account.is_paid().then_some(reserved),
                     prior_micros: prior,
                 }),
                 capped,
@@ -498,6 +519,11 @@ impl Store {
         runner: &str,
         e: &RunEvent,
     ) -> Result<(i64, bool)> {
+        if matches!(e, RunEvent::Usage { .. }) {
+            return Err(StoreError::Invalid(
+                "usage readings are recorded with record_usage".into(),
+            ));
+        }
         self.thread(thread_id).await?;
         let mut tx = self.pool.begin().await?;
         let holder: Option<String> = sqlx::query_scalar("SELECT runner FROM threads WHERE id = ?")

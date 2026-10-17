@@ -15,8 +15,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Tasks within tasks.** Work can belong to a bigger task. Stopping a task stops its smaller tasks first, unless they were set to keep going on their own.
 - **Receipts.** Every tap and message carries a receipt number, so a resend after a dropped connection never acts twice, and a tap from an out-of-date screen is ignored.
 - **Interrupted, checking.** After a crash the agent is told which step was cut off. A step that only looked at things is redone; one that changed something is checked first, never blindly repeated.
+- **ChatGPT and Grok as workers.** Choose Claude, ChatGPT or Grok when you add work. ChatGPT and Grok run through pi, an open-source coding agent, in the same sealed box, and stop at their run's budget.
+- **Usage meters and a cap per account.** The board shows how much of each Max plan's week and five hours is used, and what each paid account (Claude pay-per-use, ChatGPT, Grok) spent this month against its own cap.
+- **A cap per app.** Each app can have its own monthly cap across all paid AIs, coordinator and review work included.
 - Contribution guide, security policy, code of conduct, issue and pull request templates, and a cargo-deny configuration for dependency license and source checks.
-- **Website limits for agents.** Each agent's container is on its own closed network whose only way out is a small gate. The gate lets through only Claude, the package stores (npm, PyPI, crates.io) and the websites you add for each app in Settings. Anything else is turned away and shows in the work's activity as a blocked visit. Agents can no longer reach your PC, home network or Tailscale devices. Installers build the gate the first time Decurion starts.
+- **Website limits for agents.** Each agent's container is on its own closed network whose only way out is a small gate. The gate lets through only the AIs (Claude, ChatGPT, Grok), the package stores (npm, PyPI, crates.io) and the websites you add for each app in Settings. Anything else is turned away and shows in the work's activity as a blocked visit. Agents can no longer reach your PC, home network or Tailscale devices. Installers build the gate the first time Decurion starts.
 
 ## [0.1.0] - Unreleased
 

@@ -27,6 +27,7 @@ pub mod secrets;
 pub mod spend;
 pub mod store;
 pub mod test_keys;
+pub mod usage;
 pub mod workers;
 
 mod goals;
@@ -189,6 +190,8 @@ pub fn router(state: AppState) -> Router {
         .route("/apps/{id}/pay-per-use", post(set_pay_per_use))
         .route("/apps/{id}/sites", post(set_sites))
         .route("/sites/built-in", get(built_in_sites))
+        .route("/apps/{id}/cap", post(set_app_cap))
+        .route("/accounts", get(list_accounts))
         .route(
             "/apps/{id}/test-keys",
             get(list_test_keys).post(add_test_key),
@@ -833,6 +836,13 @@ async fn add_event(
         )
             .into_response();
     }
+    // Plan usage readings feed the meters, not the activity log.
+    if matches!(e, RunEvent::Usage { .. }) {
+        return match st.store.record_usage(id, &r.name, &e).await {
+            Ok(_) => StatusCode::NO_CONTENT.into_response(),
+            Err(e) => ApiError(e).into_response(),
+        };
+    }
     match st.store.add_event(id, &r.name, &e).await {
         Ok((eid, new_outage)) => {
             if let (true, Some(p)) = (new_outage, st.push.clone()) {
@@ -1094,6 +1104,9 @@ async fn get_spend(State(st): State<AppState>) -> ApiResult<decurion_proto::Spen
 #[derive(Deserialize)]
 struct Cap {
     cap_usd: f64,
+    /// Which paid account; the Anthropic key if left out.
+    #[serde(default)]
+    account: Option<decurion_proto::Account>,
 }
 
 async fn set_cap(
@@ -1104,7 +1117,8 @@ async fn set_cap(
     if c != Caller::Owner {
         return forbidden("changing the spending cap");
     }
-    match st.store.set_cap(b.cap_usd).await {
+    let account = b.account.unwrap_or(decurion_proto::Account::Api);
+    match st.store.set_cap(account, b.cap_usd).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => ApiError(e).into_response(),
     }
@@ -1125,6 +1139,31 @@ async fn set_pay_per_use(
         return forbidden("choosing how an app is billed");
     }
     match st.store.set_pay_per_use(id, b.on).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn list_accounts(State(st): State<AppState>) -> ApiResult<Vec<decurion_proto::AccountMeter>> {
+    Ok(Json(st.store.accounts().await?))
+}
+
+#[derive(Deserialize)]
+struct AppCap {
+    /// `null` removes the app's own cap.
+    cap_usd: Option<f64>,
+}
+
+async fn set_app_cap(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+    Json(b): Json<AppCap>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("changing an app's spending cap");
+    }
+    match st.store.set_app_cap(id, b.cap_usd).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => ApiError(e).into_response(),
     }
@@ -1380,7 +1419,12 @@ async fn runner_credential(
         Some(c) => Json(c).into_response(),
         None => (
             StatusCode::NOT_FOUND,
-            format!("no Claude sign-in saved on the PC for account {account}"),
+            format!(
+                "no sign-in or key saved on the PC for {}",
+                account
+                    .parse::<decurion_proto::Account>()
+                    .map_or(account.clone(), |a| a.label().to_owned())
+            ),
         )
             .into_response(),
     }

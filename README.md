@@ -17,7 +17,18 @@ Download the installer for Windows, or the `.tar.gz` for Mac or Linux, from the 
 
 To run an app on pay-per-use instead of a Max account, save an Anthropic API key with `python spike/wincred.py set api`, set a monthly spend limit on that key's Anthropic Console workspace equal to Decurion's cap, and switch the app under "Add an app". Decurion stops pay-per-use work at its own monthly cap (default $100). The key never enters a container: the runner keeps it in a small proxy on this PC, and each run gets a random token that only works through that proxy and stops working when the run ends. The Console limit stays as the backstop.
 
-Each piece of work runs in its own container with its own copy of the code. The only credentials inside are that profile's Claude token (or on pay-per-use the run's proxy token) and any test keys you gave that app. Work moves to *In review* only when the agent has committed to its branch.
+### ChatGPT and Grok
+
+Work can also go to ChatGPT (your OpenAI API key) or Grok (your xAI API key). Decurion runs them through [pi](https://github.com/earendil-works/pi), an open-source coding agent, in the same kind of sealed container.
+
+1. Build the pi image: `docker build -t decurion/pi-worker:dev docker/pi-worker`
+2. Save the keys you want to use: `python spike/wincred.py set openai` and `python spike/wincred.py set xai`, then paste each key (hidden input). They are stored as `decurion/openai-api` and `decurion/xai-api`.
+3. On each provider's own site (OpenAI platform settings, xAI console), set a monthly spending limit equal to Decurion's cap for that key. Decurion's caps start at $25 a month each.
+4. When you add work on the board, choose ChatGPT or Grok.
+
+Decurion stops new work at the monthly cap, and stops a run once pi reports it has spent the money set aside for it. That per-run stop relies on what pi reports, and the agent holds the key while it runs, so the provider's own monthly limit is the real backstop: set it. (Claude pay-per-use is different: its key stays on your PC behind the gatekeeper.) ChatGPT work uses `gpt-5.5` and Grok work uses `grok-4.7`.
+
+Each piece of work runs in its own container with its own copy of the code. The only credentials inside are the one that work runs on (that profile's Claude token, on Claude pay-per-use the run's proxy token, or for ChatGPT and Grok that provider's API key) and any test keys you gave that app. Work moves to *In review* only when the agent has committed to its branch.
 
 ### Test keys
 
@@ -28,7 +39,7 @@ If an app's tests need keys (a Stripe test key, a test database key), add them o
 - Each run gets that app's test keys as environment variables, and no other app's.
 - The values are hidden from everything the board shows. If one turns up anywhere in the agent's new commits, the work stops before review instead of going to *In review*. A key that was already in the app's code before the agent started is not counted.
 
-Open a card to talk to its agent while it works. *Change course now* stops its current step and gives it your message. *Do this next* waits until it finishes what it is doing. *Add a note* passes information along without interrupting. Work can be split into smaller tasks: stopping a task stops the smaller tasks inside it, except ones set to keep going on their own. If the PC or the runner stops in the middle of a step, the agent is told which step was cut off and checks what actually happened before it repeats anything that changes files or runs commands.
+Open a card to talk to its agent while it works. *Change course now* stops its current step and gives it your message. *Do this next* waits until it finishes what it is doing. *Add a note* passes information along without interrupting. Work can be split into smaller tasks: stopping a task stops the smaller tasks inside it, except ones set to keep going on their own. If the PC or the runner stops in the middle of a step, the agent is told which step was cut off and checks what actually happened before it repeats anything that changes files or runs commands. ChatGPT and Grok work reads your messages when its next run starts, not while it works.
 
 ## Work on your PC or in the cloud
 
@@ -40,7 +51,7 @@ How it works: the hub is the meeting point for code. Runners never clone your re
 
 Each agent also has its own private Chromium browser (Playwright) inside its box, for testing the pages it builds.
 
-Each container sits on its own private network with no way out except its gate, a small proxy that lets through only the websites the app allows: Claude itself, the package stores (npm, PyPI, crates.io), and any sites you add to the app in Settings, under Websites. An entry such as `stripe.com` covers `api.stripe.com` too. Anything else is turned away, shows on the board as "Blocked", and the agent carries on without it. The gate also refuses any site that points at your PC, your home network or Tailscale, so an agent cannot reach the hub or other devices. A site on the list can still receive data, so add only sites you trust.
+Each container sits on its own private network with no way out except its gate, a small proxy that lets through only the websites the app allows: the AI doing the work (Claude, ChatGPT or Grok), the package stores (npm, PyPI, crates.io), and any sites you add to the app in Settings, under Websites. An entry such as `stripe.com` covers `api.stripe.com` too. Anything else is turned away, shows on the board as "Blocked", and the agent carries on without it. The gate also refuses any site that points at your PC, your home network or Tailscale, so an agent cannot reach the hub or other devices. A site on the list can still receive data, so add only sites you trust.
 
 Keep Docker Desktop's "Expose daemon on tcp://localhost:2375 without TLS" setting **off**. The boxes can no longer reach your PC, but other containers you run can, and that port would give them full control of Docker.
 
@@ -48,8 +59,9 @@ Keep Docker Desktop's "Expose daemon on tcp://localhost:2375 without TLS" settin
 
 - `crates/decurion-proto` shared types and the allowed state moves
 - `crates/decurion-hub` board state (SQLite), API, board page
-- `crates/decurion-runner` starts one sealed Claude Code container per piece of work, on the PC or a cloud worker
-- `docker/claude-worker` the agent image, with its test browser
+- `crates/decurion-runner` starts one sealed agent container (Claude Code, or pi for ChatGPT and Grok) per piece of work, on the PC or a cloud worker
+- `docker/claude-worker` the Claude Code image, with its test browser
+- `docker/pi-worker` the pi image, for ChatGPT and Grok
 - `docker/cloud` how a cloud worker sets itself up, updates itself and walls off its agents
 - `docs/help` help pages
 - `docs/spikes` what we tested and learned
