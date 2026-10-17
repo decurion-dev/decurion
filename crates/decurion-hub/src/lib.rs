@@ -116,7 +116,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(board))
         .route("/inbox", get(inbox))
         .route("/login", get(login))
-        .route("/pair", get(pair))
+        .route("/pair", get(pair_page).post(pair))
         .route("/sw.js", get(service_worker))
         .route("/manifest.webmanifest", get(manifest))
         .route("/healthz", get(|| async { "ok" }))
@@ -269,11 +269,35 @@ fn device_name(headers: &HeaderMap) -> &'static str {
     }
 }
 
-/// Where a scanned pairing QR code lands.
+/// Where a scanned pairing QR code lands. Opening the link only shows a
+/// button: link previews and prefetchers open links too, and must not use up
+/// the one-time code or get signed in.
+async fn pair_page(Query(q): Query<CodeQuery>) -> Response {
+    // Codes are hex; anything else is not ours and is not echoed back.
+    if q.code.is_empty() || !q.code.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("This is not a Decurion pairing link."),
+        )
+            .into_response();
+    }
+    let html = include_str!("pair.html").replace("{{code}}", &q.code);
+    (
+        [
+            (header::CONTENT_SECURITY_POLICY, CSP),
+            (header::CACHE_CONTROL, "no-store"),
+            (header::REFERRER_POLICY, "no-referrer"),
+        ],
+        Html(html),
+    )
+        .into_response()
+}
+
+/// The "Pair this phone" button.
 async fn pair(
     State(st): State<AppState>,
     headers: HeaderMap,
-    Query(q): Query<CodeQuery>,
+    axum::Form(q): axum::Form<CodeQuery>,
 ) -> Response {
     match st.store.redeem_pairing_code(&q.code).await {
         Ok(true) => {}

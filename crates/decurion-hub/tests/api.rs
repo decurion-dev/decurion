@@ -562,6 +562,20 @@ async fn get(r: &axum::Router, path: &str, cookie: Option<&str>) -> axum::respon
         .expect("resp")
 }
 
+async fn post_pair(r: &axum::Router, path: &str) -> axum::response::Response {
+    let code = path.trim_start_matches("/pair?code=").to_owned();
+    r.clone()
+        .oneshot(
+            Request::post("/pair")
+                .header(header::USER_AGENT, "Mozilla/5.0 (Linux; Android 15)")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!("code={code}")))
+                .expect("req"),
+        )
+        .await
+        .expect("resp")
+}
+
 fn cookie_pair(resp: &axum::response::Response) -> String {
     resp.headers()
         .get(header::SET_COOKIE)
@@ -583,7 +597,14 @@ async fn a_phone_pairs_once_and_can_be_removed() {
     assert!(p["qr_svg"].as_str().is_some_and(|q| q.contains("<svg")));
     let path = url.trim_start_matches("https://hub.test");
 
-    let resp = get(&r, path, None).await;
+    // Opening the link (or a link preview fetching it) signs nothing in.
+    let preview = get(&r, path, None).await;
+    assert_eq!(preview.status(), StatusCode::OK);
+    assert!(preview.headers().get(header::SET_COOKIE).is_none());
+    let (_, devices) = call(&r, "GET", "/api/devices", Some(OWNER), Value::Null).await;
+    assert_eq!(devices, json!([]));
+
+    let resp = post_pair(&r, path).await;
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
     assert_eq!(
         resp.headers()
@@ -595,7 +616,7 @@ async fn a_phone_pairs_once_and_can_be_removed() {
     assert!(cookie.starts_with("decurion_device="));
 
     // The code works only once.
-    assert_eq!(get(&r, path, None).await.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(post_pair(&r, path).await.status(), StatusCode::UNAUTHORIZED);
 
     // The phone can use the API, and survives a "restart" (state lives in the DB).
     assert_eq!(
@@ -645,12 +666,17 @@ async fn expired_pairing_codes_are_refused() {
         .trim_start_matches("https://hub.test")
         .to_owned();
     assert_eq!(
-        get(&r, &path, None).await.status(),
+        post_pair(&r, &path).await.status(),
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
-        get(&r, "/pair?code=made-up", None).await.status(),
+        post_pair(&r, "/pair?code=abc123").await.status(),
         StatusCode::UNAUTHORIZED
+    );
+    // A link with markup in it is refused, not echoed into the page.
+    assert_eq!(
+        get(&r, "/pair?code=%3Cscript%3E", None).await.status(),
+        StatusCode::BAD_REQUEST
     );
 }
 

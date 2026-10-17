@@ -31,7 +31,7 @@ pub fn hash(secret: &str) -> String {
 }
 
 /// How long a pairing QR code works.
-pub const PAIRING_MINUTES: i64 = 10;
+pub const PAIRING_MINUTES: i64 = 30;
 
 impl Store {
     /// Creates a device and returns it with its token. The token is shown once,
