@@ -411,7 +411,7 @@ between them.
 
 Rules for the file: everything inline (CSS in a style tag, images as data: URLs, PNG or JPEG, no bigger \
 than needed); no JavaScript and no external links, fonts or images, because it opens in a viewer that \
-blocks them; under 6 MB in total. Screenshots from the browser tool are saved under /tmp/playwright-mcp; give it a filename, then \
+blocks them; under 6 MB in total. To use a browser screenshot, give the tool a full path such as /tmp/playwright-mcp/now.png, then \
 turn the file into a data: URL (base64 -w0) to put it in the page. When the page is written, finish with one short \
 line saying so.",
         summary = plan.summary,
@@ -463,7 +463,7 @@ browser tool, mcp__browser__browser_take_screenshot, or Playwright may be availa
 open local addresses) and put them in one \
 self-contained HTML page at /out/page.html with plain-words captions: images as data: URLs, no JavaScript \
 and no external links, under 6 MB. Skip the page if nothing visible changed or the app cannot run here. \
-Screenshots from the browser tool are saved under /tmp/playwright-mcp; give it a filename, then \
+To use a browser screenshot, give the tool a full path such as /tmp/playwright-mcp/now.png, then \
 turn the file into a data: URL (base64 -w0) to put it in the page.
 
 End your answer with one JSON object and nothing after it:
