@@ -1,0 +1,27 @@
+[package]
+name = "decurion-hub"
+description = "Decurion hub: board state, rules and the runner API"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+decurion-proto = { path = "../decurion-proto" }
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower.workspace = true
+
+[lints]
+workspace = true

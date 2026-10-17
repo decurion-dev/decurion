@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Decurion</title>
+<style>
+  :root { --bg:#f5f4f0; --card:#fff; --ink:#1d1c19; --muted:#6f6b61; --line:#e2dfd6;
+          --accent:#3b5bdb; --ok:#2b8a3e; --warn:#c77700; --bad:#c92a2a; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#151513; --card:#1f1e1b; --ink:#ecebe6; --muted:#9a968b; --line:#33312c;
+            --accent:#7b93f0; --ok:#59c26d; --warn:#f0a43a; --bad:#f06464; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui, "Segoe UI", sans-serif; }
+  header { display:flex; align-items:center; gap:16px; padding:14px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; }
+  header .status { color:var(--muted); font-size:13px; margin-left:auto; }
+  main { display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); gap:12px; padding:16px; }
+  @media (max-width: 1000px) { main { grid-template-columns:repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 600px) { main { grid-template-columns:1fr; } }
+  .col h2 { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:0 0 8px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:8px; cursor:pointer; }
+  .card .app { font-size:12px; color:var(--muted); }
+  .card[data-state="running"] { border-left:3px solid var(--accent); }
+  .card[data-state="needs_you"] { border-left:3px solid var(--warn); }
+  .card[data-state="failed"] { border-left:3px solid var(--bad); }
+  .card[data-state="done"] { border-left:3px solid var(--ok); }
+  form { display:flex; gap:8px; flex-wrap:wrap; padding:0 16px 16px; }
+  input, select, textarea, button { font:inherit; color:var(--ink); background:var(--card); border:1px solid var(--line); border-radius:8px; padding:7px 10px; }
+  textarea { flex:1 1 320px; min-height:38px; }
+  button { cursor:pointer; background:var(--accent); color:#fff; border-color:var(--accent); }
+  dialog { background:var(--card); color:var(--ink); border:1px solid var(--line); border-radius:12px; width:min(720px, 94vw); }
+  #log { max-height:60vh; overflow:auto; font:13px/1.4 Consolas, monospace; white-space:pre-wrap; }
+  .actions { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+  .err { color:var(--bad); padding:0 16px; }
+</style>
+</head>
+<body>
+<header><h1>Decurion</h1><span class="status" id="status">Loading…</span></header>
+<form id="add-thread">
+  <select id="app" required aria-label="App"></select>
+  <input id="title" placeholder="Title" required aria-label="Title">
+  <textarea id="prompt" placeholder="What should the agent do?" required aria-label="Task"></textarea>
+  <button>Add work</button>
+</form>
+<details style="padding:0 16px 12px"><summary>Add an app</summary>
+  <form id="add-app" style="padding:8px 0 0">
+    <input id="app-name" placeholder="Name" required aria-label="App name">
+    <input id="app-path" placeholder="C:\path\to\repo" required aria-label="Repo path">
+    <select id="app-profile" aria-label="Claude account"><option>A</option><option>B</option></select>
+    <button>Add app</button>
+  </form>
+</details>
+<div class="err" id="err"></div>
+<main id="board"></main>
+<dialog id="detail"><h3 id="d-title"></h3><div id="log"></div>
+  <div class="actions" id="d-actions"></div></dialog>
+<script>
+const COLS = [["queued","Queued"],["running","Running"],["needs_you","Needs you"],["in_review","In review"],["done","Done"],["failed","Failed"]];
+const OWNER_MOVES = { in_review:[["done","Accept"],["queued","Send back"],["failed","Reject"]],
+                      needs_you:[["queued","Continue"],["failed","Stop"]], failed:[["queued","Retry"]],
+                      queued:[["failed","Cancel"]] };
+let apps = {};
+const $ = id => document.getElementById(id);
+async function api(path, opts = {}) {
+  const r = await fetch("/api" + path, { headers: { "content-type": "application/json" }, ...opts });
+  if (r.status === 401) throw new Error("Not signed in. Open the login link the hub printed when it started.");
+  if (!r.ok) throw new Error(await r.text());
+  return r.status === 204 ? null : r.json();
+}
+function el(tag, attrs = {}, text = "") { const e = document.createElement(tag); Object.assign(e, attrs); e.textContent = text; return e; }
+async function refresh() {
+  try {
+    const [a, threads] = await Promise.all([api("/apps"), api("/threads")]);
+    apps = Object.fromEntries(a.map(x => [x.id, x]));
+    const sel = $("app"); const keep = sel.value; sel.replaceChildren(...a.map(x => el("option", { value: x.id }, x.name))); if (keep) sel.value = keep;
+    $("board").replaceChildren(...COLS.map(([st, label]) => {
+      const col = el("section", { className: "col" }); const mine = threads.filter(t => t.state === st);
+      col.append(el("h2", {}, `${label} (${mine.length})`));
+      for (const t of mine) {
+        const c = el("div", { className: "card" }); c.dataset.state = t.state;
+        c.append(el("div", { className: "app" }, apps[t.app_id]?.name ?? ""), el("div", {}, t.title));
+        c.onclick = () => openThread(t); col.append(c);
+      }
+      return col;
+    }));
+    $("status").textContent = `${threads.length} pieces of work · updated ${new Date().toLocaleTimeString()}`;
+    $("err").textContent = "";
+  } catch (e) { $("err").textContent = e.message; }
+}
+async function openThread(t) {
+  $("d-title").textContent = `${t.title} · ${t.state.replace("_", " ")}`;
+  // Events come in pages of 500; fetch them all so the outcome is never cut off.
+  let ev = [], page;
+  do { page = await api(`/threads/${t.id}/events?after=${ev.length ? ev[ev.length - 1].id : 0}`); ev = ev.concat(page); }
+  while (page.length === 500);
+  $("log").textContent = ev.map(r => {
+    const e = r.event; const time = r.at.slice(11, 19);
+    return e.kind === "message" ? `${time}  ${e.text}` : e.kind === "tool" ? `${time}  [${e.name}] ${e.summary}` : `${time}  FINISHED ${e.ok ? "ok" : "failed"}: ${e.summary}`;
+  }).join("\n") || "No activity yet.";
+  $("d-actions").replaceChildren(...(OWNER_MOVES[t.state] ?? []).map(([to, label]) => {
+    const b = el("button", { type: "button" }, label);
+    b.onclick = async () => { try { await api(`/threads/${t.id}/move`, { method: "POST", body: JSON.stringify({ to }) }); $("detail").close(); refresh(); } catch (e) { alert(e.message); } };
+    return b;
+  }), Object.assign(el("button", { type: "button" }, "Close"), { onclick: () => $("detail").close() }));
+  $("detail").showModal();
+}
+$("add-thread").onsubmit = async e => { e.preventDefault();
+  try { await api("/threads", { method: "POST", body: JSON.stringify({ app_id: +$("app").value, title: $("title").value, prompt: $("prompt").value }) });
+        $("title").value = ""; $("prompt").value = ""; refresh(); } catch (x) { $("err").textContent = x.message; } };
+$("add-app").onsubmit = async e => { e.preventDefault();
+  try { await api("/apps", { method: "POST", body: JSON.stringify({ name: $("app-name").value, repo_path: $("app-path").value, profile: $("app-profile").value }) });
+        e.target.reset(); refresh(); } catch (x) { $("err").textContent = x.message; } };
+refresh(); setInterval(refresh, 3000);
+</script>
+</body>
+</html>
