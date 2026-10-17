@@ -171,6 +171,19 @@ pub struct Claim {
     /// start.
     #[serde(default)]
     pub budget_usd: Option<f64>,
+    /// Names of the app's test keys. The runner reads their values from the
+    /// vault on this PC; the hub never sends them.
+    #[serde(default)]
+    pub test_keys: Vec<String>,
+}
+
+/// A saved test key as the board sees it. The value itself is never shown
+/// again after it is saved.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestKey {
+    pub name: String,
+    pub last_four: String,
+    pub added_at: String,
 }
 
 /// A Max account that is out of usage, and the work waiting for it.
