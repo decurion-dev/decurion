@@ -146,6 +146,7 @@ async fn unknown_tokens_never_reach_the_api() {
         let resp = r
             .http
             .post(r.url("/v1/messages"))
+            .body("{}")
             .header(name, value)
             .send()
             .await
@@ -165,12 +166,14 @@ async fn a_token_dies_with_its_run() {
     let ok = r
         .http
         .post(r.url("/v1/messages"))
+        .body("{}")
         .header("x-api-key", &token);
     assert_eq!(ok.send().await.expect("send").status(), 200);
     drop(grant);
     let late = r
         .http
         .post(r.url("/v1/messages"))
+        .body("{}")
         .header("x-api-key", &token);
     assert_eq!(late.send().await.expect("send").status(), 401);
     assert_eq!(r.calls(), 1);
@@ -238,6 +241,7 @@ async fn client_credentials_are_not_passed_on() {
     let resp = r
         .http
         .post(r.url("/v1/messages"))
+        .body("{}")
         .header("authorization", &bearer)
         .header("proxy-authorization", "Basic c2VjcmV0")
         .send()
@@ -289,6 +293,7 @@ async fn only_the_calls_claude_code_makes_are_forwarded() {
             .http
             .request(method.parse().expect("method"), r.url(path))
             .header("x-api-key", grant.token())
+            .body("{}")
             .send()
             .await
             .expect("send");
@@ -399,11 +404,20 @@ async fn priced_api() -> (Gatekeeper, SocketAddr, Arc<Mutex<u32>>) {
                         "event: message_delta\n",
                         "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":400}}\n\n",
                     )),
+                    // Cut off: no message_delta ever arrives.
+                    "cut" => sse(concat!(
+                        "data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-5-5\",",
+                        "\"usage\":{\"input_tokens\":1000,\"output_tokens\":1}}}\n\n",
+                        "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n",
+                    )),
                     // A model the table does not know: priced at the top rates.
                     "unknown" => sse(concat!(
                         "data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-new-9\",",
                         "\"usage\":{\"input_tokens\":1000,\"output_tokens\":0}}}\n\n",
+                        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":0}}\n\n",
                     )),
+                    // A stream with nothing readable in it.
+                    "blank" => sse("data: {}\n\n"),
                     "error" => axum::http::Response::builder()
                         .status(529)
                         .header("content-type", "application/json")
@@ -435,7 +449,8 @@ async fn ask(proxy: SocketAddr, token: &str, mode: &str) -> reqwest::StatusCode 
         .post(format!("http://{proxy}/v1/messages"))
         .header("x-api-key", token)
         .header("x-mock", mode)
-        .body("{}")
+        .header("accept-encoding", "gzip, br")
+        .body("{\"model\":\"claude-opus-5-5\",\"max_tokens\":2000}")
         .send()
         .await
         .expect("send");
@@ -493,6 +508,8 @@ async fn errors_cost_nothing_and_unreadable_answers_cost_everything_left() {
     assert_eq!(ask(proxy, grant.token(), "error").await, 529);
     assert_eq!(settled(&grant).await, 0);
     ask(proxy, grant.token(), "garbled").await;
+    ask(proxy, grant.token(), "garbled").await;
+    // Charged the whole budget, once, not once per unreadable answer.
     assert_eq!(settled(&grant).await, 1_000_000);
     assert!(grant.used_up());
 }
@@ -500,17 +517,19 @@ async fn errors_cost_nothing_and_unreadable_answers_cost_everything_left() {
 #[tokio::test]
 async fn calls_stop_once_the_run_has_spent_its_money() {
     let (gate, proxy, calls) = priced_api().await;
-    // Room for one streamed answer (24,000) but not a second.
-    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(30_000));
+    // Each call holds its worst case first: about 44 bytes of input at 8 plus
+    // 2000 output at 20 = ~40,400. The real answer costs 24,000.
+    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(70_000));
     assert_eq!(ask(proxy, grant.token(), "sse").await, 200);
     settled(&grant).await;
+    // 24,000 spent + a 40,400 hold fits in 70,000; a third would not.
     assert_eq!(ask(proxy, grant.token(), "sse").await, 200);
     settled(&grant).await;
-    assert!(grant.used_up());
     // Refused at the gatekeeper: the API is not called again.
     let before = calls.lock().map(|n| *n).unwrap_or(0);
     assert_eq!(ask(proxy, grant.token(), "sse").await, 400);
     assert_eq!(calls.lock().map(|n| *n).unwrap_or(0), before);
+    assert!(grant.used_up());
     // Counting tokens and listing models cost nothing and stay allowed.
     let r = reqwest::Client::new()
         .get(format!("http://{proxy}/v1/models"))
@@ -519,4 +538,79 @@ async fn calls_stop_once_the_run_has_spent_its_money() {
         .await
         .expect("send");
     assert_ne!(r.status(), 400);
+}
+
+#[tokio::test]
+async fn an_answer_cut_off_before_its_final_count_is_charged_its_max_tokens() {
+    let (gate, proxy, _) = priced_api().await;
+    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(10_000_000));
+    ask(proxy, grant.token(), "cut").await;
+    // Opus 5.5: 1000 in at 4, plus the request's max_tokens (2000) out at 20.
+    assert_eq!(settled(&grant).await, 4_000 + 40_000);
+}
+
+#[tokio::test]
+async fn finishing_waits_for_answers_still_streaming() {
+    let (gate, proxy, _) = priced_api().await;
+    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(10_000_000));
+    ask(proxy, grant.token(), "sse").await;
+    assert!(grant.finish(std::time::Duration::from_secs(2)).await);
+    assert_eq!(grant.spent_micros(), 24_000);
+}
+
+#[tokio::test]
+async fn a_stream_with_nothing_readable_costs_the_whole_budget() {
+    let (gate, proxy, _) = priced_api().await;
+    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(500_000));
+    ask(proxy, grant.token(), "blank").await;
+    assert_eq!(settled(&grant).await, 500_000);
+    assert!(grant.used_up());
+}
+
+#[tokio::test]
+async fn settings_the_meter_cannot_price_are_refused() {
+    let (gate, proxy, calls) = priced_api().await;
+    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(10_000_000));
+    for body in [
+        r#"{"model":"claude-opus-5-5","max_tokens":10,"fallbacks":"default"}"#,
+        r#"{"model":"claude-opus-5-5","max_tokens":10,"speed":"fast"}"#,
+        r#"{"model":"claude-opus-5-5","max_tokens":10,"service_tier":"priority"}"#,
+        r#"{"model":"claude-opus-5-5","max_tokens":10,"inference_geo":"us"}"#,
+        r#"{"model":"claude-opus-5-5","max_tokens":10,"tools":[{"type":"advisor_20260301","name":"advisor"}]}"#,
+        r#"{"model":"claude-opus-5-5","max_tokens":10,"tools":[{"type":"code_execution_20260521","name":"code_execution"}]}"#,
+        r#"{"model":"claude-opus-5-5","max_tokens":10,"mcp_servers":[]}"#,
+        "not json",
+    ] {
+        let r = reqwest::Client::new()
+            .post(format!("http://{proxy}/v1/messages"))
+            .header("x-api-key", grant.token())
+            .body(body)
+            .send()
+            .await
+            .expect("send");
+        assert_eq!(r.status(), 400, "{body}");
+    }
+    assert_eq!(calls.lock().map(|n| *n).unwrap_or(0), 0);
+    // Ordinary tools and settings still pass.
+    let r = reqwest::Client::new()
+        .post(format!("http://{proxy}/v1/messages"))
+        .header("x-api-key", grant.token())
+        .header("x-mock", "sse")
+        .body(r#"{"model":"claude-opus-5-5","max_tokens":10,"inference_geo":"global","tools":[{"name":"bash","input_schema":{}},{"type":"web_search_20260209","name":"web_search"}]}"#)
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn a_failed_call_gives_its_hold_back() {
+    let (gate, proxy, _) = priced_api().await;
+    // Room for exactly one worst case at a time.
+    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(45_000));
+    assert_eq!(ask(proxy, grant.token(), "error").await, 529);
+    settled(&grant).await;
+    assert_eq!(ask(proxy, grant.token(), "error").await, 529);
+    assert_eq!(grant.spent_micros(), 0);
+    assert!(!grant.used_up());
 }

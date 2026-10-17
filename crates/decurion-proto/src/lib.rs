@@ -175,14 +175,15 @@ pub struct Claim {
     /// vault on this PC; the hub never sends them.
     #[serde(default)]
     pub test_keys: Vec<String>,
-    /// Set for pay-per-use runs: the money set aside for this run alone. The
-    /// gatekeeper stops the run's API calls once its answers cost this much.
+    /// Set for pay-per-use runs: the money set aside for this run alone, in
+    /// micro-dollars. The gatekeeper stops the run's API calls as it is used.
     #[serde(default)]
-    pub reserved_usd: Option<f64>,
-    /// What earlier runs of this Claude session were charged. Cost reports
-    /// are running totals for the session, so they include this.
+    pub reserved_micros: Option<i64>,
+    /// What earlier runs of this Claude session were charged, in
+    /// micro-dollars. Cost reports are running totals for the session, so
+    /// they include this.
     #[serde(default)]
-    pub prior_usd: f64,
+    pub prior_micros: i64,
 }
 
 /// A saved test key as the board sees it. The value itself is never shown

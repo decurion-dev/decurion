@@ -135,7 +135,12 @@ pub struct Usage {
     pub cache_write_1h: u64,
     /// Fast mode costs twice the standard rate.
     pub fast: bool,
+    /// Inference pinned to one region costs 10% more.
+    pub regional: bool,
     pub web_searches: u64,
+    /// Some features (compaction, fallbacks) bill per step and report each
+    /// step here; the top-level counts can leave them out.
+    pub iterations: Vec<(String, Usage)>,
 }
 
 /// Web search is billed per search: $10 per 1,000.
@@ -150,12 +155,21 @@ pub fn cost_micros(model: &str, u: &Usage) -> u64 {
         price(model)
     };
     let speed = if u.fast { 2.0 } else { 1.0 };
+    let region = if u.regional { 1.1 } else { 1.0 };
     let tokens = u.input as f64 * p.input
         + u.output as f64 * p.output
         + u.cache_read as f64 * p.cache_read
         + u.cache_write_5m as f64 * p.input * 1.25
         + u.cache_write_1h as f64 * p.input * 2.0;
-    (tokens * speed).ceil() as u64 + u.web_searches * WEB_SEARCH_MICROS
+    let top = (tokens * speed * region).ceil() as u64 + u.web_searches * WEB_SEARCH_MICROS;
+    // When steps are reported, each is priced at its own model; the larger of
+    // the two totals is used, so neither way of reporting can hide tokens.
+    let steps: u64 = u
+        .iterations
+        .iter()
+        .map(|(m, it)| cost_micros(if m.is_empty() { model } else { m }, it))
+        .sum();
+    top.max(steps)
 }
 
 /// Reads one `usage` object (a response's, or a stream event's) into `u`.
@@ -181,9 +195,14 @@ pub fn read_usage(v: &serde_json::Value, u: &mut Usage) {
             &mut u.cache_write_1h,
             split["ephemeral_1h_input_tokens"].as_u64(),
         );
-    } else {
-        // Without the split, count writes at the dearer 1-hour rate.
-        keep(&mut u.cache_write_1h, n("cache_creation_input_tokens"));
+    }
+    // The total without a split: only what the split does not already cover
+    // is added, at the dearer 1-hour rate.
+    if let Some(total) = n("cache_creation_input_tokens") {
+        let known = u.cache_write_5m + u.cache_write_1h;
+        if total > known {
+            u.cache_write_1h += total - known;
+        }
     }
     keep(
         &mut u.web_searches,
@@ -191,6 +210,20 @@ pub fn read_usage(v: &serde_json::Value, u: &mut Usage) {
     );
     if v["speed"] == "fast" {
         u.fast = true;
+    }
+    if v["inference_geo"].as_str().is_some_and(|g| g != "global") {
+        u.regional = true;
+    }
+    if let Some(steps) = v["iterations"].as_array() {
+        // A later report repeats the whole list; it replaces the earlier one.
+        u.iterations = steps
+            .iter()
+            .map(|s| {
+                let mut it = Usage::default();
+                read_usage(s, &mut it);
+                (s["model"].as_str().unwrap_or("").to_owned(), it)
+            })
+            .collect();
     }
 }
 
@@ -217,8 +250,8 @@ mod tests {
             cache_read: 10_000,
             cache_write_5m: 2_000,
             cache_write_1h: 0,
-            fast: false,
             web_searches: 1,
+            ..Default::default()
         };
         // Opus 5.5: 1000*4 + 500*20 + 10000*0.2 + 2000*4*1.25 + one search.
         assert_eq!(
@@ -271,5 +304,38 @@ mod tests {
                 ..Default::default()
             }
         );
+        // The same total again without the split is not counted twice.
+        read_usage(
+            &serde_json::json!({"cache_creation_input_tokens": 30}),
+            &mut u,
+        );
+        assert_eq!((u.cache_write_5m, u.cache_write_1h), (30, 0));
+    }
+
+    #[test]
+    fn steps_are_priced_at_their_own_model_when_top_level_counts_miss_them() {
+        let mut u = Usage::default();
+        read_usage(
+            &serde_json::json!({"input_tokens": 0, "output_tokens": 0, "iterations": [
+                {"model": "claude-fable-5-1", "input_tokens": 1000, "output_tokens": 100},
+                {"input_tokens": 500, "output_tokens": 50}
+            ]}),
+            &mut u,
+        );
+        // Fable: 1000*10 + 100*50; the step without a model at Opus 5.5 rates.
+        assert_eq!(
+            cost_micros("claude-opus-5-5", &u),
+            (10_000 + 5_000) + (500 * 4 + 50 * 20)
+        );
+    }
+
+    #[test]
+    fn regional_inference_costs_ten_percent_more() {
+        let mut u = Usage::default();
+        read_usage(
+            &serde_json::json!({"input_tokens": 1000, "inference_geo": "us"}),
+            &mut u,
+        );
+        assert_eq!(cost_micros("claude-opus-5-5", &u), 4_400);
     }
 }

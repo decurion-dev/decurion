@@ -454,9 +454,7 @@ async fn run(
         Credential::PayPerUse => {
             // The gatekeeper prices every answer and stops the run's calls
             // once its set-aside money is used.
-            let budget = c
-                .reserved_usd
-                .map(|usd| (usd.max(0.0) * 1_000_000.0) as u64);
+            let budget = c.reserved_micros.map(|m| m.max(0) as u64);
             let g = gate.keeper.grant_with_budget(token, budget);
             let v = vec![g.token().to_owned(), gate.url.clone()];
             (Some(g), v)
@@ -568,10 +566,17 @@ async fn run(
     // The container is gone; its token goes with it.
     // For pay-per-use, the gatekeeper's count is the cost: it saw every call,
     // including any the agent made itself, and runs outside the container.
-    let metered_usd = grant
-        .as_ref()
-        .map(|g| c.prior_usd + g.spent_micros() as f64 / 1_000_000.0);
+    // Answers still finishing are waited for, so their cost is in; if they do
+    // not finish in time the count is not trusted and the hub charges the
+    // whole set-aside amount.
+    let metered_usd = match &grant {
+        Some(g) if g.finish(Duration::from_secs(30)).await => {
+            Some((c.prior_micros as u64 + g.spent_micros()) as f64 / 1_000_000.0)
+        }
+        _ => None,
+    };
     let used_up = grant.as_ref().is_some_and(|g| g.used_up());
+    let pay_per_use = grant.is_some();
     drop(grant);
     let finished = match result {
         Some(RunEvent::Finished {
@@ -582,6 +587,14 @@ async fn run(
             output_tokens,
         }) => {
             let trusted = status.success() && !after_result;
+            let reported = cost_usd.filter(|_| trusted);
+            // The higher of the gatekeeper's count and Claude's own report;
+            // a pay-per-use run whose count is unknown reports nothing.
+            let cost = if pay_per_use {
+                metered_usd.map(|m| reported.map_or(m, |r| m.max(r)))
+            } else {
+                reported
+            };
             let summary = if !ok && used_up {
                 BUDGET_STOP.to_owned()
             } else {
@@ -592,7 +605,7 @@ async fn run(
                 &RunEvent::Finished {
                     ok,
                     summary: summary.clone(),
-                    cost_usd: metered_usd.or(cost_usd.filter(|_| trusted)),
+                    cost_usd: cost,
                     input_tokens,
                     output_tokens,
                 },
@@ -601,13 +614,19 @@ async fn run(
             Some((ok, summary))
         }
         _ => {
-            // No result line at all: still report what the gatekeeper saw.
+            // No result line at all: still report what the gatekeeper saw,
+            // and say so if the run was stopped by its budget.
+            let summary = if used_up {
+                BUDGET_STOP.to_owned()
+            } else {
+                String::new()
+            };
             if let Some(cost) = metered_usd {
                 hub.event(
                     id,
                     &RunEvent::Finished {
                         ok: false,
-                        summary: String::new(),
+                        summary: summary.clone(),
                         cost_usd: Some(cost),
                         input_tokens: None,
                         output_tokens: None,
@@ -615,7 +634,7 @@ async fn run(
                 )
                 .await;
             }
-            None
+            used_up.then_some((false, summary))
         }
     };
     let max_limit = limit.filter(|_| !after_result && c.budget_usd.is_none());
@@ -672,7 +691,11 @@ sent for review. Retry it and the agent will be asked to rewrite its branch with
             }
         }
         // Out of money for this run, not broken: the owner can give it more.
-        Some((false, summary)) if summary == BUDGET_STOP => (ThreadState::NeedsYou, summary),
+        // Decided by the gatekeeper's count, or by Claude Code's own limit on
+        // a pay-per-use run; never by text alone on a Max run.
+        Some((false, summary)) if used_up || (pay_per_use && summary == BUDGET_STOP) => {
+            (ThreadState::NeedsYou, BUDGET_STOP.to_owned())
+        }
         Some((false, summary)) => (ThreadState::Failed, summary),
         None => (
             ThreadState::Failed,
