@@ -183,7 +183,10 @@ impl CoordinatorReply {
                 check_len("choice", c, 200)?;
             }
             if q.recommended.is_some_and(|r| r >= q.choices.len()) {
-                return Err(format!("question {} recommends a choice it does not have", q.id));
+                return Err(format!(
+                    "question {} recommends a choice it does not have",
+                    q.id
+                ));
             }
         }
         if let Some(p) = &self.plan {
@@ -336,6 +339,41 @@ pub struct Piece {
     pub branch: Option<String>,
 }
 
+/// What a visual page shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageKind {
+    /// The plan drawn out: mockups, and for changes, today's screens beside
+    /// the planned ones.
+    Plan,
+    /// A finished piece as built: screenshots taken by the checker.
+    Check,
+}
+
+impl PageKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Check => "check",
+        }
+    }
+}
+
+/// A self-contained HTML page an agent drew. Opened at
+/// `/api/goals/{goal_id}/pages/{id}` in a sandbox that runs no scripts.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PageInfo {
+    pub id: i64,
+    pub kind: PageKind,
+    /// For a plan page: the coordinator message holding that plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<i64>,
+    /// For a check page: the piece's thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<i64>,
+    pub created_at: String,
+}
+
 /// Everything the goal page shows.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoalView {
@@ -343,6 +381,9 @@ pub struct GoalView {
     pub app_name: String,
     pub messages: Vec<GoalMessage>,
     pub pieces: Vec<Piece>,
+    pub pages: Vec<PageInfo>,
+    /// The plan page for the latest plan is being drawn.
+    pub drawing: bool,
 }
 
 /// What the reviewer returns, as the JSON object at the end of its answer.
@@ -398,12 +439,14 @@ pub fn last_json_object<T: serde::de::DeserializeOwned>(text: &str) -> Result<T,
 
 // ---- runner side ----
 
-/// The two helper agents. Neither builds anything the owner ships.
+/// The helper agents. None of them builds anything the owner ships.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HelperKind {
     /// Talks with the owner and plans. Sees the app's code read-only.
     Coordinator,
+    /// Draws the plan as a visual page, in its own throwaway copy of the app.
+    Design,
     /// Checks a finished piece of work in its own throwaway copy.
     Review,
 }
@@ -412,10 +455,19 @@ impl HelperKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Coordinator => "coordinator",
+            Self::Design => "design",
             Self::Review => "review",
         }
     }
+
+    /// Design and review jobs may leave a page in `/out/page.html`.
+    pub fn makes_page(self) -> bool {
+        matches!(self, Self::Design | Self::Review)
+    }
 }
+
+/// Largest page a helper may hand back, screenshots included.
+pub const MAX_PAGE_BYTES: usize = 8 << 20;
 
 /// The code a helper sees.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -423,6 +475,8 @@ impl HelperKind {
 pub enum HelperSource {
     /// A read-only copy of the app's code as it is now, kept per goal.
     App { goal_id: i64 },
+    /// A fresh, writable, throwaway copy of the app's code as it is now.
+    AppCopy { goal_id: i64 },
     /// A fresh, writable, throwaway copy of a thread's branch, taken from the
     /// runner's own review copy (never from the agent's folder). The commit
     /// the thread started from is the local branch `decurion-base`.
@@ -460,6 +514,10 @@ pub struct HelperResult {
     pub input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u64>,
+    /// `/out/page.html` from a design or review job, if the agent left one
+    /// no bigger than [`MAX_PAGE_BYTES`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_html: Option<String>,
 }
 
 #[cfg(test)]

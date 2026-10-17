@@ -57,7 +57,7 @@ fn thread_from(row: &SqliteRow) -> Result<Thread> {
     })
 }
 
-fn app_from(row: &SqliteRow) -> Result<App> {
+pub(crate) fn app_from(row: &SqliteRow) -> Result<App> {
     let profile: String = row.try_get("profile")?;
     Ok(App {
         id: row.try_get("id")?,
@@ -282,6 +282,7 @@ impl Store {
                 capped.push(t);
                 continue;
             };
+            let follow_up = crate::coordinator::take_follow_up(&mut tx, t.id).await?;
             let session = t
                 .session_id
                 .clone()
@@ -324,7 +325,7 @@ impl Store {
                     resume,
                     budget_usd: pay_per_use
                         .then(|| crate::spend::claude_budget_usd(prior, reserved)),
-                    follow_up: None,
+                    follow_up,
                 }),
                 capped,
             });
@@ -472,7 +473,7 @@ fn check_repo_path(path: &str) -> Result<()> {
 
 /// Runner names are recorded as `runner:<name>`, so a runner can never write
 /// an audit row that looks like the owner's.
-fn runner_actor(name: &str) -> Result<String> {
+pub(crate) fn runner_actor(name: &str) -> Result<String> {
     let ok = (1..=32).contains(&name.len())
         && name
             .bytes()

@@ -11,10 +11,13 @@
 //! own device token in an HttpOnly cookie, which survives hub restarts and can
 //! be removed from the board.
 
+pub mod coordinator;
 pub mod devices;
 pub mod push;
 pub mod spend;
 pub mod store;
+
+mod goals;
 
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -62,7 +65,7 @@ pub struct AppState {
     login_code: Arc<str>,
     /// Address phones use to reach the hub, e.g. the Tailscale https name.
     public_url: Option<Arc<str>>,
-    push: Option<push::Pusher>,
+    pub(crate) push: Option<push::Pusher>,
 }
 
 impl AppState {
@@ -122,10 +125,25 @@ pub fn router(state: AppState) -> Router {
         .route("/spend/cap", post(set_cap))
         .route("/apps/{id}/pay-per-use", post(set_pay_per_use))
         .route("/push/subscribe", post(push_subscribe))
+        .route("/goals", get(goals::list).post(goals::add))
+        .route("/goals/{id}", get(goals::view))
+        .route("/goals/{id}/say", post(goals::say))
+        .route("/goals/{id}/answer", post(goals::answer))
+        .route("/goals/{id}/approve", post(goals::approve))
+        .route("/goals/{id}/retry", post(goals::retry))
+        .route("/goals/{id}/close", post(goals::close))
+        .route("/goals/{id}/stop", post(goals::stop))
+        .route("/goals/{id}/pages/{page}", get(goals::page))
+        .route("/apps/{id}/notes", get(goals::notes))
+        .route("/apps/{id}/notes/{note}/remove", post(goals::remove_note))
+        .route("/runner/helper/claim", post(goals::helper_claim))
+        .route("/runner/helper/{id}/started", post(goals::helper_started))
+        .route("/runner/helper/{id}/finish", post(goals::helper_finish))
         .layer(middleware::from_fn_with_state(state.clone(), require_key));
     Router::new()
         .route("/", get(board))
         .route("/inbox", get(inbox))
+        .route("/goals", get(goals_page))
         .route("/login", get(login_page).post(login))
         .route("/pair", get(pair_page).post(pair))
         .route("/sw.js", get(service_worker))
@@ -230,7 +248,7 @@ impl IntoResponse for ApiError {
 
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
-fn forbidden(what: &str) -> Response {
+pub(crate) fn forbidden(what: &str) -> Response {
     (StatusCode::FORBIDDEN, format!("{what} is owner-only")).into_response()
 }
 
@@ -274,6 +292,10 @@ async fn board() -> Response {
 
 async fn inbox() -> Response {
     page(include_str!("inbox.html"))
+}
+
+async fn goals_page() -> Response {
+    page(include_str!("goals.html"))
 }
 
 /// Sets the device cookie. `Secure` whenever the hub is reached over https
@@ -505,8 +527,17 @@ async fn move_thread(
         .await
     {
         Ok(t) => {
-            // Only what the agent did is news; the owner's own taps are not.
-            let news = (c == Caller::Runner)
+            // Pieces of a goal move on to their check, or settle.
+            let piece = match st.store.piece_thread_moved(&t).await {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!(error = %e, thread = t.id, "could not update the goal");
+                    false
+                }
+            };
+            // Only what the agent did is news; the owner's own taps are not. A
+            // piece of a goal is not ready for the owner until it is checked.
+            let news = (c == Caller::Runner && !(piece && t.state == InReview))
                 .then(|| push::message_for(t.state, &t.title))
                 .flatten();
             if let (Some(p), Some((title, body))) = (st.push.clone(), news) {
@@ -565,6 +596,9 @@ async fn runner_hello(
 ) -> Response {
     if c != Caller::Runner {
         return forbidden("runner calls are runner-only; this");
+    }
+    if let Err(e) = st.store.pause_runner_helpers(&r.runner).await {
+        return ApiError(e).into_response();
     }
     match st.store.pause_runner_threads(&r.runner).await {
         Ok(ids) => Json(ids).into_response(),
