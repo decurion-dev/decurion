@@ -259,6 +259,40 @@ impl Gate {
 
 /// Serves connections until the listener fails. Does not print the ready
 /// line; the caller does that once the listener is bound.
+/// Port where a pay-per-use box reaches the gatekeeper through the gate.
+pub const RELAY_PORT: u16 = 3129;
+
+/// Passes every connection on `listener` straight through to `target`, the
+/// gatekeeper on the PC that holds the pay-per-use key. It is the one
+/// address on the PC a box can reach, and it is fixed by the runner, never
+/// by the box. Unlike sites on the list, it is expected to be private.
+pub async fn relay(listener: TcpListener, target: String) -> io::Result<()> {
+    let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    loop {
+        let Ok(slot) = slots.clone().acquire_owned().await else {
+            return Ok(());
+        };
+        let mut client = match listener.accept().await {
+            Ok((client, _)) => client,
+            Err(_) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
+        let target = target.clone();
+        tokio::spawn(async move {
+            if let Ok(Ok(mut upstream)) =
+                timeout(CONNECT_TIMEOUT, TcpStream::connect(target.as_str())).await
+            {
+                let _ = client.set_nodelay(true);
+                let _ = upstream.set_nodelay(true);
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+            }
+            drop(slot);
+        });
+    }
+}
+
 pub async fn serve(listener: TcpListener, gate: Arc<Gate>) -> io::Result<()> {
     let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     loop {

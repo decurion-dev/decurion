@@ -2,29 +2,30 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e1014" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/ui.css">
 <title>{{title}}</title>
 <style>
-  :root { --bg:#f5f4f0; --card:#fff; --ink:#1d1c19; --muted:#6f6b61; --line:#e2dfd6; --accent:#3b5bdb; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#151513; --card:#1f1e1b; --ink:#ecebe6; --muted:#9a968b; --line:#33312c; --accent:#7b93f0; }
-  }
-  body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--ink);
-         font:16px/1.5 system-ui, "Segoe UI", sans-serif; padding:16px; }
-  main { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:24px; max-width:380px; width:100%; }
-  h1 { font-size:22px; margin:0 0 8px; }
-  p { color:var(--muted); margin:0 0 20px; }
-  button { width:100%; font:inherit; font-weight:600; padding:14px; border-radius:12px; border:0;
-           background:var(--accent); color:#fff; cursor:pointer; }
+  body { min-height: 100dvh; display: grid; place-items: center; padding: 24px 16px; }
+  main { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l); padding: 28px 24px 24px; max-width: 400px; width: 100%; display: grid; gap: 14px; }
+  .brand { display: flex; align-items: center; gap: 10px; font: 600 15px var(--font-display); color: var(--muted); }
+  .brand img { width: 32px; height: 32px; border-radius: 8px; }
+  h1 { font-size: 22px; }
+  p { color: var(--muted); }
+  .btn { width: 100%; min-height: 48px; font-size: 16px; margin-top: 6px; }
 </style>
 </head>
 <body>
 <main>
+  <div class="brand"><img src="/icon.svg" alt="">Decurion</div>
   <h1>{{title}}</h1>
   <p>{{text}}</p>
   <form method="post" action="{{action}}">
     <input type="hidden" name="code" value="{{code}}">
-    <button>{{button}}</button>
+    <button class="btn primary">{{button}}</button>
   </form>
 </main>
 </body>

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/decurion-dev/decurion/security/advisories/new
+    about: Please report security problems privately, not in a public issue. See our security policy for details.
+  - name: Security policy
+    url: https://github.com/decurion-dev/decurion/blob/main/SECURITY.md
+    about: What counts as a security problem and how we handle reports.

@@ -1,0 +1,151 @@
+# decurion-addon.toml: example manifest (decurion_api 1).
+#
+# Design: docs/adr/0001-add-on-system.md (status: Proposed). Field names may
+# still change before the add-on system ships.
+#
+# Most real add-ons declare a single component. This example declares one of
+# each kind (agent type, tool, check) so every field is shown in one place.
+# All hashes and digests below are placeholders.
+
+# Required. The major API version this add-on is written against. A hub that
+# does not support it refuses the install with a plain message.
+decurion_api = "1"
+
+[addon]
+# Lowercase letters, digits, dots and hyphens. Prefix it with something that
+# is yours (a domain, a GitHub org) so ids do not collide.
+id = "example.tickets"
+name = "Tickets"                      # shown on the install screen
+version = "0.3.0"                     # semver
+description = "Lets agents search and update tickets in Example Tracker, and adds two small checks."
+authors = ["Example Co <dev@example.invalid>"]
+license = "Apache-2.0"
+homepage = "https://github.com/example/decurion-tickets"
+
+# ---------------------------------------------------------------------------
+# Tool: an MCP server, always in its own container image, pinned by digest.
+# ---------------------------------------------------------------------------
+[[tool]]
+# The agent sees functions as mcp__<name>__<function>, e.g. mcp__tickets__search.
+name = "tickets"
+summary = "Search and update tickets in Example Tracker"
+
+# "hub": runs next to the hub, may hold secrets, the agent reaches it only
+#        through Decurion's MCP proxy (per-run URL and token).
+# "box": a sidecar inside the run's sandbox, shares the run's website
+#        allowlist, may see /work, and never gets secrets.
+placement = "hub"
+
+image = "ghcr.io/example/tickets-mcp@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+command = ["tickets-mcp"]
+
+# "stdio" (hub placement only) or "http" (MCP streamable HTTP; set `port`).
+transport = "stdio"
+# port = 7000
+
+# Environment variable inside THIS container = name of a saved key in the
+# vault. Resolved for the app the run belongs to, at container start. The
+# value never enters the manifest, the agent's box, logs or events.
+[tool.secrets]
+EXAMPLE_TRACKER_TOKEN = "example-tracker-token"
+
+[tool.permissions]
+# The only hosts this container may reach. For a box tool, these hosts are
+# also added to the agent's allowlist for runs that use the tool, and the
+# install screen says so.
+network = ["api.example-tracker.com"]
+# Box tools only: "none", "read" or "write" access to /work.
+# worktree = "none"
+
+[tool.resources]                      # optional, capped by the hub's ceiling
+memory = "256m"
+cpus = 0.5
+
+# Every function the agent may call. Functions the server offers but you do
+# not list here are hidden from the agent.
+#
+# effect: read | write | outbound_message | deploy | production_data | spend
+# The last four are hard stops: every call waits for the owner in Needs you.
+[[tool.expose]]
+name = "search"
+effect = "read"
+summary = "Search tickets"
+
+[[tool.expose]]
+name = "set_status"
+effect = "write"
+summary = "Move a ticket to another column"
+
+[[tool.expose]]
+name = "comment"
+effect = "outbound_message"           # it notifies people, so it is a hard stop
+summary = "Comment on a ticket"
+
+# ---------------------------------------------------------------------------
+# Check: a WASM component run by wasmtime. No files, network, environment or
+# clock unless granted. Verdicts can only tighten: pass, deny or flag.
+# ---------------------------------------------------------------------------
+[[check]]
+name = "no-todo-left"
+summary = "Holds finished work that adds TODO comments"
+module = "checks/no_todo_left.wasm"   # path inside this add-on, prebuilt
+sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+
+# before-tool:  sees each proposed tool call (needs the Phase 2 policy engine)
+# after-run:    sees the diff and summary before work moves to In review
+# redact-event: returns spans of event text to mask before it is stored
+hooks = ["after-run"]
+
+[check.permissions]
+# "read" links the read-diff and read-file host functions (the thread's
+# worktree, read-only). Leave it out and those imports do not exist.
+worktree = "read"
+
+[check.limits]                        # optional; defaults shown, hub caps apply
+fuel = 50_000_000
+memory_mb = 64
+timeout_ms = 2000
+
+[[check]]
+name = "keep-out-of-billing"
+summary = "Stops agents from editing files under billing/"
+module = "checks/keep_out_of_billing.wasm"
+sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+hooks = ["before-tool"]               # sees tool calls; needs no worktree access
+
+# ---------------------------------------------------------------------------
+# Agent type: a new kind of worker. Same sandbox as the built-in Claude
+# worker: /work plus a home volume, all capabilities dropped, no extra mounts.
+# Claude itself is built in; add-ons cannot use Claude profile tokens.
+# ---------------------------------------------------------------------------
+[[agent]]
+name = "tinycoder"
+summary = "Runs the TinyCoder agent on OpenAI models"
+image = "ghcr.io/example/tinycoder@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+command = ["tinycoder", "--json"]
+
+# Templates. Available: {session_id}, {budget_usd}, {model}.
+start_args = ["--session", "{session_id}"]
+resume_args = ["--resume", "{session_id}"]
+budget_args = ["--max-cost-usd", "{budget_usd}"]   # used when cost = "reported"
+
+prompt = "stdin"                      # the only option in v1
+
+# "builtin:claude-stream-json", or "wasm:<path>" for a component exporting
+# parse-line (world decurion:addon/adapter, no imports).
+adapter = "wasm:adapters/tinycoder.wasm"
+adapter_sha256 = "4444444444444444444444444444444444444444444444444444444444444444"
+
+# "none": free or local model. "reported": the hub reserves budget, passes it
+# via budget_args, and counts Finished.cost_usd toward the monthly cap. Also
+# set a spending limit with the provider, because the agent holds the key.
+cost = "reported"
+
+[agent.secrets]
+OPENAI_API_KEY = "openai-api-key"
+
+[agent.permissions]
+network = ["api.openai.com"]
+
+[agent.resources]
+memory = "2g"

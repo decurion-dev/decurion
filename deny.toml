@@ -1,0 +1,73 @@
+# cargo-deny configuration (v2 format). Run with `cargo deny check`.
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# Only check dependencies that can end up in a build for the platforms we ship.
+targets = [
+  "x86_64-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+]
+all-features = false
+no-default-features = false
+
+[advisories]
+version = 2
+db-path = "$CARGO_HOME/advisory-dbs"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Vulnerabilities and unsound crates always fail. Unmaintained crates fail only
+# when we depend on them directly; yanked versions fail too.
+unmaintained = "workspace"
+yanked = "deny"
+# Add an advisory id here only with a comment saying why it does not affect us.
+ignore = [
+  # Marvin Attack timing side channel in `rsa`, which has no fixed release.
+  # It arrives through web-push-native -> jwt-simple, but the hub only signs
+  # with ES256 (P-256) keys (crates/decurion-hub/src/push.rs) and never makes
+  # or uses an RSA key.
+  { id = "RUSTSEC-2023-0071", reason = "RSA is compiled in via jwt-simple but never used; push signing is ES256" },
+]
+
+[licenses]
+version = 2
+# Permissive licenses that are fine to ship inside an Apache-2.0 project.
+# Keep this list to what the dependency tree actually uses; cargo-deny warns
+# about entries nothing needs.
+allow = [
+  "Apache-2.0",          # most of the ecosystem
+  "MIT",                 # most of the ecosystem
+  "BSD-2-Clause",        # coarsetime (via web-push-native / jwt-simple)
+  "BSD-3-Clause",        # subtle, matchit (via axum)
+  "ISC",                 # ring, rustls-webpki, untrusted, jwt-simple and its hmac crates
+  "Unicode-3.0",         # icu_* and unicode-ident (via url / idna, proc-macro2)
+  "Zlib",                # foldhash (via hashbrown)
+  "CDLA-Permissive-2.0", # webpki-roots (Mozilla root certificate data, via reqwest)
+]
+confidence-threshold = 0.9
+exceptions = []
+
+[licenses.private]
+# Our own crates are checked against the allow list like everything else.
+ignore = false
+registries = []
+
+[bans]
+multiple-versions = "warn"
+# Our crates depend on decurion-proto by path with no version. cargo-deny only
+# accepts that for crates marked `publish = false`. Once every workspace crate
+# sets `publish = false`, change this to "deny".
+wildcards = "warn"
+allow-wildcard-paths = true
+highlight = "all"
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

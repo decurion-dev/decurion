@@ -1,8 +1,10 @@
 //! The gate binary. Reads its list from `DECURION_SITES`, listens on port
-//! 3128 and prints `{"event":"ready"}` once it can take connections.
+//! 3128 and prints `{"event":"ready"}` once it can take connections. With
+//! `DECURION_RELAY` (`host:port` of the gatekeeper), it also passes port
+//! 3129 straight through to that one address.
 
 use anyhow::Context;
-use decurion_gate::{print_event, serve, Event, Gate, Policy, PORT};
+use decurion_gate::{print_event, relay, serve, Event, Gate, Policy, PORT, RELAY_PORT};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -18,6 +20,18 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(("0.0.0.0", PORT))
         .await
         .with_context(|| format!("listening on port {PORT}"))?;
+    let relayed = match std::env::var("DECURION_RELAY")
+        .ok()
+        .filter(|t| !t.is_empty())
+    {
+        Some(target) => {
+            let l = TcpListener::bind(("0.0.0.0", RELAY_PORT))
+                .await
+                .with_context(|| format!("listening on port {RELAY_PORT}"))?;
+            Some(tokio::spawn(relay(l, target)))
+        }
+        None => None,
+    };
     let gate = Arc::new(Gate::new(policy, print_event));
     print_event(Event::Ready);
 
@@ -26,6 +40,9 @@ async fn main() -> anyhow::Result<()> {
     tokio::select! {
         served = serve(listener, gate) => served.context("serving")?,
         _ = stop_signal() => {}
+    }
+    if let Some(r) = relayed {
+        r.abort();
     }
     Ok(())
 }

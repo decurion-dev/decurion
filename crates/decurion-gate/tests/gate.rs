@@ -276,3 +276,27 @@ async fn garbage_gets_a_400() {
     assert!(reply.starts_with("HTTP/1.1 400 Bad Request\r\n"), "{reply}");
     assert!(blocked(&events).is_empty());
 }
+
+#[tokio::test]
+async fn the_relay_passes_bytes_to_its_one_target() {
+    let upstream = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind upstream");
+    let target = upstream.local_addr().expect("addr").to_string();
+    tokio::spawn(async move {
+        if let Ok((mut s, _)) = upstream.accept().await {
+            let mut buf = [0u8; 4];
+            if s.read_exact(&mut buf).await.is_ok() {
+                let _ = s.write_all(&buf).await;
+            }
+        }
+    });
+    let l = TcpListener::bind("127.0.0.1:0").await.expect("bind relay");
+    let at = l.local_addr().expect("addr");
+    tokio::spawn(decurion_gate::relay(l, target));
+    let mut c = TcpStream::connect(at).await.expect("connect");
+    c.write_all(b"ping").await.expect("write");
+    let mut back = [0u8; 4];
+    c.read_exact(&mut back).await.expect("read");
+    assert_eq!(&back, b"ping");
+}

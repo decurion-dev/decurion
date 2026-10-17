@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.9.0.schema.json
+PackageIdentifier: Decurion.Decurion
+PackageVersion: ${VERSION}
+PackageLocale: en-US
+Publisher: The Decurion contributors
+PublisherUrl: https://github.com/decurion-dev
+PublisherSupportUrl: https://github.com/decurion-dev/decurion/issues
+PackageName: Decurion
+PackageUrl: https://github.com/decurion-dev/decurion
+License: Apache-2.0
+LicenseUrl: https://github.com/decurion-dev/decurion/blob/main/LICENSE
+ShortDescription: One coordinator, every agent, your rules. A control room for AI coding agents.
+Description: Decurion runs AI coding agents such as Claude Code in sealed workspaces on your PC, shows all their work on one board, and sends the questions that need you to your phone.
+Tags:
+  - ai
+  - agents
+  - claude-code
+  - developer-tools
+ReleaseNotesUrl: https://github.com/decurion-dev/decurion/releases/tag/v${VERSION}
+ManifestType: defaultLocale
+ManifestVersion: 1.9.0

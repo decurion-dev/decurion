@@ -1,8 +1,9 @@
 use anyhow::{bail, Context};
 use decurion_proto::{sites, Claim, MoveRequest, RunEvent, ThreadState};
+use decurion_runner::gatekeeper::{Gatekeeper, ANTHROPIC_API};
 use decurion_runner::{
     container_name, gate_args, gate_name, network_name, parse_gate_line, parse_line, prompt_for,
-    run_args, Credential, GateLine, BUDGET_STOP, DOCKER_CLI_ENV, GATE_IMAGE, LIMIT_STOP,
+    run_args, Credential, GateLine, BUDGET_STOP, DOCKER_CLI_ENV, GATE_IMAGE, LIMIT_STOP, RELAY_URL,
 };
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -73,7 +74,8 @@ fn data_dir() -> anyhow::Result<PathBuf> {
 
 /// The run's one credential, from Windows Credential Manager: a Max profile's
 /// token (`claude setup-token`, saved as `decurion/claude-profile-A`) or the
-/// pay-per-use API key (`decurion/anthropic-api`).
+/// pay-per-use API key (`decurion/anthropic-api`), which stays with the
+/// gatekeeper.
 fn secret(cred: Credential) -> anyhow::Result<String> {
     let target = cred.target();
     #[cfg(windows)]
@@ -81,12 +83,15 @@ fn secret(cred: Credential) -> anyhow::Result<String> {
         let entry = keyring::Entry::new_with_target(&target, "decurion", "claude")?;
         entry
             .get_password()
+            .map(|s| s.trim().to_owned())
             .with_context(|| format!("nothing saved in Credential Manager as {target}"))
     }
     #[cfg(not(windows))]
     {
         let var = cred.env_fallback();
-        std::env::var(&var).with_context(|| format!("{var} not set ({target})"))
+        std::env::var(&var)
+            .map(|s| s.trim().to_owned())
+            .with_context(|| format!("{var} not set ({target})"))
     }
 }
 
@@ -254,9 +259,35 @@ fn docker() -> Command {
     cmd
 }
 
+/// The host-side gatekeeper and the address containers reach it at.
+struct Gate {
+    keeper: Gatekeeper,
+    url: String,
+}
+
+/// Runs one claimed thread behind its site gate, which lets the box reach
+/// only the websites the app allows.
+async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()> {
+    // A pay-per-use box reaches the gatekeeper through its site gate, which
+    // passes that one address through and nothing else on the PC.
+    let relay = c
+        .budget_usd
+        .is_some()
+        .then(|| gate.url.trim_start_matches("http://").to_owned());
+    let exit = start_gate(hub, &c, relay.as_deref()).await?;
+    let outcome = run_in_box(hub, data, gate, c).await;
+    exit.stop().await;
+    outcome
+}
+
 /// Runs one claimed thread to the end and reports the outcome.
-async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
+async fn run_in_box(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()> {
     let id = c.thread.id;
+    let session = c
+        .thread
+        .session_id
+        .clone()
+        .context("claim has no session")?;
     // Only one copy of a thread may ever run: clear any container left behind
     // by a runner that died.
     let _ = docker()
@@ -270,55 +301,39 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
     } else {
         Credential::Max(c.app.profile)
     };
-    let token = secret(cred)?;
-    let prompt = prompt_for(&c.thread.prompt, c.resume);
-    let gate = start_gate(hub, &c).await?;
-    let outcome = run_in_box(hub, data, &c, &wt, cred, token, prompt).await;
-    // Stopped before the final move, so everything it blocked is on the
-    // board by the time the work moves on.
-    gate.stop().await;
-    let (to, note, max_limit) = outcome?;
-    if let (ThreadState::Queued, Some(reset_epoch)) = (to, max_limit) {
-        // The hub saves the outage and requeues the work in one step.
-        hub.post(
-            &format!("/threads/{id}/events"),
-            &RunEvent::LimitHit { reset_epoch },
-        )
-        .await
-        .map(|_| ())
-    } else {
-        hub.move_to(id, to, &note).await
+    if cred == Credential::PayPerUse && !gate.keeper.is_alive() {
+        // Without the gatekeeper the run could only fail, and a failed
+        // pay-per-use run is charged its whole budget. Stop before starting.
+        bail!("the gatekeeper has stopped; restart the runner before running pay-per-use work");
     }
-}
-
-/// Where a run's work goes next, with the note for the board, and the Max
-/// account's reset time when it ran out.
-type Outcome = (ThreadState, String, Option<Option<i64>>);
-
-/// Runs the agent's box to the end.
-async fn run_in_box(
-    hub: &Hub,
-    data: &Path,
-    c: &Claim,
-    wt: &Path,
-    cred: Credential,
-    token: String,
-    prompt: String,
-) -> anyhow::Result<Outcome> {
-    let id = c.thread.id;
-    let session = c
-        .thread
-        .session_id
-        .as_deref()
-        .context("claim has no session")?;
+    let token = secret(cred)?;
+    let mut cmd = docker();
+    // A pay-per-use container gets a token for the gatekeeper, never the key.
+    // The grant is revoked when it drops, on every way out of this function.
+    let (grant, values) = match cred {
+        Credential::PayPerUse => {
+            let g = gate.keeper.grant(token);
+            let v = vec![g.token().to_owned(), RELAY_URL.to_owned()];
+            (Some(g), v)
+        }
+        Credential::Max(_) => (None, vec![token]),
+    };
+    // Names come from the same list run_args passes to docker with `-e`.
+    anyhow::ensure!(
+        values.len() == cred.vars().len(),
+        "credential variables out of step"
+    );
+    for (name, value) in cred.vars().iter().zip(values) {
+        cmd.env(name, value);
+    }
+    let prompt = prompt_for(&c.thread.prompt, c.resume);
     // Tell the hub before launching: from here the run may cost money, and if
     // the hub cannot be told, the run does not start.
     hub.post(&format!("/threads/{id}/events"), &RunEvent::Started)
         .await
         .context("could not tell the hub the run is starting")?;
-    let mut child = docker()
-        .env(cred.var(), token)
-        .args(run_args(id, wt, session, c.resume, cred, c.budget_usd)?)
+    let mut child = cmd
+        .args(run_args(id, &wt, &session, c.resume, cred, c.budget_usd)?)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -386,6 +401,8 @@ async fn run_in_box(
         }
     }
     let status = child.wait().await?;
+    // The container is gone; its token goes with it.
+    drop(grant);
     let finished = match result {
         Some(RunEvent::Finished {
             ok,
@@ -416,7 +433,7 @@ async fn run_in_box(
     // actually left commits on its branch.
     let (to, note) = match finished {
         Some((true, _)) if status.success() => {
-            match new_commits(data, wt, c.thread.branch.as_deref().unwrap_or_default()).await {
+            match new_commits(data, &wt, c.thread.branch.as_deref().unwrap_or_default()).await {
                 Ok(0) => (
                     ThreadState::Failed,
                     "agent said it finished but saved no commits".to_owned(),
@@ -458,12 +475,22 @@ async fn run_in_box(
             ),
         ),
     };
-    Ok((to, note, max_limit))
+    if let (ThreadState::Queued, Some(reset_epoch)) = (to, max_limit) {
+        // The hub saves the outage and requeues the work in one step.
+        hub.post(
+            &format!("/threads/{id}/events"),
+            &RunEvent::LimitHit { reset_epoch },
+        )
+        .await
+        .map(|_| ())
+    } else {
+        hub.move_to(id, to, &note).await
+    }
 }
 
-/// A box's gate: its network, the proxy container on it, and the task
+/// A box's site gate: its network, the proxy container on it, and the task
 /// passing what the gate blocks on to the board.
-struct Gate {
+struct SiteGate {
     id: i64,
     child: tokio::process::Child,
     reader: tokio::task::JoinHandle<()>,
@@ -481,10 +508,10 @@ async fn clear_gate(id: i64) {
 /// Makes the box's network and starts its gate, letting through only the
 /// built-in sites and the app's own list. Returns once the gate is
 /// listening and connected to the outside.
-async fn start_gate(hub: &Hub, c: &Claim) -> anyhow::Result<Gate> {
+async fn start_gate(hub: &Hub, c: &Claim, relay: Option<&str>) -> anyhow::Result<SiteGate> {
     let id = c.thread.id;
     clear_gate(id).await;
-    match gate_up(hub, c).await {
+    match gate_up(hub, c, relay).await {
         Ok(g) => Ok(g),
         Err(e) => {
             clear_gate(id).await;
@@ -493,7 +520,7 @@ async fn start_gate(hub: &Hub, c: &Claim) -> anyhow::Result<Gate> {
     }
 }
 
-async fn gate_up(hub: &Hub, c: &Claim) -> anyhow::Result<Gate> {
+async fn gate_up(hub: &Hub, c: &Claim, relay: Option<&str>) -> anyhow::Result<SiteGate> {
     let id = c.thread.id;
     let out = docker()
         .args([
@@ -515,7 +542,7 @@ async fn gate_up(hub: &Hub, c: &Claim) -> anyhow::Result<Gate> {
         );
     }
     let mut child = docker()
-        .args(gate_args(id, &sites::for_app(&c.app.sites)))
+        .args(gate_args(id, &sites::for_app(&c.app.sites), relay))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -572,10 +599,10 @@ async fn gate_up(hub: &Hub, c: &Claim) -> anyhow::Result<Gate> {
             }
         }
     });
-    Ok(Gate { id, child, reader })
+    Ok(SiteGate { id, child, reader })
 }
 
-impl Gate {
+impl SiteGate {
     async fn stop(mut self) {
         let _ = docker()
             .args(["rm", "-f", &gate_name(self.id)])
@@ -615,6 +642,24 @@ async fn main() -> anyhow::Result<()> {
     if lock.try_lock().is_err() {
         bail!("another Decurion runner is already running on this PC");
     }
+    // Docker Desktop forwards host.docker.internal to the host's loopback, so
+    // containers reach the gatekeeper while nothing off this PC can.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .context("could not start the gatekeeper")?;
+    let gate = Gate {
+        keeper: Gatekeeper::new(ANTHROPIC_API)?,
+        url: format!(
+            "http://host.docker.internal:{}",
+            listener.local_addr()?.port()
+        ),
+    };
+    let serving = gate.keeper.clone();
+    tokio::spawn(async move {
+        if let Err(err) = serving.serve(listener).await {
+            tracing::error!(%err, "gatekeeper stopped");
+        }
+    });
     let keys: serde_json::Value = serde_json::from_slice(
         &std::fs::read(data.join("keys.json"))
             .context("start the hub first; it creates keys.json")?,
@@ -625,7 +670,11 @@ async fn main() -> anyhow::Result<()> {
             .as_str()
             .context("keys.json has no runner key")?
             .to_owned(),
-        http: reqwest::Client::new(),
+        // A stalled hub must not hold up the end of a run (and with it the
+        // revoking of its gatekeeper token).
+        http: reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()?,
     };
     // Containers left by a runner that died keep working, and spending, with
     // nobody listening. Stop them all before taking on any work.
@@ -694,7 +743,7 @@ async fn main() -> anyhow::Result<()> {
                 };
                 let id = claim.thread.id;
                 tracing::info!(id, resume = claim.resume, "running");
-                if let Err(err) = run(&hub, &data, claim).await {
+                if let Err(err) = run(&hub, &data, &gate, claim).await {
                     tracing::error!(%err, id, "run failed");
                     hub.event(
                         id,

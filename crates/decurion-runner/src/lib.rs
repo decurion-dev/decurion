@@ -5,6 +5,8 @@ use decurion_proto::{Profile, RunEvent};
 use serde_json::Value;
 use std::path::Path;
 
+pub mod gatekeeper;
+
 pub const IMAGE: &str = "decurion/claude-worker:dev";
 
 /// The gate: a small proxy that is a box's only way out to the internet.
@@ -12,6 +14,10 @@ pub const GATE_IMAGE: &str = "decurion/gate:dev";
 
 /// Where a box finds its gate, on the box's own network.
 pub const GATE_URL: &str = "http://gate:3128";
+
+/// Where a pay-per-use box reaches the gatekeeper: the gate passes this port
+/// straight through to it, and to nothing else on the PC.
+pub const RELAY_URL: &str = "http://gate:3129";
 
 /// Host environment variables the docker CLI itself needs. Nothing else from
 /// the runner's environment reaches the docker process, and `docker run` only
@@ -33,8 +39,9 @@ pub const DOCKER_CLI_ENV: &[&str] = &[
     "DOCKER_CONFIG",
 ];
 
-/// The one credential an agent gets: its Max profile's Claude token, or the
-/// pay-per-use API key. Never both.
+/// The one credential an agent gets: its Max profile's Claude token, or a
+/// per-run token for the gatekeeper, which holds the pay-per-use API key on
+/// the host. Never both, and never the API key itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Credential {
     Max(Profile),
@@ -42,11 +49,11 @@ pub enum Credential {
 }
 
 impl Credential {
-    /// The environment variable Claude Code reads it from.
-    pub fn var(self) -> &'static str {
+    /// The environment variables the container gets for it.
+    pub fn vars(self) -> &'static [&'static str] {
         match self {
-            Credential::Max(_) => "CLAUDE_CODE_OAUTH_TOKEN",
-            Credential::PayPerUse => "ANTHROPIC_API_KEY",
+            Credential::Max(_) => &["CLAUDE_CODE_OAUTH_TOKEN"],
+            Credential::PayPerUse => &["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"],
         }
     }
 
@@ -89,9 +96,10 @@ pub fn gate_name(thread_id: i64) -> String {
 /// Arguments for `docker run` of a box's gate. It starts on the box's network
 /// only, under the name `gate`; the runner connects it to the outside network
 /// once it is listening. Site names are checked by `sites::normalize`, so
-/// none contains a comma.
-pub fn gate_args(thread_id: i64, sites: &[String]) -> Vec<String> {
-    [
+/// none contains a comma. With `relay` (the gatekeeper's `host:port`), the
+/// gate also passes its relay port through to that one address.
+pub fn gate_args(thread_id: i64, sites: &[String], relay: Option<&str>) -> Vec<String> {
+    let mut a: Vec<String> = [
         "run",
         "--rm",
         "--name",
@@ -111,11 +119,23 @@ pub fn gate_args(thread_id: i64, sites: &[String]) -> Vec<String> {
         "128",
         "-e",
         &format!("DECURION_SITES={}", sites.join(",")),
-        GATE_IMAGE,
     ]
     .iter()
     .map(|s| s.to_string())
-    .collect()
+    .collect();
+    if let Some(r) = relay {
+        a.extend(
+            [
+                "--add-host",
+                "host.docker.internal:host-gateway",
+                "-e",
+                &format!("DECURION_RELAY={r}"),
+            ]
+            .map(str::to_owned),
+        );
+    }
+    a.push(GATE_IMAGE.to_owned());
+    a
 }
 
 /// What the gate reports on its output, one JSON line each.
@@ -153,8 +173,8 @@ Check `git status` and `git log` first and do not redo finished steps."
     }
 }
 
-/// Arguments for `docker run`. The token is passed by name only, so it never
-/// appears on a command line, and the task goes in on stdin (`-i`), so a long
+/// Arguments for `docker run`. Credentials are passed by name only, so they
+/// never appear on a command line, and the task goes in on stdin (`-i`), so a long
 /// task cannot hit the Windows command-line limit.
 pub fn run_args(
     thread_id: i64,
@@ -189,8 +209,6 @@ pub fn run_args(
         "1024",
         "--network",
         &network_name(thread_id),
-        "-e",
-        cred.var(),
         // Claude Code, git, npm, pip, cargo and curl all send web traffic
         // through these. Anything that ignores them has no way out at all.
         "-e",
@@ -202,35 +220,47 @@ pub fn run_args(
         "-e",
         &format!("http_proxy={GATE_URL}"),
         "-e",
+        "NO_PROXY=gate",
+        "-e",
+        "no_proxy=gate",
+        "-e",
         "NODE_USE_ENV_PROXY=1",
         // No update checks or telemetry: they would only be blocked.
         "-e",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
-        "-e",
-        "GIT_CONFIG_COUNT=1",
-        "-e",
-        "GIT_CONFIG_KEY_0=safe.directory",
-        "-e",
-        "GIT_CONFIG_VALUE_0=/work",
-        "-e",
-        "GIT_AUTHOR_NAME=decurion-agent",
-        "-e",
-        "GIT_AUTHOR_EMAIL=agent@decurion.invalid",
-        "-e",
-        "GIT_COMMITTER_NAME=decurion-agent",
-        "-e",
-        "GIT_COMMITTER_EMAIL=agent@decurion.invalid",
-        IMAGE,
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--permission-mode",
-        "bypassPermissions",
     ]
     .iter()
     .map(|s| s.to_string())
     .collect();
+    for v in cred.vars() {
+        a.extend(["-e".to_owned(), (*v).to_owned()]);
+    }
+    a.extend(
+        [
+            "-e",
+            "GIT_CONFIG_COUNT=1",
+            "-e",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "-e",
+            "GIT_CONFIG_VALUE_0=/work",
+            "-e",
+            "GIT_AUTHOR_NAME=decurion-agent",
+            "-e",
+            "GIT_AUTHOR_EMAIL=agent@decurion.invalid",
+            "-e",
+            "GIT_COMMITTER_NAME=decurion-agent",
+            "-e",
+            "GIT_COMMITTER_EMAIL=agent@decurion.invalid",
+            IMAGE,
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "bypassPermissions",
+        ]
+        .map(str::to_owned),
+    );
     a.push(if resume { "--resume" } else { "--session-id" }.into());
     a.push(session_id.into());
     if let Some(b) = budget_usd {
@@ -279,18 +309,23 @@ pub const BUDGET_STOP: &str =
 /// Hides anything shaped like an Anthropic token, in case an agent is tricked
 /// into echoing its own credential into its output.
 pub fn redact(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = rest.find("sk-ant-") {
-        out.push_str(&rest[..i]);
-        out.push_str("[redacted]");
-        let tail = &rest[i..];
-        let end = tail
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
-            .unwrap_or(tail.len());
-        rest = &tail[end..];
+    let mut out = s.to_owned();
+    // Real keys, and the gatekeeper's per-run tokens while they may be live.
+    for prefix in ["sk-ant-", "decurion-run-"] {
+        let mut done = String::with_capacity(out.len());
+        let mut rest = out.as_str();
+        while let Some(i) = rest.find(prefix) {
+            done.push_str(&rest[..i]);
+            done.push_str("[redacted]");
+            let tail = &rest[i..];
+            let end = tail
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .unwrap_or(tail.len());
+            rest = &tail[end..];
+        }
+        done.push_str(rest);
+        out = done;
     }
-    out.push_str(rest);
     out
 }
 
@@ -433,13 +468,18 @@ mod tests {
         assert!(a.contains(&"HTTPS_PROXY=http://gate:3128".to_string()));
         assert!(!a.iter().any(|x| x == "--network=host" || x == "host"));
 
-        let g = gate_args(7, &["api.anthropic.com".into(), "stripe.com".into()]);
+        let g = gate_args(7, &["api.anthropic.com".into(), "stripe.com".into()], None);
         let joined = g.join(" ");
         assert!(joined.contains("--name decurion-gate-7"));
         assert!(joined.contains("--network decurion-net-7 --network-alias gate"));
         assert!(joined.contains("DECURION_SITES=api.anthropic.com,stripe.com"));
         assert!(joined.contains("--cap-drop ALL"));
         assert_eq!(g.last().map(String::as_str), Some(GATE_IMAGE));
+        assert!(!joined.contains("DECURION_RELAY") && !joined.contains("host-gateway"));
+
+        let r = gate_args(7, &[], Some("host.docker.internal:5123")).join(" ");
+        assert!(r.contains("-e DECURION_RELAY=host.docker.internal:5123 decurion/gate:dev"));
+        assert!(r.contains("--add-host host.docker.internal:host-gateway"));
     }
 
     #[test]
@@ -487,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn pay_per_use_runs_get_the_api_key_and_a_budget_only() {
+    fn pay_per_use_runs_get_a_gatekeeper_token_and_a_budget_only() {
         let a = run_args(
             7,
             Path::new("/w"),
@@ -497,9 +537,17 @@ mod tests {
             Some(9.5),
         )
         .unwrap_or_default();
-        assert!(a
-            .windows(2)
-            .any(|w| w[0] == "-e" && w[1] == "ANTHROPIC_API_KEY"));
+        // Both by name: the values come from the docker process's environment.
+        for var in ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"] {
+            assert!(a.windows(2).any(|w| w[0] == "-e" && w[1] == var), "{var}");
+        }
+        let joined = a.join(" ");
+        // The only addresses on the command line are the box's gate.
+        assert!(!joined.contains("sk-ant") && !joined.contains("ANTHROPIC_BASE_URL="));
+        assert!(joined
+            .split_whitespace()
+            .filter(|x| x.contains("http"))
+            .all(|x| x.ends_with(GATE_URL)));
         assert!(!a.iter().any(|x| x == "CLAUDE_CODE_OAUTH_TOKEN"));
         assert!(a
             .windows(2)
@@ -513,9 +561,9 @@ mod tests {
             None,
         )
         .unwrap_or_default();
-        assert!(!m
-            .iter()
-            .any(|x| x == "ANTHROPIC_API_KEY" || x == "--max-budget-usd"));
+        assert!(!m.iter().any(|x| x == "ANTHROPIC_API_KEY"
+            || x == "ANTHROPIC_BASE_URL"
+            || x == "--max-budget-usd"));
         assert_eq!(
             Credential::Max(Profile::B).target(),
             "decurion/claude-profile-B"
@@ -551,6 +599,14 @@ mod tests {
         ] {
             assert_eq!(usage_limit(other), None, "{other}");
         }
+    }
+
+    #[test]
+    fn run_tokens_are_redacted_too() {
+        assert_eq!(
+            redact("my key is decurion-run-0a1b2c3d ok"),
+            "my key is [redacted] ok"
+        );
     }
 
     #[test]
