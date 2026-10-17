@@ -1839,3 +1839,202 @@ async fn a_reset_time_in_a_few_seconds_still_waits_five_minutes() {
     assert!(waits);
     assert_eq!(claim_id(&r).await, None);
 }
+
+async fn add_app_with_sites(r: &axum::Router, sites: Value) -> (StatusCode, Value) {
+    call(
+        r,
+        "POST",
+        "/api/apps",
+        Some(OWNER),
+        json!({"name":"web","repo_path":"C:\\repos\\web","profile":"A","sites":sites}),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn an_apps_websites_are_cleaned_up_when_added() {
+    let (r, _) = hub().await;
+    let (s, app) = add_app_with_sites(
+        &r,
+        json!([
+            "https://Stripe.com/docs",
+            "stripe.com",
+            "*.docs.rs",
+            "pypi.org",
+            "https://api.anthropic.com/v1",
+            " ",
+        ]),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert_eq!(app["sites"], json!(["stripe.com", "docs.rs"]));
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(apps[0]["sites"], json!(["stripe.com", "docs.rs"]));
+    // Apps added without a list get the built-in sites only.
+    seed(&r).await;
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(apps[0]["name"], "demo");
+    assert_eq!(apps[0]["sites"], json!([]));
+}
+
+#[tokio::test]
+async fn a_bad_website_is_refused_by_name() {
+    let (r, _) = hub().await;
+    for bad in ["10.0.0.1", "com", "*.com", "not a site"] {
+        let (s, msg) = add_app_with_sites(&r, json!(["stripe.com", bad])).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}");
+        assert!(msg.as_str().is_some_and(|m| m.contains(bad)), "{msg}");
+    }
+    let too_many: Vec<String> = (0..=decurion_proto::sites::MAX_SITES)
+        .map(|i| format!("site{i}.example.com"))
+        .collect();
+    let (s, _) = add_app_with_sites(&r, json!(too_many)).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(apps, json!([]));
+}
+
+#[tokio::test]
+async fn the_owner_changes_an_apps_websites_and_the_next_run_gets_them() {
+    let (r, _) = hub().await;
+    let id = seed(&r).await;
+    let path = "/api/apps/1/sites";
+    let (s, stored) = call(
+        &r,
+        "POST",
+        path,
+        Some(OWNER),
+        json!({"sites":["https://GitHub.com/x", "crates.io", "github.com"]}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(stored, json!(["github.com"]));
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(apps[0]["sites"], json!(["github.com"]));
+    let (s, c) = call(
+        &r,
+        "POST",
+        "/api/runner/claim",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(c["thread"]["id"], id);
+    assert_eq!(c["app"]["sites"], json!(["github.com"]));
+
+    // A bad entry changes nothing.
+    let (s, _) = call(
+        &r,
+        "POST",
+        path,
+        Some(OWNER),
+        json!({"sites":["github.com", "x"]}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(apps[0]["sites"], json!(["github.com"]));
+    // Clearing the list is allowed.
+    let (s, stored) = call(&r, "POST", path, Some(OWNER), json!({"sites":[]})).await;
+    assert_eq!((s, stored), (StatusCode::OK, json!([])));
+    let (s, _) = call(
+        &r,
+        "POST",
+        "/api/apps/99/sites",
+        Some(OWNER),
+        json!({"sites":["github.com"]}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn only_the_owner_chooses_an_apps_websites() {
+    let (r, _) = hub().await;
+    seed(&r).await;
+    let (s, msg) = call(
+        &r,
+        "POST",
+        "/api/apps/1/sites",
+        Some(RUNNER),
+        json!({"sites":["evil.example"]}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert!(msg.as_str().is_some_and(|m| m.contains("owner-only")));
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(apps[0]["sites"], json!([]));
+    // Anyone signed in can see the built-in list; nobody else can.
+    let (s, built_in) = call(&r, "GET", "/api/sites/built-in", Some(RUNNER), Value::Null).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(built_in, json!(decurion_proto::sites::BUILT_IN));
+    let (s, _) = call(&r, "GET", "/api/sites/built-in", None, Value::Null).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_blocked_website_is_logged_and_counts_as_the_box_running() {
+    let (r, _) = hub().await;
+    let app = ppu_app(&r).await;
+    let id = add_work(&r, app, "x").await;
+    call(
+        &r,
+        "POST",
+        "/api/runner/claim",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await;
+    let blocked = json!({"kind":"blocked","host":"evil.example","reason":"not on this app's list"});
+    let (s, _) = call(
+        &r,
+        "POST",
+        &format!("/api/threads/{id}/events"),
+        Some(RUNNER),
+        blocked.clone(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, _) = call(
+        &r,
+        "POST",
+        &format!("/api/threads/{id}/events"),
+        Some(OWNER),
+        blocked.clone(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (_, ev) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{id}/events"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(ev.as_array().map(Vec::len), Some(1));
+    assert_eq!(ev[0]["event"], blocked);
+
+    // The runner dies: the box was up and reaching out, so the budget counts
+    // as spent, but no agent session was saved yet, so the retry starts fresh.
+    call(
+        &r,
+        "POST",
+        "/api/runner/hello",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await;
+    assert_eq!(spend(&r).await["pay_per_use_usd"], 10.0);
+    let (_, c) = call(
+        &r,
+        "POST",
+        "/api/runner/claim",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await;
+    assert_eq!(c["thread"]["id"], id);
+    assert_eq!(c["resume"], false);
+}

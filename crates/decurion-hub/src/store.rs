@@ -3,7 +3,7 @@
 //! in the same transaction.
 
 use decurion_proto::{
-    App, Claim, EventRecord, NewApp, NewThread, Profile, RunEvent, Thread, ThreadState,
+    sites, App, Claim, EventRecord, NewApp, NewThread, Profile, RunEvent, Thread, ThreadState,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
 use sqlx::{Row, SqlitePool};
@@ -41,6 +41,8 @@ pub struct Store {
     pool: SqlitePool,
 }
 
+const APP_COLS: &str = "id, name, repo_path, profile, pay_per_use, sites";
+
 const THREAD_COLS: &str = "id, app_id, title, prompt, state, session_id, branch, updated_at";
 
 fn thread_from(row: &SqliteRow) -> Result<Thread> {
@@ -65,6 +67,8 @@ fn app_from(row: &SqliteRow) -> Result<App> {
         repo_path: row.try_get("repo_path")?,
         profile: Profile::from_str(&profile).map_err(|e| StoreError::Invalid(e.to_string()))?,
         pay_per_use: row.try_get("pay_per_use")?,
+        sites: serde_json::from_str(row.try_get("sites")?)
+            .map_err(|e| StoreError::Invalid(e.to_string()))?,
     })
 }
 
@@ -92,14 +96,16 @@ impl Store {
     pub async fn add_app(&self, a: &NewApp) -> Result<App> {
         check_app_name(&a.name)?;
         check_repo_path(&a.repo_path)?;
-        let row = sqlx::query(
-            "INSERT INTO apps (name, repo_path, profile, pay_per_use) VALUES (?, ?, ?, ?)
-             RETURNING id, name, repo_path, profile, pay_per_use",
-        )
+        let sites = clean_sites(&a.sites)?;
+        let row = sqlx::query(&format!(
+            "INSERT INTO apps (name, repo_path, profile, pay_per_use, sites) VALUES (?, ?, ?, ?, ?)
+             RETURNING {APP_COLS}"
+        ))
         .bind(&a.name)
         .bind(&a.repo_path)
         .bind(a.profile.as_str())
         .bind(a.pay_per_use)
+        .bind(sites_json(&sites)?)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| match e.as_database_error() {
@@ -112,21 +118,35 @@ impl Store {
     }
 
     pub async fn apps(&self) -> Result<Vec<App>> {
-        let rows =
-            sqlx::query("SELECT id, name, repo_path, profile, pay_per_use FROM apps ORDER BY name")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query(&format!("SELECT {APP_COLS} FROM apps ORDER BY name"))
+            .fetch_all(&self.pool)
+            .await?;
         rows.iter().map(app_from).collect()
     }
 
     pub async fn app(&self, id: i64) -> Result<App> {
-        let row =
-            sqlx::query("SELECT id, name, repo_path, profile, pay_per_use FROM apps WHERE id = ?")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await?
-                .ok_or(StoreError::NotFound)?;
+        let row = sqlx::query(&format!("SELECT {APP_COLS} FROM apps WHERE id = ?"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(StoreError::NotFound)?;
         app_from(&row)
+    }
+
+    /// Replaces the websites an app's agents may reach on top of the built-in
+    /// ones, and returns the list as stored. Running work keeps the list it
+    /// started with; the next piece of work gets this one.
+    pub async fn set_sites(&self, app_id: i64, sites: &[String]) -> Result<Vec<String>> {
+        let sites = clean_sites(sites)?;
+        let done = sqlx::query("UPDATE apps SET sites = ? WHERE id = ?")
+            .bind(sites_json(&sites)?)
+            .bind(app_id)
+            .execute(&self.pool)
+            .await?;
+        if done.rows_affected() != 1 {
+            return Err(StoreError::NotFound);
+        }
+        Ok(sites)
     }
 
     pub async fn add_thread(&self, t: &NewThread) -> Result<Thread> {
@@ -500,6 +520,39 @@ fn check_app_name(name: &str) -> Result<()> {
             "app name must be 1-40 letters, digits, - or _".into(),
         ))
     }
+}
+
+/// Cleans the owner's list of extra websites: each entry becomes a plain site
+/// name, repeats and built-in sites are dropped, and anything that is not a
+/// site name is refused rather than quietly skipped.
+fn clean_sites(input: &[String]) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in input {
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let Some(site) = sites::normalize(raw) else {
+            let shown: String = raw.trim().chars().take(80).collect();
+            return Err(StoreError::Invalid(format!(
+                "\"{shown}\" is not a website name; use a name like stripe.com"
+            )));
+        };
+        if sites::BUILT_IN.contains(&site.as_str()) || out.contains(&site) {
+            continue;
+        }
+        if out.len() == sites::MAX_SITES {
+            return Err(StoreError::Invalid(format!(
+                "an app can have at most {} extra websites",
+                sites::MAX_SITES
+            )));
+        }
+        out.push(site);
+    }
+    Ok(out)
+}
+
+fn sites_json(sites: &[String]) -> Result<String> {
+    serde_json::to_string(sites).map_err(|e| StoreError::Invalid(e.to_string()))
 }
 
 /// The repo path is handed to `git clone`: it must be absolute, so it cannot

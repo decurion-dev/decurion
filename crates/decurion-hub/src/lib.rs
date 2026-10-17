@@ -124,6 +124,8 @@ pub fn router(state: AppState) -> Router {
         .route("/limits/{profile}/pay-per-use", post(overflow))
         .route("/spend/cap", post(set_cap))
         .route("/apps/{id}/pay-per-use", post(set_pay_per_use))
+        .route("/apps/{id}/sites", post(set_sites))
+        .route("/sites/built-in", get(built_in_sites))
         .route("/push/subscribe", post(push_subscribe))
         .layer(middleware::from_fn_with_state(state.clone(), require_key));
     Router::new()
@@ -732,4 +734,29 @@ async fn overflow(
         Ok(n) => Json(serde_json::json!({ "moved": n })).into_response(),
         Err(e) => ApiError(e).into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct Sites {
+    sites: Vec<String>,
+}
+
+async fn set_sites(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+    Json(b): Json<Sites>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("choosing which websites an app's agents may use");
+    }
+    match st.store.set_sites(id, &b.sites).await {
+        Ok(sites) => Json(sites).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// Sites every box may reach whatever the app, so the board can list them.
+async fn built_in_sites() -> Json<&'static [&'static str]> {
+    Json(decurion_proto::sites::BUILT_IN)
 }

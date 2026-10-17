@@ -7,6 +7,12 @@ use std::path::Path;
 
 pub const IMAGE: &str = "decurion/claude-worker:dev";
 
+/// The gate: a small proxy that is a box's only way out to the internet.
+pub const GATE_IMAGE: &str = "decurion/gate:dev";
+
+/// Where a box finds its gate, on the box's own network.
+pub const GATE_URL: &str = "http://gate:3128";
+
 /// Host environment variables the docker CLI itself needs. Nothing else from
 /// the runner's environment reaches the docker process, and `docker run` only
 /// forwards the variables named with `-e`.
@@ -69,9 +75,73 @@ pub fn home_volume(thread_id: i64) -> String {
     format!("decurion-home-{thread_id}")
 }
 
+/// The box's own network. It is `--internal` and the PC takes no address on
+/// it: nothing on it has a route out, so the gate is the only way to reach
+/// the internet, the owner's PC or the home network.
+pub fn network_name(thread_id: i64) -> String {
+    format!("decurion-net-{thread_id}")
+}
+
+pub fn gate_name(thread_id: i64) -> String {
+    format!("decurion-gate-{thread_id}")
+}
+
+/// Arguments for `docker run` of a box's gate. It starts on the box's network
+/// only, under the name `gate`; the runner connects it to the outside network
+/// once it is listening. Site names are checked by `sites::normalize`, so
+/// none contains a comma.
+pub fn gate_args(thread_id: i64, sites: &[String]) -> Vec<String> {
+    [
+        "run",
+        "--rm",
+        "--name",
+        &gate_name(thread_id),
+        "--network",
+        &network_name(thread_id),
+        "--network-alias",
+        "gate",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--read-only",
+        "--memory",
+        "256m",
+        "--pids-limit",
+        "128",
+        "-e",
+        &format!("DECURION_SITES={}", sites.join(",")),
+        GATE_IMAGE,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// What the gate reports on its output, one JSON line each.
+#[derive(Debug, PartialEq)]
+pub enum GateLine {
+    Ready,
+    Blocked { host: String, reason: String },
+}
+
+pub fn parse_gate_line(line: &str) -> Option<GateLine> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    match v["event"].as_str()? {
+        "ready" => Some(GateLine::Ready),
+        "blocked" => Some(GateLine::Blocked {
+            host: clip(v["host"].as_str()?, 253),
+            reason: clip(v["reason"].as_str().unwrap_or("not allowed"), 200),
+        }),
+        _ => None,
+    }
+}
+
 const RULES: &str = "You are working in your own copy of the code on its own branch. \
 Commit your work to this branch as you go. Do not push and do not open pull requests; \
-Decurion does that after review.";
+Decurion does that after review. You can reach only the websites on this app's list; \
+others are blocked. If the work needs a blocked site, carry on without it and say so \
+in your final summary.";
 
 pub fn prompt_for(task: &str, resume: bool) -> String {
     if resume {
@@ -117,8 +187,25 @@ pub fn run_args(
         "4g",
         "--pids-limit",
         "1024",
+        "--network",
+        &network_name(thread_id),
         "-e",
         cred.var(),
+        // Claude Code, git, npm, pip, cargo and curl all send web traffic
+        // through these. Anything that ignores them has no way out at all.
+        "-e",
+        &format!("HTTPS_PROXY={GATE_URL}"),
+        "-e",
+        &format!("https_proxy={GATE_URL}"),
+        "-e",
+        &format!("HTTP_PROXY={GATE_URL}"),
+        "-e",
+        &format!("http_proxy={GATE_URL}"),
+        "-e",
+        "NODE_USE_ENV_PROXY=1",
+        // No update checks or telemetry: they would only be blocked.
+        "-e",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
         "-e",
         "GIT_CONFIG_COUNT=1",
         "-e",
@@ -327,6 +414,59 @@ mod tests {
                 && !joined.contains("docker.sock")
         );
         assert!(joined.contains("--session-id sid"));
+    }
+
+    #[test]
+    fn boxes_sit_on_their_own_network_behind_the_gate() {
+        let a = run_args(
+            7,
+            Path::new("/w"),
+            "sid",
+            false,
+            Credential::Max(Profile::A),
+            None,
+        )
+        .unwrap_or_default();
+        assert!(a
+            .windows(2)
+            .any(|w| w[0] == "--network" && w[1] == "decurion-net-7"));
+        assert!(a.contains(&"HTTPS_PROXY=http://gate:3128".to_string()));
+        assert!(!a.iter().any(|x| x == "--network=host" || x == "host"));
+
+        let g = gate_args(7, &["api.anthropic.com".into(), "stripe.com".into()]);
+        let joined = g.join(" ");
+        assert!(joined.contains("--name decurion-gate-7"));
+        assert!(joined.contains("--network decurion-net-7 --network-alias gate"));
+        assert!(joined.contains("DECURION_SITES=api.anthropic.com,stripe.com"));
+        assert!(joined.contains("--cap-drop ALL"));
+        assert_eq!(g.last().map(String::as_str), Some(GATE_IMAGE));
+    }
+
+    #[test]
+    fn gate_lines_are_read_and_clipped() {
+        assert_eq!(
+            parse_gate_line(r#"{"event":"ready"}"#),
+            Some(GateLine::Ready)
+        );
+        assert_eq!(
+            parse_gate_line(
+                r#"{"event":"blocked","host":"evil.net","reason":"not on this app's list"}"#
+            ),
+            Some(GateLine::Blocked {
+                host: "evil.net".into(),
+                reason: "not on this app's list".into()
+            })
+        );
+        let long = format!(
+            r#"{{"event":"blocked","host":"{}","reason":"x"}}"#,
+            "a".repeat(5000)
+        );
+        assert!(matches!(
+            parse_gate_line(&long),
+            Some(GateLine::Blocked { host, .. }) if host.chars().count() <= 254
+        ));
+        assert_eq!(parse_gate_line("garbage"), None);
+        assert_eq!(parse_gate_line(r#"{"event":"other"}"#), None);
     }
 
     #[test]

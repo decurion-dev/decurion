@@ -1,8 +1,8 @@
 use anyhow::{bail, Context};
-use decurion_proto::{Claim, MoveRequest, RunEvent, ThreadState};
+use decurion_proto::{sites, Claim, MoveRequest, RunEvent, ThreadState};
 use decurion_runner::{
-    container_name, parse_line, prompt_for, run_args, Credential, BUDGET_STOP, DOCKER_CLI_ENV,
-    LIMIT_STOP,
+    container_name, gate_args, gate_name, network_name, parse_gate_line, parse_line, prompt_for,
+    run_args, Credential, GateLine, BUDGET_STOP, DOCKER_CLI_ENV, GATE_IMAGE, LIMIT_STOP,
 };
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -12,6 +12,7 @@ use tokio::process::Command;
 
 const RUNNER: &str = "local";
 
+#[derive(Clone)]
 struct Hub {
     base: String,
     key: String,
@@ -256,11 +257,6 @@ fn docker() -> Command {
 /// Runs one claimed thread to the end and reports the outcome.
 async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
     let id = c.thread.id;
-    let session = c
-        .thread
-        .session_id
-        .clone()
-        .context("claim has no session")?;
     // Only one copy of a thread may ever run: clear any container left behind
     // by a runner that died.
     let _ = docker()
@@ -276,6 +272,45 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
     };
     let token = secret(cred)?;
     let prompt = prompt_for(&c.thread.prompt, c.resume);
+    let gate = start_gate(hub, &c).await?;
+    let outcome = run_in_box(hub, data, &c, &wt, cred, token, prompt).await;
+    // Stopped before the final move, so everything it blocked is on the
+    // board by the time the work moves on.
+    gate.stop().await;
+    let (to, note, max_limit) = outcome?;
+    if let (ThreadState::Queued, Some(reset_epoch)) = (to, max_limit) {
+        // The hub saves the outage and requeues the work in one step.
+        hub.post(
+            &format!("/threads/{id}/events"),
+            &RunEvent::LimitHit { reset_epoch },
+        )
+        .await
+        .map(|_| ())
+    } else {
+        hub.move_to(id, to, &note).await
+    }
+}
+
+/// Where a run's work goes next, with the note for the board, and the Max
+/// account's reset time when it ran out.
+type Outcome = (ThreadState, String, Option<Option<i64>>);
+
+/// Runs the agent's box to the end.
+async fn run_in_box(
+    hub: &Hub,
+    data: &Path,
+    c: &Claim,
+    wt: &Path,
+    cred: Credential,
+    token: String,
+    prompt: String,
+) -> anyhow::Result<Outcome> {
+    let id = c.thread.id;
+    let session = c
+        .thread
+        .session_id
+        .as_deref()
+        .context("claim has no session")?;
     // Tell the hub before launching: from here the run may cost money, and if
     // the hub cannot be told, the run does not start.
     hub.post(&format!("/threads/{id}/events"), &RunEvent::Started)
@@ -283,7 +318,7 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
         .context("could not tell the hub the run is starting")?;
     let mut child = docker()
         .env(cred.var(), token)
-        .args(run_args(id, &wt, &session, c.resume, cred, c.budget_usd)?)
+        .args(run_args(id, wt, session, c.resume, cred, c.budget_usd)?)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -381,7 +416,7 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
     // actually left commits on its branch.
     let (to, note) = match finished {
         Some((true, _)) if status.success() => {
-            match new_commits(data, &wt, c.thread.branch.as_deref().unwrap_or_default()).await {
+            match new_commits(data, wt, c.thread.branch.as_deref().unwrap_or_default()).await {
                 Ok(0) => (
                     ThreadState::Failed,
                     "agent said it finished but saved no commits".to_owned(),
@@ -423,16 +458,145 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
             ),
         ),
     };
-    if let (ThreadState::Queued, Some(reset_epoch)) = (to, max_limit) {
-        // The hub saves the outage and requeues the work in one step.
-        hub.post(
-            &format!("/threads/{id}/events"),
-            &RunEvent::LimitHit { reset_epoch },
-        )
-        .await
-        .map(|_| ())
-    } else {
-        hub.move_to(id, to, &note).await
+    Ok((to, note, max_limit))
+}
+
+/// A box's gate: its network, the proxy container on it, and the task
+/// passing what the gate blocks on to the board.
+struct Gate {
+    id: i64,
+    child: tokio::process::Child,
+    reader: tokio::task::JoinHandle<()>,
+}
+
+/// Removes a box's gate and network, if a runner that died left them.
+async fn clear_gate(id: i64) {
+    let _ = docker().args(["rm", "-f", &gate_name(id)]).output().await;
+    let _ = docker()
+        .args(["network", "rm", &network_name(id)])
+        .output()
+        .await;
+}
+
+/// Makes the box's network and starts its gate, letting through only the
+/// built-in sites and the app's own list. Returns once the gate is
+/// listening and connected to the outside.
+async fn start_gate(hub: &Hub, c: &Claim) -> anyhow::Result<Gate> {
+    let id = c.thread.id;
+    clear_gate(id).await;
+    match gate_up(hub, c).await {
+        Ok(g) => Ok(g),
+        Err(e) => {
+            clear_gate(id).await;
+            Err(e)
+        }
+    }
+}
+
+async fn gate_up(hub: &Hub, c: &Claim) -> anyhow::Result<Gate> {
+    let id = c.thread.id;
+    let out = docker()
+        .args([
+            "network",
+            "create",
+            "--internal",
+            // Without this the PC itself takes an address on the network,
+            // and anything listening on the PC is in reach of the box.
+            "-o",
+            "com.docker.network.bridge.inhibit_ipv4=true",
+            &network_name(id),
+        ])
+        .output()
+        .await?;
+    if !out.status.success() {
+        bail!(
+            "could not make the box's network: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let mut child = docker()
+        .args(gate_args(id, &sites::for_app(&c.app.sites)))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .context("could not start the gate")?;
+    let stderr = child.stderr.take().context("no stderr")?;
+    let err_task = tokio::spawn(async move {
+        let mut tail = String::new();
+        let mut r = BufReader::new(stderr);
+        while let Ok(Some(line)) = read_capped_line(&mut r).await {
+            if tail.len() < STDERR_TAIL {
+                tail.push_str(&line);
+                tail.push('\n');
+            }
+        }
+        tail
+    });
+    let mut out = BufReader::new(child.stdout.take().context("no stdout")?);
+    let ready = tokio::time::timeout(Duration::from_secs(60), async {
+        while let Some(line) = read_capped_line(&mut out).await? {
+            if parse_gate_line(&line) == Some(GateLine::Ready) {
+                return Ok(true);
+            }
+        }
+        std::io::Result::Ok(false)
+    })
+    .await;
+    if !matches!(ready, Ok(Ok(true))) {
+        let _ = child.kill().await;
+        let err = err_task.await.unwrap_or_default();
+        bail!(
+            "the box's gate did not start: {}. If the image is missing, build it with \
+             `docker build -t {GATE_IMAGE} -f docker/gate/Dockerfile .`",
+            err.trim()
+        );
+    }
+    // Only now does the gate get a way out; the box itself never does.
+    let out2 = docker()
+        .args(["network", "connect", "bridge", &gate_name(id)])
+        .output()
+        .await?;
+    if !out2.status.success() {
+        bail!(
+            "could not connect the gate to the internet: {}",
+            String::from_utf8_lossy(&out2.stderr).trim()
+        );
+    }
+    let hub = hub.clone();
+    let reader = tokio::spawn(async move {
+        while let Ok(Some(line)) = read_capped_line(&mut out).await {
+            if let Some(GateLine::Blocked { host, reason }) = parse_gate_line(&line) {
+                hub.event(id, &RunEvent::Blocked { host, reason }).await;
+            }
+        }
+    });
+    Ok(Gate { id, child, reader })
+}
+
+impl Gate {
+    async fn stop(mut self) {
+        let _ = docker()
+            .args(["rm", "-f", &gate_name(self.id)])
+            .output()
+            .await;
+        let _ = self.child.wait().await;
+        let _ = self.reader.await;
+        // The box is removed as it exits, but give Docker a moment to let go
+        // of the network.
+        for _ in 0..5 {
+            let ok = docker()
+                .args(["network", "rm", &network_name(self.id)])
+                .output()
+                .await
+                .is_ok_and(|o| o.status.success());
+            if ok {
+                return;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        tracing::warn!(id = self.id, "could not remove the box's network");
     }
 }
 
@@ -465,11 +629,14 @@ async fn main() -> anyhow::Result<()> {
     };
     // Containers left by a runner that died keep working, and spending, with
     // nobody listening. Stop them all before taking on any work.
-    if let Ok(out) = docker()
-        .args(["ps", "-aq", "--filter", "name=^decurion-thread-"])
-        .output()
-        .await
-    {
+    for name in ["name=^decurion-thread-", "name=^decurion-gate-"] {
+        let Ok(out) = docker()
+            .args(["ps", "-aq", "--filter", name])
+            .output()
+            .await
+        else {
+            continue;
+        };
         let ids: Vec<String> = String::from_utf8_lossy(&out.stdout)
             .split_whitespace()
             .map(str::to_owned)
@@ -480,6 +647,19 @@ async fn main() -> anyhow::Result<()> {
                 "stopping containers left by a previous runner"
             );
             let _ = docker().arg("rm").arg("-f").args(&ids).output().await;
+        }
+    }
+    if let Ok(out) = docker()
+        .args(["network", "ls", "-q", "--filter", "name=^decurion-net-"])
+        .output()
+        .await
+    {
+        let ids: Vec<String> = String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        if !ids.is_empty() {
+            let _ = docker().arg("network").arg("rm").args(&ids).output().await;
         }
     }
     let paused: Vec<i64> = hub

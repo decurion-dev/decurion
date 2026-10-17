@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
+pub mod sites;
+
 /// Where a piece of work is. A thread is in exactly one state at a time, and
 /// only the moves in [`ThreadState::can_move_to`] are allowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -121,6 +123,9 @@ pub struct App {
     /// the Max account in `profile`.
     #[serde(default)]
     pub pay_per_use: bool,
+    /// Websites this app's agents may reach on top of [`sites::BUILT_IN`].
+    #[serde(default)]
+    pub sites: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +135,8 @@ pub struct NewApp {
     pub profile: Profile,
     #[serde(default)]
     pub pay_per_use: bool,
+    #[serde(default)]
+    pub sites: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -212,6 +219,9 @@ pub enum RunEvent {
     Message { text: String },
     /// The agent used a tool.
     Tool { name: String, summary: String },
+    /// The box tried to reach a website that is not allowed, and the gate
+    /// turned it away. `reason` is in plain words.
+    Blocked { host: String, reason: String },
     /// The run ended. `ok` is the agent's own result, not a review. Cost and
     /// tokens are what Claude Code reported for this run.
     Finished {

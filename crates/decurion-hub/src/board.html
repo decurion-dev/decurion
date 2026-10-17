@@ -123,7 +123,16 @@ async function refresh() {
       const li = el("li"); const span = el("span", {}, `${x.name} · ${x.pay_per_use ? "pay-per-use" : "Max account " + x.profile}`);
       const b = el("button", { type: "button" }, x.pay_per_use ? `Switch to Max ${x.profile}` : "Switch to pay-per-use");
       b.onclick = async () => { await api(`/apps/${x.id}/pay-per-use`, { method: "POST", body: JSON.stringify({ on: !x.pay_per_use }) }); refresh(); };
-      li.append(span, b); return li;
+      const sites = x.sites ?? [];
+      const web = el("span", { className: "hint" }, `Websites: ${sites.length ? sites.join(", ") : "built-in only"}`);
+      const w = el("button", { type: "button" }, "Websites");
+      w.onclick = async () => {
+        const v = prompt(`Extra websites ${x.name}'s agents may use, separated by commas. Claude and the package stores are always allowed. Changes apply to the next piece of work.`, sites.join(", "));
+        if (v === null) return;
+        try { await api(`/apps/${x.id}/sites`, { method: "POST", body: JSON.stringify({ sites: v.split(",").map(s => s.trim()).filter(Boolean) }) }); refresh(); }
+        catch (e) { $("err").textContent = e.message; }
+      };
+      li.append(span, web, b, w); return li;
     }));
     $("err").textContent = "";
   } catch (e) { $("err").textContent = e.message; }
@@ -138,6 +147,7 @@ async function openThread(t) {
     const e = r.event; const time = r.at.slice(11, 19);
     if (e.kind === "started") return `${time}  Agent's box started`;
     if (e.kind === "limit_hit") return `${time}  Claude Max account ran out of usage`;
+    if (e.kind === "blocked") return `${time}  Blocked: ${e.host} (${e.reason})`;
     return e.kind === "message" ? `${time}  ${e.text}` : e.kind === "tool" ? `${time}  [${e.name}] ${e.summary}` : `${time}  FINISHED ${e.ok ? "ok" : "failed"}${e.cost_usd != null ? ` ($${e.cost_usd.toFixed(2)} so far)` : ""}: ${e.summary}`;
   }).join("\n") || "No activity yet.";
   $("d-actions").replaceChildren(...(OWNER_MOVES[t.state] ?? []).map(([to, label]) => {
