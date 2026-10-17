@@ -1056,3 +1056,54 @@ async fn a_restart_keeps_a_talk_turn_when_a_report_waits() {
     finish(&r, &second, r#"{"say": "Yes, it is blue."}"#).await;
     no_helper(&r).await;
 }
+
+#[tokio::test]
+async fn a_check_of_old_code_does_not_pass_the_new_code() {
+    let (r, _) = hub().await;
+    let (goal, thread) = approved_one_piece(&r).await;
+    let old = claim_any(&r).await;
+    assert_eq!(old["kind"], "review");
+    // The owner asks for more while that check runs; the builder does it.
+    ok(
+        &r,
+        "POST",
+        &format!("/api/threads/{thread}/messages"),
+        OWNER,
+        json!({"kind": "follow_up", "text": "Also add a test"}),
+    )
+    .await;
+    let work = ok(
+        &r,
+        "POST",
+        "/api/runner/claim",
+        RUNNER,
+        json!({"runner":"local"}),
+    )
+    .await;
+    ok(
+        &r,
+        "POST",
+        &format!("/api/threads/{thread}/messages/delivered"),
+        RUNNER,
+        json!({"ids": [work["messages"][0]["id"]]}),
+    )
+    .await;
+    ok(
+        &r,
+        "POST",
+        &format!("/api/threads/{thread}/move"),
+        RUNNER,
+        json!({"to":"in_review"}),
+    )
+    .await;
+    finish(&r, &old, r#"{"pass": true, "summary": "Works."}"#).await;
+    assert_eq!(view(&r, goal).await["pieces"][0]["review"], "reviewing");
+    helper(
+        &r,
+        "review",
+        r#"{"pass": true, "summary": "Works, with a test."}"#,
+        None,
+    )
+    .await;
+    assert_eq!(view(&r, goal).await["pieces"][0]["review"], "passed");
+}

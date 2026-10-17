@@ -1659,8 +1659,16 @@ impl Store {
                 .bind(t)
                 .fetch_one(&mut *tx)
                 .await?;
-                // A check of code that has since been sent back or signed off is stale.
-                if review != "reviewing" || thread_state != "in_review" {
+                // A check of code that has since been sent back or signed off is
+                // stale, and so is one overtaken by a newer check of newer code.
+                let newer: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM helper_jobs WHERE thread_id = ? AND kind = 'review' AND id > ?)",
+                )
+                .bind(t)
+                .bind(job_id)
+                .fetch_one(&mut *tx)
+                .await?;
+                if review != "reviewing" || thread_state != "in_review" || newer {
                     tx.commit().await?;
                     return Ok(None);
                 }
