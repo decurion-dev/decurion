@@ -6,6 +6,8 @@ use decurion_proto::{Profile, RunEvent};
 use serde_json::Value;
 use std::path::Path;
 
+pub mod gatekeeper;
+
 pub const IMAGE: &str = "decurion/claude-worker:dev";
 
 /// Host environment variables the docker CLI itself needs. Nothing else from
@@ -28,8 +30,9 @@ pub const DOCKER_CLI_ENV: &[&str] = &[
     "DOCKER_CONFIG",
 ];
 
-/// The one credential an agent gets: its Max profile's Claude token, or the
-/// pay-per-use API key. Never both.
+/// The one credential an agent gets: its Max profile's Claude token, or a
+/// per-run token for the gatekeeper, which holds the pay-per-use API key on
+/// the host. Never both, and never the API key itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Credential {
     Max(Profile),
@@ -37,11 +40,11 @@ pub enum Credential {
 }
 
 impl Credential {
-    /// The environment variable Claude Code reads it from.
-    pub fn var(self) -> &'static str {
+    /// The environment variables the container gets for it.
+    pub fn vars(self) -> &'static [&'static str] {
         match self {
-            Credential::Max(_) => "CLAUDE_CODE_OAUTH_TOKEN",
-            Credential::PayPerUse => "ANTHROPIC_API_KEY",
+            Credential::Max(_) => &["CLAUDE_CODE_OAUTH_TOKEN"],
+            Credential::PayPerUse => &["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"],
         }
     }
 
@@ -140,8 +143,8 @@ pub struct Sandbox<'a> {
     pub out: Option<&'a Path>,
 }
 
-/// Arguments for `docker run`. The token is passed by name only, so it never
-/// appears on a command line, and the task goes in on stdin (`-i`), so a long
+/// Arguments for `docker run`. Credentials are passed by name only, so they
+/// never appear on a command line, and the task goes in on stdin (`-i`), so a long
 /// task cannot hit the Windows command-line limit.
 pub fn run_args(
     thread_id: i64,
@@ -237,33 +240,39 @@ fn agent_args(
         "4g",
         "--pids-limit",
         "1024",
-        "-e",
-        cred.var(),
-        "-e",
-        "GIT_CONFIG_COUNT=1",
-        "-e",
-        "GIT_CONFIG_KEY_0=safe.directory",
-        "-e",
-        "GIT_CONFIG_VALUE_0=/work",
-        "-e",
-        "GIT_AUTHOR_NAME=decurion-agent",
-        "-e",
-        "GIT_AUTHOR_EMAIL=agent@decurion.invalid",
-        "-e",
-        "GIT_COMMITTER_NAME=decurion-agent",
-        "-e",
-        "GIT_COMMITTER_EMAIL=agent@decurion.invalid",
-        IMAGE,
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--permission-mode",
-        "bypassPermissions",
     ]
     .iter()
     .map(|s| s.to_string())
     .collect();
+    for v in cred.vars() {
+        a.extend(["-e".to_owned(), (*v).to_owned()]);
+    }
+    a.extend(
+        [
+            "-e",
+            "GIT_CONFIG_COUNT=1",
+            "-e",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "-e",
+            "GIT_CONFIG_VALUE_0=/work",
+            "-e",
+            "GIT_AUTHOR_NAME=decurion-agent",
+            "-e",
+            "GIT_AUTHOR_EMAIL=agent@decurion.invalid",
+            "-e",
+            "GIT_COMMITTER_NAME=decurion-agent",
+            "-e",
+            "GIT_COMMITTER_EMAIL=agent@decurion.invalid",
+            IMAGE,
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "bypassPermissions",
+        ]
+        .map(str::to_owned),
+    );
     if let Some(out) = sb.out {
         // Before the image name: everything after it goes to Claude Code.
         let at = a.iter().position(|x| x == IMAGE).unwrap_or(a.len());
@@ -318,18 +327,23 @@ pub const BUDGET_STOP: &str =
 /// Hides anything shaped like an Anthropic token, in case an agent is tricked
 /// into echoing its own credential into its output.
 pub fn redact(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = rest.find("sk-ant-") {
-        out.push_str(&rest[..i]);
-        out.push_str("[redacted]");
-        let tail = &rest[i..];
-        let end = tail
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
-            .unwrap_or(tail.len());
-        rest = &tail[end..];
+    let mut out = s.to_owned();
+    // Real keys, and the gatekeeper's per-run tokens while they may be live.
+    for prefix in ["sk-ant-", "decurion-run-"] {
+        let mut done = String::with_capacity(out.len());
+        let mut rest = out.as_str();
+        while let Some(i) = rest.find(prefix) {
+            done.push_str(&rest[..i]);
+            done.push_str("[redacted]");
+            let tail = &rest[i..];
+            let end = tail
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .unwrap_or(tail.len());
+            rest = &tail[end..];
+        }
+        done.push_str(rest);
+        out = done;
     }
-    out.push_str(rest);
     out
 }
 
@@ -662,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn pay_per_use_runs_get_the_api_key_and_a_budget_only() {
+    fn pay_per_use_runs_get_a_gatekeeper_token_and_a_budget_only() {
         let a = run_args(
             7,
             Path::new("/w"),
@@ -672,9 +686,12 @@ mod tests {
             Some(9.5),
         )
         .unwrap_or_default();
-        assert!(a
-            .windows(2)
-            .any(|w| w[0] == "-e" && w[1] == "ANTHROPIC_API_KEY"));
+        // Both by name: the values come from the docker process's environment.
+        for var in ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"] {
+            assert!(a.windows(2).any(|w| w[0] == "-e" && w[1] == var), "{var}");
+        }
+        let joined = a.join(" ");
+        assert!(!joined.contains("sk-ant") && !joined.contains("http"));
         assert!(!a.iter().any(|x| x == "CLAUDE_CODE_OAUTH_TOKEN"));
         assert!(a
             .windows(2)
@@ -688,9 +705,9 @@ mod tests {
             None,
         )
         .unwrap_or_default();
-        assert!(!m
-            .iter()
-            .any(|x| x == "ANTHROPIC_API_KEY" || x == "--max-budget-usd"));
+        assert!(!m.iter().any(|x| x == "ANTHROPIC_API_KEY"
+            || x == "ANTHROPIC_BASE_URL"
+            || x == "--max-budget-usd"));
         assert_eq!(
             Credential::Max(Profile::B).target(),
             "decurion/claude-profile-B"
@@ -726,6 +743,14 @@ mod tests {
         ] {
             assert_eq!(usage_limit(other), None, "{other}");
         }
+    }
+
+    #[test]
+    fn run_tokens_are_redacted_too() {
+        assert_eq!(
+            redact("my key is decurion-run-0a1b2c3d ok"),
+            "my key is [redacted] ok"
+        );
     }
 
     #[test]

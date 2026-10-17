@@ -1,6 +1,7 @@
 use anyhow::{bail, Context};
 use decurion_proto::goal::{HelperClaim, HelperResult, HelperSource};
 use decurion_proto::{App, Claim, MoveRequest, RunEvent, ThreadState};
+use decurion_runner::gatekeeper::{Gatekeeper, Grant, ANTHROPIC_API};
 use decurion_runner::{
     check_home_volume, container_name, design_home_volume, goal_home_volume, helper_container_name,
     helper_run_args, parse_line, parse_result, prompt_for, read_page, run_args, split_result,
@@ -101,7 +102,8 @@ fn data_dir() -> anyhow::Result<PathBuf> {
 
 /// The run's one credential, from Windows Credential Manager: a Max profile's
 /// token (`claude setup-token`, saved as `decurion/claude-profile-A`) or the
-/// pay-per-use API key (`decurion/anthropic-api`).
+/// pay-per-use API key (`decurion/anthropic-api`), which stays with the
+/// gatekeeper.
 fn secret(cred: Credential) -> anyhow::Result<String> {
     let target = cred.target();
     #[cfg(windows)]
@@ -109,12 +111,15 @@ fn secret(cred: Credential) -> anyhow::Result<String> {
         let entry = keyring::Entry::new_with_target(&target, "decurion", "claude")?;
         entry
             .get_password()
+            .map(|s| s.trim().to_owned())
             .with_context(|| format!("nothing saved in Credential Manager as {target}"))
     }
     #[cfg(not(windows))]
     {
         let var = cred.env_fallback();
-        std::env::var(&var).with_context(|| format!("{var} not set ({target})"))
+        std::env::var(&var)
+            .map(|s| s.trim().to_owned())
+            .with_context(|| format!("{var} not set ({target})"))
     }
 }
 
@@ -312,15 +317,10 @@ fn docker() -> Command {
 }
 
 /// Starts an agent's container and hands it its prompt on stdin.
-fn spawn_agent(
-    cred: Credential,
-    token: String,
-    args: Vec<String>,
-    prompt: String,
-) -> anyhow::Result<Child> {
+fn spawn_agent(env: ContainerEnv, args: Vec<String>, prompt: String) -> anyhow::Result<Child> {
     use tokio::io::AsyncWriteExt;
     let mut child = docker()
-        .env(cred.var(), token)
+        .envs(env)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -363,8 +363,46 @@ fn stderr_tail(child: &mut Child) -> anyhow::Result<JoinHandle<String>> {
     }))
 }
 
+/// Variables set on the docker process for a container to take with `-e`.
+type ContainerEnv = Vec<(&'static str, String)>;
+
+/// The host-side gatekeeper and the address containers reach it at.
+#[derive(Clone)]
+struct Gate {
+    keeper: Gatekeeper,
+    url: String,
+}
+
+impl Gate {
+    /// The environment for a container's credential. A pay-per-use container
+    /// gets a token for the gatekeeper, never the key; the grant is revoked
+    /// when it drops, so the caller keeps it until the container is gone.
+    fn credential(&self, cred: Credential) -> anyhow::Result<(Option<Grant>, ContainerEnv)> {
+        if cred == Credential::PayPerUse && !self.keeper.is_alive() {
+            // Without the gatekeeper the run could only fail, and a failed
+            // pay-per-use run is charged its whole budget. Stop before starting.
+            bail!("the gatekeeper has stopped; restart the runner before running pay-per-use work");
+        }
+        let token = secret(cred)?;
+        let (grant, values) = match cred {
+            Credential::PayPerUse => {
+                let g = self.keeper.grant(token);
+                let v = vec![g.token().to_owned(), self.url.clone()];
+                (Some(g), v)
+            }
+            Credential::Max(_) => (None, vec![token]),
+        };
+        // Names come from the same list run_args passes to docker with `-e`.
+        anyhow::ensure!(
+            values.len() == cred.vars().len(),
+            "credential variables out of step"
+        );
+        Ok((grant, cred.vars().iter().copied().zip(values).collect()))
+    }
+}
+
 /// Runs one claimed thread to the end and reports the outcome.
-async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
+async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()> {
     let id = c.thread.id;
     let session = c
         .thread
@@ -384,7 +422,7 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
     } else {
         Credential::Max(c.app.profile)
     };
-    let token = secret(cred)?;
+    let (grant, env) = gate.credential(cred)?;
     let prompt = prompt_for(&c.thread.prompt, c.resume, c.follow_up.as_deref());
     // Tell the hub before launching: from here the run may cost money, and if
     // the hub cannot be told, the run does not start.
@@ -392,7 +430,7 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
         .await
         .context("could not tell the hub the run is starting")?;
     let args = run_args(id, &wt, &session, c.resume, cred, c.budget_usd)?;
-    let mut child = spawn_agent(cred, token, args, prompt)?;
+    let mut child = spawn_agent(env, args, prompt)?;
     let stderr_task = stderr_tail(&mut child)?;
     let stdout = child.stdout.take().context("no stdout")?;
     let mut out = BufReader::new(stdout);
@@ -411,6 +449,8 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
         watch.push(&line, result);
     }
     let status = child.wait().await?;
+    // The container is gone; its token goes with it.
+    drop(grant);
     let alone = watch.trusted();
     let (result, limit) = match watch.result {
         Some(r) => (Some(r.finished), r.limit),
@@ -662,13 +702,18 @@ async fn branch_copy(
 
 /// Runs one coordinator, design or review job. Never posts events: what the
 /// helper says only matters as its final answer, which the hub checks.
-async fn run_helper(hub: &Hub, data: &Path, job: &HelperClaim) -> anyhow::Result<HelperResult> {
+async fn run_helper(
+    hub: &Hub,
+    data: &Path,
+    gate: &Gate,
+    job: &HelperClaim,
+) -> anyhow::Result<HelperResult> {
     let name = helper_container_name(job.job_id);
     let hb = HelperBox::for_job(data, job);
     // A job handed out again after a runner restart starts from scratch.
     let _ = docker().args(["rm", "-f", &name]).output().await;
     hb.clean().await;
-    let r = helper_container(hub, data, job, &name, &hb).await;
+    let r = helper_container(hub, data, gate, job, &name, &hb).await;
     // `--rm` only applies if the docker client lived to see the exit.
     let _ = docker().args(["rm", "-f", &name]).output().await;
     hb.clean().await;
@@ -681,6 +726,7 @@ const HELPER_TIME_LIMIT: Duration = Duration::from_secs(60 * 60);
 async fn helper_container(
     hub: &Hub,
     data: &Path,
+    gate: &Gate,
     job: &HelperClaim,
     name: &str,
     hb: &HelperBox,
@@ -703,7 +749,8 @@ async fn helper_container(
     } else {
         Credential::Max(job.app.profile)
     };
-    let token = secret(cred)?;
+    // Held until this function returns, after the container is gone.
+    let (_grant, env) = gate.credential(cred)?;
     let args = helper_run_args(
         &Sandbox {
             name,
@@ -726,7 +773,7 @@ async fn helper_container(
     )
     .await
     .context("could not tell the hub the job is starting")?;
-    let mut child = spawn_agent(cred, token, args, job.prompt.clone())?;
+    let mut child = spawn_agent(env, args, job.prompt.clone())?;
     let stderr_task = stderr_tail(&mut child)?;
     let mut out = BufReader::new(child.stdout.take().context("no stdout")?);
     // Same trust rule as `run`, except that two results fail the job: a cost
@@ -836,7 +883,7 @@ async fn finish_helper(hub: &Hub, id: i64, mut r: HelperResult) {
 
 /// Takes coordinator, design and review jobs one at a time, alongside the
 /// work loop, so a goal's planning never waits for a long build.
-async fn helper_loop(hub: Hub, data: PathBuf) {
+async fn helper_loop(hub: Hub, data: PathBuf, gate: Gate) {
     loop {
         let r = hub
             .post(
@@ -860,7 +907,7 @@ async fn helper_loop(hub: Hub, data: PathBuf) {
                 };
                 let id = job.job_id;
                 tracing::info!(id, kind = job.kind.as_str(), "helper job");
-                let result = match run_helper(&hub, &data, &job).await {
+                let result = match run_helper(&hub, &data, &gate, &job).await {
                     Ok(r) => r,
                     Err(err) => {
                         tracing::error!(%err, id, "helper job failed");
@@ -923,6 +970,24 @@ async fn main() -> anyhow::Result<()> {
     if lock.try_lock().is_err() {
         bail!("another Decurion runner is already running on this PC");
     }
+    // Docker Desktop forwards host.docker.internal to the host's loopback, so
+    // containers reach the gatekeeper while nothing off this PC can.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .context("could not start the gatekeeper")?;
+    let gate = Gate {
+        keeper: Gatekeeper::new(ANTHROPIC_API)?,
+        url: format!(
+            "http://host.docker.internal:{}",
+            listener.local_addr()?.port()
+        ),
+    };
+    let serving = gate.keeper.clone();
+    tokio::spawn(async move {
+        if let Err(err) = serving.serve(listener).await {
+            tracing::error!(%err, "gatekeeper stopped");
+        }
+    });
     let keys: serde_json::Value = serde_json::from_slice(
         &std::fs::read(data.join("keys.json"))
             .context("start the hub first; it creates keys.json")?,
@@ -933,7 +998,11 @@ async fn main() -> anyhow::Result<()> {
             .as_str()
             .context("keys.json has no runner key")?
             .to_owned(),
-        http: reqwest::Client::new(),
+        // A stalled hub must not hold up the end of a run (and with it the
+        // revoking of its gatekeeper token).
+        http: reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()?,
     };
     // Containers left by a runner that died keep working, and spending, with
     // nobody listening. Stop them all before taking on any work.
@@ -973,7 +1042,7 @@ async fn main() -> anyhow::Result<()> {
             "requeued work this runner had in flight; it will resume"
         );
     }
-    tokio::spawn(helper_loop(hub.clone(), data.clone()));
+    tokio::spawn(helper_loop(hub.clone(), data.clone(), gate.clone()));
     loop {
         let r = hub
             .post("/runner/claim", &serde_json::json!({ "runner": RUNNER }))
@@ -995,7 +1064,7 @@ async fn main() -> anyhow::Result<()> {
                 };
                 let id = claim.thread.id;
                 tracing::info!(id, resume = claim.resume, "running");
-                if let Err(err) = run(&hub, &data, claim).await {
+                if let Err(err) = run(&hub, &data, &gate, claim).await {
                     tracing::error!(%err, id, "run failed");
                     hub.event(
                         id,
