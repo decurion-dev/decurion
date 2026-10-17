@@ -52,6 +52,7 @@ impl Hub {
             &MoveRequest {
                 to,
                 note: Some(note.to_owned()),
+                receipt: None,
             },
         )
         .await
