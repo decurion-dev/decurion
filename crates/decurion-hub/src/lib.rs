@@ -10,28 +10,59 @@
 //! short-lived pairing QR code on the board. Either way the browser gets its
 //! own device token in an HttpOnly cookie, which survives hub restarts and can
 //! be removed from the board.
+//!
+//! Runners sign in with their own keys: the PC runner with the runner key, a
+//! cloud worker with the key it got when it signed up. The hub knows which
+//! runner is calling from its key alone, and a runner can only report on,
+//! save or move work it is running itself. A cloud worker's key reaches
+//! nothing else at all: not the board, spending or other work.
 
+pub mod checkpoints;
 pub mod coordinator;
 pub mod devices;
 pub mod limits;
 pub mod messages;
 pub mod push;
+pub mod secrets;
 pub mod spend;
 pub mod store;
 pub mod test_keys;
+pub mod workers;
 
 mod goals;
 
-use axum::extract::{Path, Query, Request, State};
+use axum::body::{Body, Bytes};
+use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use decurion_proto::{MoveRequest, NewApp, NewMessage, NewThread, RunEvent};
+use checkpoints::{Files, Part};
+use decurion_proto::{
+    HelloReply, JoinReply, JoinRequest, MoveRequest, NewApp, NewCheckpoint, NewMessage, NewThread,
+    Place, PlaceRequest, RunEvent, RunnerHello, RULES_VERSION,
+};
 use serde::Deserialize;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use store::{Store, StoreError};
+use workers::RunnerId;
+
+/// The git commit this hub was built from. A cloud worker builds the same
+/// commit, so both computers run the same rules.
+pub const HUB_COMMIT: &str = match option_env!("DECURION_COMMIT") {
+    Some(c) => c,
+    None => "unknown",
+};
+
+/// The public repository cloud workers build from.
+pub const REPO_URL: &str = "https://github.com/decurion-dev/decurion";
+
+/// A runner counts as online if it was heard from this recently. Runners ask
+/// for work every few seconds.
+const ONLINE_SECS: u64 = 30;
 
 /// Who is calling. The owner uses the board or a paired phone; the runner
 /// uses its own key.
@@ -71,6 +102,9 @@ pub struct AppState {
     pub(crate) push: Option<push::Pusher>,
     /// Where apps' test keys are kept. Without one, the key endpoints refuse.
     vault: Option<decurion_vault::Vault>,
+    files: Option<Arc<Files>>,
+    /// When each runner was last heard from, by name.
+    seen: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 impl AppState {
@@ -84,7 +118,16 @@ impl AppState {
             public_url: public_url.map(|u| u.trim_end_matches('/').into()),
             push: None,
             vault: None,
+            files: None,
+            seen: Arc::default(),
         }
+    }
+
+    /// Where saved copies of work are kept. Without it, work cannot move
+    /// between computers.
+    pub fn with_files(mut self, dir: std::path::PathBuf) -> Self {
+        self.files = Some(Arc::new(Files::new(dir)));
+        self
     }
 
     /// Turns on phone notifications.
@@ -150,6 +193,21 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/apps/{id}/test-keys/{name}/remove", post(remove_test_key))
         .route("/push/subscribe", post(push_subscribe))
+        .route("/threads/{id}/place", post(set_place))
+        .route("/workers", get(list_workers))
+        .route("/workers/join-code", post(new_join_code))
+        .route("/workers/{id}/remove", post(remove_worker))
+        .route("/runner/threads/{id}/base", get(runner_base))
+        .route(
+            "/runner/threads/{id}/upload/{part}",
+            put(runner_upload).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/runner/threads/{id}/checkpoint", post(runner_checkpoint))
+        .route(
+            "/runner/threads/{id}/checkpoint/{cp}/{part}",
+            get(runner_download),
+        )
+        .route("/runner/threads/{id}/credential", post(runner_credential))
         .route("/goals", get(goals::list).post(goals::add))
         .route("/goals/{id}", get(goals::view))
         .route("/goals/{id}/say", post(goals::say))
@@ -174,6 +232,8 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(board))
         .route("/inbox", get(inbox))
+        .route("/cloud", get(cloud_page))
+        .route("/runner/join", post(runner_join))
         .route("/goals", get(goals_page))
         .route("/login", get(login_page).post(login))
         .route("/pair", get(pair_page).post(pair))
@@ -256,7 +316,24 @@ fn same_origin_write(req: &Request) -> bool {
 async fn require_key(State(st): State<AppState>, mut req: Request, next: Next) -> Response {
     let (caller, device) = match (bearer(req.headers()), device_cookie(req.headers())) {
         (Some(k), _) if same(k, &st.keys.owner) => (Caller::Owner, None),
-        (Some(k), _) if same(k, &st.keys.runner) => (Caller::Runner, None),
+        (Some(k), _) if same(k, &st.keys.runner) => {
+            req.extensions_mut()
+                .insert(st.heard_from(RunnerId::local()));
+            (Caller::Runner, None)
+        }
+        (Some(k), _) => match st.store.cloud_runner_for_token(k).await {
+            Ok(Some(r)) => {
+                let r = st.heard_from(r);
+                let reach = cloud_reach(req.method(), req.uri().path());
+                if let Err(resp) = cloud_may_call(&st, &r, reach).await {
+                    return resp;
+                }
+                req.extensions_mut().insert(r);
+                (Caller::Runner, None)
+            }
+            Ok(None) => return (StatusCode::UNAUTHORIZED, "missing or wrong key").into_response(),
+            Err(e) => return ApiError(e).into_response(),
+        },
         (None, Some(_)) if !same_origin_write(&req) => {
             return (StatusCode::FORBIDDEN, "cross-site request refused").into_response()
         }
@@ -270,6 +347,84 @@ async fn require_key(State(st): State<AppState>, mut req: Request, next: Next) -
     req.extensions_mut().insert(caller);
     req.extensions_mut().insert(DeviceId(device));
     next.run(req).await
+}
+
+/// What a cloud worker's call reaches.
+enum CloudReach {
+    Any,
+    /// Work it must be running now. `hidden` answers "not found" otherwise,
+    /// so a worker cannot learn about other work.
+    Thread {
+        id: i64,
+        hidden: bool,
+    },
+    Refused,
+}
+
+/// A cloud worker is a rented server, not the owner's PC, so its key reaches
+/// only what running its own work needs. Anything not listed here, including
+/// routes added later, is refused.
+fn cloud_reach(method: &axum::http::Method, path: &str) -> CloudReach {
+    use axum::http::Method;
+    let path = path.strip_prefix("/api").unwrap_or(path);
+    let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
+    let thread = |id: &str, hidden| match id.parse() {
+        Ok(id) => CloudReach::Thread { id, hidden },
+        Err(_) => CloudReach::Refused,
+    };
+    match (method, parts.as_slice()) {
+        (&Method::POST, ["runner", "hello" | "claim"]) => CloudReach::Any,
+        (&Method::GET, ["threads", id] | ["threads", id, "live"]) => thread(id, true),
+        (
+            &Method::POST,
+            ["threads", id, "events" | "move"] | ["threads", id, "messages", "delivered"],
+        ) => thread(id, false),
+        (_, ["runner", "threads", id, _, ..]) => thread(id, false),
+        _ => CloudReach::Refused,
+    }
+}
+
+// Responses are what axum handlers return; boxing them buys nothing here.
+#[allow(clippy::result_large_err)]
+async fn cloud_may_call(st: &AppState, r: &RunnerId, reach: CloudReach) -> Result<(), Response> {
+    let (id, hidden) = match reach {
+        CloudReach::Any => return Ok(()),
+        CloudReach::Thread { id, hidden } => (id, hidden),
+        CloudReach::Refused => {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "cloud workers only run their own work",
+            )
+                .into_response())
+        }
+    };
+    match st.store.running_on(id, &r.name).await {
+        Ok(true) => Ok(()),
+        Ok(false) if hidden => Err(ApiError(StoreError::NotFound).into_response()),
+        Ok(false) => Err((
+            StatusCode::CONFLICT,
+            "that work is not running on this runner",
+        )
+            .into_response()),
+        Err(e) => Err(ApiError(e).into_response()),
+    }
+}
+
+impl AppState {
+    /// Notes that a runner called, for the board's online dot.
+    fn heard_from(&self, r: RunnerId) -> RunnerId {
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.insert(r.name.clone(), Instant::now());
+        }
+        r
+    }
+
+    fn seconds_ago(&self, name: &str) -> Option<u64> {
+        self.seen
+            .lock()
+            .ok()
+            .and_then(|s| s.get(name).map(|t| t.elapsed().as_secs()))
+    }
 }
 
 pub struct ApiError(StoreError);
@@ -304,7 +459,7 @@ pub(crate) fn forbidden(what: &str) -> Response {
     (StatusCode::FORBIDDEN, format!("{what} is owner-only")).into_response()
 }
 
-fn runner_only(what: &str) -> Response {
+fn not_runner(what: &str) -> Response {
     (StatusCode::FORBIDDEN, format!("{what} is runner-only")).into_response()
 }
 
@@ -577,6 +732,7 @@ async fn add_thread(
 async fn move_thread(
     State(st): State<AppState>,
     axum::Extension(c): axum::Extension<Caller>,
+    runner: Option<axum::Extension<RunnerId>>,
     Path(id): Path<i64>,
     Json(m): Json<MoveRequest>,
 ) -> Response {
@@ -593,13 +749,17 @@ async fn move_thread(
     } else {
         m.expect
     };
+    let actor = match runner {
+        Some(axum::Extension(r)) if c == Caller::Runner => r.actor(),
+        _ => c.actor().to_owned(),
+    };
     match st
         .store
         .request_move(
             id,
             expect,
             m.to,
-            c.actor(),
+            &actor,
             m.note.as_deref(),
             m.receipt.as_deref(),
         )
@@ -655,13 +815,13 @@ async fn list_events(
 
 async fn add_event(
     State(st): State<AppState>,
-    axum::Extension(c): axum::Extension<Caller>,
+    runner: Option<axum::Extension<RunnerId>>,
     Path(id): Path<i64>,
     Json(e): Json<RunEvent>,
 ) -> Response {
-    if c != Caller::Runner {
+    let Some(axum::Extension(r)) = runner else {
         return (StatusCode::FORBIDDEN, "events come from the runner").into_response();
-    }
+    };
     // The owner's messages and cut-off steps are the hub's record; a runner
     // writing them could put words in the owner's mouth.
     if e.hub_only() {
@@ -671,7 +831,7 @@ async fn add_event(
         )
             .into_response();
     }
-    match st.store.add_event(id, &e).await {
+    match st.store.add_event(id, &r.name, &e).await {
         Ok((eid, new_outage)) => {
             if let (true, Some(p)) = (new_outage, st.push.clone()) {
                 let store = st.store.clone();
@@ -731,7 +891,7 @@ async fn live(
     Path(id): Path<i64>,
 ) -> Response {
     if c != Caller::Runner {
-        return runner_only("checking on a run");
+        return not_runner("checking on a run");
     }
     match st.store.live(id).await {
         Ok(l) => Json(l).into_response(),
@@ -751,7 +911,7 @@ async fn messages_delivered(
     Json(b): Json<Ids>,
 ) -> Response {
     if c != Caller::Runner {
-        return runner_only("marking messages delivered");
+        return not_runner("marking messages delivered");
     }
     match st.store.mark_delivered(id, &b.ids).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -762,34 +922,87 @@ async fn messages_delivered(
 #[derive(Deserialize)]
 struct RunnerName {
     runner: String,
+    /// Checked again at every claim, so a runner left on old rules after the
+    /// hub updates never starts new work.
+    #[serde(default)]
+    rules_version: Option<u32>,
+}
+
+/// The 409 a runner on other rules gets, telling it which rules and commit
+/// to update to.
+fn other_rules(r: &RunnerId, theirs: Option<u32>) -> Response {
+    tracing::warn!(runner = %r.name, ?theirs, "runner on other rules refused");
+    let reply = HelloReply {
+        paused: vec![],
+        rules_version: RULES_VERSION,
+        hub_commit: HUB_COMMIT.to_owned(),
+    };
+    (StatusCode::CONFLICT, Json(reply)).into_response()
+}
+
+/// The runner making a runner-only call. A runner names itself in some
+/// bodies; that name must be the one its key belongs to.
+// Responses are what axum handlers return; boxing them buys nothing here.
+#[allow(clippy::result_large_err)]
+fn runner_only(
+    runner: Option<axum::Extension<RunnerId>>,
+    claimed: Option<&str>,
+) -> Result<RunnerId, Response> {
+    match runner {
+        Some(axum::Extension(r)) if claimed.is_none_or(|n| n == r.name) => Ok(r),
+        Some(_) => Err((
+            StatusCode::FORBIDDEN,
+            "that runner name belongs to another key",
+        )
+            .into_response()),
+        None => Err(forbidden("runner calls are runner-only; this")),
+    }
 }
 
 async fn runner_hello(
     State(st): State<AppState>,
-    axum::Extension(c): axum::Extension<Caller>,
-    Json(r): Json<RunnerName>,
+    runner: Option<axum::Extension<RunnerId>>,
+    Json(h): Json<RunnerHello>,
 ) -> Response {
-    if c != Caller::Runner {
-        return forbidden("runner calls are runner-only; this");
-    }
-    if let Err(e) = st.store.pause_runner_helpers(&r.runner).await {
+    let r = match runner_only(runner, Some(&h.runner)) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    // Work it had running goes back to the queue either way, so a runner
+    // that must update first does not leave work stuck as Running.
+    if let Err(e) = st.store.pause_runner_helpers(&r.name).await {
         return ApiError(e).into_response();
     }
-    match st.store.pause_runner_threads(&r.runner).await {
-        Ok(ids) => Json(ids).into_response(),
-        Err(e) => ApiError(e).into_response(),
+    let paused = match st.store.pause_runner_threads(&r.name).await {
+        Ok(ids) => ids,
+        Err(e) => return ApiError(e).into_response(),
+    };
+    // A runner on other rules must not touch any work; it updates itself to
+    // the hub's commit and starts again.
+    if h.rules_version != RULES_VERSION {
+        return other_rules(&r, Some(h.rules_version));
     }
+    Json(HelloReply {
+        paused,
+        rules_version: RULES_VERSION,
+        hub_commit: HUB_COMMIT.to_owned(),
+    })
+    .into_response()
 }
 
 async fn runner_claim(
     State(st): State<AppState>,
-    axum::Extension(c): axum::Extension<Caller>,
-    Json(r): Json<RunnerName>,
+    runner: Option<axum::Extension<RunnerId>>,
+    Json(b): Json<RunnerName>,
 ) -> Response {
-    if c != Caller::Runner {
-        return forbidden("runner calls are runner-only; this");
+    let r = match runner_only(runner, Some(&b.runner)) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if b.rules_version != Some(RULES_VERSION) {
+        return other_rules(&r, b.rules_version);
     }
-    match st.store.claim(&r.runner).await {
+    match st.store.claim(&r.name, r.place).await {
         Ok(out) => {
             if let (Some(p), Some(first)) = (st.push.clone(), out.capped.first()) {
                 // One alert, however many pieces of work it stopped.
@@ -912,6 +1125,338 @@ async fn set_pay_per_use(
     match st.store.set_pay_per_use(id, b.on).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn cloud_page() -> Response {
+    page(include_str!("cloud.html"))
+}
+
+async fn set_place(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+    Json(p): Json<PlaceRequest>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("moving work between computers");
+    }
+    match st.store.set_place(id, p.place, "owner").await {
+        Ok(t) => Json(t).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn list_workers(State(st): State<AppState>) -> ApiResult<Vec<workers::Worker>> {
+    let worker = |id, name: String, place| {
+        let ago = st.seconds_ago(&name);
+        workers::Worker {
+            id,
+            online: ago.is_some_and(|s| s <= ONLINE_SECS),
+            seconds_ago: ago,
+            name,
+            place,
+        }
+    };
+    let mut list = vec![worker(None, workers::LOCAL.to_owned(), Place::Pc)];
+    for (id, name) in st.store.cloud_workers().await? {
+        list.push(worker(Some(id), name, Place::Cloud));
+    }
+    Ok(Json(list))
+}
+
+async fn new_join_code(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("adding a cloud worker");
+    }
+    match st.store.new_join_code().await {
+        Ok((code, name)) => Json(serde_json::json!({
+            "code": code,
+            "name": name,
+            "minutes": workers::JOIN_HOURS * 60,
+            "hub_url": st.public_url.as_deref(),
+            "hub_commit": HUB_COMMIT,
+            "rules_version": RULES_VERSION,
+            "repo": REPO_URL,
+        }))
+        .into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn remove_worker(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("removing a cloud worker");
+    }
+    match st.store.remove_cloud_worker(id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// A cloud worker's first call: its setup code for its own key.
+async fn runner_join(State(st): State<AppState>, Json(j): Json<JoinRequest>) -> Response {
+    match st.store.join_cloud_worker(&j.code).await {
+        Ok(Some((name, token))) => {
+            tracing::info!(%name, "cloud worker signed up");
+            Json(JoinReply { name, token }).into_response()
+        }
+        Ok(None) => (
+            StatusCode::UNAUTHORIZED,
+            "This setup code is used or expired. Make new setup text in Decurion.",
+        )
+            .into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// Whether a runner call reads a work's saved copies or changes them.
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum Access {
+    Read,
+    Write,
+}
+
+/// Checks the caller is a runner holding `thread` (or the PC runner, for a
+/// read), and that the hub can keep files. Returns the runner and the file
+/// store.
+// Responses are what axum handlers return; boxing them buys nothing here.
+#[allow(clippy::result_large_err)]
+async fn holding(
+    st: &AppState,
+    runner: Option<axum::Extension<RunnerId>>,
+    thread: i64,
+    access: Access,
+) -> Result<(RunnerId, Arc<Files>), Response> {
+    let r = runner_only(runner, None)?;
+    let files = st.files.clone().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this hub has no folder for saved work",
+        )
+            .into_response()
+    })?;
+    // The PC runner checks finished work, whichever computer made it, so it
+    // may read any work's saved copies. It runs next to the hub, which keeps
+    // the owner's repos anyway.
+    if access == Access::Read && r.place == Place::Pc {
+        return Ok((r, files));
+    }
+    match st.store.running_on(thread, &r.name).await {
+        Ok(true) => Ok((r, files)),
+        Ok(false) => Err((
+            StatusCode::CONFLICT,
+            "that work is not running on this runner",
+        )
+            .into_response()),
+        Err(e) => Err(ApiError(e).into_response()),
+    }
+}
+
+async fn runner_base(
+    State(st): State<AppState>,
+    runner: Option<axum::Extension<RunnerId>>,
+    Path(id): Path<i64>,
+) -> Response {
+    let (_, files) = match holding(&st, runner, id, Access::Read).await {
+        Ok(h) => h,
+        Err(resp) => return resp,
+    };
+    let result = async {
+        let t = st.store.thread(id).await?;
+        let app = st.store.app(t.app_id).await?;
+        let base = st.store.base_commit(id).await?;
+        let (sha, path) = files
+            .base_bundle(app.id, &app.repo_path, base.as_deref())
+            .await?;
+        let sha = st.store.fix_base_commit(id, &sha).await?;
+        Ok::<_, StoreError>((sha, path))
+    }
+    .await;
+    match result {
+        Ok((sha, path)) => file_response(&path, Some(("x-decurion-base", sha))).await,
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn runner_upload(
+    State(st): State<AppState>,
+    runner: Option<axum::Extension<RunnerId>>,
+    Path((id, part)): Path<(i64, String)>,
+    body: Body,
+) -> Response {
+    let Some(part) = Part::parse(&part) else {
+        return (StatusCode::NOT_FOUND, "unknown part").into_response();
+    };
+    let (_, files) = match holding(&st, runner, id, Access::Write).await {
+        Ok(h) => h,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = files.prepare_thread_dir(id) {
+        tracing::error!(%e, "could not make the saved-work folder");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    match save_body(body, &files.incoming(id, part), part.max_bytes()).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(resp) => resp,
+    }
+}
+
+async fn runner_checkpoint(
+    State(st): State<AppState>,
+    runner: Option<axum::Extension<RunnerId>>,
+    Path(id): Path<i64>,
+    Json(c): Json<NewCheckpoint>,
+) -> Response {
+    let (r, files) = match holding(&st, runner, id, Access::Write).await {
+        Ok(h) => h,
+        Err(resp) => return resp,
+    };
+    match st
+        .store
+        .add_checkpoint(&files, id, &r.name, &c.head, c.base.as_deref())
+        .await
+    {
+        Ok(cp) => Json(serde_json::json!({ "id": cp })).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn runner_download(
+    State(st): State<AppState>,
+    runner: Option<axum::Extension<RunnerId>>,
+    Path((id, cp, part)): Path<(i64, i64, String)>,
+) -> Response {
+    // Only the runner now running the work may read its saved copies.
+    let (_, files) = match holding(&st, runner, id, Access::Read).await {
+        Ok(h) => h,
+        Err(resp) => return resp,
+    };
+    let Some(part) = Part::parse(&part) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match st.store.checkpoint_belongs(id, cp).await {
+        Ok(true) => file_response(&files.saved(id, cp, part), None).await,
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn runner_credential(
+    State(st): State<AppState>,
+    runner: Option<axum::Extension<RunnerId>>,
+    Path(id): Path<i64>,
+) -> Response {
+    let r = match runner_only(runner, None) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    match st.store.running_on(id, &r.name).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::CONFLICT,
+                "that work is not running on this runner",
+            )
+                .into_response()
+        }
+        Err(e) => return ApiError(e).into_response(),
+    }
+    let account = match st.store.open_run_account(id).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return (StatusCode::CONFLICT, "that work has no open run").into_response(),
+        Err(e) => return ApiError(e).into_response(),
+    };
+    match secrets::read(&account) {
+        Some(c) => Json(c).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            format!("no Claude sign-in saved on the PC for account {account}"),
+        )
+            .into_response(),
+    }
+}
+
+/// Streams a file to the caller, with an extra header if given.
+async fn file_response(path: &std::path::Path, extra: Option<(&'static str, String)>) -> Response {
+    use tokio::io::AsyncReadExt;
+    let Ok(file) = tokio::fs::File::open(path).await else {
+        return (StatusCode::NOT_FOUND, "that saved work is gone").into_response();
+    };
+    let len = file.metadata().await.map(|m| m.len()).ok();
+    let stream = futures_util::stream::try_unfold(file, |mut f| async move {
+        let mut buf = vec![0u8; 64 << 10];
+        let n = f.read(&mut buf).await?;
+        if n == 0 {
+            return Ok::<_, std::io::Error>(None);
+        }
+        buf.truncate(n);
+        Ok(Some((Bytes::from(buf), f)))
+    });
+    let mut resp = Body::from_stream(stream).into_response();
+    let h = resp.headers_mut();
+    h.insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/octet-stream"),
+    );
+    if let Some(n) = len {
+        h.insert(header::CONTENT_LENGTH, n.into());
+    }
+    if let Some((k, v)) = extra {
+        if let Ok(v) = header::HeaderValue::from_str(&v) {
+            h.insert(k, v);
+        }
+    }
+    resp
+}
+
+/// Writes an upload to `path`, refusing anything over `max` bytes. The file
+/// only appears under its real name once complete.
+// Responses are what axum handlers return; boxing them buys nothing here.
+#[allow(clippy::result_large_err)]
+async fn save_body(body: Body, path: &std::path::Path, max: u64) -> Result<(), Response> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let tmp = path.with_extension("partial");
+    let fail = |code: StatusCode, msg: &'static str| (code, msg).into_response();
+    let mut f = tokio::fs::File::create(&tmp)
+        .await
+        .map_err(|_| fail(StatusCode::INTERNAL_SERVER_ERROR, "could not save upload"))?;
+    let mut stream = body.into_data_stream();
+    let mut total: u64 = 0;
+    let result = async {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|_| fail(StatusCode::BAD_REQUEST, "upload broke off"))?;
+            total += chunk.len() as u64;
+            if total > max {
+                return Err(fail(StatusCode::PAYLOAD_TOO_LARGE, "upload too large"));
+            }
+            f.write_all(&chunk)
+                .await
+                .map_err(|_| fail(StatusCode::INTERNAL_SERVER_ERROR, "could not save upload"))?;
+        }
+        f.flush()
+            .await
+            .map_err(|_| fail(StatusCode::INTERNAL_SERVER_ERROR, "could not save upload"))?;
+        Ok(())
+    }
+    .await;
+    drop(f);
+    match result {
+        Ok(()) => tokio::fs::rename(&tmp, path)
+            .await
+            .map_err(|_| fail(StatusCode::INTERNAL_SERVER_ERROR, "could not save upload")),
+        Err(resp) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            Err(resp)
+        }
     }
 }
 

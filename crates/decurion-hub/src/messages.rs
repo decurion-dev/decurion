@@ -6,7 +6,7 @@ use crate::store::{
     checked_move, insert_event, receipt_result, save_receipt, state_in, Result, Store, StoreError,
     OWNER, RECEIPT_REUSED,
 };
-use decurion_proto::{Live, Message, MessageKind, NewMessage, RunEvent, ThreadState};
+use decurion_proto::{Live, Message, MessageKind, NewMessage, Place, RunEvent, ThreadState};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, Sqlite, SqliteConnection, Transaction};
 use std::str::FromStr;
@@ -92,9 +92,18 @@ impl Store {
     pub async fn live(&self, thread_id: i64) -> Result<Live> {
         let mut tx = self.pool().begin().await?;
         let state = state_in(&mut tx, thread_id).await?;
+        let place: String = sqlx::query_scalar("SELECT place FROM threads WHERE id = ?")
+            .bind(thread_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let place = Place::from_str(&place).map_err(|e| StoreError::Invalid(e.to_string()))?;
         let messages = list(&mut tx, thread_id, true).await?;
         tx.commit().await?;
-        Ok(Live { state, messages })
+        Ok(Live {
+            state,
+            place,
+            messages,
+        })
     }
 
     /// Marks messages as handed to the agent. Ids that are not this thread's

@@ -19,6 +19,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # The "Add cloud worker" page carries copies of docker/cloud; keep them equal.
+      - run: bash docker/cloud/check-template.sh
 
   test:
     strategy:

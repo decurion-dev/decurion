@@ -210,3 +210,16 @@ impl Store {
         Ok(())
     }
 }
+
+impl Store {
+    /// The account the thread's current run is billed to (`A`, `B` or `api`).
+    pub async fn open_run_account(&self, thread_id: i64) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT account FROM runs WHERE thread_id = ? AND finished_at IS NULL
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(thread_id)
+        .fetch_optional(self.pool())
+        .await?)
+    }
+}

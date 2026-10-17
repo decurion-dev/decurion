@@ -480,7 +480,14 @@ pub enum HelperSource {
     /// A fresh, writable, throwaway copy of a thread's branch, taken from the
     /// runner's own review copy (never from the agent's folder). The commit
     /// the thread started from is the local branch `decurion-base`.
-    Branch { thread_id: i64, branch: String },
+    Branch {
+        thread_id: i64,
+        branch: String,
+        /// The thread's latest saved copy. Work last saved on another
+        /// computer is brought into the review copy from it first.
+        #[serde(default)]
+        checkpoint: Option<i64>,
+    },
 }
 
 /// What the runner gets when it claims a helper job.

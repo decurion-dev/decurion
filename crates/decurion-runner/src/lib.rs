@@ -5,7 +5,11 @@ use decurion_proto::goal::{HelperResult, MAX_PAGE_BYTES};
 use decurion_proto::{Interrupted, Message, MessageKind, Profile, RunEvent};
 use serde_json::{json, Value};
 use std::collections::{HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+pub mod handover;
+pub mod identity;
 
 pub mod gatekeeper;
 pub mod pricing;
@@ -75,6 +79,16 @@ pub fn home_volume(thread_id: i64) -> String {
     format!("decurion-home-{thread_id}")
 }
 
+/// A file next to the workspace folder, outside the container's mount, so
+/// the agent cannot change it: `<workspace>.<ext>`. Appended rather than
+/// swapped in with `with_extension`, which would cut an app name with a dot.
+pub fn sibling(dir: &Path, ext: &str) -> PathBuf {
+    let mut name = dir.file_name().unwrap_or_default().to_os_string();
+    name.push(".");
+    name.push(ext);
+    dir.with_file_name(name)
+}
+
 /// One coordinator or checker job. Its own prefix, so a restarted runner can
 /// find and stop helpers left running as well as threads.
 pub fn helper_container_name(job_id: i64) -> String {
@@ -109,27 +123,109 @@ pub fn valid_branch(b: &str) -> bool {
 
 const RULES: &str = "You are working in your own copy of the code on its own branch. \
 Commit your work to this branch as you go. Do not push and do not open pull requests; \
-Decurion does that after review.";
+Decurion does that after review. \
+A private Chromium browser is available through the Playwright browser tools for testing web pages you build.";
+
+/// How a run begins, which decides what the agent is told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Start {
+    /// A new session: the agent gets the task.
+    Fresh,
+    /// The same computer's copy, after a stop: the agent picks up its session.
+    Restarted,
+    /// Rebuilt from a checkpoint another computer (or an older copy) saved.
+    Moved,
+}
+
+impl Start {
+    /// `rebuilt` is whether the runner had to rebuild the copy from the hub
+    /// instead of reusing its own. A rebuild without a checkpoint has no
+    /// session to resume, so it starts over with the task.
+    pub fn pick(resume: bool, rebuilt: bool, has_checkpoint: bool) -> Start {
+        match (resume, rebuilt, has_checkpoint) {
+            (false, _, _) | (true, true, false) => Start::Fresh,
+            (true, false, _) => Start::Restarted,
+            (true, true, true) => Start::Moved,
+        }
+    }
+
+    /// Whether Claude Code continues the saved session.
+    pub fn resumes(self) -> bool {
+        self != Start::Fresh
+    }
+}
+
+/// Whether a failed hub call is worth repeating: the hub was unreachable
+/// (`None`, e.g. the owner's PC is asleep) or had a passing problem. A
+/// refusal is final.
+pub fn retriable(status: Option<u16>) -> bool {
+    match status {
+        None => true,
+        Some(s) => s >= 500 || s == 408 || s == 429,
+    }
+}
+
+/// The wait before retry number `attempt` (from 0): 5s, doubling, at most a
+/// minute.
+pub fn backoff(attempt: u32) -> Duration {
+    Duration::from_secs(5u64.saturating_mul(1 << attempt.min(4)).min(60))
+}
+
+/// The workspace, mounted at `/work`.
+pub fn work_mount(worktree: &Path) -> anyhow::Result<String> {
+    Ok(format!("type=bind,src={},dst=/work", mount_src(worktree)?))
+}
+
+/// The agent's home volume, mounted at `/home/agent`. It holds Claude Code's
+/// session files, which is what lets a run resume.
+pub fn home_mount(thread_id: i64) -> String {
+    format!("type=volume,src={},dst=/home/agent", home_volume(thread_id))
+}
+
+/// Settings every git inside the agent's box gets: the bind-mounted folder is
+/// owned by another user, and commits need a name.
+pub const GIT_ENV: &[&str] = &[
+    "GIT_CONFIG_COUNT=1",
+    "GIT_CONFIG_KEY_0=safe.directory",
+    "GIT_CONFIG_VALUE_0=/work",
+    "GIT_AUTHOR_NAME=decurion-agent",
+    "GIT_AUTHOR_EMAIL=agent@decurion.invalid",
+    "GIT_COMMITTER_NAME=decurion-agent",
+    "GIT_COMMITTER_EMAIL=agent@decurion.invalid",
+];
+
+/// How containers on Linux find the host (and the gatekeeper on it).
+pub const GATE_HOST: &str = "host.docker.internal:host-gateway";
 
 const RESUME: &str = "Your container was restarted. Continue the same task from where it stopped. \
 Check `git status` and `git log` first and do not redo finished steps.";
 
+const MOVED: &str = "This work was moved to another computer. \
+Continue the same task from where it stopped. \
+Unfinished changes were saved in a commit named 'Decurion: saved unfinished work before moving'. \
+Check `git status` and `git log` first and do not redo finished steps.";
+
 /// The agent's starting message: the task and the rules (or, on a resume,
-/// where to pick up), the app's test keys by name, the step it was cut off
+/// where to pick up and why), the app's test keys by name, the step it was cut off
 /// in, if any, and the owner messages it has not seen yet.
 pub fn prompt_for(
     task: &str,
-    resume: bool,
+    start: Start,
     test_keys: &[String],
     messages: &[Message],
     interrupted: Option<&Interrupted>,
 ) -> String {
-    let mut p = if resume && test_keys.is_empty() {
-        RESUME.to_owned()
-    } else if resume {
+    let resume = match start {
+        Start::Fresh => None,
+        Start::Restarted => Some(RESUME),
+        Start::Moved => Some(MOVED),
+    };
+    let mut p = if let (Some(r), true) = (resume, test_keys.is_empty()) {
+        r.to_owned()
+    } else if let Some(r) = resume {
         // A run stopped for a key in its commits comes back this way too.
         format!(
-            "{RESUME} Your branch must not contain the value of any of these test keys: {}. \
+            "{r} Your branch must not contain the value of any of these test keys: {}. \
 If an earlier commit on it does, rewrite the branch so no commit contains it.",
             test_keys.join(", ")
         )
@@ -525,12 +621,19 @@ pub fn run_args(
             "--verbose",
             "--permission-mode",
             "bypassPermissions",
+            // Only Decurion's browser tool; never MCP servers a repo brings along.
+            "--mcp-config",
+            MCP_CONFIG,
+            "--strict-mcp-config",
         ]
         .map(str::to_owned),
     );
     session_and_budget(&mut a, session_id, resume, budget_usd);
     Ok(a)
 }
+
+/// Decurion's own MCP servers in the agent image: the test browser.
+const MCP_CONFIG: &str = "/etc/decurion/mcp.json";
 
 /// Arguments for a coordinator, design or review container: the same sealed
 /// box as a work run, minus the tools the hub took away for this job. The
@@ -565,8 +668,18 @@ pub fn helper_run_args(
         a.push(disallowed_tools.join(","));
     }
     // The code in /work was written by an agent. Its project settings, hooks
-    // and MCP servers must not steer the helper that reads or checks it.
-    a.extend(["--setting-sources", "user", "--strict-mcp-config"].map(String::from));
+    // and MCP servers must not steer the helper that reads or checks it; the
+    // only MCP server is Decurion's own browser.
+    a.extend(
+        [
+            "--setting-sources",
+            "user",
+            "--mcp-config",
+            MCP_CONFIG,
+            "--strict-mcp-config",
+        ]
+        .map(String::from),
+    );
     Ok(a)
 }
 
@@ -603,6 +716,9 @@ fn box_args(
         "4g",
         "--pids-limit",
         "1024",
+        // Chromium needs more shared memory than Docker's 64 MB default.
+        "--shm-size",
+        "1g",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -612,32 +728,21 @@ fn box_args(
         let mount = format!("type=bind,src={},dst=/out", mount_src(out)?);
         a.extend(["--mount".to_owned(), mount]);
     }
+    if cfg!(target_os = "linux") {
+        // Docker Desktop provides this name; plain Docker on Linux needs it
+        // mapped to the host, where the gatekeeper listens.
+        a.extend(["--add-host".to_owned(), GATE_HOST.to_owned()]);
+    }
     for v in cred.vars() {
         a.extend(["-e".to_owned(), (*v).to_owned()]);
     }
     for k in test_keys {
         a.extend(["-e".to_owned(), k.clone()]);
     }
-    a.extend(
-        [
-            "-e",
-            "GIT_CONFIG_COUNT=1",
-            "-e",
-            "GIT_CONFIG_KEY_0=safe.directory",
-            "-e",
-            "GIT_CONFIG_VALUE_0=/work",
-            "-e",
-            "GIT_AUTHOR_NAME=decurion-agent",
-            "-e",
-            "GIT_AUTHOR_EMAIL=agent@decurion.invalid",
-            "-e",
-            "GIT_COMMITTER_NAME=decurion-agent",
-            "-e",
-            "GIT_COMMITTER_EMAIL=agent@decurion.invalid",
-            IMAGE,
-        ]
-        .map(str::to_owned),
-    );
+    for e in GIT_ENV {
+        a.extend(["-e".to_owned(), (*e).to_owned()]);
+    }
+    a.push(IMAGE.to_owned());
     Ok(a)
 }
 
@@ -1123,6 +1228,50 @@ mod tests {
                 && !joined.contains("docker.sock")
         );
         assert!(joined.contains("--session-id sid"));
+        let image = a.iter().position(|x| x == IMAGE).unwrap_or(0);
+        let shm = a
+            .iter()
+            .position(|x| x == "--shm-size")
+            .unwrap_or(usize::MAX);
+        assert!(shm < image && a[shm + 1] == "1g");
+        let mcp = a.iter().position(|x| x == "--mcp-config").unwrap_or(0);
+        assert!(mcp > image && a[mcp + 1] == "/etc/decurion/mcp.json");
+        let strict = a.iter().position(|x| x == "--strict-mcp-config");
+        assert!(strict.is_some_and(|i| i > image));
+    }
+
+    #[test]
+    fn prompts_follow_how_the_run_starts() {
+        assert_eq!(Start::pick(false, true, false), Start::Fresh);
+        assert_eq!(Start::pick(false, false, true), Start::Fresh);
+        assert_eq!(Start::pick(true, false, true), Start::Restarted);
+        assert_eq!(Start::pick(true, false, false), Start::Restarted);
+        assert_eq!(Start::pick(true, true, true), Start::Moved);
+        // Nothing saved to resume from: start the task again.
+        assert_eq!(Start::pick(true, true, false), Start::Fresh);
+        assert!(prompt_for("Fix it", Start::Fresh, &[], &[], None).starts_with("Fix it\n\n"));
+        assert!(prompt_for("Fix it", Start::Fresh, &[], &[], None).contains("Playwright"));
+        assert!(prompt_for("x", Start::Moved, &[], &[], None).contains("moved to another computer"));
+        assert!(!prompt_for("x", Start::Restarted, &[], &[], None).contains("moved"));
+        assert!(Start::Moved.resumes() && !Start::Fresh.resumes());
+    }
+
+    #[test]
+    fn side_files_keep_the_whole_folder_name() {
+        assert_eq!(
+            sibling(Path::new("/d/workspaces/my.app-7"), "checkpoint"),
+            Path::new("/d/workspaces/my.app-7.checkpoint")
+        );
+    }
+
+    #[test]
+    fn only_outages_are_retried_with_growing_waits() {
+        assert!(retriable(None) && retriable(Some(502)) && retriable(Some(429)));
+        assert!(!retriable(Some(409)) && !retriable(Some(403)));
+        assert_eq!(backoff(0), Duration::from_secs(5));
+        assert_eq!(backoff(1), Duration::from_secs(10));
+        assert_eq!(backoff(4), Duration::from_secs(60));
+        assert_eq!(backoff(40), Duration::from_secs(60));
     }
 
     #[test]
@@ -1344,20 +1493,23 @@ mod tests {
 
     #[test]
     fn the_agent_is_told_about_test_keys_only_when_there_are_some() {
-        let p = prompt_for("Fix it", false, &keys(), &[], None);
+        let p = prompt_for("Fix it", Start::Fresh, &keys(), &[], None);
         assert!(p.starts_with("Fix it\n\n"));
         assert!(p.contains("STRIPE_SECRET_KEY, MAPS_TEST_KEY"));
         assert!(p.contains("will not be accepted"));
         assert_eq!(
-            prompt_for("Fix it", false, &[], &[], None),
+            prompt_for("Fix it", Start::Fresh, &[], &[], None),
             format!("Fix it\n\n{RULES}")
         );
         // A resumed run is reminded, so a run stopped for a key in its
         // commits can clean its branch when the owner retries it.
-        let r = prompt_for("Fix it", true, &keys(), &[], None);
+        let r = prompt_for("Fix it", Start::Restarted, &keys(), &[], None);
         assert!(r.starts_with(RESUME) && r.contains("rewrite the branch"));
         assert!(r.contains("STRIPE_SECRET_KEY, MAPS_TEST_KEY"));
-        assert_eq!(prompt_for("Fix it", true, &[], &[], None), RESUME);
+        assert_eq!(
+            prompt_for("Fix it", Start::Restarted, &[], &[], None),
+            RESUME
+        );
     }
 
     #[test]
@@ -1680,7 +1832,7 @@ mod tests {
     fn the_prompt_lists_owner_messages_by_kind() {
         let p = prompt_for(
             "Fix it",
-            false,
+            Start::Fresh,
             &[],
             &[
                 msg(1, MessageKind::Steer, "use B"),
@@ -1701,7 +1853,9 @@ mod tests {
             tail.find("Note:\nfyi"),
         );
         assert!(s < f && f < n && s.is_some());
-        assert!(!prompt_for("Fix it", false, &[], &[], None).contains("Messages from the owner"));
+        assert!(
+            !prompt_for("Fix it", Start::Fresh, &[], &[], None).contains("Messages from the owner")
+        );
     }
 
     #[test]
@@ -1711,7 +1865,7 @@ mod tests {
             summary: "src/main.rs".into(),
             safe_to_redo: true,
         };
-        let p = prompt_for("t", true, &[], &[], Some(&safe));
+        let p = prompt_for("t", Start::Restarted, &[], &[], Some(&safe));
         assert!(p.starts_with("Your container was restarted."));
         assert!(p.contains(
             "You were cut off while running Read (src/main.rs). It only looks at things, so it is safe to run again."
@@ -1723,7 +1877,7 @@ mod tests {
         };
         let p = prompt_for(
             "t",
-            true,
+            Start::Restarted,
             &[],
             &[msg(1, MessageKind::Note, "hi")],
             Some(&unsafe_step),
@@ -1907,7 +2061,10 @@ mod tests {
         assert!(a
             .windows(2)
             .any(|w| w[0] == "--disallowedTools" && w[1] == "Bash,Edit,Write,mcp__x__*"));
-        assert!(joined.ends_with("--setting-sources user --strict-mcp-config"));
+        assert!(joined.ends_with(
+            "--setting-sources user --mcp-config /etc/decurion/mcp.json --strict-mcp-config"
+        ));
+        assert!(joined.contains("--shm-size 1g"));
     }
 
     #[test]

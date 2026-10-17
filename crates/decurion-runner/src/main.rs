@@ -1,15 +1,26 @@
 use anyhow::{bail, Context};
 use decurion_proto::goal::{HelperClaim, HelperResult, HelperSource};
-use decurion_proto::{App, Claim, Live, MoveRequest, RunEvent, ThreadState};
+use decurion_proto::{
+    App, Claim, HelloReply, JoinReply, JoinRequest, Live, MoveRequest, NewCheckpoint, Place,
+    RunCredential, RunEvent, RunnerHello, ThreadState, RULES_VERSION,
+};
 use decurion_runner::gatekeeper::{Gatekeeper, Grant, ANTHROPIC_API};
+use decurion_runner::handover::{
+    bundle_spec, host_git_args, host_git_env, is_sha, move_note, reuse_workspace, save_edits_args,
+    session_export_args, session_import_args, tool_container_name, CODE_CAP, SESSION_CAP,
+};
+use decurion_runner::identity::{
+    hub_url, place_from_env, write_atomic, CloudRunner, PC_HUB, PC_NAME,
+};
 use decurion_runner::{
-    check_home_volume, container_name, design_home_volume, goal_home_volume, helper_container_name,
-    helper_run_args, hide, hide_cut, is_interrupted_turn, is_turn_start, parse_line_hiding,
-    parse_result, part_done, prompt_for, read_page, run_args, valid_branch, Acks, Action,
-    Conversation, Credential, FirstResult, LeakScanner, Sandbox, Step, BUDGET_STOP, DOCKER_CLI_ENV,
-    LIMIT_STOP,
+    backoff, check_home_volume, container_name, design_home_volume, goal_home_volume,
+    helper_container_name, helper_run_args, hide, hide_cut, home_volume, is_interrupted_turn,
+    is_turn_start, parse_line_hiding, parse_result, part_done, prompt_for, read_page, retriable,
+    run_args, sibling, valid_branch, Acks, Action, Conversation, Credential, FirstResult,
+    LeakScanner, Sandbox, Start, Step, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
 };
 use decurion_vault::{check_name, Vault};
+use reqwest::header::{HeaderMap, CONTENT_LENGTH, CONTENT_TYPE};
 use reqwest::StatusCode;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -20,7 +31,44 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-const RUNNER: &str = "local";
+/// How long the last steps of a run (saving a checkpoint, reporting the
+/// outcome) keep trying while the hub is out of reach. A cloud worker's hub is
+/// the owner's PC, which may be asleep or off for days; giving up would leave
+/// the work shown as running forever, so only a refusal ends these early.
+const FINAL_RETRY: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// How long a download keeps trying. The hub just handed out the work, so it
+/// is awake; this only covers a short hiccup.
+const DOWNLOAD_RETRY: Duration = Duration::from_secs(2 * 60);
+/// Longest a throwaway container may take.
+const TOOL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// A hub call that did not work: the hub could not be reached, or it said no.
+#[derive(Debug)]
+enum HubError {
+    Unreachable(String, reqwest::Error),
+    Refused(String, StatusCode, String),
+}
+
+impl std::fmt::Display for HubError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HubError::Unreachable(path, e) => write!(f, "hub {path}: unreachable: {e}"),
+            HubError::Refused(path, s, text) => write!(f, "hub {path}: {s} {text}"),
+        }
+    }
+}
+
+impl std::error::Error for HubError {}
+
+impl HubError {
+    fn retriable(&self) -> bool {
+        retriable(match self {
+            HubError::Unreachable(..) => None,
+            HubError::Refused(_, s, _) => Some(s.as_u16()),
+        })
+    }
+}
+
 /// How often a run asks the hub for owner messages and whether it was stopped.
 const POLL: Duration = Duration::from_secs(2);
 /// How long Claude may print nothing at all after a result while stdin is
@@ -29,25 +77,12 @@ const IDLE_LIMIT: Duration = Duration::from_secs(5 * 60);
 /// Most ids the hub marks delivered in one call.
 const ACK_BATCH: usize = 500;
 
-/// The hub answered, but not with success.
-#[derive(Debug)]
-struct HubRefused {
-    path: String,
-    status: StatusCode,
-    body: String,
-}
-
-impl std::fmt::Display for HubRefused {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "hub {}: {} {}", self.path, self.status, self.body)
-    }
-}
-
-impl std::error::Error for HubRefused {}
-
 /// The status the hub answered with, if the error is the hub saying no.
-fn hub_status(err: &anyhow::Error) -> Option<StatusCode> {
-    err.downcast_ref::<HubRefused>().map(|e| e.status)
+fn hub_status(err: &HubError) -> Option<StatusCode> {
+    match err {
+        HubError::Refused(_, s, _) => Some(*s),
+        HubError::Unreachable(..) => None,
+    }
 }
 
 /// Cheap to clone: the work loop and the helper loop each hold one.
@@ -56,24 +91,51 @@ struct Hub {
     base: String,
     key: String,
     http: reqwest::Client,
+    /// This runner's name, bound by the hub to its key.
+    name: String,
+    /// The computer this runner is; it only runs work placed here.
+    place: Place,
 }
 
+/// Short calls to the hub give up after this, so a hub that went to sleep
+/// mid-call does not hang the runner.
+const CALL_TIMEOUT: Duration = Duration::from_secs(60);
+
 impl Hub {
+    fn url(&self, path: &str) -> String {
+        format!("{}/api{path}", self.base)
+    }
+
+    async fn send(
+        &self,
+        path: &str,
+        req: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, HubError> {
+        let r = req
+            .bearer_auth(&self.key)
+            .send()
+            .await
+            .map_err(|e| HubError::Unreachable(path.to_owned(), e))?;
+        if !r.status().is_success() {
+            let s = r.status();
+            return Err(HubError::Refused(
+                path.to_owned(),
+                s,
+                r.text().await.unwrap_or_default(),
+            ));
+        }
+        Ok(r)
+    }
+
     /// What a run checks while it goes. Short timeout: a slow hub must not
     /// hold up reading the agent's output for long.
     async fn live(&self, thread: i64) -> anyhow::Result<Live> {
         let path = format!("/threads/{thread}/live");
-        let r = self
+        let req = self
             .http
-            .get(format!("{}/api{path}", self.base))
-            .bearer_auth(&self.key)
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await?;
-        if !r.status().is_success() {
-            bail!("hub {path}: {}", r.status());
-        }
-        Ok(r.json().await?)
+            .get(self.url(&path))
+            .timeout(Duration::from_secs(10));
+        Ok(self.send(&path, req).await?.json().await?)
     }
 
     async fn delivered(&self, thread: i64, ids: &[i64]) -> anyhow::Result<()> {
@@ -81,32 +143,21 @@ impl Hub {
             &format!("/threads/{thread}/messages/delivered"),
             &serde_json::json!({ "ids": ids }),
         )
-        .await
-        .map(|_| ())
+        .await?;
+        Ok(())
     }
 
     async fn post<T: serde::Serialize>(
         &self,
         path: &str,
         body: &T,
-    ) -> anyhow::Result<reqwest::Response> {
-        let r = self
+    ) -> Result<reqwest::Response, HubError> {
+        let req = self
             .http
-            .post(format!("{}/api{path}", self.base))
-            .bearer_auth(&self.key)
-            .json(body)
-            .send()
-            .await?;
-        let status = r.status();
-        if !status.is_success() {
-            return Err(HubRefused {
-                path: path.to_owned(),
-                status,
-                body: r.text().await.unwrap_or_default(),
-            }
-            .into());
-        }
-        Ok(r)
+            .post(self.url(path))
+            .timeout(CALL_TIMEOUT)
+            .json(body);
+        self.send(path, req).await
     }
 
     async fn event(&self, thread: i64, e: &RunEvent) {
@@ -125,8 +176,79 @@ impl Hub {
                 receipt: None,
             },
         )
-        .await
-        .map(|_| ())
+        .await?;
+        Ok(())
+    }
+
+    /// Saves a download to `dest` as it arrives, never holding it in memory,
+    /// and stops at `cap` bytes. Returns the response headers.
+    async fn download(&self, path: &str, dest: &Path, cap: u64) -> anyhow::Result<HeaderMap> {
+        let mut r = self.send(path, self.http.get(self.url(path))).await?;
+        if r.content_length().is_some_and(|n| n > cap) {
+            bail!("hub {path}: larger than the {cap}-byte limit");
+        }
+        let headers = r.headers().clone();
+        let mut f = tokio::fs::File::create(dest).await?;
+        let mut n: u64 = 0;
+        loop {
+            let chunk = tokio::time::timeout(CALL_TIMEOUT, r.chunk())
+                .await
+                .with_context(|| format!("hub {path}: download stalled"))?
+                .map_err(|e| HubError::Unreachable(path.to_owned(), e))?;
+            let Some(chunk) = chunk else { break };
+            n += chunk.len() as u64;
+            if n > cap {
+                bail!("hub {path}: larger than the {cap}-byte limit");
+            }
+            f.write_all(&chunk).await?;
+        }
+        f.flush().await?;
+        Ok(headers)
+    }
+
+    /// Uploads a file as the raw request body, streamed from disk.
+    async fn put_file(&self, path: &str, file: &Path) -> anyhow::Result<()> {
+        let f = tokio::fs::File::open(file).await?;
+        let len = f.metadata().await?.len();
+        let req = self
+            .http
+            .put(self.url(path))
+            .header(CONTENT_TYPE, "application/octet-stream")
+            .header(CONTENT_LENGTH, len)
+            .body(reqwest::Body::from(f));
+        self.send(path, req).await?;
+        Ok(())
+    }
+}
+
+/// Keeps trying `f` while the hub is out of reach or briefly failing, for up
+/// to `limit`, waiting longer each time. A refusal is returned at once.
+async fn with_retry<T>(
+    what: &str,
+    limit: Duration,
+    mut f: impl AsyncFnMut() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let start = Instant::now();
+    let mut attempt = 0;
+    loop {
+        let err = match f().await {
+            Ok(v) => return Ok(v),
+            Err(e) => e,
+        };
+        let wait = backoff(attempt);
+        let again = err
+            .downcast_ref::<HubError>()
+            .is_some_and(HubError::retriable);
+        if !again || start.elapsed() + wait > limit {
+            return Err(err);
+        }
+        tracing::warn!(
+            %err,
+            wait_secs = wait.as_secs(),
+            "could not {what} yet; waiting for the hub to answer, then trying again"
+        );
+        tokio::time::sleep(wait).await;
+        attempt += 1;
     }
 }
 
@@ -165,7 +287,14 @@ fn secret(cred: Credential) -> anyhow::Result<String> {
 
 /// The app's test keys as (name, value), from this PC's key store. The hub
 /// sends only their names.
-fn test_keys(data: &Path, c: &Claim) -> anyhow::Result<Vec<(String, String)>> {
+fn test_keys(hub: &Hub, data: &Path, c: &Claim) -> anyhow::Result<Vec<(String, String)>> {
+    // Test keys live only in the PC's key store, which never leaves it.
+    if hub.place == Place::Cloud && !c.test_keys.is_empty() {
+        bail!(
+            "this app uses test keys, which stay on the PC, so its work cannot run on the \
+cloud worker yet. Move it to the PC and try again."
+        );
+    }
     let vault = Vault::system(data);
     c.test_keys
         .iter()
@@ -187,10 +316,36 @@ key store; save it again on the board"
         .collect()
 }
 
+/// The run's credential. The PC keeps its own; a cloud worker keeps none and
+/// is handed the one this run needs by the hub.
+async fn credential(hub: &Hub, id: i64, cred: Credential) -> anyhow::Result<String> {
+    if hub.place == Place::Pc {
+        return secret(cred);
+    }
+    let r: RunCredential = hub
+        .post(
+            &format!("/runner/threads/{id}/credential"),
+            &serde_json::json!({ "runner": hub.name }),
+        )
+        .await?
+        .json()
+        .await
+        .context("could not read the run's credential")?;
+    // Only the one variable this run should get, never anything else.
+    let want = cred.vars().first().copied().unwrap_or_default();
+    if r.var != want {
+        bail!("hub sent {} but this run needs {want}", r.var);
+    }
+    Ok(r.value)
+}
+
+/// Runs git on the host. It never trusts any config but the runner's own (see
+/// [`host_git_env`]), so a `.gitattributes` or `.lfsconfig` the agent
+/// committed cannot start filters or Git LFS here.
 async fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
     let out = Command::new("git")
-        .env("GIT_NO_LAZY_FETCH", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(host_git_env())
+        .args(host_git_args())
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -230,51 +385,207 @@ async fn git_isolated(dir: &Path, args: &[&str], null: &str) -> anyhow::Result<S
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-/// The thread's own copy of the code, on its own branch. Reused on resume.
+/// Removes a folder or file, if there is one.
+fn remove_all(p: &Path) -> std::io::Result<()> {
+    let r = if p.is_dir() {
+        std::fs::remove_dir_all(p)
+    } else {
+        std::fs::remove_file(p)
+    };
+    match r {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// An empty folder for one thread's downloads and uploads.
+fn transfer_dir(data: &Path, id: i64) -> anyhow::Result<PathBuf> {
+    let d = data.join("transfer").join(id.to_string());
+    remove_all(&d)?;
+    std::fs::create_dir_all(&d)?;
+    Ok(d)
+}
+
+/// The thread's own copy of the code, on its own branch, and whether it had
+/// to be rebuilt from the hub.
 ///
-/// A full clone, not a `git worktree`: a worktree's `.git` file points at the
-/// main repo's folder on the host, which does not exist inside the container.
-/// `--no-hardlinks` matters: a hardlinked object file is the same file as the
-/// one in the app's own repo, so an agent could overwrite it in place.
+/// The runner's copy is reused only when it is the one the hub's latest
+/// checkpoint was made from. Otherwise (new work, or work saved on another
+/// computer) it is rebuilt from what the hub holds: the starting commit, plus
+/// the latest checkpoint's branch and the agent's session. Code comes only
+/// from the hub, on the PC too.
+///
+/// A full clone, not a `git worktree`: a worktree's `.git` file points at a
+/// folder on the host, which does not exist inside the container.
 ///
 /// Once an agent has run in this folder it controls its git config and hooks,
-/// so the runner never runs git in it again (see [`new_commits`]).
-async fn workspace(data: &Path, c: &Claim) -> anyhow::Result<PathBuf> {
+/// so the runner never runs git in it again (see [`new_commits`]); git runs
+/// here only in the fresh clone the runner just made.
+async fn workspace(
+    hub: &Hub,
+    data: &Path,
+    c: &Claim,
+    branch: &str,
+) -> anyhow::Result<(PathBuf, bool)> {
+    let id = c.thread.id;
     let dir = data
         .join("workspaces")
-        .join(format!("{}-{}", c.app.name, c.thread.id));
-    let branch = c.thread.branch.clone().context("claim has no branch")?;
-    if dir.join(".git").is_dir() {
+        .join(format!("{}-{}", c.app.name, id));
+    let marker_file = sibling(&dir, "checkpoint");
+    let marker = match std::fs::read_to_string(&marker_file) {
+        Ok(t) => Some(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        // Unreadable: matches no checkpoint, so the copy is rebuilt.
+        Err(_) => Some(String::new()),
+    };
+    if reuse_workspace(dir.join(".git").is_dir(), marker.as_deref(), c.checkpoint) {
         // Read the file instead of asking git, which would run the agent's config.
         let head = std::fs::read_to_string(dir.join(".git").join("HEAD")).unwrap_or_default();
         if head.trim() != format!("ref: refs/heads/{branch}") {
             bail!("workspace {} is not on branch {branch}", dir.display());
         }
-        return Ok(dir);
+        return Ok((dir, false));
     }
+    tracing::info!(id, checkpoint = ?c.checkpoint, "rebuilding this work's copy from the hub");
+    set_aside(&dir)?;
     std::fs::create_dir_all(dir.parent().context("workspace parent")?)?;
-    let tmp = dir.with_extension("partial");
-    let _ = std::fs::remove_dir_all(&tmp);
+    let tmp = sibling(&dir, "partial");
+    remove_all(&tmp)?;
+    let xfer = transfer_dir(data, id)?;
+
+    let base_bundle = xfer.join("base.bundle");
+    let headers = with_retry("download the starting commit", DOWNLOAD_RETRY, async || {
+        hub.download(
+            &format!("/runner/threads/{id}/base"),
+            &base_bundle,
+            CODE_CAP,
+        )
+        .await
+    })
+    .await?;
+    let base = headers
+        .get("x-decurion-base")
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| is_sha(s))
+        .context("hub sent no starting commit")?
+        .to_owned();
     let tmp_s = tmp.to_string_lossy().into_owned();
+    let bundle_s = base_bundle.to_string_lossy().into_owned();
+    // `--no-hardlinks` matters when cloning from a folder: a hardlinked
+    // object file would be shared with the source, and an agent could
+    // overwrite it in place.
     git(
         Path::new("."),
         &[
             "clone",
             "--quiet",
+            "--no-checkout",
             "--no-hardlinks",
             "--",
-            &c.app.repo_path,
+            &bundle_s,
             &tmp_s,
         ],
     )
     .await?;
-    git(&tmp, &["switch", "--quiet", "-c", &branch]).await?;
-    let base = git(&tmp, &["rev-parse", "HEAD"]).await?;
-    std::fs::write(base_file(&dir), base)?;
-    // Only a fully prepared clone gets the real name, so a crash mid-setup
+    // The bundle file is about to be deleted; leave no remote pointing at it.
+    git(&tmp, &["remote", "remove", "origin"]).await?;
+    match c.checkpoint {
+        Some(cp) => {
+            let code = xfer.join("code.bundle");
+            with_retry("download the saved code", DOWNLOAD_RETRY, async || {
+                hub.download(
+                    &format!("/runner/threads/{id}/checkpoint/{cp}/code"),
+                    &code,
+                    CODE_CAP,
+                )
+                .await
+            })
+            .await?;
+            let code_s = code.to_string_lossy().into_owned();
+            let refspec = format!("+refs/heads/{branch}:refs/heads/{branch}");
+            git(
+                &tmp,
+                &["fetch", "--quiet", "--no-tags", "--", &code_s, &refspec],
+            )
+            .await?;
+            git(&tmp, &["switch", "--quiet", branch]).await?;
+        }
+        None => {
+            git(&tmp, &["switch", "--quiet", "-c", branch, &base]).await?;
+        }
+    }
+
+    // The session goes with the code: a fresh home, plus the saved sessions.
+    let out = docker()
+        .args(["volume", "rm", "-f", &home_volume(id)])
+        .output()
+        .await?;
+    if !out.status.success() {
+        bail!(
+            "could not reset the agent's home: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    if let Some(cp) = c.checkpoint {
+        let tar = xfer.join("session.tar");
+        with_retry("download the saved session", DOWNLOAD_RETRY, async || {
+            hub.download(
+                &format!("/runner/threads/{id}/checkpoint/{cp}/session"),
+                &tar,
+                SESSION_CAP,
+            )
+            .await
+        })
+        .await?;
+        import_session(id, &tar).await?;
+    }
+
+    // The starting commit and the checkpoint marker live next to the
+    // workspace, outside the container's mount, so the agent cannot move them.
+    write_atomic(&base_file(&dir), base.as_bytes(), false)?;
+    if let Some(cp) = c.checkpoint {
+        write_atomic(&marker_file, cp.to_string().as_bytes(), false)?;
+    }
+    // Only a fully prepared copy gets the real name, so a crash mid-setup
     // never leaves a half-made workspace that looks finished.
     std::fs::rename(&tmp, &dir)?;
-    Ok(dir)
+    let _ = remove_all(&xfer);
+    Ok((dir, true))
+}
+
+/// Moves an out-of-date workspace (and its checkpoint and starting-commit
+/// files) to `<workspace>.previous` instead of deleting it: it may hold work
+/// that never reached the hub. Only the latest such copy is kept.
+fn set_aside(dir: &Path) -> anyhow::Result<()> {
+    let prev = sibling(dir, "previous");
+    let pairs = [
+        (dir.to_path_buf(), prev.clone()),
+        (sibling(dir, "checkpoint"), sibling(&prev, "checkpoint")),
+        (base_file(dir), base_file(&prev)),
+    ];
+    if !dir.exists() {
+        // Nothing to keep; only stray files from an older copy.
+        for (from, _) in &pairs {
+            remove_all(from)?;
+        }
+        return Ok(());
+    }
+    for (_, to) in &pairs {
+        remove_all(to)?;
+    }
+    for (from, to) in &pairs {
+        match std::fs::rename(from, to) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(e).with_context(|| format!("could not set aside {}", from.display()))
+            }
+            _ => {}
+        }
+    }
+    tracing::info!(
+        kept = %prev.display(),
+        "this computer's copy of the work was out of date; kept it aside in case it holds unsaved work"
+    );
+    Ok(())
 }
 
 /// `git clone --no-hardlinks` of the app's repo. See [`workspace`] for why
@@ -292,14 +603,12 @@ async fn clone_into(from: &str, to: &Path) -> anyhow::Result<()> {
 /// Where the starting commit is kept: next to the workspace, outside the
 /// container's mount, so the agent cannot move it.
 fn base_file(dir: &Path) -> PathBuf {
-    dir.with_extension("base")
+    sibling(dir, "base")
 }
 
-/// Commits the agent added on its branch. The branch is fetched into a
-/// runner-owned bare repo with hooks off and counted there against the
-/// recorded starting commit; nothing the agent wrote is trusted except the
-/// commits themselves.
-async fn new_commits(data: &Path, dir: &Path, branch: &str) -> anyhow::Result<u64> {
+/// Fetches the agent's branch into a runner-owned bare repo with hooks off.
+/// Nothing the agent wrote is trusted except the commits themselves.
+async fn fetch_branch(data: &Path, dir: &Path, branch: &str) -> anyhow::Result<PathBuf> {
     let bare = review_repo(data, dir)?;
     if !bare.exists() {
         std::fs::create_dir_all(&bare)?;
@@ -308,17 +617,12 @@ async fn new_commits(data: &Path, dir: &Path, branch: &str) -> anyhow::Result<u6
     let src = dir.to_string_lossy().into_owned();
     let refspec = format!("+refs/heads/{branch}:refs/heads/{branch}");
     // The source repo's config is agent-written. Command-line settings win
-    // over it and reach git's child processes: no hooks, no fsmonitor, no
-    // transports beyond plain local files, and no lazy fetching of missing
-    // objects through a planted remote.
-    let hooks = no_hooks();
+    // over it and reach git's child processes: on top of what [`git`] always
+    // turns off (hooks, fsmonitor, lazy fetching), no transports beyond plain
+    // local files.
     git(
         &bare,
         &[
-            "-c",
-            &hooks,
-            "-c",
-            "core.fsmonitor=false",
             "-c",
             "protocol.allow=never",
             "-c",
@@ -332,14 +636,218 @@ async fn new_commits(data: &Path, dir: &Path, branch: &str) -> anyhow::Result<u6
         ],
     )
     .await?;
-    let n = git(&bare, &["rev-list", "--count", &new_range(dir, branch)?]).await?;
+    Ok(bare)
+}
+
+/// The recorded starting commit of a workspace.
+fn read_base(dir: &Path) -> anyhow::Result<String> {
+    let base = std::fs::read_to_string(base_file(dir)).context("missing base commit")?;
+    let base = base.trim();
+    if !is_sha(base) {
+        bail!("base commit file holds no commit id");
+    }
+    Ok(base.to_owned())
+}
+
+/// Commits the agent added on its branch, counted in the runner-owned bare
+/// repo against the recorded starting commit.
+async fn new_commits(data: &Path, dir: &Path, branch: &str) -> anyhow::Result<u64> {
+    let base = read_base(dir)?;
+    let bare = fetch_branch(data, dir, branch).await?;
+    count_since(&bare, &base, branch).await
+}
+
+async fn count_since(bare: &Path, base: &str, branch: &str) -> anyhow::Result<u64> {
+    let range = format!("{base}..refs/heads/{branch}");
+    let n = git(bare, &["rev-list", "--count", &range]).await?;
     Ok(n.parse()?)
+}
+
+/// Runs a throwaway container to the end, within [`TOOL_TIMEOUT`].
+async fn run_tool(id: i64, args: &[String], stdin: Stdio) -> anyhow::Result<std::process::Output> {
+    let child = docker()
+        .args(args)
+        .stdin(stdin)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .context("could not start docker")?;
+    match tokio::time::timeout(TOOL_TIMEOUT, child.wait_with_output()).await {
+        Ok(out) => Ok(out?),
+        Err(_) => {
+            let _ = docker()
+                .args(["rm", "-f", &tool_container_name(id)])
+                .output()
+                .await;
+            bail!("throwaway container took too long")
+        }
+    }
+}
+
+/// Saves the agent's unfinished edits as a commit, inside a sealed throwaway
+/// container, so they travel with the work.
+async fn save_edits(id: i64, wt: &Path) -> anyhow::Result<()> {
+    let [add, commit] = save_edits_args(id, wt)?;
+    let out = run_tool(id, &add, Stdio::null()).await?;
+    if !out.status.success() {
+        bail!(
+            "git add in the agent's copy failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let out = run_tool(id, &commit, Stdio::null()).await?;
+    if !out.status.success() {
+        // Usually: nothing was left to commit.
+        tracing::info!(
+            id,
+            out = %String::from_utf8_lossy(&out.stdout).trim(),
+            "no unfinished edits saved"
+        );
+    }
+    Ok(())
+}
+
+/// Unpacks a saved session into the agent's home volume, inside a sealed
+/// throwaway container.
+async fn import_session(id: i64, tar: &Path) -> anyhow::Result<()> {
+    let f = std::fs::File::open(tar)?;
+    let out = run_tool(id, &session_import_args(id), Stdio::from(f)).await?;
+    if !out.status.success() {
+        bail!(
+            "could not restore the agent's session: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Writes the agent's sessions as a tar archive to `dest`, from a sealed
+/// throwaway container, stopping at [`SESSION_CAP`].
+async fn export_session(id: i64, dest: &Path) -> anyhow::Result<()> {
+    let mut child = docker()
+        .args(session_export_args(id))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .context("could not start docker")?;
+    let mut out = child.stdout.take().context("no stdout")?;
+    let copy = async {
+        let mut f = tokio::fs::File::create(dest).await?;
+        let mut buf = vec![0u8; 64 << 10];
+        let mut n: u64 = 0;
+        loop {
+            let k = out.read(&mut buf).await?;
+            if k == 0 {
+                break;
+            }
+            n += k as u64;
+            if n > SESSION_CAP {
+                bail!("the agent's session is larger than {SESSION_CAP} bytes");
+            }
+            f.write_all(&buf[..k]).await?;
+        }
+        f.flush().await?;
+        anyhow::Ok(())
+    };
+    let copied = match tokio::time::timeout(TOOL_TIMEOUT, copy).await {
+        Ok(r) => r,
+        Err(_) => Err(anyhow::anyhow!("saving the agent's session took too long")),
+    };
+    if let Err(e) = copied {
+        let _ = docker()
+            .args(["rm", "-f", &tool_container_name(id)])
+            .output()
+            .await;
+        return Err(e);
+    }
+    let status = child.wait().await?;
+    if !status.success() {
+        bail!("tar of the agent's session exited with {status}");
+    }
+    Ok(())
+}
+
+/// An empty tar archive: two zero blocks, padded to a full record.
+const EMPTY_TAR: [u8; 10240] = [0; 10240];
+
+/// Saves the work to the hub so any computer can continue it: the branch as a
+/// git bundle and the agent's sessions as a tar archive. Records the
+/// checkpoint next to the workspace, so the next run here knows its own copy
+/// is the latest. Keeps trying while the hub is out of reach.
+async fn save_checkpoint(
+    hub: &Hub,
+    data: &Path,
+    id: i64,
+    wt: &Path,
+    branch: &str,
+) -> anyhow::Result<i64> {
+    let base = read_base(wt)?;
+    let bare = fetch_branch(data, wt, branch).await?;
+    let head = git(
+        &bare,
+        &[
+            "rev-parse",
+            "--verify",
+            &format!("refs/heads/{branch}^{{commit}}"),
+        ],
+    )
+    .await?;
+    // A branch rewritten past its starting commit cannot be counted; send it
+    // whole.
+    let n = count_since(&bare, &base, branch).await.unwrap_or(0);
+    let xfer = transfer_dir(data, id)?;
+    let code = xfer.join("code.bundle");
+    let code_s = code.to_string_lossy().into_owned();
+    git(
+        &bare,
+        &[
+            "bundle",
+            "create",
+            "--quiet",
+            &code_s,
+            &bundle_spec(&base, branch, n),
+        ],
+    )
+    .await?;
+    let tar = xfer.join("session.tar");
+    if let Err(err) = export_session(id, &tar).await {
+        // The code matters most; without a session the agent starts afresh
+        // on it, which is better than losing the code.
+        tracing::warn!(%err, id, "could not save the agent's session; saving the code only");
+        std::fs::write(&tar, EMPTY_TAR)?;
+    }
+    let cp = with_retry("save a checkpoint", FINAL_RETRY, async || {
+        hub.put_file(&format!("/runner/threads/{id}/upload/code"), &code)
+            .await?;
+        hub.put_file(&format!("/runner/threads/{id}/upload/session"), &tar)
+            .await?;
+        let v: serde_json::Value = hub
+            .post(
+                &format!("/runner/threads/{id}/checkpoint"),
+                &NewCheckpoint {
+                    head: head.clone(),
+                    base: Some(base.clone()),
+                },
+            )
+            .await?
+            .json()
+            .await?;
+        v["id"].as_i64().context("hub gave no checkpoint id")
+    })
+    .await?;
+    write_atomic(&sibling(wt, "checkpoint"), cp.to_string().as_bytes(), false)?;
+    let _ = remove_all(&xfer);
+    tracing::info!(id, checkpoint = cp, "saved a checkpoint");
+    Ok(cp)
 }
 
 /// The runner-owned bare repo the agent's commits are fetched into.
 fn review_repo(data: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
     let name = dir.file_name().context("workspace name")?;
-    Ok(data.join("review").join(name).with_extension("git"))
+    Ok(sibling(&data.join("review").join(name), "git"))
 }
 
 /// The agent's commits in the review repo: from the recorded start to its
@@ -423,7 +931,8 @@ async fn scan_objects(
         return Ok(vec![]);
     }
     let mut child = Command::new("git")
-        .env("GIT_NO_LAZY_FETCH", "1")
+        .envs(host_git_env())
+        .args(host_git_args())
         .env("GIT_NO_REPLACE_OBJECTS", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .arg("-C")
@@ -517,6 +1026,53 @@ fn docker() -> Command {
     }
     cmd
 }
+
+/// Stops the agent gently first, so Claude Code can save its session for
+/// the computer the work moves to, then makes sure its container is gone.
+async fn stop_agent(hub: &Hub, id: i64, child: &mut Child) {
+    let _ = docker_out(&["stop", "-t", "20", &container_name(id)]).await;
+    kill(hub, child, id).await;
+}
+
+/// Hands running work to the other computer: stop the agent, keep its
+/// unfinished edits as a commit, save a checkpoint and put the work back in
+/// the queue for the other runner. Never reports the work as failed: every
+/// problem here is logged. If the work could not be saved it is not queued,
+/// since the other computer would start from an older copy; it stays here
+/// and goes to the owner.
+async fn hand_over(
+    hub: &Hub,
+    data: &Path,
+    id: i64,
+    wt: &Path,
+    branch: &str,
+    to: Place,
+    child: &mut Child,
+) {
+    tracing::info!(id, to = to.as_str(), "work was moved; handing it over");
+    stop_agent(hub, id, child).await;
+    if let Err(err) = save_edits(id, wt).await {
+        tracing::warn!(%err, id, "could not save unfinished edits");
+    }
+    let (state, note) = match save_checkpoint(hub, data, id, wt, branch).await {
+        Ok(_) => (ThreadState::Queued, move_note(to)),
+        Err(err) => {
+            tracing::error!(%err, id, "could not save a checkpoint before moving; keeping the work here");
+            (ThreadState::NeedsYou, UNSAVED_MOVE)
+        }
+    };
+    if let Err(err) = with_retry("hand the work over", FINAL_RETRY, async || {
+        hub.move_to(id, state, note).await
+    })
+    .await
+    {
+        tracing::error!(%err, id, "could not tell the hub where the moved work stands");
+    }
+}
+
+/// The board note when work could not be saved for a move.
+const UNSAVED_MOVE: &str =
+    "Could not save the work before moving it, so it stayed here. Try the move again.";
 
 /// The host-side gatekeeper and the address containers reach it at.
 #[derive(Clone)]
@@ -629,8 +1185,11 @@ fn spawn_stderr_tail(stderr: ChildStderr, secrets: Vec<String>) -> JoinHandle<St
 }
 
 enum Ended {
-    /// The owner stopped the work while it ran.
+    /// The owner stopped the work while it ran, or it is no longer this
+    /// runner's (a cloud worker that was removed).
     Stopped,
+    /// The owner moved the work to another computer while it ran.
+    Moved(Place),
     /// The agent's output ended. `result` is its last result line, if any,
     /// and `after_result` says the agent printed more after it.
     Exited {
@@ -799,6 +1358,10 @@ async fn follow(
             }
             _ = poll.tick() => match hub.live(id).await {
                 Ok(live) if live.state != ThreadState::Running => break Ended::Stopped,
+                Ok(live) if live.place != hub.place => break Ended::Moved(live.place),
+                // The hub answers 404 to a cloud worker once the work is not
+                // running there; 401 or 403 means this worker was removed.
+                Err(err) if lost(&err) => break Ended::Stopped,
                 Ok(live) => {
                     hub_down = false;
                     send(conv.on_messages(&live.messages));
@@ -846,6 +1409,18 @@ async fn follow(
         );
     }
     ended
+}
+
+/// Whether the hub said the running work is no longer this runner's.
+fn lost(err: &anyhow::Error) -> bool {
+    matches!(
+        err.downcast_ref::<HubError>(),
+        Some(HubError::Refused(
+            _,
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND,
+            _,
+        ))
+    )
 }
 
 /// Removes a thread's container and checks that it is really gone. Tried a
@@ -926,6 +1501,7 @@ async fn run(
         .session_id
         .clone()
         .context("claim has no session")?;
+    let branch = c.thread.branch.clone().context("claim has no branch")?;
     // Only one copy of a thread may ever run: clear any container left behind
     // by a runner that died, and do not start another while it may be there.
     if !remove_container(id).await {
@@ -935,8 +1511,11 @@ make sure Docker Desktop is running and delete that container there",
             container_name(id)
         );
     }
+    // A save or restore box left by a runner that died.
+    let _ = docker_out(&["rm", "-f", &tool_container_name(id)]).await;
 
-    let wt = workspace(data, &c).await?;
+    let (wt, rebuilt) = workspace(hub, data, &c, &branch).await?;
+    let start = Start::pick(c.resume, rebuilt, c.checkpoint.is_some());
     let cred = if c.budget_usd.is_some() {
         Credential::PayPerUse
     } else {
@@ -947,7 +1526,7 @@ make sure Docker Desktop is running and delete that container there",
         // pay-per-use run is charged its whole budget. Stop before starting.
         bail!("the gatekeeper has stopped; restart the runner before running pay-per-use work");
     }
-    let token = secret(cred)?;
+    let token = credential(hub, id, cred).await?;
     let mut cmd = docker();
     // A pay-per-use container gets a token for the gatekeeper, never the key.
     // The grant is revoked when it drops, on every way out of this function.
@@ -976,7 +1555,7 @@ make sure Docker Desktop is running and delete that container there",
     let secrets: Vec<String> = keys.iter().map(|(_, v)| v.clone()).collect();
     let prompt = prompt_for(
         &c.thread.prompt,
-        c.resume,
+        start,
         &c.test_keys,
         &c.messages,
         c.interrupted.as_ref(),
@@ -991,7 +1570,7 @@ make sure Docker Desktop is running and delete that container there",
             id,
             &wt,
             &session,
-            c.resume,
+            start.resumes(),
             cred,
             c.budget_usd,
             &c.test_keys,
@@ -1028,9 +1607,15 @@ make sure Docker Desktop is running and delete that container there",
     .await
     {
         Ended::Stopped => {
-            // The owner already moved it; the hub has the last word.
+            // The owner already moved it; the hub has the last word. Nothing
+            // is saved: the work is not this runner's to touch any more.
             tracing::info!(id, "stopped by the owner");
             kill(hub, &mut child, id).await;
+            let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
+            return Ok(());
+        }
+        Ended::Moved(to) => {
+            hand_over(hub, data, id, &wt, &branch, to, &mut child).await;
             let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
             return Ok(());
         }
@@ -1127,17 +1712,43 @@ make sure Docker Desktop is running and delete that container there",
         used_up,
     };
     let (to, note) = outcome(data, &wt, &c, finished, max_limit, exit, keys).await;
-    if let (ThreadState::Queued, Some(reset_epoch)) = (to, max_limit) {
-        // The hub saves the outage and requeues the work in one step.
-        hub.post(
-            &format!("/threads/{id}/events"),
-            &RunEvent::LimitHit { reset_epoch },
-        )
-        .await
-        .map(|_| ())
-    } else {
-        hub.move_to(id, to, &hide(&note, &secrets)).await
-    }
+    // Save the work whatever the outcome, so it can continue anywhere later.
+    // A failed save is logged and the outcome is still reported, except that
+    // unsaved work never goes back in the queue, where another computer could
+    // pick it up from an older copy: it goes to the owner instead.
+    let (to, note) = match save_checkpoint(hub, data, id, &wt, &branch).await {
+        Ok(_) => (to, note),
+        Err(err) => {
+            tracing::error!(%err, id, "could not save a checkpoint");
+            // Only a Max usage limit queues work at the end of a run.
+            if to == ThreadState::Queued {
+                (
+                    ThreadState::NeedsYou,
+                    "The Max account is out of usage, and the work could not be saved, so it \
+                     stayed here instead of waiting in the queue. Queue it again once the \
+                     account resets."
+                        .to_owned(),
+                )
+            } else {
+                (to, note)
+            }
+        }
+    };
+    let note = hide(&note, &secrets);
+    with_retry("report the outcome", FINAL_RETRY, async || {
+        if let (ThreadState::Queued, Some(reset_epoch)) = (to, max_limit) {
+            // The hub saves the outage and requeues the work in one step.
+            hub.post(
+                &format!("/threads/{id}/events"),
+                &RunEvent::LimitHit { reset_epoch },
+            )
+            .await?;
+            Ok(())
+        } else {
+            hub.move_to(id, to, &note).await
+        }
+    })
+    .await
 }
 
 /// How the container ended: its exit status, the tail of its stderr, and
@@ -1247,7 +1858,10 @@ async fn fail(hub: &Hub, id: i64, note: &str) {
         },
     )
     .await;
-    let _ = hub.move_to(id, ThreadState::Failed, note).await;
+    let _ = with_retry("report the failure", FINAL_RETRY, async || {
+        hub.move_to(id, ThreadState::Failed, note).await
+    })
+    .await;
 }
 
 /// Variables set on the docker process for a container to take with `-e`.
@@ -1374,6 +1988,116 @@ async fn goal_copy(app: &App, dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Brings this PC's review copy of a thread's branch up to the hub's latest
+/// saved copy, so a check sees the code even when another computer (the
+/// cloud worker) finished the work. Nothing to do when this PC made that
+/// saved copy itself: its run already put its commits in the review copy.
+/// Only the review copy and the starting-commit file change; the work's own
+/// folder is rebuilt by its next run here, as for any move.
+async fn sync_review_copy(
+    hub: &Hub,
+    data: &Path,
+    app: &App,
+    thread_id: i64,
+    branch: &str,
+    checkpoint: i64,
+) -> anyhow::Result<()> {
+    let ws = data
+        .join("workspaces")
+        .join(format!("{}-{thread_id}", app.name));
+    let bare = review_repo(data, &ws)?;
+    let made_here = std::fs::read_to_string(sibling(&ws, "checkpoint"))
+        .is_ok_and(|t| t.trim() == checkpoint.to_string());
+    if made_here && bare.is_dir() && base_file(&ws).is_file() {
+        return Ok(());
+    }
+    tracing::info!(
+        thread_id,
+        checkpoint,
+        "bringing in work saved on another computer for its check"
+    );
+    // Its own folder: the work itself may be running here meanwhile.
+    let xfer = data.join("transfer").join(format!("check-{thread_id}"));
+    remove_all(&xfer)?;
+    std::fs::create_dir_all(&xfer)?;
+    let r = async {
+        let base_bundle = xfer.join("base.bundle");
+        let headers = download_retrying(
+            hub,
+            &format!("/runner/threads/{thread_id}/base"),
+            &base_bundle,
+        )
+        .await?;
+        let base = headers
+            .get("x-decurion-base")
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| is_sha(s))
+            .context("hub sent no starting commit")?
+            .to_owned();
+        let code = xfer.join("code.bundle");
+        download_retrying(
+            hub,
+            &format!("/runner/threads/{thread_id}/checkpoint/{checkpoint}/code"),
+            &code,
+        )
+        .await?;
+        if !bare.exists() {
+            std::fs::create_dir_all(&bare)?;
+            git(&bare, &["init", "--quiet", "--bare"]).await?;
+        }
+        let base_s = base_bundle.to_string_lossy().into_owned();
+        let code_s = code.to_string_lossy().into_owned();
+        let refspec = format!("+refs/heads/{branch}:refs/heads/{branch}");
+        // The starting commit first: the saved code is only what came after.
+        git(
+            &bare,
+            &[
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--",
+                &base_s,
+                "+refs/heads/decurion-base:refs/decurion/base",
+            ],
+        )
+        .await?;
+        git(
+            &bare,
+            &["fetch", "--quiet", "--no-tags", "--", &code_s, &refspec],
+        )
+        .await?;
+        std::fs::create_dir_all(ws.parent().context("workspace parent")?)?;
+        write_atomic(&base_file(&ws), base.as_bytes(), false)?;
+        anyhow::Ok(())
+    }
+    .await;
+    let _ = remove_all(&xfer);
+    r
+}
+
+/// A code download for a check, tried again over a short hiccup. A plain
+/// loop rather than [`with_retry`]: the helper loop runs on its own task,
+/// which the async closures there cannot be sent to.
+async fn download_retrying(hub: &Hub, path: &str, dest: &Path) -> anyhow::Result<HeaderMap> {
+    let start = Instant::now();
+    let mut attempt = 0;
+    loop {
+        let err = match hub.download(path, dest, CODE_CAP).await {
+            Ok(h) => return Ok(h),
+            Err(e) => e,
+        };
+        let wait = backoff(attempt);
+        let again = err
+            .downcast_ref::<HubError>()
+            .is_some_and(HubError::retriable);
+        if !again || start.elapsed() + wait > DOWNLOAD_RETRY {
+            return Err(err);
+        }
+        tokio::time::sleep(wait).await;
+        attempt += 1;
+    }
+}
+
 /// A checker's copy of a thread's branch, cloned from the runner's own review
 /// repo rather than the building agent's folder, whose git config and hooks
 /// that agent controls.
@@ -1492,7 +2216,17 @@ async fn helper_container(
             std::fs::create_dir_all(hb.dir.parent().context("design copy parent")?)?;
             clone_into(&job.app.repo_path, &hb.dir).await?;
         }
-        HelperSource::Branch { thread_id, branch } => {
+        HelperSource::Branch {
+            thread_id,
+            branch,
+            checkpoint,
+        } => {
+            if !valid_branch(branch) {
+                bail!("refusing odd branch name {branch:?}");
+            }
+            if let Some(cp) = checkpoint {
+                sync_review_copy(hub, data, &job.app, *thread_id, branch, *cp).await?;
+            }
             branch_copy(data, &job.app, *thread_id, branch, &hb.dir).await?
         }
     }
@@ -1650,9 +2384,7 @@ async fn finish_helper(hub: &Hub, id: i64, mut r: HelperResult) {
         // down or failing may recover.
         let retry = match status {
             Some(s) => s.is_server_error(),
-            None => err
-                .downcast_ref::<reqwest::Error>()
-                .is_some_and(|e| !e.is_builder()),
+            None => matches!(&err, HubError::Unreachable(_, e) if !e.is_builder()),
         };
         if !retry || Instant::now() + wait > give_up {
             tracing::error!(%err, id, "could not report helper job");
@@ -1671,7 +2403,7 @@ async fn helper_loop(hub: Hub, data: PathBuf, gate: Gate) {
         let r = hub
             .post(
                 "/runner/helper/claim",
-                &serde_json::json!({ "runner": RUNNER }),
+                &serde_json::json!({ "runner": hub.name }),
             )
             .await;
         match r {
@@ -1731,26 +2463,189 @@ async fn clean_helper_leftovers(data: &Path) {
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "decurion_runner=info".into()),
-        )
-        .init();
-    let data = data_dir()?;
-    // One runner per hub: a second one would requeue and kill the first one's
-    // work. The OS releases the lock if this process dies.
-    let lock = std::fs::File::create(data.join("runner.lock"))?;
-    if lock.try_lock().is_err() {
-        bail!("another Decurion runner is already running on this PC");
+/// A cloud worker's identity: read from `cloud-runner.json`, or on first
+/// start swapped for the one-time join code. The code is never used again.
+async fn cloud_identity(data: &Path, http: &reqwest::Client) -> anyhow::Result<CloudRunner> {
+    let file = data.join("cloud-runner.json");
+    match std::fs::read(&file) {
+        Ok(b) => return CloudRunner::parse(&b),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(e).context("could not read cloud-runner.json")
+        }
+        Err(_) => {}
     }
-    // Docker Desktop forwards host.docker.internal to the host's loopback, so
-    // containers reach the gatekeeper while nothing off this PC can.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+    let code = std::env::var("DECURION_JOIN_CODE")
+        .ok()
+        .filter(|c| !c.trim().is_empty())
+        .context("first start of a cloud worker needs DECURION_JOIN_CODE from the board's Add cloud worker page")?;
+    let hub = hub_url(
+        &std::env::var("DECURION_HUB")
+            .context("first start of a cloud worker needs DECURION_HUB")?,
+    )?;
+    let mut attempt = 0;
+    loop {
+        let r = http
+            .post(format!("{hub}/runner/join"))
+            .timeout(CALL_TIMEOUT)
+            .json(&JoinRequest {
+                code: code.trim().to_owned(),
+            })
+            .send()
+            .await;
+        match r {
+            Ok(r) if r.status().is_success() => {
+                let j: JoinReply = r.json().await.context("could not read the join reply")?;
+                let me = CloudRunner {
+                    hub,
+                    name: j.name,
+                    token: j.token,
+                };
+                write_atomic(&file, &serde_json::to_vec_pretty(&me)?, true)?;
+                tracing::info!(name = %me.name, "joined the hub");
+                return Ok(me);
+            }
+            Ok(r) if r.status() == StatusCode::UNAUTHORIZED => bail!(
+                "the hub refused the join code: it was used already or is more than a day old. \
+                 Make a new one on the board's Add cloud worker page"
+            ),
+            Ok(r) if !retriable(Some(r.status().as_u16())) => {
+                bail!("could not join the hub: {}", r.status())
+            }
+            Ok(r) => tracing::warn!(status = %r.status(), "could not join the hub yet"),
+            Err(err) => tracing::warn!(%err, "hub unreachable; will try joining again"),
+        }
+        tokio::time::sleep(backoff(attempt)).await;
+        attempt += 1;
+    }
+}
+
+/// Says hello, which also requeues work this runner had in flight. Keeps
+/// trying while the hub is out of reach. If the hub follows other rules,
+/// records the commit the hub was built from and exits with code 3, so the
+/// cloud server's updater rebuilds the runner at that commit.
+async fn hello(hub: &Hub, data: &Path) -> anyhow::Result<Vec<i64>> {
+    let body = RunnerHello {
+        runner: hub.name.clone(),
+        rules_version: RULES_VERSION,
+    };
+    let mut attempt = 0;
+    loop {
+        let r = hub
+            .http
+            .post(hub.url("/runner/hello"))
+            .bearer_auth(&hub.key)
+            .timeout(CALL_TIMEOUT)
+            .json(&body)
+            .send()
+            .await;
+        match r {
+            Ok(r) if r.status().is_success() => {
+                let reply: HelloReply = r.json().await.context("could not read hello reply")?;
+                return Ok(reply.paused);
+            }
+            Ok(r) if r.status() == StatusCode::CONFLICT => {
+                let reply: HelloReply = r
+                    .json()
+                    .await
+                    .context("hub refused this runner and gave no reason")?;
+                match rules_differ(data, &reply)? {}
+            }
+            Ok(r) if !retriable(Some(r.status().as_u16())) => bail!(
+                "hub refused this runner: {} {}",
+                r.status(),
+                r.text().await.unwrap_or_default()
+            ),
+            Ok(r) => tracing::warn!(status = %r.status(), "hub not ready; retrying"),
+            Err(err) => tracing::warn!(%err, "hub unreachable; retrying"),
+        }
+        tokio::time::sleep(backoff(attempt)).await;
+        attempt += 1;
+    }
+}
+
+/// The hub follows other rules: records the commit it was built from for the
+/// cloud server's updater and exits with code 3, so the runner is rebuilt at
+/// that commit and started again.
+fn rules_differ(data: &Path, reply: &HelloReply) -> anyhow::Result<std::convert::Infallible> {
+    let commit = reply.hub_commit.trim();
+    if is_sha(commit) {
+        write_atomic(
+            &data.join("wanted-commit"),
+            format!("{commit}\n").as_bytes(),
+            false,
+        )?;
+    }
+    tracing::error!(
+        runner_rules = RULES_VERSION,
+        hub_rules = reply.rules_version,
+        hub_commit = commit,
+        "this runner follows different rules from the hub; rebuild it at the hub's commit and start it again"
+    );
+    std::process::exit(3);
+}
+
+/// On Linux the agent's files in the work folder belong to the agent's user,
+/// and the runner must be able to read, save and delete them; the agent must
+/// be able to write what the runner unpacked. That only works if both are the
+/// same user (or the runner is root), so refuse to start otherwise rather than
+/// fail on the first piece of work. Docker Desktop on Windows has no such
+/// problem.
+#[cfg(unix)]
+async fn same_user_as_agent(mine: &std::fs::File) -> anyhow::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let me = mine.metadata()?.uid();
+    if me == 0 {
+        return Ok(());
+    }
+    let out = docker()
+        .args([
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--entrypoint",
+            "id",
+            decurion_runner::IMAGE,
+            "-u",
+        ])
+        .output()
         .await
-        .context("could not start the gatekeeper")?;
+        .context("could not start docker")?;
+    let agent = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if !out.status.success() || agent != me.to_string() {
+        bail!(
+            "the agent image's user ({agent}) is not this runner's user ({me}); rebuild it with \
+             `docker build --build-arg AGENT_UID={me} -t {} docker/claude-worker`",
+            decurion_runner::IMAGE
+        );
+    }
+    Ok(())
+}
+
+/// Port a cloud worker's gatekeeper listens on: the cloud walls open exactly
+/// this port to containers. Elsewhere any free port will do.
+const CLOUD_GATE_PORT: u16 = 7421;
+
+/// Starts the gatekeeper where only this computer's containers can reach it.
+async fn start_gate(place: Place) -> anyhow::Result<Gate> {
+    // Docker Desktop (Windows, Mac) forwards host.docker.internal to the
+    // host's loopback, so nothing off this computer can reach it. On Linux,
+    // containers reach the host at the Docker bridge's own address (run_args
+    // maps host.docker.internal there), which only containers and the host
+    // itself can use.
+    let addr = if cfg!(target_os = "linux") {
+        let port = if place == Place::Cloud {
+            CLOUD_GATE_PORT
+        } else {
+            0
+        };
+        std::net::SocketAddr::new(wait_for_bridge().await?, port)
+    } else {
+        std::net::SocketAddr::from(([127, 0, 0, 1], 0))
+    };
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("could not start the gatekeeper on {addr}"))?;
     let gate = Gate {
         keeper: Gatekeeper::new(ANTHROPIC_API)?,
         url: format!(
@@ -1764,22 +2659,109 @@ async fn main() -> anyhow::Result<()> {
             tracing::error!(%err, "gatekeeper stopped");
         }
     });
-    let keys: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(data.join("keys.json"))
-            .context("start the hub first; it creates keys.json")?,
-    )?;
-    let hub = Hub {
-        base: std::env::var("DECURION_HUB").unwrap_or_else(|_| "http://127.0.0.1:7420".into()),
-        key: keys["runner"]
-            .as_str()
-            .context("keys.json has no runner key")?
-            .to_owned(),
-        // A stalled hub must not hold up the end of a run (and with it the
-        // revoking of its gatekeeper token).
-        http: reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()?,
+    Ok(gate)
+}
+
+/// How long the runner waits for Docker to come up at start.
+const DOCKER_WAIT: Duration = Duration::from_secs(5 * 60);
+
+/// The Docker bridge's address, waiting a while for Docker: at boot the
+/// runner can start before Docker is ready.
+async fn wait_for_bridge() -> anyhow::Result<std::net::IpAddr> {
+    let start = Instant::now();
+    let mut attempt = 0;
+    loop {
+        let err = match bridge_gateway().await {
+            Ok(ip) => return Ok(ip),
+            Err(e) => e,
+        };
+        let wait = backoff(attempt);
+        if start.elapsed() + wait > DOCKER_WAIT {
+            return Err(err);
+        }
+        tracing::warn!(%err, wait_secs = wait.as_secs(), "waiting for Docker to start");
+        tokio::time::sleep(wait).await;
+        attempt += 1;
+    }
+}
+
+/// The host's address on Docker's default bridge, which is what
+/// `host-gateway` resolves to inside containers.
+async fn bridge_gateway() -> anyhow::Result<std::net::IpAddr> {
+    let out = docker()
+        .args([
+            "network",
+            "inspect",
+            "bridge",
+            "--format",
+            "{{range .IPAM.Config}}{{.Gateway}} {{end}}",
+        ])
+        .output()
+        .await
+        .context("could not start docker")?;
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .find_map(|s| s.parse::<std::net::Ipv4Addr>().ok())
+        .map(std::net::IpAddr::V4)
+        .context("could not find the Docker bridge's address; is Docker running?")
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "decurion_runner=info".into()),
+        )
+        .init();
+    let data = data_dir()?;
+    std::fs::create_dir_all(&data)?;
+    // One runner per hub: a second one would requeue and kill the first one's
+    // work. The OS releases the lock if this process dies.
+    let lock = std::fs::File::create(data.join("runner.lock"))?;
+    if lock.try_lock().is_err() {
+        bail!("another Decurion runner is already running on this computer");
+    }
+    let place = place_from_env(std::env::var("DECURION_PLACE").ok().as_deref())?;
+    let gate = start_gate(place).await?;
+    // A sleeping hub must not hang a call forever: give up on dead
+    // connections, then retry.
+    let http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .tcp_keepalive(Duration::from_secs(30))
+        .tcp_keepalive_interval(Duration::from_secs(15))
+        .build()?;
+    let hub = match place {
+        Place::Pc => {
+            let keys: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(data.join("keys.json"))
+                    .context("start the hub first; it creates keys.json")?,
+            )?;
+            Hub {
+                base: hub_url(&std::env::var("DECURION_HUB").unwrap_or_else(|_| PC_HUB.into()))?,
+                key: keys["runner"]
+                    .as_str()
+                    .context("keys.json has no runner key")?
+                    .to_owned(),
+                http,
+                name: PC_NAME.to_owned(),
+                place,
+            }
+        }
+        Place::Cloud => {
+            let me = cloud_identity(&data, &http).await?;
+            Hub {
+                base: me.hub,
+                key: me.token,
+                http,
+                name: me.name,
+                place,
+            }
+        }
     };
+    tracing::info!(name = %hub.name, place = place.as_str(), hub = %hub.base, "runner starting");
+    #[cfg(unix)]
+    same_user_as_agent(&lock).await?;
     // Containers left by a runner that died keep working, and spending, with
     // nobody listening. Stop them all before taking on any work.
     if let Ok(out) = docker()
@@ -1807,24 +2789,27 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     clean_helper_leftovers(&data).await;
-    let paused: Vec<i64> = hub
-        .post("/runner/hello", &serde_json::json!({ "runner": RUNNER }))
-        .await?
-        .json()
-        .await?;
+    let paused = hello(&hub, &data).await?;
     if !paused.is_empty() {
         tracing::info!(
             ?paused,
             "requeued work this runner had in flight; it will resume"
         );
     }
-    tokio::spawn(helper_loop(hub.clone(), data.clone(), gate.clone()));
+    // Coordinator, design and review jobs work on the app's own repo, which
+    // only the PC has.
+    if place == Place::Pc {
+        tokio::spawn(helper_loop(hub.clone(), data.clone(), gate.clone()));
+    }
     loop {
         let r = hub
-            .post("/runner/claim", &serde_json::json!({ "runner": RUNNER }))
+            .post(
+                "/runner/claim",
+                &serde_json::json!({ "runner": hub.name, "rules_version": RULES_VERSION }),
+            )
             .await;
         match r {
-            Ok(resp) if resp.status() == reqwest::StatusCode::NO_CONTENT => {
+            Ok(resp) if resp.status() == StatusCode::NO_CONTENT => {
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
             Ok(resp) => {
@@ -1839,9 +2824,14 @@ async fn main() -> anyhow::Result<()> {
                     }
                 };
                 let id = claim.thread.id;
-                tracing::info!(id, resume = claim.resume, "running");
+                tracing::info!(
+                    id,
+                    resume = claim.resume,
+                    checkpoint = ?claim.checkpoint,
+                    "running"
+                );
                 // Read here, not in `run`, so its errors can be hidden too.
-                let keys = match test_keys(&data, &claim) {
+                let keys = match test_keys(&hub, &data, &claim) {
                     Ok(k) => k,
                     Err(err) => {
                         tracing::error!(%err, id, "could not read test keys");
@@ -1856,8 +2846,18 @@ async fn main() -> anyhow::Result<()> {
                     fail(&hub, id, &note).await;
                 }
             }
+            // The hub was updated while this runner was waiting for work.
+            Err(HubError::Refused(_, s, text)) if s == StatusCode::CONFLICT => {
+                match serde_json::from_str::<HelloReply>(&text) {
+                    Ok(reply) => match rules_differ(&data, &reply)? {},
+                    Err(_) => {
+                        tracing::warn!(%text, "hub refused to hand out work; retrying");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
+                }
+            }
             Err(err) => {
-                tracing::warn!(%err, "hub unreachable; retrying");
+                tracing::warn!(%err, "could not ask the hub for work; retrying");
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
