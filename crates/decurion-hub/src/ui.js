@@ -172,6 +172,7 @@
     if (t.state === "running") {
       const e = ev[ev.length - 1].event;
       if (e.kind === "started") return "Starting up its box";
+      if (e.kind === "limit_hit") return "Paused: the Claude Max account ran out of usage";
       if (e.kind === "tool") return e.summary ? `${e.name}: ${e.summary}` : `Using ${e.name}`;
       if (e.kind === "message") return e.text;
     }
@@ -293,6 +294,7 @@
     for (let i = 0; i < ev.length; i++) {
       const r = ev[i], e = r.event;
       if (e.kind === "started") item("", "start", "Started its sealed box", when(r));
+      else if (e.kind === "limit_hit") item("bad", "alert", "The Claude Max account ran out of usage", when(r));
       else if (e.kind === "message") item("say", "question", e.text, when(r));
       else if (e.kind === "finished") {
         const cost = pro && e.cost_usd != null ? ` · ${D.money(e.cost_usd)} so far` : "";
