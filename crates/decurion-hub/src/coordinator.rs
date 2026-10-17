@@ -397,8 +397,8 @@ change files freely. Nothing you change there is kept.
 Make one self-contained HTML file at /out/page.html:
 - At the top: the goal in one sentence and what will change, in plain words.
 - For screens that exist today and will change: show each one as it looks now beside how it will look \
-after. For \"now\", run the app and take a real screenshot if you can: a headless browser (for example \
-chromium, or Playwright) may be available in this box; only open local addresses. If you cannot run it, \
+after. For \"now\", run the app and take a real screenshot if you can: the browser tool (mcp__browser__browser_navigate and \
+mcp__browser__browser_take_screenshot) or Playwright may be available in this box; only open local addresses. If you cannot run it, \
 draw the current screen faithfully from the code and label it \"drawn from the code\". For \"after\", draw \
 a mockup in HTML and CSS that looks like the real app (same colors, fonts and layout) with the change in \
 place, and point out what changed.
@@ -451,8 +451,9 @@ Check that it does what was asked and meets \"done when\", that the existing tes
 behaviour has tests, and that nothing is broken, unsafe or half-done. Ask for fixes only for things that \
 matter, not for taste or small style points.
 
-If the work changes anything the owner can see, take screenshots of the affected screens as built (a \
-headless browser may be available in this box; only open local addresses) and put them in one \
+If the work changes anything the owner can see, take screenshots of the affected screens as built (the \
+browser tool, mcp__browser__browser_take_screenshot, or Playwright may be available in this box; only \
+open local addresses) and put them in one \
 self-contained HTML page at /out/page.html with plain-words captions: images as data: URLs, no JavaScript \
 and no external links, under 6 MB. Skip the page if nothing visible changed or the app cannot run here.
 
