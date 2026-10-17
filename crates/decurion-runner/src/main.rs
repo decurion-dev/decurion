@@ -1,5 +1,6 @@
 use anyhow::{bail, Context};
 use decurion_proto::{Claim, MoveRequest, RunEvent, ThreadState};
+use decurion_runner::gatekeeper::{Gatekeeper, ANTHROPIC_API};
 use decurion_runner::{
     container_name, parse_line, prompt_for, run_args, Credential, BUDGET_STOP, DOCKER_CLI_ENV,
     LIMIT_STOP,
@@ -72,7 +73,8 @@ fn data_dir() -> anyhow::Result<PathBuf> {
 
 /// The run's one credential, from Windows Credential Manager: a Max profile's
 /// token (`claude setup-token`, saved as `decurion/claude-profile-A`) or the
-/// pay-per-use API key (`decurion/anthropic-api`).
+/// pay-per-use API key (`decurion/anthropic-api`), which stays with the
+/// gatekeeper.
 fn secret(cred: Credential) -> anyhow::Result<String> {
     let target = cred.target();
     #[cfg(windows)]
@@ -80,12 +82,15 @@ fn secret(cred: Credential) -> anyhow::Result<String> {
         let entry = keyring::Entry::new_with_target(&target, "decurion", "claude")?;
         entry
             .get_password()
+            .map(|s| s.trim().to_owned())
             .with_context(|| format!("nothing saved in Credential Manager as {target}"))
     }
     #[cfg(not(windows))]
     {
         let var = cred.env_fallback();
-        std::env::var(&var).with_context(|| format!("{var} not set ({target})"))
+        std::env::var(&var)
+            .map(|s| s.trim().to_owned())
+            .with_context(|| format!("{var} not set ({target})"))
     }
 }
 
@@ -253,8 +258,14 @@ fn docker() -> Command {
     cmd
 }
 
+/// The host-side gatekeeper and the address containers reach it at.
+struct Gate {
+    keeper: Gatekeeper,
+    url: String,
+}
+
 /// Runs one claimed thread to the end and reports the outcome.
-async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
+async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()> {
     let id = c.thread.id;
     let session = c
         .thread
@@ -274,15 +285,38 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
     } else {
         Credential::Max(c.app.profile)
     };
+    if cred == Credential::PayPerUse && !gate.keeper.is_alive() {
+        // Without the gatekeeper the run could only fail, and a failed
+        // pay-per-use run is charged its whole budget. Stop before starting.
+        bail!("the gatekeeper has stopped; restart the runner before running pay-per-use work");
+    }
     let token = secret(cred)?;
+    let mut cmd = docker();
+    // A pay-per-use container gets a token for the gatekeeper, never the key.
+    // The grant is revoked when it drops, on every way out of this function.
+    let (grant, values) = match cred {
+        Credential::PayPerUse => {
+            let g = gate.keeper.grant(token);
+            let v = vec![g.token().to_owned(), gate.url.clone()];
+            (Some(g), v)
+        }
+        Credential::Max(_) => (None, vec![token]),
+    };
+    // Names come from the same list run_args passes to docker with `-e`.
+    anyhow::ensure!(
+        values.len() == cred.vars().len(),
+        "credential variables out of step"
+    );
+    for (name, value) in cred.vars().iter().zip(values) {
+        cmd.env(name, value);
+    }
     let prompt = prompt_for(&c.thread.prompt, c.resume);
     // Tell the hub before launching: from here the run may cost money, and if
     // the hub cannot be told, the run does not start.
     hub.post(&format!("/threads/{id}/events"), &RunEvent::Started)
         .await
         .context("could not tell the hub the run is starting")?;
-    let mut child = docker()
-        .env(cred.var(), token)
+    let mut child = cmd
         .args(run_args(id, &wt, &session, c.resume, cred, c.budget_usd)?)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -351,6 +385,8 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
         }
     }
     let status = child.wait().await?;
+    // The container is gone; its token goes with it.
+    drop(grant);
     let finished = match result {
         Some(RunEvent::Finished {
             ok,
@@ -451,6 +487,24 @@ async fn main() -> anyhow::Result<()> {
     if lock.try_lock().is_err() {
         bail!("another Decurion runner is already running on this PC");
     }
+    // Docker Desktop forwards host.docker.internal to the host's loopback, so
+    // containers reach the gatekeeper while nothing off this PC can.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .context("could not start the gatekeeper")?;
+    let gate = Gate {
+        keeper: Gatekeeper::new(ANTHROPIC_API)?,
+        url: format!(
+            "http://host.docker.internal:{}",
+            listener.local_addr()?.port()
+        ),
+    };
+    let serving = gate.keeper.clone();
+    tokio::spawn(async move {
+        if let Err(err) = serving.serve(listener).await {
+            tracing::error!(%err, "gatekeeper stopped");
+        }
+    });
     let keys: serde_json::Value = serde_json::from_slice(
         &std::fs::read(data.join("keys.json"))
             .context("start the hub first; it creates keys.json")?,
@@ -461,7 +515,11 @@ async fn main() -> anyhow::Result<()> {
             .as_str()
             .context("keys.json has no runner key")?
             .to_owned(),
-        http: reqwest::Client::new(),
+        // A stalled hub must not hold up the end of a run (and with it the
+        // revoking of its gatekeeper token).
+        http: reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()?,
     };
     // Containers left by a runner that died keep working, and spending, with
     // nobody listening. Stop them all before taking on any work.
@@ -514,7 +572,7 @@ async fn main() -> anyhow::Result<()> {
                 };
                 let id = claim.thread.id;
                 tracing::info!(id, resume = claim.resume, "running");
-                if let Err(err) = run(&hub, &data, claim).await {
+                if let Err(err) = run(&hub, &data, &gate, claim).await {
                     tracing::error!(%err, id, "run failed");
                     hub.event(
                         id,
