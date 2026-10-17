@@ -2066,7 +2066,9 @@ async fn a_resumed_run_hears_which_step_was_cut_off() {
     assert_eq!(c["resume"], true);
     let step = json!({"name":"Bash","summary":"cargo test","safe_to_redo":false});
     assert_eq!(c["interrupted"], step);
-    // Cut off again before the agent did anything: same step, logged once.
+    // Cut off again after the box started but before the agent did
+    // anything: same step, logged once.
+    event(&r, id, json!({"kind":"started"})).await;
     hello(&r).await;
     let c = claim(&r).await;
     assert_eq!(c["interrupted"], step);
@@ -2082,11 +2084,13 @@ async fn a_resumed_run_hears_which_step_was_cut_off() {
     let (_, tail) = call(
         &r,
         "GET",
-        &format!("/api/threads/{id}/events?tail=1"),
+        &format!("/api/threads/{id}/events?tail=2"),
         Some(OWNER),
         Value::Null,
     )
     .await;
+    // The cut-off step, then the box that started and died again.
+    assert_eq!(tail[1]["event"]["kind"], "started");
     assert_eq!(tail[0]["event"]["kind"], "interrupted");
     assert_eq!(tail[0]["event"]["name"], "Bash");
 

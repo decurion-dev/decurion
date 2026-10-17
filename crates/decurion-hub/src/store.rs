@@ -677,7 +677,8 @@ async fn check_parent(tx: &mut Transaction<'_, Sqlite>, parent: i64, app_id: i64
 }
 
 /// Where a resumed run was cut off: set when the agent's last event (the
-/// owner's messages aside) is a tool call it never got the answer to. The
+/// owner's messages and box starts aside, since a box that started and died
+/// again did nothing new) is a tool call it never got the answer to. The
 /// log gets an Interrupted event, once; a later claim of the same cut-off
 /// finds that event and reuses it.
 async fn interrupted_step(
@@ -686,7 +687,7 @@ async fn interrupted_step(
 ) -> Result<Option<Interrupted>> {
     let body: Option<String> = sqlx::query_scalar(
         "SELECT body FROM events WHERE thread_id = ?
-             AND json_extract(body, '$.kind') <> 'owner'
+             AND json_extract(body, '$.kind') NOT IN ('owner', 'started')
          ORDER BY id DESC LIMIT 1",
     )
     .bind(thread_id)

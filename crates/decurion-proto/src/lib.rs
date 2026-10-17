@@ -182,8 +182,7 @@ pub struct MoveRequest {
 /// `-` or `_` (a UUID fits).
 pub fn check_receipt(r: &str) -> bool {
     (8..=64).contains(&r.len())
-        && r
-            .bytes()
+        && r.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
