@@ -142,6 +142,7 @@
   .wcard .meta .tag { min-width: 0; flex: 0 1 auto; }
   .wcard .meta .tag.app { flex-shrink: 0; max-width: 60%; }
   .wcard .meta .tag span { overflow: hidden; text-overflow: ellipsis; }
+  .wcard .meta .tag.place { flex-shrink: 0; }
   .wcard .meta .when { margin-left: auto; padding-left: 8px; color: var(--faint); flex: none; }
   .wcard[data-state="needs_you"] .says { color: var(--ink); }
   .wcard .foot { min-height: 20px; margin-top: 8px; }
@@ -201,6 +202,8 @@
   .sites-note .builtin { list-style: none; margin: 6px 0 0 22px; padding: 0; display: flex; flex-wrap: wrap; gap: 2px 14px; font: 12.5px/1.6 var(--mono); color: var(--muted); }
   .acct { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); padding: 4px 10px; border-radius: 99px; background: var(--surface-2); white-space: nowrap; }
   .acct svg.i { width: 14px; height: 14px; }
+  .acct .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+  .acct.on .dot { background: var(--green); }
   .form-grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); padding-top: 16px; border-top: 1px solid var(--line); }
   .form-grid .full { grid-column: 1 / -1; }
   .form-grid .actions { display: flex; gap: 10px; align-items: center; }
@@ -334,6 +337,7 @@
           <textarea id="prompt" rows="3" placeholder="For example: add a page where clients book a treatment, pick a time and get a confirmation email" aria-describedby="add-err"></textarea>
           <div class="bar">
             <select id="app" aria-label="App"></select>
+            <select id="place" aria-label="Where it runs" hidden><option value="pc">On your PC</option><option value="cloud">In the cloud</option></select>
             <input id="title" type="text" placeholder="Title (optional)" aria-label="Title (optional)" maxlength="120" autocomplete="off">
             <select id="parent" aria-label="Part of other work" hidden></select>
             <label class="check" id="bg-wrap" hidden><input type="checkbox" id="background"> Keep going if the parent stops</label>
@@ -389,6 +393,12 @@
           </form>
         </section>
 
+        <section class="scard wide live" id="set-computers" aria-labelledby="h-computers">
+          <header><span class="ic" data-icon="cloud"></span><div><h2 id="h-computers">Computers</h2><p>Where agents work. Each piece of work runs on your PC or on a cloud worker, under the same rules, and can move between them at any time.</p></div></header>
+          <ul class="rows" id="worker-rows"><li class="empty">Loading…</li></ul>
+          <div><a class="btn" id="add-cloud" href="/cloud"></a></div>
+        </section>
+
         <section class="scard live" id="set-spending" aria-labelledby="h-spend">
           <header><span class="ic" data-icon="money"></span><div><h2 id="h-spend">Spending</h2><p>Pay-per-use work stops and asks you when this month's total reaches the cap. Each run can spend at most $10 of what is left.</p></div></header>
           <div class="spend-big" id="spend-big"></div>
@@ -436,7 +446,8 @@
   };
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
-  let apps = [], threads = [], spend = null, devices = null, limits = [];
+  let apps = [], threads = [], spend = null, devices = null, limits = [], workers = [];
+  let hasCloud = false;
   const siteDraft = {}, siteErr = {}, siteBusy = {}; // app id -> typed text, error, saving
   const sitesSaved = new Map();  // app id -> list the hub just stored
   let sitesSeq = 0, builtIn = null;
@@ -535,13 +546,17 @@
     busy = true;
     try {
       const seq = sitesSeq;
-      const [a, th, sp, lim] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/spend"),
-        D.api("/limits").catch(() => [])]); // older hubs have no /limits
+      const [a, th, sp, lim, wk] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/spend"),
+        D.api("/limits").catch(() => []), // older hubs have no /limits
+        D.api("/workers").catch(() => [])]);
       // A website list saved while this was loading is newer than what came back.
       if (seq !== sitesSeq) for (const x of a) { if (sitesSaved.has(x.id)) x.sites = sitesSaved.get(x.id); }
       else sitesSaved.clear();
       apps = a; threads = th; spend = sp; limits = Array.isArray(lim) ? lim : [];
+      workers = Array.isArray(wk) ? wk : [];
+      hasCloud = workers.some((w) => w.place === "cloud");
       D.setApps(a);
+      D.setCloud(hasCloud);
       D.setThreads(th);
       await loadTails(th);
       loaded = true; loadErr = null;
@@ -708,6 +723,9 @@
       sel.replaceChildren(...apps.map((a) => el("option", { value: String(a.id) }, a.name)));
       if (keep && apps.some((a) => String(a.id) === keep)) sel.value = keep;
     }
+    // The choice of computer only shows once there is a cloud worker.
+    $("place").hidden = !hasCloud;
+    if (!hasCloud) $("place").value = "pc";
     fillParents();
     $("start").disabled = D.offline;
   }
@@ -766,7 +784,7 @@
     btn.replaceChildren(icon("running"), "Starting");
     try {
       const parent = $("parent").value;
-      await D.send("/threads", { app_id, title, prompt: text,
+      await D.send("/threads", { app_id, title, prompt: text, place: $("place").value,
         parent_id: parent ? +parent : null, background: !!parent && $("background").checked });
       prompt.value = ""; $("title").value = ""; $("title").placeholder = "Title (optional)"; grow();
       $("background").checked = false;
@@ -823,6 +841,8 @@
       el("div", { className: "meta" },
         el("span", { className: "tag app" }, icon("app"), el("span", {}, D.appName(t.app_id) || "Unknown app")),
         D.pro && app && el("span", { className: "tag ai dot-sep" }, icon("ai"), el("span", {}, D.aiLabel(app))),
+        hasCloud && el("span", { className: "tag place dot-sep", title: t.place === "cloud" ? "Runs in the cloud" : "Runs on your PC" },
+          icon(t.place === "cloud" ? "cloud" : "pc"), el("span", {}, t.place === "cloud" ? "Cloud" : "PC")),
         el("span", { className: "when", title: new Date(t.updated_at).toLocaleString() }, D.ago(t.updated_at))),
       el("h3", { className: "t" }, hit),
       line && el("p", { className: "says" }, line),
@@ -851,8 +871,8 @@
     if (!loaded) { if (changed("board", ["skeleton", !!loadErr])) { if (loadErr) $("board").replaceChildren(); else skeleton(); } return; }
 
     const shown = shownThreads();
-    const sig = ["board", filter, D.pro, D.offline, folds, Math.floor(Date.now() / 30000), apps.map((a) => [a.id, a.name, a.pay_per_use, a.profile]),
-      shown.map((t) => [t.id, t.state, t.updated_at, t.title, t.branch, lineOf(t), D.treeLine(t)])];
+    const sig = ["board", filter, D.pro, D.offline, hasCloud, folds, Math.floor(Date.now() / 30000), apps.map((a) => [a.id, a.name, a.pay_per_use, a.profile]),
+      shown.map((t) => [t.id, t.state, t.place, t.updated_at, t.title, t.branch, lineOf(t), D.treeLine(t)])];
     if (!changed("board", sig)) return;
 
     keepFocus(() => {
@@ -940,6 +960,32 @@
             b,
             sitesBlock(a));
         }) : [el("li", { className: "empty" }, "No apps yet. Add one below.")]));
+      });
+    }
+    if (changed("set-computers", [workers, D.offline])) {
+      $("add-cloud").replaceChildren(icon("cloud"), hasCloud ? "Add another cloud worker" : "Add cloud worker");
+      keepFocus(() => {
+        $("worker-rows").replaceChildren(...workers.map((w) => {
+          const cloudOne = w.place === "cloud";
+          let b = null;
+          if (cloudOne && w.id != null) {
+            b = el("button", { type: "button", className: "btn quiet danger-text sm", dataset: { key: `worker-${w.id}` } }, icon("trash"), "Remove");
+            b.disabled = D.offline;
+            b.onclick = async () => {
+              const ok = await D.confirm([`Remove the cloud worker "${w.name}"?`,
+                "Its work comes back to your PC and carries on there. To use the cloud again, add a new cloud worker.", "Remove worker", "Keep it"]);
+              if (!ok) return;
+              try { await D.api(`/workers/${w.id}/remove`, { method: "POST" }); D.toast(`Removed ${w.name}. Its work is back on your PC.`); await refresh(); }
+              catch (x) { D.toast(`Couldn't remove ${w.name}. ${x.message}`, "alert"); }
+            };
+          }
+          return el("li", {},
+            el("span", { className: "ic" }, icon(cloudOne ? "cloud" : "pc")),
+            el("div", { className: "who" }, el("b", {}, cloudOne ? `Cloud worker ${w.name}` : "Your PC"),
+              el("span", { className: "hint" }, w.online ? (cloudOne ? "Runs work set to the cloud" : "Runs work set to your PC") : w.seconds_ago != null ? `Offline, last heard from ${D.ago(new Date(Date.now() - w.seconds_ago * 1000).toISOString())}` : "Offline, not heard from yet")),
+            el("span", { className: `acct${w.online ? " on" : ""}` }, el("span", { className: "dot" }), w.online ? "Online" : "Offline"),
+            b);
+        }));
       });
     }
     if (spend && changed("set-spend", spend)) {

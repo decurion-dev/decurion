@@ -86,7 +86,7 @@ async fn helper(r: &axum::Router, kind: &str, text: &str, page: Option<&str>) ->
         "POST",
         "/api/runner/helper/claim",
         RUNNER,
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "expected a {kind} job, got {claim}");
@@ -123,7 +123,7 @@ async fn no_helper(r: &axum::Router) {
         "POST",
         "/api/runner/helper/claim",
         RUNNER,
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(s, StatusCode::NO_CONTENT, "unexpected job {v}");
@@ -330,7 +330,7 @@ async fn a_goal_becomes_reviewed_work() {
         "POST",
         "/api/runner/claim",
         RUNNER,
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     let thread = work["thread"]["id"].as_i64().expect("thread");
@@ -371,7 +371,7 @@ async fn a_goal_becomes_reviewed_work() {
         "POST",
         "/api/runner/claim",
         RUNNER,
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(work["resume"], true);
@@ -512,7 +512,7 @@ async fn messages_wait_for_the_running_turn_and_restarts_requeue_it() {
         "POST",
         "/api/runner/helper/claim",
         RUNNER,
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     // While that turn runs, the owner adds two messages: one more turn, not two.
@@ -540,7 +540,7 @@ async fn messages_wait_for_the_running_turn_and_restarts_requeue_it() {
         "POST",
         "/api/runner/hello",
         RUNNER,
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     let (s, _) = call(
@@ -581,7 +581,7 @@ async fn helpers_count_toward_the_spending_cap() {
         "POST",
         "/api/runner/helper/claim",
         RUNNER,
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(claim["budget_usd"], 0.9);
@@ -725,7 +725,7 @@ async fn approved_one_piece(r: &axum::Router) -> (i64, i64) {
         "POST",
         "/api/runner/claim",
         RUNNER,
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     let thread = work["thread"]["id"].as_i64().expect("thread");
@@ -806,7 +806,7 @@ async fn talking_after_a_failed_write_up_writes_it_again() {
         "POST",
         "/api/runner/helper/claim",
         RUNNER,
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     let id = claim["job_id"].as_i64().expect("job");
@@ -846,7 +846,7 @@ async fn a_restart_does_not_rerun_checks_for_a_stopped_goal() {
         "POST",
         "/api/runner/helper/claim",
         RUNNER,
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(claim["kind"], "review");
@@ -863,7 +863,7 @@ async fn a_restart_does_not_rerun_checks_for_a_stopped_goal() {
         "POST",
         "/api/runner/hello",
         RUNNER,
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     no_helper(&r).await;
@@ -889,7 +889,7 @@ async fn sending_a_piece_back_during_its_check_checks_the_new_code() {
         "POST",
         "/api/runner/claim",
         RUNNER,
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(work["thread"]["id"], thread);
@@ -931,7 +931,7 @@ async fn claim_any(r: &axum::Router) -> Value {
         "POST",
         "/api/runner/helper/claim",
         RUNNER,
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     let id = claim["job_id"].as_i64().expect("job id");
@@ -1046,7 +1046,7 @@ async fn a_restart_keeps_a_talk_turn_when_a_report_waits() {
         "POST",
         "/api/runner/hello",
         RUNNER,
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     let first = claim_any(&r).await;
@@ -1077,7 +1077,7 @@ async fn a_check_of_old_code_does_not_pass_the_new_code() {
         "POST",
         "/api/runner/claim",
         RUNNER,
-        json!({"runner":"local"}),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
     )
     .await;
     ok(

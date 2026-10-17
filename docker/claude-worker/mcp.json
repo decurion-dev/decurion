@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "browser": {
+      "type": "stdio",
+      "command": "/usr/local/bin/playwright-mcp",
+      "args": [
+        "--browser", "chromium",
+        "--headless",
+        "--isolated",
+        "--no-sandbox",
+        "--no-webmcp",
+        "--proxy-server", "http://gate:3128",
+        "--proxy-bypass", "localhost,127.0.0.1,[::1]",
+        "--output-dir", "/tmp/playwright-mcp"
+      ],
+      "env": {
+        "PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright"
+      }
+    }
+  }
+}

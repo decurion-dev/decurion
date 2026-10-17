@@ -1272,6 +1272,11 @@ impl Store {
                             .bind(t)
                             .fetch_one(&mut *tx)
                             .await?;
+                    let checkpoint: Option<i64> =
+                        sqlx::query_scalar("SELECT MAX(id) FROM checkpoints WHERE thread_id = ?")
+                            .bind(t)
+                            .fetch_one(&mut *tx)
+                            .await?;
                     (
                         HelperKind::Review,
                         new_session(),
@@ -1281,6 +1286,7 @@ impl Store {
                         HelperSource::Branch {
                             thread_id: t,
                             branch: branch.unwrap_or_else(|| format!("decurion/thread-{t}")),
+                            checkpoint,
                         },
                         HELPER_DISALLOWED,
                         None,

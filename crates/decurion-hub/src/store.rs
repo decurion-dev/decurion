@@ -3,8 +3,8 @@
 //! in the same transaction.
 
 use decurion_proto::{
-    sites, App, Claim, EventRecord, Interrupted, NewApp, NewThread, Profile, RunEvent, Thread,
-    ThreadState,
+    sites, App, Claim, EventRecord, Interrupted, NewApp, NewThread, Place, Profile, RunEvent,
+    Thread, ThreadState,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
@@ -48,7 +48,7 @@ pub struct Store {
 pub(crate) const APP_COLS: &str = "id, name, repo_path, profile, pay_per_use, sites";
 
 const THREAD_COLS: &str =
-    "id, app_id, title, prompt, state, session_id, branch, updated_at, parent_id, background";
+    "id, app_id, title, prompt, state, session_id, branch, place, updated_at, parent_id, background";
 
 /// The actor recorded for the owner's own moves.
 pub const OWNER: &str = "owner";
@@ -61,6 +61,7 @@ pub(crate) const RECEIPT_REUSED: &str = "this receipt was already used for somet
 
 fn thread_from(row: &SqliteRow) -> Result<Thread> {
     let state: String = row.try_get("state")?;
+    let place: String = row.try_get("place")?;
     Ok(Thread {
         id: row.try_get("id")?,
         app_id: row.try_get("app_id")?,
@@ -69,6 +70,7 @@ fn thread_from(row: &SqliteRow) -> Result<Thread> {
         state: ThreadState::from_str(&state).map_err(|e| StoreError::Invalid(e.to_string()))?,
         session_id: row.try_get("session_id")?,
         branch: row.try_get("branch")?,
+        place: Place::from_str(&place).map_err(|e| StoreError::Invalid(e.to_string()))?,
         updated_at: row.try_get("updated_at")?,
         parent_id: row.try_get("parent_id")?,
         background: row.try_get("background")?,
@@ -185,18 +187,22 @@ impl Store {
         if app.is_none() {
             return Err(StoreError::NotFound);
         }
+        if t.place == Place::Cloud && !crate::workers::cloud_worker_in(&mut tx).await? {
+            return Err(StoreError::Refused(crate::workers::NO_CLOUD_WORKER.into()));
+        }
         if let Some(parent) = t.parent_id {
             check_parent(&mut tx, parent, t.app_id).await?;
         }
         let row = sqlx::query(&format!(
-            "INSERT INTO threads (app_id, title, prompt, parent_id, background)
-             VALUES (?, ?, ?, ?, ?) RETURNING {THREAD_COLS}"
+            "INSERT INTO threads (app_id, title, prompt, parent_id, background, place)
+             VALUES (?, ?, ?, ?, ?, ?) RETURNING {THREAD_COLS}"
         ))
         .bind(t.app_id)
         .bind(t.title.trim())
         .bind(t.prompt.trim())
         .bind(t.parent_id)
         .bind(t.background)
+        .bind(t.place.as_str())
         .fetch_one(&mut *tx)
         .await?;
         let thread = thread_from(&row)?;
@@ -224,7 +230,8 @@ impl Store {
     /// Moves a thread to `to` if that move is allowed from its current state.
     /// With `expect`, the move only happens if the thread is still in that
     /// state. The update is conditional on the state read, so two racing moves
-    /// cannot both succeed.
+    /// cannot both succeed. A runner (actor `runner:<name>`) can only move work
+    /// it is running itself, so one computer can never end another's run.
     pub async fn move_thread(
         &self,
         id: i64,
@@ -273,6 +280,16 @@ impl Store {
         if expect.is_some_and(|e| e != from) {
             return Err(StoreError::Conflict);
         }
+        if actor.starts_with("runner:") {
+            let holder: Option<String> =
+                sqlx::query_scalar("SELECT runner FROM threads WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            if from != ThreadState::Running || holder.as_deref() != Some(actor) {
+                return Err(StoreError::Conflict);
+            }
+        }
         if !from.can_move_to(to) {
             return Err(StoreError::BadMove { from, to });
         }
@@ -307,7 +324,9 @@ impl Store {
     /// Pay-per-use work that no longer fits in the month's cap is moved to
     /// Needs you on the way, and the next thread is tried, so capped work never
     /// holds up work on a Max account.
-    pub async fn claim(&self, runner: &str) -> Result<ClaimOutcome> {
+    ///
+    /// A runner only gets work placed on its own kind of computer.
+    pub async fn claim(&self, runner: &str, place: Place) -> Result<ClaimOutcome> {
         let actor = runner_actor(runner)?;
         // IMMEDIATE takes the write lock up front, so a claim never fails
         // halfway because an event was being written at the same moment.
@@ -315,17 +334,19 @@ impl Store {
         let mut capped = Vec::new();
         loop {
             // Work on a Max account that is out of usage waits for the reset,
-            // unless it (or its app) runs on pay-per-use.
+            // unless it (or its app) runs on pay-per-use. A runner only gets
+            // work placed on its own kind of computer.
             let Some(row) = sqlx::query(
                 "SELECT t.id, t.app_id, t.title, t.prompt, t.state, t.session_id, t.branch,
-                        t.updated_at, t.parent_id, t.background, a.profile, (a.pay_per_use = 1 OR t.pay_per_use = 1) AS ppu
+                        t.place, t.updated_at, t.parent_id, t.background, a.profile, (a.pay_per_use = 1 OR t.pay_per_use = 1) AS ppu
                  FROM threads t JOIN apps a ON a.id = t.app_id
-                 WHERE t.state = 'queued'
+                 WHERE t.state = 'queued' AND t.place = ?
                    AND (t.pay_per_use = 1 OR a.pay_per_use = 1 OR NOT EXISTS (
                         SELECT 1 FROM profile_limits l WHERE l.profile = a.profile
                             AND l.until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))
                  ORDER BY t.id LIMIT 1",
             )
+            .bind(place.as_str())
             .fetch_optional(&mut *tx)
             .await?
             else {
@@ -422,12 +443,14 @@ impl Store {
             tx.commit().await?;
             let thread = self.thread(t.id).await?;
             let app = self.app(thread.app_id).await?;
+            let checkpoint = self.latest_checkpoint(t.id).await?;
             let test_keys = self.test_key_names(app.id).await?;
             return Ok(ClaimOutcome {
                 work: Some(Claim {
                     thread,
                     app,
                     resume,
+                    checkpoint,
                     test_keys,
                     budget_usd: pay_per_use
                         .then(|| crate::spend::claude_budget_usd(prior, reserved)),
@@ -464,15 +487,25 @@ impl Store {
         Ok(ids)
     }
 
-    /// Saves a run event. Returns its id, and whether it started a new Max
+    /// Saves a run event. Only the runner the work is running on may report
+    /// it (`runner` is its name): if the owner stopped or moved the work after
+    /// the claim, the runner must not launch a box for it, unmetered, or
+    /// report on it. Returns the event's id, and whether it started a new Max
     /// outage (which is worth a phone alert).
-    pub async fn add_event(&self, thread_id: i64, e: &RunEvent) -> Result<(i64, bool)> {
+    pub async fn add_event(
+        &self,
+        thread_id: i64,
+        runner: &str,
+        e: &RunEvent,
+    ) -> Result<(i64, bool)> {
         self.thread(thread_id).await?;
         let mut tx = self.pool.begin().await?;
-        // A box may only start for work that is running: if the owner stopped
-        // it after the claim, the runner must not launch it, unmetered.
-        if matches!(e, RunEvent::Started)
-            && state_in(&mut tx, thread_id).await? != ThreadState::Running
+        let holder: Option<String> = sqlx::query_scalar("SELECT runner FROM threads WHERE id = ?")
+            .bind(thread_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if state_in(&mut tx, thread_id).await? != ThreadState::Running
+            || holder.as_deref() != Some(runner_actor(runner)?.as_str())
         {
             return Err(StoreError::Conflict);
         }
@@ -502,7 +535,7 @@ impl Store {
                 audit(
                     &mut tx,
                     thread_id,
-                    "runner",
+                    &runner_actor(runner)?,
                     ThreadState::Running,
                     ThreadState::Queued,
                     Some("Max account out of usage; waits for the reset"),
@@ -909,7 +942,7 @@ pub(crate) async fn save_receipt(
     Ok(())
 }
 
-async fn audit(
+pub(crate) async fn audit(
     tx: &mut Transaction<'_, Sqlite>,
     thread_id: i64,
     actor: &str,

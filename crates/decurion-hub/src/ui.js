@@ -41,6 +41,7 @@
     settings: ["M4 21v-7", "M4 10V3", "M12 21v-9", "M12 8V3", "M20 21v-5", "M20 12V3", "M1 14h6", "M9 8h6", "M17 16h6"],
     app: ["M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2z"],
     ai: ["M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z", "M19 17v4", "M17 19h4"],
+    cloud: ["M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9z"],
     pc: ["M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z", "M8 21h8", "M12 17v4"],
     phone: ["M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z", "M12 18h.01"],
     key: ["m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4", "m21 2-9.6 9.6", "c7.5,15.5,5.5"],
@@ -367,6 +368,11 @@
   let apps = {}, panel, cur = null, timer;
   const setApps = D.setApps;
   D.setApps = (list) => { apps = Object.fromEntries(list.map((a) => [a.id, a])); setApps(list); };
+  // Whether a cloud worker is set up, so work can move between it and the PC.
+  // The board says; elsewhere it is asked once when work is first opened.
+  let cloud = null;
+  D.setCloud = (v) => { cloud = !!v; };
+  D.PLACES = { pc: ["pc", "Your PC"], cloud: ["cloud", "Cloud"] };
   const drafts = {};
 
   function ensurePanel() {
@@ -508,7 +514,7 @@
     const t = c.t, ev = c.ev, app = apps[t.app_id];
     const kids = kidsOf(t.id), parent = t.parent_id != null ? all.find((p) => p.id === t.parent_id) : null;
     const waiting = c.msgs ? c.msgs.filter((m) => m.delivered_at == null).length : 0;
-    const sig = JSON.stringify([t.state, t.updated_at, t.title, ev.length, D.pro, D.offline, waiting, parent?.title,
+    const sig = JSON.stringify([t.state, t.place, cloud, t.updated_at, t.title, ev.length, D.pro, D.offline, waiting, parent?.title,
       kids.map((k) => [k.id, k.state, k.title, k.background])]);
     if (sig === c.sig) return;
     c.sig = sig;
@@ -532,7 +538,7 @@
       el("div", { className: "meta" },
         el("span", { className: "tag" }, icon("app"), D.appName(t.app_id) || "Unknown app"),
         app && el("span", { className: "tag dot-sep" }, icon("ai"), D.aiLabel(app)),
-        el("span", { className: "tag dot-sep" }, icon("pc"), "Your PC"),
+        el("span", { className: "tag dot-sep" }, icon(D.PLACES[t.place]?.[0] ?? "pc"), D.PLACES[t.place]?.[1] ?? "Your PC"),
         el("span", { className: "tag dot-sep updated" }, `Updated ${D.ago(t.updated_at)}`)));
     p.head.replaceWith(head);
     p.head = head;
@@ -589,6 +595,25 @@
       onMoved: () => { panel.close(); c.changed(); },
       onError: (m) => { p.err.hidden = false; p.err.replaceChildren(icon("alert"), el("span", { className: "grow" }, m)); },
     });
+    // Work moves between the PC and the cloud worker at any point before it is done.
+    if (cloud && t.state !== "done") {
+      const to = t.place === "cloud" ? "pc" : "cloud";
+      const b = el("button", { type: "button", className: "btn quiet" }, icon(to), to === "cloud" ? "Move to cloud" : "Move to PC");
+      b.onclick = async () => {
+        if (D.offline) return;
+        b.disabled = true;
+        try {
+          await D.api(`/threads/${t.id}/place`, { method: "POST", body: JSON.stringify({ place: to }) });
+          D.toast(to === "cloud" ? `Moving "${t.title}" to the cloud.` : `Moving "${t.title}" to your PC.`, "done");
+          panel.close(); c.changed();
+        } catch (e) {
+          b.disabled = false;
+          p.err.hidden = false;
+          p.err.replaceChildren(icon("alert"), el("span", { className: "grow" }, `The move did not go through. ${e.message}`));
+        }
+      };
+      moves.push(b);
+    }
     moves.forEach((b, i) => { b.disabled = D.offline; b.dataset.key = `wk-move-${i}`; });
     // On a computer the main button sits on the right.
     const foot = el("footer", { className: "work-foot", hidden: !moves.length && !D.offline }, ...moves.reverse());
@@ -609,6 +634,9 @@
     if (!panel.open) {
       if (!history.state?.work) history.pushState({ work: t.id }, "", `#work-${t.id}`);
       panel.showModal();
+    }
+    if (cloud === null) {
+      try { cloud = (await D.api("/workers")).some((w) => w.place === "cloud"); } catch (_) { cloud = false; }
     }
     c.load = async () => {
       if (cur !== c) return;
