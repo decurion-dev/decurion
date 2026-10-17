@@ -1,12 +1,12 @@
-//! SQLite-backed board state. Every state change goes through [`Store::move_thread`]
-//! (or the claim/pause paths), which check the allowed moves and write an audit row
+//! SQLite-backed board state. Every state change goes through [`checked_move`]
+//! (or the claim path), which checks the allowed moves and writes an audit row
 //! in the same transaction.
 
 use decurion_proto::{
-    App, Claim, EventRecord, NewApp, NewThread, Profile, RunEvent, Thread, ThreadState,
+    App, Claim, EventRecord, Interrupted, NewApp, NewThread, Profile, RunEvent, Thread, ThreadState,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::str::FromStr;
 
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +21,9 @@ pub enum StoreError {
     Invalid(String),
     #[error("{0}")]
     Duplicate(String),
+    /// The request makes sense but the thing it is about no longer allows it.
+    #[error("{0}")]
+    Refused(String),
     #[error(transparent)]
     Db(#[from] sqlx::Error),
 }
@@ -41,7 +44,17 @@ pub struct Store {
     pool: SqlitePool,
 }
 
-const THREAD_COLS: &str = "id, app_id, title, prompt, state, session_id, branch, updated_at";
+const THREAD_COLS: &str =
+    "id, app_id, title, prompt, state, session_id, branch, updated_at, parent_id, background";
+
+/// The actor recorded for the owner's own moves.
+pub const OWNER: &str = "owner";
+
+/// A task with this many tasks above it cannot be split further. Deep trees
+/// are hard to follow on a phone and usually mean an agent is looping.
+pub const MAX_DEPTH: i64 = 5;
+
+pub(crate) const RECEIPT_REUSED: &str = "this receipt was already used for something else";
 
 fn thread_from(row: &SqliteRow) -> Result<Thread> {
     let state: String = row.try_get("state")?;
@@ -54,8 +67,8 @@ fn thread_from(row: &SqliteRow) -> Result<Thread> {
         session_id: row.try_get("session_id")?,
         branch: row.try_get("branch")?,
         updated_at: row.try_get("updated_at")?,
-        parent_id: None,
-        background: false,
+        parent_id: row.try_get("parent_id")?,
+        background: row.try_get("background")?,
     })
 }
 
@@ -131,20 +144,44 @@ impl Store {
         app_from(&row)
     }
 
-    pub async fn add_thread(&self, t: &NewThread) -> Result<Thread> {
+    /// Adds work. With a receipt already used for adding work, nothing is
+    /// added and the thread made the first time is returned; the flag is
+    /// false then.
+    pub async fn add_thread(&self, t: &NewThread) -> Result<(Thread, bool)> {
         if t.title.trim().is_empty() || t.prompt.trim().is_empty() {
             return Err(StoreError::Invalid("title and prompt are required".into()));
         }
-        self.app(t.app_id).await?;
+        check_receipt(t.receipt.as_deref())?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(id) = receipt_result(&mut tx, t.receipt.as_deref(), "add_thread").await? {
+            tx.commit().await?;
+            return Ok((self.thread(id).await?, false));
+        }
+        let app: Option<i64> = sqlx::query_scalar("SELECT id FROM apps WHERE id = ?")
+            .bind(t.app_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if app.is_none() {
+            return Err(StoreError::NotFound);
+        }
+        if let Some(parent) = t.parent_id {
+            check_parent(&mut tx, parent, t.app_id).await?;
+        }
         let row = sqlx::query(&format!(
-            "INSERT INTO threads (app_id, title, prompt) VALUES (?, ?, ?) RETURNING {THREAD_COLS}"
+            "INSERT INTO threads (app_id, title, prompt, parent_id, background)
+             VALUES (?, ?, ?, ?, ?) RETURNING {THREAD_COLS}"
         ))
         .bind(t.app_id)
         .bind(t.title.trim())
         .bind(t.prompt.trim())
-        .fetch_one(&self.pool)
+        .bind(t.parent_id)
+        .bind(t.background)
+        .fetch_one(&mut *tx)
         .await?;
-        thread_from(&row)
+        let thread = thread_from(&row)?;
+        save_receipt(&mut tx, t.receipt.as_deref(), "add_thread", thread.id).await?;
+        tx.commit().await?;
+        Ok((thread, true))
     }
 
     pub async fn threads(&self) -> Result<Vec<Thread>> {
@@ -175,37 +212,64 @@ impl Store {
         actor: &str,
         note: Option<&str>,
     ) -> Result<Thread> {
-        let mut tx = self.pool.begin().await?;
-        let from: String = sqlx::query_scalar("SELECT state FROM threads WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&mut *tx)
+        Ok(self
+            .request_move(id, expect, to, actor, note, None)
             .await?
-            .ok_or(StoreError::NotFound)?;
-        let from = ThreadState::from_str(&from).map_err(|e| StoreError::Invalid(e.to_string()))?;
+            .0)
+    }
+
+    /// [`Store::move_thread`] as asked for from the board or the runner. Two
+    /// moves do more than change the state:
+    ///
+    /// - The owner stopping work (to Failed) first stops the work under it,
+    ///   deepest first, in the same transaction, so nothing is left running
+    ///   for a task that was called off. Background work is left alone.
+    /// - The runner finishing a run (Running to In review) while the owner
+    ///   has a steer or follow-up waiting sends it back to the queue instead,
+    ///   so the agent gets them before anyone reviews it.
+    ///
+    /// With a receipt already used for this move, nothing happens and the
+    /// thread is returned as it is now; the flag is false then.
+    pub async fn request_move(
+        &self,
+        id: i64,
+        expect: Option<ThreadState>,
+        to: ThreadState,
+        actor: &str,
+        note: Option<&str>,
+        receipt: Option<&str>,
+    ) -> Result<(Thread, bool)> {
+        check_receipt(receipt)?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(done) = receipt_result(&mut tx, receipt, "move").await? {
+            if done != id {
+                return Err(StoreError::Duplicate(RECEIPT_REUSED.into()));
+            }
+            tx.commit().await?;
+            return Ok((self.thread(id).await?, false));
+        }
+        let from = state_in(&mut tx, id).await?;
         if expect.is_some_and(|e| e != from) {
             return Err(StoreError::Conflict);
         }
         if !from.can_move_to(to) {
             return Err(StoreError::BadMove { from, to });
         }
-        let done = sqlx::query(
-            "UPDATE threads SET state = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-             WHERE id = ? AND state = ?",
-        )
-        .bind(to.as_str())
-        .bind(id)
-        .bind(from.as_str())
-        .execute(&mut *tx)
-        .await?;
-        if done.rows_affected() != 1 {
-            return Err(StoreError::Conflict);
+        let (mut to, mut note) = (to, note);
+        if actor == OWNER && to == ThreadState::Failed {
+            stop_children(&mut tx, id).await?;
+        } else if actor != OWNER
+            && from == ThreadState::Running
+            && to == ThreadState::InReview
+            && crate::messages::owed(&mut tx, id).await?
+        {
+            to = ThreadState::Queued;
+            note = Some("the owner sent more while it was finishing");
         }
-        if from == ThreadState::Running {
-            crate::spend::close_open_run(&mut tx, id).await?;
-        }
-        audit(&mut tx, id, actor, from, to, note).await?;
+        checked_move(&mut tx, id, Some(from), to, actor, note).await?;
+        save_receipt(&mut tx, receipt, "move", id).await?;
         tx.commit().await?;
-        self.thread(id).await
+        Ok((self.thread(id).await?, true))
     }
 
     /// Hands the oldest queued thread to `runner` and marks it running. A thread
@@ -316,6 +380,12 @@ impl Store {
                 Some(note),
             )
             .await?;
+            let interrupted = if resume {
+                interrupted_step(&mut tx, t.id).await?
+            } else {
+                None
+            };
+            let messages = crate::messages::list(&mut tx, t.id, true).await?;
             tx.commit().await?;
             let thread = self.thread(t.id).await?;
             let app = self.app(thread.app_id).await?;
@@ -326,8 +396,8 @@ impl Store {
                     resume,
                     budget_usd: pay_per_use
                         .then(|| crate::spend::claude_budget_usd(prior, reserved)),
-                    messages: vec![],
-                    interrupted: None,
+                    messages,
+                    interrupted,
                 }),
                 capped,
             });
@@ -359,14 +429,8 @@ impl Store {
 
     pub async fn add_event(&self, thread_id: i64, e: &RunEvent) -> Result<i64> {
         self.thread(thread_id).await?;
-        let body = serde_json::to_string(e).map_err(|e| StoreError::Invalid(e.to_string()))?;
         let mut tx = self.pool.begin().await?;
-        let id =
-            sqlx::query_scalar("INSERT INTO events (thread_id, body) VALUES (?, ?) RETURNING id")
-                .bind(thread_id)
-                .bind(body)
-                .fetch_one(&mut *tx)
-                .await?;
+        let id = insert_event(&mut tx, thread_id, e).await?;
         if let RunEvent::Finished {
             cost_usd: Some(cost),
             input_tokens,
@@ -487,8 +551,245 @@ fn runner_actor(name: &str) -> Result<String> {
     }
 }
 
+/// One move inside the caller's transaction: allowed from the state the
+/// thread is in now, conditional on that state so a racing move cannot also
+/// succeed, and with its audit row. A thread leaving Running has its run
+/// closed, so the money set aside for it is settled. Returns the state it
+/// moved from.
+pub(crate) async fn checked_move(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: i64,
+    expect: Option<ThreadState>,
+    to: ThreadState,
+    actor: &str,
+    note: Option<&str>,
+) -> Result<ThreadState> {
+    let from = state_in(tx, id).await?;
+    if expect.is_some_and(|e| e != from) {
+        return Err(StoreError::Conflict);
+    }
+    if !from.can_move_to(to) {
+        return Err(StoreError::BadMove { from, to });
+    }
+    let done = sqlx::query(
+        "UPDATE threads SET state = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ? AND state = ?",
+    )
+    .bind(to.as_str())
+    .bind(id)
+    .bind(from.as_str())
+    .execute(&mut **tx)
+    .await?;
+    if done.rows_affected() != 1 {
+        return Err(StoreError::Conflict);
+    }
+    if from == ThreadState::Running {
+        crate::spend::close_open_run(tx, id).await?;
+    }
+    audit(tx, id, actor, from, to, note).await?;
+    Ok(from)
+}
+
+pub(crate) async fn state_in(tx: &mut Transaction<'_, Sqlite>, id: i64) -> Result<ThreadState> {
+    let s: String = sqlx::query_scalar("SELECT state FROM threads WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(StoreError::NotFound)?;
+    ThreadState::from_str(&s).map_err(|e| StoreError::Invalid(e.to_string()))
+}
+
+/// Stops every unfinished thread under `id`, deepest first, so no piece of
+/// a stopped task is left going without the task it belongs to. A
+/// background thread and everything under it keeps going.
+async fn stop_children(tx: &mut Transaction<'_, Sqlite>, id: i64) -> Result<()> {
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "WITH RECURSIVE down (id, depth) AS (
+             SELECT id, 1 FROM threads WHERE parent_id = ? AND background = 0
+             UNION ALL
+             SELECT t.id, down.depth + 1 FROM threads t JOIN down ON t.parent_id = down.id
+             WHERE t.background = 0
+         )
+         SELECT down.id FROM down JOIN threads t ON t.id = down.id
+         WHERE t.state NOT IN ('done', 'failed')
+         ORDER BY down.depth DESC, down.id",
+    )
+    .bind(id)
+    .fetch_all(&mut **tx)
+    .await?;
+    for child in ids {
+        checked_move(
+            tx,
+            child,
+            None,
+            ThreadState::Failed,
+            OWNER,
+            Some("stopped because the task it is part of was stopped"),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// New work can go under a task that is still open, in the same app, and
+/// not already [`MAX_DEPTH`] deep.
+async fn check_parent(tx: &mut Transaction<'_, Sqlite>, parent: i64, app_id: i64) -> Result<()> {
+    let row: Option<(i64, String)> =
+        sqlx::query_as("SELECT app_id, state FROM threads WHERE id = ?")
+            .bind(parent)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let Some((parent_app, state)) = row else {
+        return Err(StoreError::Invalid(
+            "the task this is part of does not exist".into(),
+        ));
+    };
+    if parent_app != app_id {
+        return Err(StoreError::Invalid(
+            "work must be in the same app as the task it is part of".into(),
+        ));
+    }
+    if matches!(state.as_str(), "done" | "failed") {
+        return Err(StoreError::Refused(
+            "the task this is part of is finished".into(),
+        ));
+    }
+    // Counts the parent's ancestors, stopping once past the limit.
+    let above: i64 = sqlx::query_scalar(
+        "WITH RECURSIVE up (id, n) AS (
+             SELECT parent_id, 1 FROM threads WHERE id = ? AND parent_id IS NOT NULL
+             UNION ALL
+             SELECT t.parent_id, up.n + 1 FROM threads t JOIN up ON t.id = up.id
+             WHERE t.parent_id IS NOT NULL AND up.n <= ?
+         )
+         SELECT COALESCE(MAX(n), 0) FROM up",
+    )
+    .bind(parent)
+    .bind(MAX_DEPTH)
+    .fetch_one(&mut **tx)
+    .await?;
+    if above >= MAX_DEPTH {
+        return Err(StoreError::Invalid(format!(
+            "work can only be split {MAX_DEPTH} levels deep"
+        )));
+    }
+    Ok(())
+}
+
+/// Where a resumed run was cut off: set when the agent's last event (the
+/// owner's messages aside) is a tool call it never got the answer to. The
+/// log gets an Interrupted event, once; a later claim of the same cut-off
+/// finds that event and reuses it.
+async fn interrupted_step(
+    tx: &mut Transaction<'_, Sqlite>,
+    thread_id: i64,
+) -> Result<Option<Interrupted>> {
+    let body: Option<String> = sqlx::query_scalar(
+        "SELECT body FROM events WHERE thread_id = ?
+             AND json_extract(body, '$.kind') <> 'owner'
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(thread_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    // An event this hub cannot read is not proof of anything.
+    let last = body.and_then(|b| serde_json::from_str::<RunEvent>(&b).ok());
+    Ok(match last {
+        Some(RunEvent::Tool { name, summary }) => {
+            let step = Interrupted {
+                safe_to_redo: decurion_proto::safe_to_redo(&name),
+                name,
+                summary,
+            };
+            let e = RunEvent::Interrupted {
+                name: step.name.clone(),
+                summary: step.summary.clone(),
+                safe_to_redo: step.safe_to_redo,
+            };
+            insert_event(tx, thread_id, &e).await?;
+            Some(step)
+        }
+        Some(RunEvent::Interrupted {
+            name,
+            summary,
+            safe_to_redo,
+        }) => Some(Interrupted {
+            name,
+            summary,
+            safe_to_redo,
+        }),
+        _ => None,
+    })
+}
+
+pub(crate) async fn insert_event(
+    tx: &mut Transaction<'_, Sqlite>,
+    thread_id: i64,
+    e: &RunEvent,
+) -> Result<i64> {
+    let body = serde_json::to_string(e).map_err(|e| StoreError::Invalid(e.to_string()))?;
+    Ok(
+        sqlx::query_scalar("INSERT INTO events (thread_id, body) VALUES (?, ?) RETURNING id")
+            .bind(thread_id)
+            .bind(body)
+            .fetch_one(&mut **tx)
+            .await?,
+    )
+}
+
+pub(crate) fn check_receipt(receipt: Option<&str>) -> Result<()> {
+    match receipt {
+        Some(r) if !decurion_proto::check_receipt(r) => Err(StoreError::Invalid(
+            "receipt must be 8-64 letters, digits, - or _".into(),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// What a receipt was used for before: the id it produced if it was used for
+/// `action`, nothing if it is new. A receipt stands for one tap, so reusing
+/// it for a different action is refused rather than guessed at.
+pub(crate) async fn receipt_result(
+    tx: &mut Transaction<'_, Sqlite>,
+    receipt: Option<&str>,
+    action: &str,
+) -> Result<Option<i64>> {
+    let Some(r) = receipt else {
+        return Ok(None);
+    };
+    let row: Option<(String, i64)> =
+        sqlx::query_as("SELECT action, result_id FROM receipts WHERE receipt = ?")
+            .bind(r)
+            .fetch_optional(&mut **tx)
+            .await?;
+    match row {
+        None => Ok(None),
+        Some((a, id)) if a == action => Ok(Some(id)),
+        Some(_) => Err(StoreError::Duplicate(RECEIPT_REUSED.into())),
+    }
+}
+
+/// Written in the action's own transaction, so a receipt is stored exactly
+/// when the action happened.
+pub(crate) async fn save_receipt(
+    tx: &mut Transaction<'_, Sqlite>,
+    receipt: Option<&str>,
+    action: &str,
+    result_id: i64,
+) -> Result<()> {
+    if let Some(r) = receipt {
+        sqlx::query("INSERT INTO receipts (receipt, action, result_id) VALUES (?, ?, ?)")
+            .bind(r)
+            .bind(action)
+            .bind(result_id)
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(())
+}
+
 async fn audit(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut Transaction<'_, Sqlite>,
     thread_id: i64,
     actor: &str,
     from: ThreadState,
