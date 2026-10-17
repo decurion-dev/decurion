@@ -2,8 +2,9 @@ use anyhow::{bail, Context};
 use decurion_proto::{Claim, Live, MoveRequest, RunEvent, ThreadState};
 use decurion_runner::gatekeeper::{Gatekeeper, ANTHROPIC_API};
 use decurion_runner::{
-    container_name, is_turn_start, parse_line, part_done, prompt_for, run_args, Action,
-    Conversation, Credential, Step, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
+    container_name, is_interrupted_turn, is_turn_start, parse_line, part_done, prompt_for,
+    run_args, Acks, Action, Conversation, Credential, Step, BUDGET_STOP, DOCKER_CLI_ENV,
+    LIMIT_STOP,
 };
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -12,10 +13,16 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 const RUNNER: &str = "local";
 /// How often a run asks the hub for owner messages and whether it was stopped.
 const POLL: Duration = Duration::from_secs(2);
+/// How long Claude may print nothing at all after a result while stdin is
+/// still open before the runner decides the turn it waits for is not coming.
+const IDLE_LIMIT: Duration = Duration::from_secs(5 * 60);
+/// Most ids the hub marks delivered in one call.
+const ACK_BATCH: usize = 500;
 
 #[derive(Clone)]
 struct Hub {
@@ -297,21 +304,23 @@ struct Gate {
     url: String,
 }
 
+/// Owner messages a step wrote to stdin, and when its last write ended.
+type Wrote = (Instant, Vec<i64>);
+
 /// Writes to the agent's stdin from its own task, so an agent that stops
-/// reading cannot stall the stdout reader or the hub poll. Owner messages are
-/// acked to the hub only after they were written; an ack that fails is tried
-/// again with the next one (the hub may then deliver a message twice, never
-/// lose one). A failed write is not fatal: the container is gone, and what
-/// was not written stays undelivered for the next run.
+/// reading cannot stall the stdout reader or the hub poll. Reports back the
+/// owner messages of each step whose writes all succeeded; [`follow`] acks
+/// them once Claude shows it read them. A failed write is not fatal: the
+/// container is gone, and what was not written stays undelivered for the
+/// next run.
 fn spawn_writer(
-    hub: Hub,
     thread: i64,
     stdin: ChildStdin,
+    wrote: mpsc::UnboundedSender<Wrote>,
 ) -> (mpsc::UnboundedSender<Step>, JoinHandle<()>) {
     let (tx, mut rx) = mpsc::unbounded_channel::<Step>();
     let task = tokio::spawn(async move {
         let mut stdin = Some(stdin);
-        let mut unacked: Vec<i64> = Vec::new();
         while let Some(step) = rx.recv().await {
             let mut written = true;
             for a in step.actions {
@@ -338,14 +347,10 @@ fn spawn_writer(
                     Action::Close => stdin = None,
                 }
             }
-            if written {
-                unacked.extend(step.delivered);
-            }
-            if !unacked.is_empty() {
-                match hub.delivered(thread, &unacked).await {
-                    Ok(()) => unacked.clear(),
-                    Err(err) => tracing::warn!(%err, thread, "could not ack owner messages"),
-                }
+            if written && !step.delivered.is_empty() {
+                // Fails only if the run loop is gone; the ids then stay
+                // unacked and the hub hands them to the next run.
+                let _ = wrote.send((Instant::now(), step.delivered));
             }
         }
     });
@@ -353,14 +358,20 @@ fn spawn_writer(
 }
 
 /// Reads the agent's stdout in its own task, a line at a time, into a
-/// channel the run loop can wait on alongside the hub poll.
-fn spawn_reader(stdout: ChildStdout) -> (mpsc::Receiver<String>, JoinHandle<std::io::Result<()>>) {
+/// channel the run loop can wait on alongside the hub poll. Each line comes
+/// with when it was read off the pipe (see [`Acks`]).
+fn spawn_reader(
+    stdout: ChildStdout,
+) -> (
+    mpsc::Receiver<(Instant, String)>,
+    JoinHandle<std::io::Result<()>>,
+) {
     // Few lines in flight: each may be up to MAX_LINE.
     let (tx, rx) = mpsc::channel(8);
     let task = tokio::spawn(async move {
         let mut r = BufReader::new(stdout);
         while let Some(line) = read_capped_line(&mut r).await? {
-            if tx.send(line).await.is_err() {
+            if tx.send((Instant::now(), line)).await.is_err() {
                 break;
             }
         }
@@ -404,24 +415,44 @@ enum Ended {
     },
 }
 
-/// Shows a result that turned out not to be the run's last as progress.
-async fn report_part(hub: &Hub, thread: i64, e: &RunEvent, from_interrupt: bool) {
-    if let RunEvent::Finished { ok, summary, .. } = e {
-        if let Some(m) = part_done(*ok, summary, from_interrupt) {
-            hub.event(thread, &m).await;
-        }
+/// How a result shows as progress if it turns out not to be the run's last.
+fn progress(e: &RunEvent, from_interrupt: bool) -> Option<RunEvent> {
+    match e {
+        RunEvent::Finished { ok, summary, .. } => part_done(*ok, summary, from_interrupt),
+        _ => None,
     }
 }
 
+/// Acks owner messages Claude has read. Ones the hub did not take go back
+/// to `acks` for the next try.
+async fn ack(hub: &Hub, id: i64, acks: &mut Acks<Instant>, ids: Vec<i64>) {
+    let mut failed = Vec::new();
+    for batch in ids.chunks(ACK_BATCH) {
+        if let Err(err) = hub.delivered(id, batch).await {
+            tracing::warn!(%err, id, "could not ack owner messages; trying again later");
+            failed.extend_from_slice(batch);
+        }
+    }
+    if !failed.is_empty() {
+        acks.failed(failed);
+    }
+}
+
+/// What the board says when the runner gives up waiting for Claude's next turn.
+const GAVE_UP: &str = "Claude went quiet for five minutes while Decurion waited for its \
+next step, so Decurion stopped waiting and let the run finish. Any follow-up it had not \
+been given yet is kept for the next run.";
+
 /// Follows a run until the agent's output ends or the owner stops it: posts
-/// what the agent does, and passes owner messages to it as the
-/// [`Conversation`] decides.
+/// what the agent does, passes owner messages to it as the [`Conversation`]
+/// decides, and acks them once Claude has read them.
 async fn follow(
     hub: &Hub,
     id: i64,
     mut conv: Conversation,
     to_agent: mpsc::UnboundedSender<Step>,
-    mut lines: mpsc::Receiver<String>,
+    mut lines: mpsc::Receiver<(Instant, String)>,
+    mut wrote: mpsc::UnboundedReceiver<Wrote>,
 ) -> Ended {
     let send = |step: Step| {
         if !step.actions.is_empty() || !step.delivered.is_empty() {
@@ -432,28 +463,60 @@ async fn follow(
     let mut poll = tokio::time::interval(POLL);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut hub_down = false;
+    let mut acks: Acks<Instant> = Acks::default();
     // Claude Code's outcome is the last result line it prints. Anything after
     // it, or a container that does not exit cleanly, means the agent may have
     // printed a fake result: its cost is then not trusted and the hub charges
     // the whole amount set aside. Earlier results (a follow-up's first part,
-    // the turn a steer stopped) are only progress.
-    let mut result: Option<(RunEvent, bool)> = None;
+    // the turn a steer stopped) are only progress. The held result comes
+    // with the progress it shows if it turns out not to be the last.
+    let mut result: Option<(RunEvent, Option<RunEvent>)> = None;
     // A usage-limit report is held the same way: an agent could print a fake
     // one to freeze its account, so only Claude's real, final result counts.
     let mut limit: Option<Option<i64>> = None;
     let mut after_result = false;
-    loop {
+    // The latest result already shown as progress, and whether anything came
+    // after it: the run's outcome if the runner has to give up on the turn
+    // that was to follow it.
+    let mut last_part: Option<RunEvent> = None;
+    let mut after_part = false;
+    // A result came and no turn has started since, so Claude is idle. A long
+    // tool inside a turn is never cut short by the idle watchdog.
+    let mut between_turns = false;
+    let mut last_line = Instant::now();
+    let ended = loop {
         tokio::select! {
             line = lines.recv() => {
-                let Some(line) = line else { break };
-                if result.is_some() && !line.trim().is_empty() {
-                    after_result = true;
+                let Some((at, line)) = line else {
+                    break Ended::Exited {
+                        result: result.map(|(e, _)| e),
+                        limit,
+                        after_result,
+                    };
+                };
+                last_line = at;
+                while let Ok((w, ids)) = wrote.try_recv() {
+                    acks.wrote(w, &ids);
                 }
-                if is_turn_start(&line) {
+                if !line.trim().is_empty() {
+                    after_result |= result.is_some();
+                    after_part |= last_part.is_some();
+                }
+                let turn_start = is_turn_start(&line);
+                if turn_start {
                     conv.on_turn_start();
+                    between_turns = false;
                 }
                 let events = parse_line(&line);
-                if events.iter().any(|e| matches!(e, RunEvent::Finished { .. })) {
+                let is_result = events.iter().any(|e| matches!(e, RunEvent::Finished { .. }));
+                if turn_start || is_result {
+                    // Claude has read what was written before this line.
+                    let ids = acks.boundary(at);
+                    if !ids.is_empty() {
+                        ack(hub, id, &mut acks, ids).await;
+                    }
+                }
+                if is_result {
                     limit = None;
                 }
                 for e in events {
@@ -472,22 +535,30 @@ async fn follow(
                             continue;
                         }
                     };
-                    if let Some((prev, from_interrupt)) = result.take() {
-                        report_part(hub, id, &prev, from_interrupt).await;
+                    if let Some((_, Some(part))) = result.take() {
+                        hub.event(id, &part).await;
                     }
-                    let from_interrupt = !ok && conv.interrupting();
+                    // Only Claude's own report of a stopped turn is hidden;
+                    // any other failure after a steer is shown as an error.
+                    let from_interrupt = !ok && is_interrupted_turn(&line, conv.interrupting());
+                    let part = progress(&e, from_interrupt);
                     send(conv.on_result(stop));
+                    between_turns = true;
                     if conv.closed() {
                         // Nothing more was asked of it: this may be the last.
-                        result = Some((e, from_interrupt));
+                        result = Some((e, part));
                         after_result = false;
                     } else {
-                        report_part(hub, id, &e, from_interrupt).await;
+                        if let Some(part) = part {
+                            hub.event(id, &part).await;
+                        }
+                        last_part = Some(e);
+                        after_part = false;
                     }
                 }
             }
             _ = poll.tick() => match hub.live(id).await {
-                Ok(live) if live.state != ThreadState::Running => return Ended::Stopped,
+                Ok(live) if live.state != ThreadState::Running => break Ended::Stopped,
                 Ok(live) => {
                     hub_down = false;
                     send(conv.on_messages(&live.messages));
@@ -500,22 +571,103 @@ async fn follow(
                     hub_down = true;
                 }
             },
+            // Stdin stays open while a turn is expected. If Claude prints
+            // nothing at all for this long after a result, that turn is not
+            // coming (or Claude is stuck): close stdin so the run can end.
+            _ = tokio::time::sleep_until(last_line + IDLE_LIMIT),
+                if between_turns && !conv.closed() =>
+            {
+                tracing::warn!(id, "Claude has been idle too long with input still open; closing it");
+                send(conv.give_up());
+                hub.event(id, &RunEvent::Message { text: GAVE_UP.to_owned() }).await;
+                // Already shown as progress; it is the outcome unless Claude
+                // prints another result.
+                if let Some(e) = last_part.take() {
+                    result = Some((e, None));
+                    after_result = after_part;
+                }
+            }
         }
+    };
+    // One more try for acks that failed. Messages written but never followed
+    // by a turn start or a result stay with the hub for the next run.
+    while let Ok((w, ids)) = wrote.try_recv() {
+        acks.wrote(w, &ids);
     }
-    Ended::Exited {
-        result: result.map(|(e, _)| e),
-        limit,
-        after_result,
+    let ids = acks.last_try();
+    if !ids.is_empty() {
+        ack(hub, id, &mut acks, ids).await;
     }
+    if acks.unread() > 0 {
+        tracing::info!(
+            id,
+            count = acks.unread(),
+            "owner messages Claude may not have read stay undelivered for the next run"
+        );
+    }
+    ended
 }
 
-/// Stops a run's container now, whatever the agent is doing.
-async fn kill(child: &mut Child, id: i64) {
-    let _ = docker()
-        .args(["rm", "-f", &container_name(id)])
-        .output()
-        .await;
+/// Removes a thread's container and checks that it is really gone. Tried a
+/// few times: docker refuses to remove a container it is still taking down.
+async fn remove_container(id: i64) -> bool {
+    let name = container_name(id);
+    for attempt in 0..3 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        match docker_out(&["rm", "-f", &name]).await {
+            // Fails when there is no such container too; the check says.
+            Ok(out) if !out.status.success() => tracing::debug!(
+                id,
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "docker rm failed"
+            ),
+            Ok(_) => {}
+            Err(err) => tracing::warn!(%err, id, "could not run docker rm"),
+        }
+        let filter = format!("name=^{name}$");
+        match docker_out(&["ps", "-aq", "--filter", &filter]).await {
+            Ok(out) if out.status.success() && out.stdout.trim_ascii().is_empty() => return true,
+            Ok(out) if !out.status.success() => tracing::warn!(
+                id,
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "could not check that the container is gone"
+            ),
+            Ok(_) => {}
+            Err(err) => tracing::warn!(%err, id, "could not run docker ps"),
+        }
+    }
+    false
+}
+
+/// A docker command's output, given up on if docker hangs.
+async fn docker_out(args: &[&str]) -> anyhow::Result<std::process::Output> {
+    let out = tokio::time::timeout(
+        Duration::from_secs(30),
+        docker().args(args).kill_on_drop(true).output(),
+    )
+    .await
+    .context("docker did not answer")??;
+    Ok(out)
+}
+
+/// Stops a run's container now, whatever the agent is doing. If docker
+/// cannot be made to remove it, the owner is told to: the agent may still be
+/// working with nobody watching.
+async fn kill(hub: &Hub, child: &mut Child, id: i64) {
+    let gone = remove_container(id).await;
     let _ = child.kill().await;
+    if !gone {
+        let name = container_name(id);
+        tracing::error!(id, container = %name, "could not stop the agent's container");
+        let text = format!(
+            "Decurion could not stop this agent's box (the Docker container named {name}), \
+so it may still be working. Stop it yourself: open Docker Desktop, find {name} under \
+Containers, and delete it."
+        );
+        hub.event(id, &RunEvent::Message { text }).await;
+    }
 }
 
 /// Runs one claimed thread to the end and reports the outcome.
@@ -527,11 +679,14 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
         .clone()
         .context("claim has no session")?;
     // Only one copy of a thread may ever run: clear any container left behind
-    // by a runner that died.
-    let _ = docker()
-        .args(["rm", "-f", &container_name(id)])
-        .output()
-        .await;
+    // by a runner that died, and do not start another while it may be there.
+    if !remove_container(id).await {
+        bail!(
+            "could not remove the Docker container {} left from an earlier run; \
+make sure Docker Desktop is running and delete that container there",
+            container_name(id)
+        );
+    }
 
     let wt = workspace(data, &c).await?;
     let cred = if c.budget_usd.is_some() {
@@ -585,18 +740,20 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
         .context("could not start docker")?;
 
     // Stdin stays open so owner messages can follow the prompt. The claim's
-    // undelivered messages are in the prompt and are acked once it is written.
+    // undelivered messages are in the prompt and are acked once Claude has
+    // read it.
     let (conv, first) = Conversation::start(&prompt, &c.messages);
-    let (to_agent, writer) = spawn_writer(hub.clone(), id, child.stdin.take().context("no stdin")?);
+    let (wrote_tx, wrote) = mpsc::unbounded_channel();
+    let (to_agent, writer) = spawn_writer(id, child.stdin.take().context("no stdin")?, wrote_tx);
     let _ = to_agent.send(first);
     let stderr_task = spawn_stderr_tail(child.stderr.take().context("no stderr")?);
     let (lines, reader) = spawn_reader(child.stdout.take().context("no stdout")?);
 
-    let (result, limit, after_result) = match follow(hub, id, conv, to_agent, lines).await {
+    let (result, limit, after_result) = match follow(hub, id, conv, to_agent, lines, wrote).await {
         Ended::Stopped => {
             // The owner already moved it; the hub has the last word.
             tracing::info!(id, "stopped by the owner");
-            kill(&mut child, id).await;
+            kill(hub, &mut child, id).await;
             let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
             return Ok(());
         }
@@ -610,7 +767,7 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
     let status = child.wait().await?;
     // The container is gone; its token goes with it.
     drop(grant);
-    // The container is gone, so the writer is only finishing its acks.
+    // The container is gone, so the writer has nothing left to do.
     let _ = writer.await;
     let finished = match result {
         Some(RunEvent::Finished {
