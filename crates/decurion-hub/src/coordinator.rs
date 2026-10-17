@@ -19,7 +19,7 @@ use decurion_proto::goal::{
     GoalView, HelperClaim, HelperKind, HelperResult, HelperSource, NewGoal, OwnerAnswers, PageInfo,
     PageKind, Piece, Plan, ReviewState, ReviewVerdict, MAX_PAGE_BYTES,
 };
-use decurion_proto::{Thread, ThreadState};
+use decurion_proto::{MessageKind, NewMessage, Thread, ThreadState};
 use serde::Serialize;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, Sqlite, Transaction};
@@ -474,7 +474,8 @@ fn fix_request(issues: &[String]) -> String {
         let _ = writeln!(s, "- {i}");
     }
     s.push_str("\nFix them on this branch, run the tests, and commit.");
-    s
+    // Owner messages have a length limit; the checker's notes fit in it.
+    clip(&s, crate::messages::MAX_CHARS - 1)
 }
 
 /// What a piece's builder is told: exactly the brief the owner approved, plus
@@ -674,7 +675,7 @@ async fn recover_checks(tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
         "SELECT p.thread_id FROM goal_pieces p
          JOIN threads t ON t.id = p.thread_id JOIN goals g ON g.id = p.goal_id
          WHERE t.state = 'in_review' AND g.state = 'working'
-           AND (p.review = 'building' OR (p.review = 'fixing' AND p.follow_up IS NULL))",
+           AND p.review IN ('building', 'fixing')",
     )
     .fetch_all(&mut **tx)
     .await?;
@@ -1171,7 +1172,7 @@ impl Store {
                         note(
                             &mut tx,
                             goal_id,
-                            format!("{why} Raise it on the board, then tap Try again."),
+                            format!("{why} Raise it in Settings, then tap Try again."),
                         )
                         .await?;
                     }
@@ -1326,6 +1327,8 @@ impl Store {
                     prompt,
                     disallowed_tools: disallowed.iter().map(|s| (*s).to_owned()).collect(),
                     budget_usd: app.pay_per_use.then(|| claude_budget_usd(prior, reserved)),
+                    reserved_micros: app.pay_per_use.then_some(reserved),
+                    prior_micros: prior,
                 }),
                 news,
             });
@@ -1712,25 +1715,27 @@ impl Store {
                             note(&mut tx, goal_id, format!("{piece_title} passed the check."))
                                 .await?;
                         } else if rounds < MAX_REVIEW_ROUNDS {
-                            sqlx::query("UPDATE goal_pieces SET review = 'fixing', follow_up = ? WHERE thread_id = ?")
-                                .bind(fix_request(&v.issues))
-                                .bind(t)
-                                .execute(&mut *tx)
-                                .await?;
-                            // Moved here, in the same transaction, so a crash cannot leave
-                            // the piece waiting on a fix nobody was asked for. The thread is
-                            // still in review: that was checked above.
-                            sqlx::query("UPDATE threads SET state = 'queued', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND state = 'in_review'")
-                                .bind(t)
-                                .execute(&mut *tx)
-                                .await?;
-                            crate::store::audit(
+                            sqlx::query(
+                                "UPDATE goal_pieces SET review = 'fixing' WHERE thread_id = ?",
+                            )
+                            .bind(t)
+                            .execute(&mut *tx)
+                            .await?;
+                            // The notes go to the builder the way the owner's own
+                            // "do this next" does, and send the thread back. In the
+                            // same transaction, so a crash cannot leave the piece
+                            // waiting on a fix nobody was asked for; the thread is
+                            // still in review, as checked above.
+                            crate::messages::add_message_in(
                                 &mut tx,
                                 t,
+                                &NewMessage {
+                                    kind: MessageKind::FollowUp,
+                                    text: fix_request(&v.issues),
+                                    receipt: Some(format!("review-{job_id}")),
+                                },
                                 "coordinator",
-                                ThreadState::InReview,
-                                ThreadState::Queued,
-                                Some("sent back with the checker's notes"),
+                                "sent back with the checker's notes",
                             )
                             .await?;
                             note(&mut tx, goal_id, format!("The checker sent {piece_title} back with notes; its builder is fixing them.")).await?;
@@ -1857,26 +1862,6 @@ async fn close_job(
     .execute(&mut **tx)
     .await?;
     Ok(())
-}
-
-/// Takes the follow-up waiting for a thread, if any, so it is used once.
-pub(crate) async fn take_follow_up(
-    tx: &mut Transaction<'_, Sqlite>,
-    thread_id: i64,
-) -> Result<Option<String>> {
-    let f: Option<String> =
-        sqlx::query_scalar("SELECT follow_up FROM goal_pieces WHERE thread_id = ?")
-            .bind(thread_id)
-            .fetch_optional(&mut **tx)
-            .await?
-            .flatten();
-    if f.is_some() {
-        sqlx::query("UPDATE goal_pieces SET follow_up = NULL WHERE thread_id = ?")
-            .bind(thread_id)
-            .execute(&mut **tx)
-            .await?;
-    }
-    Ok(f)
 }
 
 #[cfg(test)]

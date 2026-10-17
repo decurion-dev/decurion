@@ -14,9 +14,11 @@
 pub mod coordinator;
 pub mod devices;
 pub mod limits;
+pub mod messages;
 pub mod push;
 pub mod spend;
 pub mod store;
+pub mod test_keys;
 
 mod goals;
 
@@ -26,7 +28,7 @@ use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use decurion_proto::{MoveRequest, NewApp, NewThread, RunEvent};
+use decurion_proto::{MoveRequest, NewApp, NewMessage, NewThread, RunEvent};
 use serde::Deserialize;
 use std::sync::Arc;
 use store::{Store, StoreError};
@@ -42,7 +44,7 @@ pub enum Caller {
 impl Caller {
     fn actor(self) -> &'static str {
         match self {
-            Caller::Owner => "owner",
+            Caller::Owner => store::OWNER,
             Caller::Runner => "runner",
         }
     }
@@ -67,6 +69,8 @@ pub struct AppState {
     /// Address phones use to reach the hub, e.g. the Tailscale https name.
     public_url: Option<Arc<str>>,
     pub(crate) push: Option<push::Pusher>,
+    /// Where apps' test keys are kept. Without one, the key endpoints refuse.
+    vault: Option<decurion_vault::Vault>,
 }
 
 impl AppState {
@@ -79,12 +83,19 @@ impl AppState {
             login_code: login_code.into(),
             public_url: public_url.map(|u| u.trim_end_matches('/').into()),
             push: None,
+            vault: None,
         }
     }
 
     /// Turns on phone notifications.
     pub fn with_push(mut self, p: push::Pusher) -> Self {
         self.push = Some(p);
+        self
+    }
+
+    /// Turns on test keys, kept in `v`.
+    pub fn with_vault(mut self, v: decurion_vault::Vault) -> Self {
+        self.vault = Some(v);
         self
     }
 }
@@ -116,6 +127,12 @@ pub fn router(state: AppState) -> Router {
         .route("/threads/{id}", get(get_thread))
         .route("/threads/{id}/move", post(move_thread))
         .route("/threads/{id}/events", get(list_events).post(add_event))
+        .route(
+            "/threads/{id}/messages",
+            get(list_messages).post(add_message),
+        )
+        .route("/threads/{id}/messages/delivered", post(messages_delivered))
+        .route("/threads/{id}/live", get(live))
         .route("/runner/hello", post(runner_hello))
         .route("/runner/claim", post(runner_claim))
         .route("/pairing", post(new_pairing))
@@ -127,6 +144,11 @@ pub fn router(state: AppState) -> Router {
         .route("/limits/{profile}/pay-per-use", post(overflow))
         .route("/spend/cap", post(set_cap))
         .route("/apps/{id}/pay-per-use", post(set_pay_per_use))
+        .route(
+            "/apps/{id}/test-keys",
+            get(list_test_keys).post(add_test_key),
+        )
+        .route("/apps/{id}/test-keys/{name}/remove", post(remove_test_key))
         .route("/push/subscribe", post(push_subscribe))
         .route("/goals", get(goals::list).post(goals::add))
         .route("/goals/{id}", get(goals::view))
@@ -157,6 +179,26 @@ pub fn router(state: AppState) -> Router {
         .route("/pair", get(pair_page).post(pair))
         .route("/sw.js", get(service_worker))
         .route("/manifest.webmanifest", get(manifest))
+        .route(
+            "/ui.css",
+            get(|| async { asset("text/css; charset=utf-8", include_str!("ui.css")) }),
+        )
+        .route(
+            "/ui.js",
+            get(|| async { asset("text/javascript; charset=utf-8", include_str!("ui.js")) }),
+        )
+        .route(
+            "/icon.svg",
+            get(|| async { asset("image/svg+xml", include_str!("icon.svg")) }),
+        )
+        .route(
+            "/icon-192.png",
+            get(|| async { asset("image/png", &include_bytes!("icon-192.png")[..]) }),
+        )
+        .route(
+            "/icon-512.png",
+            get(|| async { asset("image/png", &include_bytes!("icon-512.png")[..]) }),
+        )
         .route("/healthz", get(|| async { "ok" }))
         .nest("/api", api)
         .with_state(state)
@@ -242,9 +284,10 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let code = match &self.0 {
             StoreError::NotFound => StatusCode::NOT_FOUND,
-            StoreError::BadMove { .. } | StoreError::Conflict | StoreError::Duplicate(_) => {
-                StatusCode::CONFLICT
-            }
+            StoreError::BadMove { .. }
+            | StoreError::Conflict
+            | StoreError::Duplicate(_)
+            | StoreError::Refused(_) => StatusCode::CONFLICT,
             StoreError::Invalid(_) => StatusCode::BAD_REQUEST,
             StoreError::Db(e) => {
                 tracing::error!(error = %e, "database error");
@@ -259,6 +302,20 @@ type ApiResult<T> = Result<Json<T>, ApiError>;
 
 pub(crate) fn forbidden(what: &str) -> Response {
     (StatusCode::FORBIDDEN, format!("{what} is owner-only")).into_response()
+}
+
+fn runner_only(what: &str) -> Response {
+    (StatusCode::FORBIDDEN, format!("{what} is runner-only")).into_response()
+}
+
+/// 201 for something new, 200 for the answer to a resent receipt.
+fn created_or_resent<T: serde::Serialize>(value: T, fresh: bool) -> Response {
+    let code = if fresh {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    (code, Json(value)).into_response()
 }
 
 fn page(html: impl Into<String>) -> Response {
@@ -512,7 +569,7 @@ async fn add_thread(
         return forbidden("adding work");
     }
     match st.store.add_thread(&t).await {
-        Ok(t) => (StatusCode::CREATED, Json(t)).into_response(),
+        Ok((t, fresh)) => created_or_resent(t, fresh),
         Err(e) => ApiError(e).into_response(),
     }
 }
@@ -529,24 +586,42 @@ async fn move_thread(
     if c == Caller::Runner && m.to == Done {
         return forbidden("marking work done");
     }
-    let expect = (c == Caller::Runner).then_some(Running);
+    // The owner's tap names the state it was made on, so a stale screen
+    // (Stop on work that has since finished) cannot do something else.
+    let expect = if c == Caller::Runner {
+        Some(Running)
+    } else {
+        m.expect
+    };
     match st
         .store
-        .move_thread(id, expect, m.to, c.actor(), m.note.as_deref())
+        .request_move(
+            id,
+            expect,
+            m.to,
+            c.actor(),
+            m.note.as_deref(),
+            m.receipt.as_deref(),
+        )
         .await
     {
-        Ok(t) => {
-            // Pieces of a goal move on to their check, or settle.
-            let piece = match st.store.piece_thread_moved(&t).await {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::error!(error = %e, thread = t.id, "could not update the goal");
-                    false
+        Ok((t, fresh)) => {
+            // Pieces of a goal move on to their check, or settle. A repeated
+            // tap changed nothing, so there is nothing to tell the goal.
+            let piece = if fresh {
+                match st.store.piece_thread_moved(&t).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::error!(error = %e, thread = t.id, "could not update the goal");
+                        false
+                    }
                 }
+            } else {
+                false
             };
             // Only what the agent did is news; the owner's own taps are not. A
             // piece of a goal is not ready for the owner until it is checked.
-            let news = (c == Caller::Runner && !(piece && t.state == InReview))
+            let news = (c == Caller::Runner && fresh && !(piece && t.state == InReview))
                 .then(|| push::message_for(t.state, &t.title))
                 .flatten();
             if let (Some(p), Some((title, body))) = (st.push.clone(), news) {
@@ -587,6 +662,15 @@ async fn add_event(
     if c != Caller::Runner {
         return (StatusCode::FORBIDDEN, "events come from the runner").into_response();
     }
+    // The owner's messages and cut-off steps are the hub's record; a runner
+    // writing them could put words in the owner's mouth.
+    if e.hub_only() {
+        return (
+            StatusCode::FORBIDDEN,
+            "only the hub writes this kind of event",
+        )
+            .into_response();
+    }
     match st.store.add_event(id, &e).await {
         Ok((eid, new_outage)) => {
             if let (true, Some(p)) = (new_outage, st.push.clone()) {
@@ -605,6 +689,72 @@ async fn add_event(
             }
             (StatusCode::CREATED, Json(eid)).into_response()
         }
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn list_messages(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Vec<decurion_proto::Message>> {
+    Ok(Json(st.store.messages(id).await?))
+}
+
+async fn add_message(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+    Json(m): Json<NewMessage>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("messaging an agent");
+    }
+    match st.store.add_message(id, &m).await {
+        Ok((msg, fresh)) => {
+            // A message can send a goal's piece back to its builder.
+            if fresh {
+                if let Ok(t) = st.store.thread(id).await {
+                    if let Err(e) = st.store.piece_thread_moved(&t).await {
+                        tracing::error!(error = %e, thread = id, "could not update the goal");
+                    }
+                }
+            }
+            created_or_resent(msg, fresh)
+        }
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn live(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+) -> Response {
+    if c != Caller::Runner {
+        return runner_only("checking on a run");
+    }
+    match st.store.live(id).await {
+        Ok(l) => Json(l).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct Ids {
+    ids: Vec<i64>,
+}
+
+async fn messages_delivered(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+    Json(b): Json<Ids>,
+) -> Response {
+    if c != Caller::Runner {
+        return runner_only("marking messages delivered");
+    }
+    match st.store.mark_delivered(id, &b.ids).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => ApiError(e).into_response(),
     }
 }
@@ -666,6 +816,20 @@ async fn service_worker() -> Response {
             (header::CACHE_CONTROL, "no-cache"),
         ],
         include_str!("sw.js"),
+    )
+        .into_response()
+}
+
+/// The board's and inbox's shared stylesheet, script and icons. `no-cache`
+/// so a new hub build is picked up on the next load.
+fn asset(content_type: &'static str, body: impl IntoResponse) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "no-cache"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        body,
     )
         .into_response()
 }
@@ -772,4 +936,146 @@ async fn overflow(
         Ok(n) => Json(serde_json::json!({ "moved": n })).into_response(),
         Err(e) => ApiError(e).into_response(),
     }
+}
+/// The board's "save a test key" form. Its value is never logged.
+#[derive(Deserialize)]
+struct NewTestKey {
+    name: String,
+    value: String,
+}
+
+impl std::fmt::Debug for NewTestKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NewTestKey")
+            .field("name", &self.name)
+            .field("value", &"<hidden>")
+            .finish()
+    }
+}
+
+fn no_vault() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "the key store is not set up on this hub",
+    )
+        .into_response()
+}
+
+async fn list_test_keys(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("seeing test keys");
+    }
+    if st.vault.is_none() {
+        return no_vault();
+    }
+    match st.store.test_keys(id).await {
+        Ok(k) => Json(k).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// Saves a test key: the value goes to the vault, and only its name and last
+/// four characters to the database. The body is parsed here rather than by
+/// an extractor, so no error message can ever repeat the value back.
+async fn add_test_key(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+    body: axum::body::Bytes,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("adding test keys");
+    }
+    let Some(vault) = st.vault.clone() else {
+        return no_vault();
+    };
+    let Ok(k) = serde_json::from_slice::<NewTestKey>(&body) else {
+        return (StatusCode::BAD_REQUEST, "send a name and a value").into_response();
+    };
+    let checked =
+        decurion_vault::check_name(&k.name).and_then(|()| decurion_vault::check_value(&k.value));
+    if let Err(e) = checked {
+        return vault_error(e, id, &k.name);
+    }
+    if let Err(e) = st.store.app(id).await {
+        return ApiError(e).into_response();
+    }
+    // The vault first: a crash before the row is written leaves at worst an
+    // unlisted value, never a listed key with nothing behind it.
+    let last_four = decurion_vault::last_four(&k.value);
+    let NewTestKey { name, value } = k;
+    let task_name = name.clone();
+    let saved = tokio::task::spawn_blocking(move || vault.put(id, &task_name, &value)).await;
+    match saved {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return vault_error(e, id, &name),
+        Err(e) => {
+            tracing::error!(error = %e, app = id, name = %name, "key store task failed");
+            return key_store_failed();
+        }
+    }
+    match st.store.save_test_key(id, &name, &last_four).await {
+        Ok(t) => (StatusCode::CREATED, Json(t)).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// Forgets a test key: the value first, then the row, so a failed removal
+/// still shows on the board and can be retried. A crash in between leaves a
+/// listed key with no value, which the runner refuses to start with.
+async fn remove_test_key(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path((id, name)): Path<(i64, String)>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("removing test keys");
+    }
+    let Some(vault) = st.vault.clone() else {
+        return no_vault();
+    };
+    // Also keeps odd names out of the vault's file and entry names.
+    if let Err(e) = decurion_vault::check_name(&name) {
+        return vault_error(e, id, &name);
+    }
+    if let Err(e) = st.store.app(id).await {
+        return ApiError(e).into_response();
+    }
+    let task_name = name.clone();
+    match tokio::task::spawn_blocking(move || vault.delete(id, &task_name)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return vault_error(e, id, &name),
+        Err(e) => {
+            tracing::error!(error = %e, app = id, name = %name, "key store task failed");
+            return key_store_failed();
+        }
+    }
+    match st.store.remove_test_key(id, &name).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// A refused name or value says why; a key store failure says only that it
+/// failed. The value is never part of either.
+fn vault_error(e: decurion_vault::VaultError, app: i64, name: &str) -> Response {
+    match e {
+        decurion_vault::VaultError::Invalid(why) => (StatusCode::BAD_REQUEST, why).into_response(),
+        decurion_vault::VaultError::Store(why) => {
+            tracing::error!(error = %why, app, name, "key store error");
+            key_store_failed()
+        }
+    }
+}
+
+fn key_store_failed() -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "could not use the key store on this PC",
+    )
+        .into_response()
 }

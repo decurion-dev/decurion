@@ -485,6 +485,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "decurion-proto",
+ "decurion-vault",
  "http-body-util",
  "qrcode",
  "reqwest",
@@ -518,6 +519,7 @@ dependencies = [
  "axum",
  "bytes",
  "decurion-proto",
+ "decurion-vault",
  "futures-util",
  "http-body",
  "keyring",
@@ -528,6 +530,15 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "decurion-vault"
+version = "0.1.0"
+dependencies = [
+ "keyring",
+ "thiserror",
  "uuid",
 ]
 

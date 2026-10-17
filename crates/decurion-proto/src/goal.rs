@@ -500,6 +500,14 @@ pub struct HelperClaim {
     /// Set for pay-per-use apps; see [`crate::Claim::budget_usd`].
     #[serde(default)]
     pub budget_usd: Option<f64>,
+    /// Pay-per-use only: the money set aside for this job, in micro-dollars.
+    /// The gatekeeper stops the job's API calls once it is used.
+    #[serde(default)]
+    pub reserved_micros: Option<i64>,
+    /// What earlier jobs of this Claude session were charged, in
+    /// micro-dollars; cost reports are running totals that include it.
+    #[serde(default)]
+    pub prior_micros: i64,
 }
 
 /// How a helper job ended, posted by the runner.

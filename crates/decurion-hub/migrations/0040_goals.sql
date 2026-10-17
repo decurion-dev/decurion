@@ -41,9 +41,7 @@ CREATE TABLE goal_pieces (
                    CHECK (review IN ('building', 'reviewing', 'fixing', 'passed', 'needs_a_look', 'failed')),
     rounds         INTEGER NOT NULL DEFAULT 0,
     review_summary TEXT,
-    review_issues  TEXT NOT NULL DEFAULT '[]',
-    -- What to tell the agent when its thread next resumes; cleared on claim.
-    follow_up      TEXT
+    review_issues  TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX goal_pieces_goal ON goal_pieces (goal_id, thread_id);
 

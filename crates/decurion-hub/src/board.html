@@ -4,196 +4,1074 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Decurion</title>
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/ui.css">
 <style>
-  :root { --bg:#f5f4f0; --card:#fff; --ink:#1d1c19; --muted:#6f6b61; --line:#e2dfd6;
-          --accent:#3b5bdb; --ok:#2b8a3e; --warn:#c77700; --bad:#c92a2a; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#151513; --card:#1f1e1b; --ink:#ecebe6; --muted:#9a968b; --line:#33312c;
-            --accent:#7b93f0; --ok:#59c26d; --warn:#f0a43a; --bad:#f06464; }
+  /* ---------- Shell: sidebar and main area ---------- */
+  .shell { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: 100dvh; }
+  .side {
+    position: sticky; top: 0; height: 100dvh; overflow: auto;
+    display: flex; flex-direction: column; gap: 22px;
+    padding: 16px 12px 14px; border-right: 1px solid var(--line);
   }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui, "Segoe UI", sans-serif; }
-  header { display:flex; align-items:center; gap:16px; padding:14px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
-  header h1 { font-size:18px; margin:0; }
-  header .status { color:var(--muted); font-size:13px; margin-left:auto; }
-  main { display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); gap:12px; padding:16px; }
-  @media (max-width: 1000px) { main { grid-template-columns:repeat(3, minmax(0, 1fr)); } }
-  @media (max-width: 600px) { main { grid-template-columns:1fr; } }
-  .col h2 { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:0 0 8px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:8px; cursor:pointer; }
-  .card .app { font-size:12px; color:var(--muted); }
-  .card[data-state="running"] { border-left:3px solid var(--accent); }
-  .card[data-state="needs_you"] { border-left:3px solid var(--warn); }
-  .card[data-state="failed"] { border-left:3px solid var(--bad); }
-  .card[data-state="done"] { border-left:3px solid var(--ok); }
-  form { display:flex; gap:8px; flex-wrap:wrap; padding:0 16px 16px; }
-  input, select, textarea, button { font:inherit; color:var(--ink); background:var(--card); border:1px solid var(--line); border-radius:8px; padding:7px 10px; }
-  textarea { flex:1 1 320px; min-height:38px; }
-  button { cursor:pointer; background:var(--accent); color:#fff; border-color:var(--accent); }
-  dialog { background:var(--card); color:var(--ink); border:1px solid var(--line); border-radius:12px; width:min(720px, 94vw); }
-  #log { max-height:60vh; overflow:auto; font:13px/1.4 Consolas, monospace; white-space:pre-wrap; }
-  .actions { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
-  .err { color:var(--bad); padding:0 16px; }
-  .limits { padding:0 16px; }
-  .limit { display:flex; gap:12px; align-items:center; flex-wrap:wrap; border:1px solid var(--warn); border-radius:10px; padding:10px 12px; margin:0 0 10px; }
-  .limit span { flex:1 1 260px; }
-  .spend { font-size:13px; padding:3px 10px; border-radius:99px; background:var(--card); border:1px solid var(--line); }
-  .spend.near { border-color:var(--warn); color:var(--warn); }
-  .hint { color:var(--muted); font-size:13px; margin:8px 0; }
-  .qr svg { background:#fff; padding:8px; border-radius:8px; margin-top:10px; }
-  .qr a { display:block; font-size:12px; color:var(--muted); word-break:break-all; margin-top:6px; }
-  .devices { list-style:none; padding:0; margin:10px 0 0; }
-  .devices li { display:flex; gap:10px; align-items:center; padding:6px 0; border-top:1px solid var(--line); }
-  .devices li span { flex:1; }
-  .devices button { background:var(--card); color:var(--bad); border-color:var(--line); }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px; font: 650 16px/1 var(--font-display); letter-spacing: -0.01em; color: var(--ink); text-decoration: none; }
+  .brand svg { flex: none; border-radius: 8px; }
+  .nav { display: grid; gap: 2px; }
+  .nav-h { display: flex; align-items: center; justify-content: space-between; padding: 0 4px 6px 10px; font-size: 12px; font-weight: 600; color: var(--faint); }
+  .nav-item {
+    position: relative; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 32px; padding: 0 10px;
+    border: 0; border-radius: var(--radius-s); background: none; color: var(--muted);
+    font: 500 14px/1.2 var(--font); text-decoration: none; text-align: left; cursor: pointer;
+    transition: background-color .12s var(--ease), color .12s var(--ease);
+  }
+  .nav-item:hover { background: var(--surface-2); color: var(--ink); }
+  .nav-item[aria-current="page"], .nav-item[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-ink); }
+  .nav-item .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nav-item .ct { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--faint); }
+  .nav-item[aria-pressed="true"] .ct { color: inherit; }
+  .needs-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber-line); flex: none; }
+  .ghost { display: inline-grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 6px; background: none; color: var(--faint); cursor: pointer; }
+  .ghost:hover { background: var(--surface-2); color: var(--ink); }
+
+  .usage { margin-top: auto; display: grid; gap: 7px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--ink); text-decoration: none; font-size: 13px; transition: border-color .12s var(--ease); }
+  .usage:hover { border-color: var(--field-line); }
+  .usage .lbl { color: var(--muted); font-size: 12px; font-weight: 600; }
+  .usage .num { font-variant-numeric: tabular-nums; }
+  .usage .num b { font-size: 15px; }
+  .usage .num span { color: var(--muted); }
+  .usage .hint { font-size: 12px; }
+  .meter { height: 6px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
+  .meter > span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--steel); transition: width .4s var(--ease); }
+  .meter.near > span { background: var(--amber-line); }
+  .usage.near .num b { color: var(--amber); }
+
+  main.main { min-width: 0; display: flex; flex-direction: column; }
+  .topbar {
+    position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    min-height: 60px; padding: 12px 28px;
+    background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px);
+    border-bottom: 1px solid transparent;
+  }
+  .topbar.scrolled { border-bottom-color: var(--line); }
+  .topbar h1 { font-size: 19px; font-weight: 650; }
+  .topbar .sub { color: var(--faint); font-size: 13px; }
+  .topbar .grow { flex: 1; }
+  .topbar .right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .needs-btn {
+    display: inline-flex; align-items: center; gap: 7px; min-height: 30px; padding: 0 12px 0 10px;
+    border: 0; border-radius: 99px; cursor: pointer;
+    font: 600 13px/1 var(--font); color: var(--amber); background: var(--amber-soft); box-shadow: inset 0 0 0 1px var(--amber-line);
+    transition: filter .12s var(--ease);
+  }
+  .needs-btn:hover { filter: brightness(0.97) saturate(1.1); }
+  .needs-btn svg.i { width: 15px; height: 15px; }
+  .content { padding: 4px 28px 40px; display: grid; gap: 22px; align-content: start; }
+
+  /* ---------- Composer ---------- */
+  .composer {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l);
+    box-shadow: 0 1px 2px rgba(15, 18, 24, 0.04), 0 6px 24px -12px rgba(15, 18, 24, 0.18);
+    transition: border-color .15s var(--ease), box-shadow .15s var(--ease);
+  }
+  .composer:focus-within { border-color: var(--field-line); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent), 0 6px 24px -12px rgba(15, 18, 24, 0.25); }
+  .composer label.lead { display: block; padding: 16px 18px 0; font: 600 15px/1.3 var(--font-display); color: var(--ink); }
+  .composer textarea#prompt {
+    display: block; border: 0; background: transparent; box-shadow: none; resize: none;
+    min-height: 76px; max-height: 300px; padding: 8px 18px 6px; font-size: 16px; line-height: 1.5;
+  }
+  .composer textarea#prompt:focus { box-shadow: none; }
+  .composer textarea#prompt::placeholder { color: var(--faint); }
+  .composer .bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px 10px 12px; flex-wrap: wrap; }
+  .composer .bar select { width: auto; min-width: 150px; max-width: 220px; min-height: 34px; font-size: 14px; background-color: var(--surface-2); border-color: transparent; font-weight: 500; }
+  .composer .bar input#title { flex: 1 1 200px; max-width: 360px; min-height: 34px; font-size: 14px; border-color: transparent; background: transparent; }
+  .composer .bar input#title:hover { background: var(--surface-2); }
+  .composer .bar input#title:focus { background: var(--surface); border-color: var(--focus); }
+  .composer .bar .grow { flex: 1; }
+  .composer .bar select#parent { max-width: 260px; }
+  .composer .bar .check { font-size: 13px; color: var(--muted); }
+  .kbd-hint { font-size: 12px; color: var(--faint); white-space: nowrap; }
+  kbd { font: 600 11px/1 var(--font); padding: 3px 5px; border-radius: 5px; border: 1px solid var(--line); background: var(--surface-2); color: var(--muted); }
+  .composer .field-error { padding: 0 18px 12px; }
+  .composer .empty-state { padding: 34px 16px; }
+  .composer .empty-state p { max-width: 420px; }
+
+  /* ---------- Board ---------- */
+  .board-wrap { margin: 0 -28px; padding: 0 28px 8px; overflow-x: auto; scrollbar-width: thin; }
+  .board { display: flex; gap: 12px; align-items: flex-start; }
+  .board::after { content: ""; flex: 0 0 16px; }
+  .col {
+    flex: 1 0 200px; min-width: 0; max-width: 420px;
+    background: color-mix(in srgb, var(--surface-2) 55%, transparent); border-radius: var(--radius-l);
+    padding: 6px 6px 8px;
+  }
+  .col.folded { flex: 0 0 46px; min-width: 46px; padding: 0; background: none; }
+  .col-h { display: flex; align-items: center; gap: 8px; padding: 6px 4px 10px 6px; }
+  .col-h h2 { font-size: inherit; }
+  .col-h .ct { font: 600 13px/1 var(--font); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .col-h .grow { flex: 1; }
+  .col-h .pill:not(.needs_you) { background: none; padding-left: 2px; }
+  .col-h .pill:not(.needs_you):not(.failed):not(.done) { color: var(--ink); }
+  .col-h .pill.done, .col-h .pill.failed { background: none; padding-left: 2px; }
+  .cards { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; container-type: inline-size; }
+  @container (max-width: 300px) {
+    .wcard .meta .tag.app svg.i { display: none; }
+    .wcard .meta .tag.ai::before { content: ""; margin: 0 2px; }
+  }
+  .col-empty { padding: 16px 12px; border: 1px dashed var(--line); border-radius: var(--radius); color: var(--faint); font-size: 13px; text-align: center; }
+  .strip {
+    width: 46px; min-height: 180px; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 12px 0;
+    border: 1px dashed var(--line); border-radius: var(--radius-l); background: none; cursor: pointer; color: var(--muted);
+    font: 600 13px/1 var(--font);
+  }
+  .strip:hover { background: var(--surface-2); color: var(--ink); }
+  .strip .vt { writing-mode: vertical-rl; letter-spacing: .01em; }
+  .strip .ct { font-variant-numeric: tabular-nums; color: var(--faint); }
+  .strip[data-state="failed"] svg.i { color: var(--red); }
+  .strip[data-state="queued"] svg.i { color: var(--muted); }
+
+  /* Cards: the title is the button; it stretches over the whole card. */
+  .wcard { box-shadow: 0 1px 2px rgba(15, 18, 24, 0.04); }
+  .wcard:hover { box-shadow: 0 2px 10px -4px rgba(15, 18, 24, 0.18); }
+  .wcard.seen { animation: none; }
+  .wcard .t { font-size: 14.5px; }
+  .wcard .hit { background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+  .wcard .hit::after { content: ""; position: absolute; inset: -1px; border-radius: var(--radius); }
+  .wcard .hit:focus-visible { outline: none; }
+  .wcard .hit:focus-visible::after { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .wcard .meta { flex-wrap: nowrap; white-space: nowrap; }
+  .wcard .meta .tag { min-width: 0; flex: 0 1 auto; }
+  .wcard .meta .tag.app { flex-shrink: 0; max-width: 60%; }
+  .wcard .meta .tag span { overflow: hidden; text-overflow: ellipsis; }
+  .wcard .meta .when { margin-left: auto; padding-left: 8px; color: var(--faint); flex: none; }
+  .wcard[data-state="needs_you"] .says { color: var(--ink); }
+  .wcard .foot { min-height: 20px; margin-top: 8px; }
+  .wcard .foot .acts { position: relative; z-index: 1; margin: 0 0 -4px -8px; flex-wrap: wrap; gap: 2px; }
+  .wcard .foot .working { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+  .wcard .foot .working svg.i { width: 13px; height: 13px; }
+  .wcard .pro { display: flex; align-items: center; gap: 5px; }
+  .wcard .tree { font-size: 12px; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
+  .wcard .pro svg.i { width: 12px; height: 12px; }
+  .sk-card { height: 104px; }
+
+  .board-wrap.more-r { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 56px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 56px), transparent); }
+  .board-wrap.more-l { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 56px), transparent); mask-image: linear-gradient(to left, #000 calc(100% - 56px), transparent); }
+  .board-wrap.more-l.more-r { -webkit-mask-image: linear-gradient(to right, transparent, #000 56px, #000 calc(100% - 56px), transparent); mask-image: linear-gradient(to right, transparent, #000 56px, #000 calc(100% - 56px), transparent); }
+  .col-h .ghost { opacity: 0; transition: opacity .12s var(--ease); }
+  .col:hover .col-h .ghost, .col-h .ghost:focus-visible { opacity: 1; }
+  @media (hover: none) { .col-h .ghost { opacity: 1; } }
+  .limits { display: grid; gap: 8px; }
+  .limits .notice { flex-wrap: wrap; align-items: center; }
+  .limits .notice svg.i { margin-top: 0; }
+  .limits .notice .grow { min-width: 220px; }
+  .limits .notice .field-error { margin-top: 2px; }
+  .board-empty { border: 1px dashed var(--line); border-radius: var(--radius-l); }
+  .board:has(.board-empty)::after { display: none; }
+
+  /* ---------- Settings ---------- */
+  .settings { display: grid; gap: 18px; grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 1080px; align-items: start; }
+  .settings .wide { grid-column: 1 / -1; }
+  .scard { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l); padding: 20px; display: grid; gap: 16px; scroll-margin-top: 80px; }
+  .scard > header { display: flex; gap: 12px; align-items: flex-start; }
+  .scard > header .ic { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--surface-2); color: var(--muted); flex: none; }
+  .scard > header h2 { font-size: 17px; }
+  .scard > header p { color: var(--muted); font-size: 14px; margin-top: 2px; }
+  .scard h3 { font-size: 14px; }
+  .rows { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); }
+  .rows li { display: flex; align-items: center; gap: 12px; padding: 12px 14px; flex-wrap: wrap; }
+  .rows li + li { border-top: 1px solid var(--line); }
+  .rows .ic { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; background: var(--surface-2); color: var(--muted); flex: none; }
+  .rows .who { flex: 1; min-width: 160px; display: grid; gap: 2px; }
+  .rows .who b { font-weight: 600; overflow-wrap: anywhere; }
+  .rows .who .mono, .rows .who .hint { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+  .rows .empty { color: var(--muted); font-size: 14px; justify-content: center; padding: 18px; }
+  .acct { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); padding: 4px 10px; border-radius: 99px; background: var(--surface-2); white-space: nowrap; }
+  .acct svg.i { width: 14px; height: 14px; }
+  .form-grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); padding-top: 16px; border-top: 1px solid var(--line); }
+  .form-grid .full { grid-column: 1 / -1; }
+  .form-grid .actions { display: flex; gap: 10px; align-items: center; }
+  .field .field-error:empty { display: none; }
+  .money-in { position: relative; max-width: 180px; }
+  .money-in span { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+  .money-in input { padding-left: 24px; font-variant-numeric: tabular-nums; }
+  .cap-row { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
+  .spend-big { display: grid; gap: 10px; padding: 16px; border-radius: var(--radius); background: var(--surface-2); }
+  .spend-big .num { font: 650 26px/1 var(--font-display); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+  .spend-big .num span { font: 400 14px var(--font); color: var(--muted); letter-spacing: 0; margin-left: 6px; }
+  .spend-big.near .num { color: var(--amber); }
+  .spend-big .meter { height: 8px; background: var(--surface-3); }
+  .qr { display: grid; gap: 12px; justify-items: start; }
+  .qr-box { background: #fff; padding: 14px; border-radius: var(--radius-l); box-shadow: 0 0 0 1px var(--line); line-height: 0; }
+  .qr-box svg { width: 196px; height: 196px; display: block; }
+  .qr a { font-size: 13px; overflow-wrap: anywhere; }
+
+  dialog:focus-visible { outline: none; }
+
+  /* ---------- Signed out ---------- */
+  .so { min-height: 100dvh; display: grid; place-items: center; padding: 24px 16px; }
+  .so-card { max-width: 420px; text-align: center; display: grid; justify-items: center; gap: 12px; padding: 32px 28px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l); box-shadow: var(--shadow-pop); }
+  .so-card h1 { font-size: 20px; }
+  .so-card p { color: var(--muted); }
+
+  /* ---------- Offline ---------- */
+  body.offline .live .acts .btn, body.offline .live form .btn, body.offline .live .rows .btn, body.offline .live .notice .btn, body.offline #pair { pointer-events: none; opacity: .5; }
+
+  /* ---------- Narrow screens ---------- */
+  @media (min-width: 900px) and (max-width: 1199px) {
+    .shell { grid-template-columns: 216px minmax(0, 1fr); }
+    .topbar, .content { padding-left: 22px; padding-right: 22px; }
+    .board-wrap { margin: 0 -22px; padding: 0 22px 8px; }
+  }
+  @media (max-width: 899px) {
+    .shell { display: block; }
+    .side {
+      position: sticky; top: 0; z-index: 10; height: auto; overflow: visible;
+      display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 8px 12px;
+      padding: 10px 16px; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(10px);
+      border-right: 0; border-bottom: 1px solid var(--line);
+    }
+    .brand { padding: 4px 0; }
+    .nav.main-nav { display: flex; justify-content: flex-end; gap: 4px; }
+    .nav.main-nav .nav-item { width: auto; }
+    .nav.apps { grid-column: 1 / -1; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px 2px; }
+    .nav.apps::-webkit-scrollbar { display: none; }
+    .nav.apps .nav-h { display: none; }
+    .nav.apps .nav-item { width: auto; flex: none; border: 1px solid var(--line); border-radius: 99px; min-height: 32px; }
+    .nav.apps .nav-item[aria-pressed="true"] { border-color: transparent; }
+    .usage { display: none; }
+    .topbar { position: static; padding: 14px 16px 8px; background: none; backdrop-filter: none; }
+    .content { padding: 4px 16px 32px; }
+    .board-wrap { margin: 0; padding: 0; overflow: visible; }
+    .board { flex-direction: column; align-items: stretch; }
+    .board::after { display: none; }
+    .col { max-width: none; min-width: 0; width: 100%; flex: none; }
+    .col.folded { flex: none; width: 100%; min-width: 0; }
+    .strip { width: 100%; min-height: 44px; flex-direction: row; padding: 0 14px; }
+    .strip .vt { writing-mode: horizontal-tb; }
+    .strip .ct { margin-left: auto; }
+    .col-h .ghost svg.i { transform: rotate(90deg); }
+    .settings { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 640px) {
+    .side .brand span { font-size: 15px; }
+    .topbar h1 { font-size: 22px; }
+    #new-work { display: none; }
+    .topbar .right { width: 100%; justify-content: space-between; }
+    .composer label.lead { padding: 14px 14px 0; }
+    .composer textarea#prompt { padding: 8px 14px 6px; }
+    .composer .bar { padding: 8px 10px 10px; }
+    .composer .bar select, .composer .bar input#title { max-width: none; flex: 1 1 100%; }
+    .composer .bar select#parent { max-width: none; }
+    .composer .bar .grow, .kbd-hint { display: none; }
+    .composer .bar .btn.primary { flex: 1 1 100%; }
+    .form-grid { grid-template-columns: 1fr; }
+    .scard { padding: 16px; }
+    .wcard .t { font-size: 15.5px; }
+  }
+
+  /* ---------- Work panel: task tree and messages (same in board.html and inbox.html) ---------- */
+  .work-body .part { display: contents; }
+  .talk { display: grid; gap: 8px; }
+  .talk .section-title { display: block; margin-bottom: 0; }
+  .talk textarea { min-height: 76px; }
+  .talk .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .talk .waiting { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+  .talk .field-error:empty { display: none; }
+  .kids { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); }
+  .kids li, .tree-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .kids li { padding: 8px 10px; }
+  .kids li + li { border-top: 1px solid var(--line); }
+  .kids .nm, .tree-row .nm { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+  @media (max-width: 640px) { .talk .row .btn { flex: 1 1 100%; } }
 </style>
 </head>
 <body>
-<header><h1>Decurion</h1><a href="/goals">Goals</a><span class="spend" id="spend"></span><span class="status" id="status">Loading…</span></header>
-<form id="add-thread">
-  <select id="app" required aria-label="App"></select>
-  <input id="title" placeholder="Title" required aria-label="Title">
-  <textarea id="prompt" placeholder="What should the agent do?" required aria-label="Task"></textarea>
-  <button>Add work</button>
-</form>
-<details style="padding:0 16px 12px"><summary>Add an app</summary>
-  <form id="add-app" style="padding:8px 0 0">
-    <input id="app-name" placeholder="Name" required aria-label="App name">
-    <input id="app-path" placeholder="C:\path\to\repo" required aria-label="Repo path">
-    <select id="app-profile" aria-label="Claude account"><option>A</option><option>B</option></select>
-    <label class="hint"><input type="checkbox" id="app-ppu"> Pay-per-use instead of a Max account</label>
-    <button>Add app</button>
-  </form>
-  <ul id="apps" class="devices"></ul>
-</details>
-<details style="padding:0 16px 12px"><summary>Spending</summary>
-  <p class="hint">Pay-per-use work stops and asks you when this month's total reaches the cap. Each run can spend at most $10 of what is left.</p>
-  <form id="cap-form" style="padding:0">
-    <label>Monthly cap $ <input id="cap" type="number" min="0" step="1" style="width:7em" aria-label="Monthly cap in dollars"></label>
-    <button>Save</button>
-  </form>
-</details>
-<details style="padding:0 16px 12px" id="phones"><summary>Phones and browsers</summary>
-  <p class="hint">Pair your phone to get the inbox there. The code works once, for a few minutes.</p>
-  <button type="button" id="pair">Pair a phone</button>
-  <div id="qr" class="qr"></div>
-  <ul id="devices" class="devices"></ul>
-</details>
-<div class="limits" id="limits"></div>
-<div class="err" id="err"></div>
-<main id="board"></main>
-<dialog id="detail"><h3 id="d-title"></h3><div id="log"></div>
-  <div class="actions" id="d-actions"></div></dialog>
+<div class="shell" id="shell">
+  <aside class="side" aria-label="Decurion">
+    <a class="brand" href="#board" id="brand"><span id="mark"></span><span>Decurion</span></a>
+    <nav class="nav main-nav" aria-label="Pages">
+      <a class="nav-item" href="#board" data-route="board" data-key="nav-board"></a>
+      <a class="nav-item" href="/goals" id="nav-goals"></a>
+      <a class="nav-item" href="#settings" data-route="settings" data-key="nav-settings"></a>
+    </nav>
+    <nav class="nav apps" aria-label="Filter by app" id="app-nav"></nav>
+    <a class="usage" href="#settings/spending" id="usage" hidden></a>
+  </aside>
+
+  <main class="main" id="main">
+    <div class="banner" id="offline-banner" role="status" hidden></div>
+    <header class="topbar" id="topbar">
+      <div><h1 id="page-title">Board</h1></div>
+      <span class="sub" id="sub"></span>
+      <span class="grow"></span>
+      <div class="right">
+        <button type="button" class="needs-btn" id="needs" hidden></button>
+        <span id="pro-slot"></span>
+        <button type="button" class="btn primary" id="new-work" title="New work (N)"></button>
+      </div>
+    </header>
+
+    <div class="content" id="view-board">
+      <div class="limits live" id="limits" hidden></div>
+      <section class="composer live" id="composer" aria-label="New work">
+        <form id="add-thread" novalidate>
+          <label class="lead" for="prompt">Describe what you want built</label>
+          <textarea id="prompt" rows="3" placeholder="For example: add a page where clients book a treatment, pick a time and get a confirmation email" aria-describedby="add-err"></textarea>
+          <div class="bar">
+            <select id="app" aria-label="App"></select>
+            <input id="title" type="text" placeholder="Title (optional)" aria-label="Title (optional)" maxlength="120" autocomplete="off">
+            <select id="parent" aria-label="Part of other work" hidden></select>
+            <label class="check" id="bg-wrap" hidden><input type="checkbox" id="background"> Keep going if the parent stops</label>
+            <span class="grow"></span>
+            <span class="kbd-hint" id="kbd-hint"></span>
+            <button class="btn primary" id="start" type="submit"></button>
+          </div>
+          <div class="field-error" id="add-err" role="alert"></div>
+        </form>
+        <div class="empty-state" id="no-apps" hidden></div>
+      </section>
+      <div id="board-note" class="board-note" hidden></div>
+      <div class="board-wrap live" id="board-wrap"><div class="board" id="board" aria-label="Work by status"></div></div>
+    </div>
+
+    <div class="content" id="view-settings" hidden>
+      <div class="settings">
+        <section class="scard wide live" id="set-apps" aria-labelledby="h-apps">
+          <header><span class="ic" data-icon="app"></span><div><h2 id="h-apps">Apps</h2><p>Each app is a git checkout on this PC. Agents work on their own copy and never touch yours.</p></div></header>
+          <ul class="rows" id="app-rows"></ul>
+          <form id="add-app" class="form-grid" novalidate>
+            <h3 class="full">Add an app</h3>
+            <div class="field">
+              <label for="app-name">Name</label>
+              <input id="app-name" type="text" autocomplete="off" aria-describedby="app-name-hint app-name-err" placeholder="pv-medispa">
+              <span class="hint" id="app-name-hint">1 to 40 letters, digits, - or _. No spaces.</span>
+              <span class="field-error" id="app-name-err"></span>
+            </div>
+            <div class="field">
+              <label for="app-path">Repo path</label>
+              <input id="app-path" type="text" autocomplete="off" spellcheck="false" aria-describedby="app-path-hint app-path-err" placeholder="C:\path\to\repo">
+              <span class="hint" id="app-path-hint">The full path to the app's git folder on this PC.</span>
+              <span class="field-error" id="app-path-err"></span>
+            </div>
+            <div class="field">
+              <label for="app-profile">Claude account</label>
+              <select id="app-profile" aria-describedby="app-profile-hint"><option value="A">Max account A</option><option value="B">Max account B</option></select>
+              <span class="hint" id="app-profile-hint">Which signed-in Max account the agents use.</span>
+            </div>
+            <div class="field">
+              <span class="label">Billing</span>
+              <label class="check"><input type="checkbox" id="app-ppu"> Pay-per-use instead of a Max account</label>
+              <span class="hint">Billed by use, under your monthly cap. Switch any time.</span>
+            </div>
+            <div class="full actions">
+              <button class="btn primary" type="submit" id="add-app-btn">Add app</button>
+              <span class="field-error" id="app-err" role="alert"></span>
+            </div>
+          </form>
+        </section>
+
+        <section class="scard live" id="set-spending" aria-labelledby="h-spend">
+          <header><span class="ic" data-icon="money"></span><div><h2 id="h-spend">Spending</h2><p>Pay-per-use work stops and asks you when this month's total reaches the cap. Each run can spend at most $10 of what is left.</p></div></header>
+          <div class="spend-big" id="spend-big"></div>
+          <form id="cap-form" class="field" novalidate>
+            <label for="cap">Monthly cap</label>
+            <div class="cap-row">
+              <div class="money-in"><span>$</span><input id="cap" type="number" min="0" step="1" inputmode="decimal" aria-describedby="cap-err"></div>
+              <button class="btn" type="submit">Save cap</button>
+            </div>
+            <span class="field-error" id="cap-err" role="alert"></span>
+          </form>
+        </section>
+
+        <section class="scard wide live" id="set-keys" aria-labelledby="h-keys">
+          <header><span class="ic" data-icon="key"></span><div><h2 id="h-keys">Test keys</h2><p>Test keys reach this app's agents while they work. They are kept in Windows' secure store and shown again only as their last four characters. Live keys are refused.</p></div></header>
+          <div id="key-apps"><p class="hint">Loading…</p></div>
+        </section>
+
+        <section class="scard live" id="set-phones" aria-labelledby="h-phones">
+          <header><span class="ic" data-icon="phone"></span><div><h2 id="h-phones">Phones</h2><p>Pair your phone to get the inbox there. The code works once, for a few minutes.</p></div></header>
+          <div><button type="button" class="btn" id="pair"></button></div>
+          <div class="qr" id="qr" hidden></div>
+          <div>
+            <h3 style="margin-bottom:8px">Paired phones and browsers</h3>
+            <ul class="rows" id="devices"><li class="empty">Loading…</li></ul>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+</div>
+<div class="so" id="signed-out" hidden></div>
+
+<script src="/ui.js"></script>
 <script>
-const COLS = [["queued","Queued"],["running","Running"],["needs_you","Needs you"],["in_review","In review"],["done","Done"],["failed","Failed"]];
-const OWNER_MOVES = { in_review:[["done","Accept"],["queued","Send back"],["failed","Reject"]],
-                      needs_you:[["queued","Continue"],["failed","Stop"]], failed:[["queued","Retry"]],
-                      queued:[["failed","Cancel"]] };
-let apps = {};
-const $ = id => document.getElementById(id);
-async function api(path, opts = {}) {
-  const r = await fetch("/api" + path, { headers: { "content-type": "application/json" }, ...opts });
-  if (r.status === 401) throw new Error("Not signed in. Open the login link the hub printed when it started.");
-  if (!r.ok) throw new Error(await r.text());
-  return r.status === 204 ? null : r.json();
-}
-function el(tag, attrs = {}, text = "") { const e = document.createElement(tag); Object.assign(e, attrs); e.textContent = text; return e; }
-async function refresh() {
-  try {
-    const [a, threads] = await Promise.all([api("/apps"), api("/threads")]);
-    apps = Object.fromEntries(a.map(x => [x.id, x]));
-    const sel = $("app"); const keep = sel.value; sel.replaceChildren(...a.map(x => el("option", { value: x.id }, x.name))); if (keep) sel.value = keep;
-    $("board").replaceChildren(...COLS.map(([st, label]) => {
-      const col = el("section", { className: "col" }); const mine = threads.filter(t => t.state === st);
-      col.append(el("h2", {}, `${label} (${mine.length})`));
-      for (const t of mine) {
-        const c = el("div", { className: "card" }); c.dataset.state = t.state;
-        c.append(el("div", { className: "app" }, apps[t.app_id]?.name ?? ""), el("div", {}, t.title));
-        c.onclick = () => openThread(t); col.append(c);
+"use strict";
+(() => {
+  const { el, $, icon } = D;
+  const COLS = D.ORDER; // needs you first: what you came to see
+  const ACTIVE = new Set(["queued", "running", "needs_you", "in_review"]);
+  const TAILED = new Set(["running", "needs_you", "in_review", "failed"]);
+  const EMPTY_COL = {
+    needs_you: "All clear. Nothing needs you.", running: "No agents working right now.", in_review: "Nothing to review.",
+    queued: "Nothing waiting.", done: "Finished work shows here.", failed: "Nothing failed.",
+  };
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
+  let apps = [], threads = [], spend = null, devices = null, limits = [];
+  const limitErr = {};          // profile -> message from a failed "Continue on pay-per-use"
+  let loaded = false, loadErr = null, busy = false, timer = 0;
+  const tails = new Map();      // thread id -> { key, ev }
+  const seen = new Set();       // cards already shown, so they don't animate again
+  const sigs = {};
+  let filter = D.store.get("decurion.board.app") || "all";
+  let folds = {};
+  try { folds = JSON.parse(D.store.get("decurion.board.folds") || "{}") || {}; } catch (_) { folds = {}; }
+
+  const appById = (id) => apps.find((a) => a.id === id);
+  const shownThreads = () => threads.filter((t) => filter === "all" || String(t.app_id) === filter);
+  const lineOf = (t) => D.cardLine(t, tails.get(t.id)?.ev);
+
+  // Re-renders without losing keyboard focus: focus is restored by data-key.
+  function keepFocus(fn) {
+    const key = document.activeElement?.dataset?.key;
+    fn();
+    if (key && document.activeElement?.dataset?.key !== key) document.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
+  }
+  function changed(name, value) {
+    const s = JSON.stringify(value);
+    if (sigs[name] === s) return false;
+    sigs[name] = s;
+    return true;
+  }
+
+  // ---------- Static pieces ----------
+  $("mark").append(D.mark(28));
+  document.querySelector('[data-route="board"]').append(icon("board"), el("span", { className: "nm" }, "Board"));
+  document.querySelector('[data-route="settings"]').append(icon("settings"), el("span", { className: "nm" }, "Settings"));
+  $("nav-goals").append(icon("send"), el("span", { className: "nm" }, "Goals"));
+  for (const s of document.querySelectorAll("[data-icon]")) s.append(icon(s.dataset.icon, "l"));
+  $("new-work").append(icon("plus"), "New work");
+  $("start").append("Start work", icon("send"));
+  $("pair").append(icon("phone"), "Pair a phone");
+  $("kbd-hint").append(el("kbd", {}, isMac ? "Cmd" : "Ctrl"), " ", el("kbd", {}, "Enter"), " to start");
+  $("pro-slot").append(D.switchEl("Pro view", () => D.pro, (v) => D.setPro(v)));
+  $("offline-banner").append(icon("offline"), el("span", {}, "Your PC's hub isn't answering. Showing the last known board."));
+  $("no-apps").append(
+    el("div", { className: "mark" }, icon("app", "l")),
+    el("h3", {}, "Add your first app to start"),
+    el("p", {}, "An app is a git folder on this PC. Once it's added, describe what you want built and an agent gets to work."),
+    el("a", { className: "btn primary", href: "#settings/apps" }, icon("plus"), "Add an app"));
+  window.addEventListener("scroll", () => $("topbar").classList.toggle("scrolled", window.scrollY > 4), { passive: true });
+
+  // ---------- Routes: #board and #settings ----------
+  let view = "board";
+  function route() {
+    const h = location.hash;
+    view = h.startsWith("#settings") ? "settings" : "board";
+    $("view-board").hidden = view !== "board";
+    $("view-settings").hidden = view !== "settings";
+    for (const a of document.querySelectorAll("[data-route]")) {
+      if (a.dataset.route === view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+    }
+    $("page-title").textContent = view === "settings" ? "Settings" : "Board";
+    document.title = view === "settings" ? "Settings · Decurion" : "Decurion";
+    if (view === "settings") {
+      renderSettings();
+      loadDevices();
+      loadKeys();
+      const part = h.split("/")[1];
+      const target = part && $(`set-${part}`);
+      if (target) requestAnimationFrame(() => target.scrollIntoView({ block: "start" }));
+      else window.scrollTo(0, 0);
+    }
+    renderTop();
+  }
+  window.addEventListener("hashchange", route);
+
+  // ---------- Loading ----------
+  async function loadTails(list) {
+    const live = new Set(list.map((t) => t.id));
+    for (const id of tails.keys()) if (!live.has(id)) tails.delete(id);
+    await Promise.all(list.filter((t) => TAILED.has(t.state)).map(async (t) => {
+      const key = t.state + t.updated_at;
+      const c = tails.get(t.id);
+      if (c && c.key === key && t.state !== "running") return;
+      try { tails.set(t.id, { key, ev: await D.tail(t.id, 5) }); } catch (_) { /* keep the old line */ }
+    }));
+  }
+
+  async function refresh() {
+    if (busy) return;
+    busy = true;
+    try {
+      const [a, th, sp, lim] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/spend"),
+        D.api("/limits").catch(() => [])]); // older hubs have no /limits
+      apps = a; threads = th; spend = sp; limits = Array.isArray(lim) ? lim : [];
+      D.setApps(a);
+      D.setThreads(th);
+      await loadTails(th);
+      loaded = true; loadErr = null;
+    } catch (e) {
+      if (e.signedOut) { busy = false; signedOut(); return; }
+      loadErr = e;
+    }
+    busy = false;
+    render();
+  }
+
+  function signedOut() {
+    clearInterval(timer);
+    $("shell").hidden = true;
+    const so = $("signed-out");
+    so.hidden = false;
+    so.replaceChildren(el("div", { className: "so-card" }, D.mark(44), el("h1", {}, "Sign in to Decurion"), el("p", {}, D.signedOutText)));
+  }
+
+  function render() {
+    if (filter !== "all" && loaded && !apps.some((a) => String(a.id) === filter)) setFilter("all", false);
+    renderSide();
+    renderTop();
+    renderLimits();
+    renderComposer();
+    renderBoard();
+    if (view === "settings") renderSettings();
+  }
+
+  // ---------- Sidebar ----------
+  function setFilter(v, rerender = true) {
+    filter = v;
+    D.store.set("decurion.board.app", v);
+    if (v !== "all") $("app").value = v;
+    if (rerender) render();
+  }
+
+  function renderSide() {
+    const counts = {}, needs = {};
+    for (const t of threads) {
+      if (ACTIVE.has(t.state)) counts[t.app_id] = (counts[t.app_id] ?? 0) + 1;
+      if (t.state === "needs_you") needs[t.app_id] = (needs[t.app_id] ?? 0) + 1;
+    }
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    const totalNeeds = Object.values(needs).reduce((a, b) => a + b, 0);
+    if (changed("side", [apps.map((a) => [a.id, a.name]), counts, needs, filter, view])) {
+      keepFocus(() => {
+        const item = (key, name, count, need, iconName) => {
+          const b = el("button", { type: "button", className: "nav-item", "aria-pressed": filter === key ? "true" : "false", dataset: { key: `app-${key}` }, title: name },
+            icon(iconName), el("span", { className: "nm" }, name),
+            need ? el("span", { className: "needs-dot" }, el("span", { className: "sr-only" }, `${need} ${need === 1 ? "needs" : "need"} you`)) : null,
+            el("span", { className: "ct", "aria-label": `${count} active` }, String(count)));
+          b.onclick = () => { setFilter(key); if (view !== "board") location.hash = "#board"; };
+          return b;
+        };
+        const add = el("a", { className: "ghost", href: "#settings/apps", "aria-label": "Add an app", title: "Add an app" }, icon("plus"));
+        $("app-nav").replaceChildren(
+          el("div", { className: "nav-h" }, el("span", {}, "Apps"), add),
+          item("all", "All apps", total, totalNeeds, "board"),
+          ...apps.map((a) => item(String(a.id), a.name, counts[a.id] ?? 0, needs[a.id] ?? 0, "app")));
+      });
+    }
+    if (spend && changed("usage", spend)) {
+      const { pay_per_use_usd: used, cap_usd: cap, max_equivalent_usd: max } = spend;
+      const pct = cap > 0 ? Math.min(1, used / cap) : (used > 0 ? 1 : 0);
+      const near = cap > 0 ? used >= 0.8 * cap : used > 0;
+      const u = $("usage");
+      u.hidden = false;
+      u.classList.toggle("near", near);
+      u.replaceChildren(
+        el("span", { className: "lbl" }, "Pay-per-use this month"),
+        el("span", { className: "num" }, el("b", {}, D.money(used)), el("span", {}, ` of ${D.money(cap)}`)),
+        el("span", { className: `meter${near ? " near" : ""}`, role: "meter", "aria-valuemin": "0", "aria-valuemax": String(cap), "aria-valuenow": String(used), "aria-label": "Pay-per-use spent this month" },
+          el("span", { style: `width:${(pct * 100).toFixed(1)}%` })),
+        el("span", { className: "hint" }, `Max accounts used ${D.money(max)} worth`));
+    }
+  }
+
+  // ---------- Top bar ----------
+  function renderTop() {
+    const needs = threads.filter((t) => t.state === "needs_you").length;
+    const n = $("needs");
+    n.hidden = !needs;
+    if (changed("needs", needs)) n.replaceChildren(icon("needs_you"), `${needs} ${needs === 1 ? "needs" : "need"} you`);
+    const shown = shownThreads();
+    const where = filter === "all" ? "All apps" : D.appName(+filter);
+    $("sub").textContent = view === "board" && loaded ? `${where} · ${D.plural(shown.length, "piece")} of work` : "";
+  }
+  $("needs").onclick = () => {
+    const mine = threads.filter((t) => t.state === "needs_you");
+    if (filter !== "all" && !mine.some((t) => String(t.app_id) === filter)) setFilter("all");
+    if (view !== "board") { location.hash = "#board"; }
+    if (folds.needs_you === true) { folds.needs_you = false; saveFolds(); renderBoard(); }
+    requestAnimationFrame(() => {
+      const col = document.querySelector('.col[data-state="needs_you"]');
+      col?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+      col?.querySelector(".hit")?.focus({ preventScroll: true });
+    });
+  };
+  function focusComposer() {
+    if (view !== "board") location.hash = "#board";
+    requestAnimationFrame(() => {
+      const target = apps.length ? $("prompt") : $("no-apps").querySelector(".btn");
+      $("composer").scrollIntoView({ block: "nearest", behavior: "smooth" });
+      target?.focus({ preventScroll: true });
+    });
+  }
+  $("new-work").onclick = focusComposer;
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "n" && e.key !== "N") return;
+    if (e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]")) return;
+    if (e.target.closest("input, textarea, select, [contenteditable]")) return;
+    e.preventDefault();
+    focusComposer();
+  });
+
+  // ---------- Accounts out of usage ----------
+  function untilText(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return "later";
+    return d.toDateString() === new Date().toDateString()
+      ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : d.toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" });
+  }
+  function renderLimits() {
+    if (!changed("limits", [limits, limitErr, D.offline])) return;
+    const box = $("limits");
+    box.hidden = !limits.length;
+    keepFocus(() => box.replaceChildren(...limits.map((l) => {
+      const text = `Claude Max ${l.profile} is out of usage until about ${untilText(l.until)}. ` +
+        (l.waiting > 0 ? `${l.waiting} waiting; they restart on their own then.` : "New work for it waits until then.");
+      let btn = null;
+      if (l.waiting > 0) {
+        btn = el("button", { type: "button", className: "btn sm", dataset: { key: `limit-${l.profile}` } }, icon("money"), "Continue on pay-per-use");
+        btn.disabled = D.offline;
+        btn.onclick = async () => {
+          btn.disabled = true;
+          delete limitErr[l.profile];
+          try {
+            await D.api(`/limits/${encodeURIComponent(l.profile)}/pay-per-use`, { method: "POST" });
+            D.toast(`Moved ${D.plural(l.waiting, "piece")} of work to pay-per-use.`);
+          } catch (e) {
+            limitErr[l.profile] = `Couldn't move it to pay-per-use. ${e.message}`;
+          }
+          sigs.limits = "";
+          await refresh();
+          renderLimits();
+        };
       }
-      return col;
+      return el("div", { className: "notice warn", role: "status" }, icon("alert"),
+        el("div", { className: "grow" }, text, limitErr[l.profile] ? el("div", { className: "field-error" }, limitErr[l.profile]) : null),
+        btn);
+    })));
+  }
+
+  // ---------- Composer ----------
+  function renderComposer() {
+    const has = apps.length > 0;
+    $("add-thread").hidden = loaded && !has;
+    $("no-apps").hidden = !loaded || has;
+    if (changed("appsel", apps.map((a) => [a.id, a.name]))) {
+      const sel = $("app");
+      const keep = sel.value || (filter !== "all" ? filter : D.store.get("decurion.board.lastApp"));
+      sel.replaceChildren(...apps.map((a) => el("option", { value: String(a.id) }, a.name)));
+      if (keep && apps.some((a) => String(a.id) === keep)) sel.value = keep;
+    }
+    fillParents();
+    $("start").disabled = D.offline;
+  }
+
+  // "Part of": open work in the same app. Kept while the owner is choosing.
+  function fillParents() {
+    const sel = $("parent");
+    const app = +$("app").value;
+    const open = threads.filter((t) => t.app_id === app && ACTIVE.has(t.state));
+    if (document.activeElement !== sel && changed("parents", [app, open.map((t) => [t.id, t.title])])) {
+      const keep = sel.value;
+      sel.replaceChildren(el("option", { value: "" }, "Not part of other work"),
+        ...open.map((t) => el("option", { value: String(t.id) }, `Part of: ${t.title}`)));
+      sel.value = open.some((t) => String(t.id) === keep) ? keep : "";
+    }
+    sel.hidden = !open.length && !sel.value;
+    $("bg-wrap").hidden = !sel.value;
+    if (!sel.value) $("background").checked = false;
+  }
+  $("parent").onchange = fillParents;
+
+  function deriveTitle(prompt) {
+    const first = (prompt.split(/\r?\n/).find((l) => l.trim()) ?? "").trim().replace(/\s+/g, " ");
+    if (first.length <= 60) return first.replace(/[.\s]+$/, "") || first;
+    const cut = first.slice(0, 60);
+    const sp = cut.lastIndexOf(" ");
+    return (sp > 30 ? cut.slice(0, sp) : cut).replace(/[\s,.;:-]+$/, "") + "…";
+  }
+
+  const prompt = $("prompt");
+  function grow() { prompt.style.height = "auto"; prompt.style.height = Math.min(prompt.scrollHeight + 2, 300) + "px"; }
+  prompt.addEventListener("input", () => {
+    grow();
+    $("title").placeholder = prompt.value.trim() ? `Title: ${deriveTitle(prompt.value)}` : "Title (optional)";
+    if (prompt.value.trim()) $("add-err").textContent = "";
+  });
+  for (const f of [prompt, $("title")]) {
+    f.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("add-thread").requestSubmit(); }
+    });
+  }
+  $("app").onchange = () => { D.store.set("decurion.board.lastApp", $("app").value); fillParents(); };
+
+  $("add-thread").onsubmit = async (e) => {
+    e.preventDefault();
+    const err = $("add-err");
+    err.textContent = "";
+    if (D.offline) { err.textContent = "Your PC isn't answering. Try again when it's back."; return; }
+    const text = prompt.value.trim();
+    if (!text) { err.textContent = "Describe the work first."; prompt.focus(); return; }
+    const app_id = +$("app").value;
+    if (!app_id) { err.textContent = "Pick an app."; $("app").focus(); return; }
+    const title = $("title").value.trim() || deriveTitle(text);
+    const btn = $("start");
+    btn.disabled = true;
+    btn.replaceChildren(icon("running"), "Starting");
+    try {
+      const parent = $("parent").value;
+      await D.send("/threads", { app_id, title, prompt: text,
+        parent_id: parent ? +parent : null, background: !!parent && $("background").checked });
+      prompt.value = ""; $("title").value = ""; $("title").placeholder = "Title (optional)"; grow();
+      $("background").checked = false;
+      D.store.set("decurion.board.lastApp", String(app_id));
+      D.toast(`Started "${title}". An agent will pick it up.`);
+      refresh();
+    } catch (x) {
+      err.textContent = `Couldn't start the work. ${x.message}`;
+    } finally {
+      btn.replaceChildren("Start work", icon("send"));
+      btn.disabled = D.offline;
+    }
+  };
+
+  // ---------- Board ----------
+  // Done is history, so it starts folded; Queued and Failed fold while empty.
+  const isFolded = (st, n) => (st in folds ? folds[st] : st === "done" || ((st === "queued" || st === "failed") && n === 0));
+  function saveFolds() { D.store.set("decurion.board.folds", JSON.stringify(folds)); }
+  function toggleFold(st, n) { folds[st] = !isFolded(st, n); saveFolds(); keepFocusFold(st); }
+  function keepFocusFold(st) {
+    renderBoard();
+    document.querySelector(`[data-key="fold-${st}"]`)?.focus({ preventScroll: true });
+  }
+
+  function skeleton() {
+    $("board").replaceChildren(...COLS.map((st) => {
+      if (st === "queued" || st === "failed") return foldedCol(st, null);
+      return el("section", { className: "col", dataset: { state: st } },
+        el("header", { className: "col-h" }, el("h2", {}, D.pill(st))),
+        el("div", { className: "cards" }, ...[0, 1].slice(0, st === "done" ? 1 : 2).map(() => el("div", { className: "skeleton sk-card" }))));
     }));
-    $("status").textContent = `${threads.length} pieces of work · updated ${new Date().toLocaleTimeString()}`;
-    const [sp] = await Promise.all([api("/spend"), showLimits($("limits"), refresh).catch(() => {})]);
-    const money = n => "$" + n.toFixed(2);
-    $("spend").textContent = `Pay-per-use this month: ${money(sp.pay_per_use_usd)} of ${money(sp.cap_usd)} · Max accounts used ${money(sp.max_equivalent_usd)} worth`;
-    $("spend").classList.toggle("near", sp.pay_per_use_usd >= 0.8 * sp.cap_usd);
-    if (document.activeElement !== $("cap")) $("cap").value = sp.cap_usd;
-    $("apps").replaceChildren(...a.map(x => {
-      const li = el("li"); const span = el("span", {}, `${x.name} · ${x.pay_per_use ? "pay-per-use" : "Max account " + x.profile}`);
-      const b = el("button", { type: "button" }, x.pay_per_use ? `Switch to Max ${x.profile}` : "Switch to pay-per-use");
-      b.onclick = async () => { await api(`/apps/${x.id}/pay-per-use`, { method: "POST", body: JSON.stringify({ on: !x.pay_per_use }) }); refresh(); };
-      li.append(span, b); return li;
-    }));
-    $("err").textContent = "";
-  } catch (e) { $("err").textContent = e.message; }
-}
-async function openThread(t) {
-  $("d-title").textContent = `${t.title} · ${t.state.replace("_", " ")}`;
-  // Events come in pages of 500; fetch them all so the outcome is never cut off.
-  let ev = [], page;
-  do { page = await api(`/threads/${t.id}/events?after=${ev.length ? ev[ev.length - 1].id : 0}`); ev = ev.concat(page); }
-  while (page.length === 500);
-  $("log").textContent = ev.map(r => {
-    const e = r.event; const time = r.at.slice(11, 19);
-    if (e.kind === "started") return `${time}  Agent's box started`;
-    if (e.kind === "limit_hit") return `${time}  Claude Max account ran out of usage`;
-    return e.kind === "message" ? `${time}  ${e.text}` : e.kind === "tool" ? `${time}  [${e.name}] ${e.summary}` : `${time}  FINISHED ${e.ok ? "ok" : "failed"}${e.cost_usd != null ? ` ($${e.cost_usd.toFixed(2)} so far)` : ""}: ${e.summary}`;
-  }).join("\n") || "No activity yet.";
-  $("d-actions").replaceChildren(...(OWNER_MOVES[t.state] ?? []).map(([to, label]) => {
-    const b = el("button", { type: "button" }, label);
-    b.onclick = async () => { try { await api(`/threads/${t.id}/move`, { method: "POST", body: JSON.stringify({ to }) }); $("detail").close(); refresh(); } catch (e) { alert(e.message); } };
-    return b;
-  }), Object.assign(el("button", { type: "button" }, "Close"), { onclick: () => $("detail").close() }));
-  $("detail").showModal();
-}
-$("add-thread").onsubmit = async e => { e.preventDefault();
-  try { await api("/threads", { method: "POST", body: JSON.stringify({ app_id: +$("app").value, title: $("title").value, prompt: $("prompt").value }) });
-        $("title").value = ""; $("prompt").value = ""; refresh(); } catch (x) { $("err").textContent = x.message; } };
-$("add-app").onsubmit = async e => { e.preventDefault();
-  try { await api("/apps", { method: "POST", body: JSON.stringify({ name: $("app-name").value, repo_path: $("app-path").value, profile: $("app-profile").value, pay_per_use: $("app-ppu").checked }) });
-        e.target.reset(); refresh(); } catch (x) { $("err").textContent = x.message; } };
-async function showLimits(box, after) {
-  const limits = await api("/limits");
-  box.replaceChildren(...limits.map(l => {
-    const t = new Date(l.until);
-    // A weekly limit can reset days from now: say the day when it is not today.
-    const when = t.toDateString() === new Date().toDateString()
-      ? t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-      : t.toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" });
-    const d = el("div", { className: "limit" });
-    d.append(el("span", {}, `Claude Max ${l.profile} is out of usage until about ${when}. ${l.waiting} waiting; they restart on their own then.`));
-    const b = el("button", { type: "button" }, "Continue on pay-per-use");
-    b.onclick = async () => { b.disabled = true; try { await api(`/limits/${l.profile}/pay-per-use`, { method: "POST" }); after(); } catch (e) { $("err").textContent = e.message; b.disabled = false; } };
-    d.append(b); return d;
-  }));
-}
-async function loadDevices() {
-  const list = await api("/devices");
-  $("devices").replaceChildren(...list.map(d => {
-    const li = el("li"); li.append(el("span", {}, `${d.name}${d.has_push ? " · notifications on" : ""} · last used ${d.last_seen ? d.last_seen.slice(0, 16).replace("T", " ") : "never"}`));
-    const b = el("button", { type: "button" }, "Remove");
-    b.onclick = async () => { if (confirm(`Sign out "${d.name}"? It will need a new pairing code.`)) { await api(`/devices/${d.id}/remove`, { method: "POST" }); loadDevices(); } };
-    li.append(b); return li;
-  }));
-}
-$("phones").ontoggle = () => { if ($("phones").open) loadDevices().catch(e => $("err").textContent = e.message); };
-$("pair").onclick = async () => {
-  try {
-    const p = await api("/pairing", { method: "POST" });
-    // The SVG is generated by the hub itself from the pairing link.
-    $("qr").innerHTML = p.qr_svg;
-    $("qr").append(el("a", { href: p.url }, `Or open this on the phone (works for ${p.minutes} minutes)`));
-    if (p.warning) $("qr").append(el("p", { className: "hint" }, p.warning));
-    setTimeout(loadDevices, 15000);
-  } catch (e) { $("err").textContent = e.message; }
-};
-$("cap-form").onsubmit = async e => { e.preventDefault();
-  const v = $("cap").value.trim();
-  if (v === "" || !(+v >= 0)) { $("err").textContent = "Enter a monthly cap in dollars."; return; }
-  try { await api("/spend/cap", { method: "POST", body: JSON.stringify({ cap_usd: +v }) }); $("cap").blur(); refresh(); }
-  catch (x) { $("err").textContent = x.message; } };
-refresh(); setInterval(refresh, 3000);
+  }
+
+  function foldedCol(st, n) {
+    const b = el("button", { type: "button", className: "strip", dataset: { state: st, key: `fold-${st}` }, "aria-expanded": "false",
+      "aria-label": `Show ${D.STATES[st].col}${n == null ? "" : `, ${n}`}`, title: `Show ${D.STATES[st].col}` },
+      icon(st === "running" && !n ? "queued" : st), el("span", { className: "vt" }, D.STATES[st].col), n == null ? null : el("span", { className: "ct" }, String(n)));
+    if (b.querySelector("svg")?.classList.contains("spin") && !n) b.querySelector("svg").classList.remove("spin");
+    if (n != null) b.onclick = () => toggleFold(st, n);
+    return el("section", { className: "col folded", dataset: { state: st } }, b);
+  }
+
+  function card(t) {
+    const app = appById(t.app_id);
+    const line = lineOf(t);
+    const c = el("article", { className: `wcard${seen.has(t.id) ? " seen" : ""}`, dataset: { state: t.state, id: String(t.id) } });
+    seen.add(t.id);
+    const hit = el("button", { type: "button", className: "hit", dataset: { key: `card-${t.id}` } }, t.title);
+    hit.onclick = () => D.openWork(t, refresh);
+    const acts = (t.state === "needs_you" || t.state === "in_review")
+      ? D.moveButtons(t, { quiet: true, size: "sm", onMoved: refresh }) : [];
+    acts.forEach((b, i) => { b.dataset.key = `act-${t.id}-${i}`; b.disabled = D.offline; });
+    const parts = [
+      el("div", { className: "meta" },
+        el("span", { className: "tag app" }, icon("app"), el("span", {}, D.appName(t.app_id) || "Unknown app")),
+        D.pro && app && el("span", { className: "tag ai dot-sep" }, icon("ai"), el("span", {}, D.aiLabel(app))),
+        el("span", { className: "when", title: new Date(t.updated_at).toLocaleString() }, D.ago(t.updated_at))),
+      el("h3", { className: "t" }, hit),
+      line && el("p", { className: "says" }, line),
+      D.treeLine(t) && el("p", { className: "tree" }, D.treeLine(t)),
+      D.pro && el("div", { className: "pro" }, icon("branch"), `${t.branch || "no branch yet"} · #${t.id}`),
+      (acts.length || t.state === "running") && el("div", { className: "foot" },
+        acts.length ? el("span", { className: "acts" }, ...acts) : null,
+        t.state === "running" ? el("span", { className: "working" }, icon("running"), "Working") : null),
+    ];
+    c.append(...parts.filter(Boolean));
+    return c;
+  }
+
+  function renderBoard() {
+    const note = $("board-note");
+    const showErr = loadErr && !D.offline;
+    if (changed("note", [showErr ? loadErr.message : "", D.offline])) {
+      note.hidden = !showErr;
+      if (showErr) {
+        const again = el("button", { type: "button", className: "btn sm" }, icon("retry"), "Try again");
+        again.onclick = async () => { again.disabled = true; await refresh(); again.disabled = false; };
+        note.replaceChildren(el("div", { className: "notice bad", role: "alert" }, icon("alert"),
+          el("div", { className: "grow" }, el("b", {}, "Couldn't load the board. "), "Your work is safe.", el("div", { className: "hint" }, loadErr.message)), again));
+      }
+    }
+    if (!loaded) { if (changed("board", ["skeleton", !!loadErr])) { if (loadErr) $("board").replaceChildren(); else skeleton(); } return; }
+
+    const shown = shownThreads();
+    const sig = ["board", filter, D.pro, D.offline, folds, Math.floor(Date.now() / 30000), apps.map((a) => [a.id, a.name, a.pay_per_use, a.profile]),
+      shown.map((t) => [t.id, t.state, t.updated_at, t.title, t.branch, lineOf(t), D.treeLine(t)])];
+    if (!changed("board", sig)) return;
+
+    keepFocus(() => {
+      const board = $("board");
+      if (!apps.length) { board.replaceChildren(); return; }
+      if (!shown.length) {
+        const all = filter === "all";
+        const btn = !all && Object.assign(el("button", { type: "button", className: "btn sm" }, "Show all apps"), { onclick: () => setFilter("all") });
+        board.replaceChildren(el("div", { className: "empty-state board-empty", style: "flex:1" },
+          el("div", { className: "mark" }, icon(all ? "board" : "app", "l")),
+          el("h3", {}, all ? "Nothing running yet" : `Nothing for ${D.appName(+filter)} yet`),
+          el("p", {}, all ? "Describe what you want built above." : "Describe what you want built above, or look at every app."),
+          btn));
+        return;
+      }
+      board.replaceChildren(...COLS.map((st) => {
+        const mine = shown.filter((t) => t.state === st);
+        if (isFolded(st, mine.length)) return foldedCol(st, mine.length);
+        const pill = D.pill(st);
+        if (st === "running" && !mine.length) pill.querySelector("svg")?.classList.remove("spin");
+        const fold = el("button", { type: "button", className: "ghost", dataset: { key: `fold-${st}` }, "aria-expanded": "true",
+          "aria-label": `Fold ${D.STATES[st].col}`, title: "Fold this column" }, icon("left"));
+        fold.onclick = () => toggleFold(st, mine.length);
+        return el("section", { className: "col", dataset: { state: st }, "aria-label": `${D.STATES[st].col}, ${mine.length}` },
+          el("header", { className: "col-h" }, el("h2", {}, pill), el("span", { className: "ct" }, String(mine.length)), el("span", { className: "grow" }), fold),
+          el("div", { className: "cards" }, ...(mine.length ? mine.map(card) : [el("div", { className: "col-empty" }, EMPTY_COL[st])])));
+      }));
+    });
+  }
+
+  function edges() {
+    const w = $("board-wrap");
+    const scrollable = w.scrollWidth > w.clientWidth + 2;
+    w.classList.toggle("more-l", scrollable && w.scrollLeft > 2);
+    w.classList.toggle("more-r", scrollable && w.scrollLeft + w.clientWidth < w.scrollWidth - 2);
+  }
+  $("board-wrap").addEventListener("scroll", edges, { passive: true });
+  window.addEventListener("resize", edges);
+  new ResizeObserver(edges).observe($("board"));
+
+  // Arrow keys move between cards: up and down in a column, left and right across columns.
+  $("board").addEventListener("keydown", (e) => {
+    const hit = e.target.closest?.(".hit");
+    if (!hit || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+    const cols = [...$("board").querySelectorAll(".col:not(.folded)")].map((c) => [...c.querySelectorAll(".hit")]).filter((l) => l.length);
+    const ci = cols.findIndex((l) => l.includes(hit));
+    if (ci < 0) return;
+    const ri = cols[ci].indexOf(hit);
+    const stacked = getComputedStyle($("board")).flexDirection === "column";
+    let next;
+    if (e.key === "Home") next = cols[ci][0];
+    else if (e.key === "End") next = cols[ci][cols[ci].length - 1];
+    else if (e.key === "ArrowUp") next = cols[ci][ri - 1] ?? (stacked ? cols[ci - 1]?.at(-1) : null);
+    else if (e.key === "ArrowDown") next = cols[ci][ri + 1] ?? (stacked ? cols[ci + 1]?.[0] : null);
+    else {
+      const nc = cols[ci + (e.key === "ArrowRight" ? 1 : -1)];
+      next = nc?.[Math.min(ri, nc.length - 1)];
+    }
+    e.preventDefault();
+    if (next) { next.focus({ preventScroll: true }); next.closest(".wcard").scrollIntoView({ block: "nearest", inline: "nearest" }); }
+  });
+
+  // ---------- Settings ----------
+  function renderSettings() {
+    if (!loaded) return;
+    if (changed("set-apps", [apps, D.offline])) {
+      keepFocus(() => {
+        $("app-rows").replaceChildren(...(apps.length ? apps.map((a) => {
+          const b = el("button", { type: "button", className: "btn sm", dataset: { key: `ppu-${a.id}` } },
+            a.pay_per_use ? `Switch to Max account ${a.profile}` : "Switch to pay-per-use");
+          b.onclick = async () => {
+            b.disabled = true;
+            try {
+              await D.api(`/apps/${a.id}/pay-per-use`, { method: "POST", body: JSON.stringify({ on: !a.pay_per_use }) });
+              D.toast(a.pay_per_use ? `${a.name} now uses Max account ${a.profile}.` : `${a.name} now uses pay-per-use.`);
+              await refresh();
+            } catch (e) { D.toast(`Couldn't switch ${a.name}. ${e.message}`, "alert"); b.disabled = false; }
+          };
+          return el("li", {},
+            el("span", { className: "ic" }, icon("app")),
+            el("div", { className: "who" }, el("b", {}, a.name), el("span", { className: "mono" }, a.repo_path)),
+            el("span", { className: "acct" }, icon(a.pay_per_use ? "money" : "ai"), a.pay_per_use ? "Pay-per-use" : `Max account ${a.profile}`),
+            b);
+        }) : [el("li", { className: "empty" }, "No apps yet. Add one below.")]));
+      });
+    }
+    if (spend && changed("set-spend", spend)) {
+      const { pay_per_use_usd: used, cap_usd: cap, max_equivalent_usd: max } = spend;
+      const pct = cap > 0 ? Math.min(1, used / cap) : (used > 0 ? 1 : 0);
+      const near = cap > 0 ? used >= 0.8 * cap : used > 0;
+      const box = $("spend-big");
+      box.classList.toggle("near", near);
+      box.replaceChildren(
+        el("span", { className: "hint" }, "Pay-per-use this month"),
+        el("div", { className: "num" }, D.money(used), el("span", {}, `of ${D.money(cap)} cap`)),
+        el("div", { className: `meter${near ? " near" : ""}`, role: "meter", "aria-valuemin": "0", "aria-valuemax": String(cap), "aria-valuenow": String(used), "aria-label": "Pay-per-use spent this month" },
+          el("span", { style: `width:${(pct * 100).toFixed(1)}%` })),
+        el("span", { className: "hint" }, near && cap > 0 ? `${Math.round(pct * 100)}% of the cap is used. Raise it below if you need more.`
+          : `Max accounts used ${D.money(max)} worth this month. That isn't billed; it's what the same work would cost pay-per-use.`));
+      if (document.activeElement !== $("cap")) $("cap").value = cap;
+    }
+  }
+
+  function fieldErr(input, errEl, msg) {
+    $(errEl).textContent = msg || "";
+    if (msg) $(input).setAttribute("aria-invalid", "true"); else $(input).removeAttribute("aria-invalid");
+  }
+  for (const [i, e] of [["app-name", "app-name-err"], ["app-path", "app-path-err"], ["cap", "cap-err"]]) $(i).addEventListener("input", () => fieldErr(i, e, ""));
+
+  $("add-app").onsubmit = async (e) => {
+    e.preventDefault();
+    const name = $("app-name").value.trim(), path = $("app-path").value.trim();
+    $("app-err").textContent = "";
+    let bad = false;
+    if (!/^[A-Za-z0-9_-]{1,40}$/.test(name)) { fieldErr("app-name", "app-name-err", name ? "Use only letters, digits, - or _, up to 40." : "Give the app a name."); bad = true; } else fieldErr("app-name", "app-name-err", "");
+    if (!/^([A-Za-z]:[\\/]|\/)/.test(path) || /[,"]/.test(path)) { fieldErr("app-path", "app-path-err", path ? "Use the full path, like C:\\path\\to\\repo, without commas or quotes." : "Enter the repo path."); bad = true; } else fieldErr("app-path", "app-path-err", "");
+    if (bad) { e.target.querySelector("[aria-invalid]")?.focus(); return; }
+    const btn = $("add-app-btn");
+    btn.disabled = true;
+    try {
+      await D.api("/apps", { method: "POST", body: JSON.stringify({ name, repo_path: path, profile: $("app-profile").value, pay_per_use: $("app-ppu").checked }) });
+      e.target.reset();
+      D.toast(`Added ${name}. You can start work on it now.`);
+      await refresh();
+    } catch (x) {
+      if (/name/i.test(x.message)) fieldErr("app-name", "app-name-err", x.message.replace(/^an app/, "An app").replace(/^app name/, "The name"));
+      else if (/repo_path/.test(x.message)) fieldErr("app-path", "app-path-err", "Use the full path, without commas or quotes.");
+      else $("app-err").textContent = `Couldn't add the app. ${x.message}`;
+    } finally { btn.disabled = false; }
+  };
+
+  $("cap-form").onsubmit = async (e) => {
+    e.preventDefault();
+    const v = $("cap").value.trim();
+    if (v === "" || !(+v >= 0)) { fieldErr("cap", "cap-err", "Enter a monthly cap in dollars, 0 or more."); return; }
+    try {
+      await D.api("/spend/cap", { method: "POST", body: JSON.stringify({ cap_usd: +v }) });
+      $("cap").blur();
+      D.toast(`Monthly cap set to ${D.money(+v)}.`);
+      refresh();
+    } catch (x) { fieldErr("cap", "cap-err", `Couldn't save the cap. ${x.message}`); }
+  };
+
+  async function loadDevices() {
+    try { devices = await D.api("/devices"); } catch (e) {
+      if (!devices) $("devices").replaceChildren(el("li", { className: "empty" }, `Couldn't load phones. ${e.message}`));
+      return;
+    }
+    if (!changed("devices", [devices, D.offline])) return;
+    const when = (iso) => new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    keepFocus(() => {
+      $("devices").replaceChildren(...(devices.length ? devices.map((d) => {
+        const b = el("button", { type: "button", className: "btn quiet danger-text sm", dataset: { key: `dev-${d.id}` } }, icon("trash"), "Remove");
+        b.onclick = async () => {
+          const ok = await D.confirm([`Remove "${d.name}"?`, "It is signed out and will need a new pairing code to get back in.", "Remove phone", "Keep it"]);
+          if (!ok) return;
+          try { await D.api(`/devices/${d.id}/remove`, { method: "POST" }); D.toast(`Removed ${d.name}.`); loadDevices(); }
+          catch (x) { D.toast(`Couldn't remove ${d.name}. ${x.message}`, "alert"); }
+        };
+        return el("li", {},
+          el("span", { className: "ic" }, icon("phone")),
+          el("div", { className: "who" }, el("b", {}, d.name),
+            el("span", { className: "hint" }, [d.has_push ? "Notifications on" : "Notifications off", d.last_seen ? `Last used ${when(d.last_seen)}` : "Not used yet"].join(" · "))),
+          b);
+      }) : [el("li", { className: "empty" }, "No phones paired yet.")]));
+    });
+  }
+
+  // Drawn when Settings opens and after each change, not on the timer, so a
+  // half-typed key is never wiped. Values go to the hub once and never come back.
+  async function loadKeys() {
+    let sections;
+    try {
+      const list = await D.api("/apps");
+      sections = await Promise.all(list.map(keySection));
+    } catch (e) {
+      $("key-apps").replaceChildren(el("p", { className: "field-error" }, `Couldn't load test keys. ${e.message}`));
+      return;
+    }
+    $("key-apps").replaceChildren(...(sections.length ? sections : [el("p", { className: "hint" }, "Add an app first.")]));
+  }
+  async function keySection(a) {
+    const keys = await D.api(`/apps/${a.id}/test-keys`);
+    const id = (s) => `key-${a.id}-${s}`;
+    const rows = el("ul", { className: "rows" }, ...(keys.length ? keys.map((k) => {
+      const b = el("button", { type: "button", className: "btn quiet danger-text sm" }, icon("trash"), "Remove");
+      b.onclick = async () => {
+        const ok = await D.confirm([`Remove ${k.name} from ${a.name}?`, "Its agents stop getting it from their next run.", "Remove key", "Keep it"]);
+        if (!ok) return;
+        try { await D.api(`/apps/${a.id}/test-keys/${encodeURIComponent(k.name)}/remove`, { method: "POST" }); D.toast(`Removed ${k.name}.`); await loadKeys(); }
+        catch (x) { D.toast(`Couldn't remove ${k.name}. ${x.message}`, "alert"); }
+      };
+      return el("li", {},
+        el("span", { className: "ic" }, icon("key")),
+        el("div", { className: "who" }, el("b", {}, k.name), el("span", { className: "hint" }, `••••${k.last_four}`)),
+        b);
+    }) : [el("li", { className: "empty" }, "No test keys yet.")]));
+    const name = el("input", { id: id("name"), type: "text", placeholder: "STRIPE_SECRET_KEY", autocomplete: "off", spellcheck: false });
+    const value = el("input", { id: id("value"), type: "password", placeholder: "sk_test_…", autocomplete: "off", spellcheck: false });
+    const err = el("span", { className: "field-error", id: id("err"), role: "alert" });
+    value.setAttribute("aria-describedby", id("err"));
+    const show = el("button", { type: "button", className: "btn quiet sm" }, "Show");
+    show.onclick = () => { const hidden = value.type === "password"; value.type = hidden ? "text" : "password"; show.textContent = hidden ? "Hide" : "Show"; };
+    const form = el("form", { className: "form-grid", noValidate: true },
+      el("div", { className: "field" }, el("label", { htmlFor: id("name") }, "Name"), name,
+        el("span", { className: "hint" }, "The setting your app reads it from.")),
+      el("div", { className: "field" }, el("label", { htmlFor: id("value") }, "Key"), value, show),
+      el("div", { className: "full actions" }, el("button", { className: "btn primary", type: "submit" }, "Save key"), err));
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      err.textContent = "";
+      try {
+        await D.api(`/apps/${a.id}/test-keys`, { method: "POST", body: JSON.stringify({ name: name.value.trim(), value: value.value }) });
+        value.value = "";
+        D.toast(`Saved ${name.value.trim()} for ${a.name}.`);
+        await loadKeys();
+      } catch (x) { err.textContent = x.message; }
+    };
+    return el("div", {}, el("h3", { style: "margin:8px 0" }, a.name), rows, form);
+  }
+
+  $("pair").onclick = async () => {
+    const b = $("pair");
+    b.disabled = true;
+    try {
+      const p = await D.api("/pairing", { method: "POST" });
+      const box = el("div", { className: "qr-box" });
+      box.innerHTML = p.qr_svg; // drawn by the hub itself from the pairing link
+      const q = $("qr");
+      q.hidden = false;
+      q.replaceChildren(box,
+        el("p", { className: "hint" }, `Scan it with the phone's camera. It works once, for ${D.plural(p.minutes, "minute")}.`),
+        el("a", { href: p.url }, "Or open this link on the phone"),
+        p.warning ? el("div", { className: "notice warn" }, icon("alert"), el("span", { className: "grow" }, p.warning)) : null);
+      setTimeout(loadDevices, 15000);
+    } catch (e) { D.toast(`Couldn't make a pairing code. ${e.message}`, "alert"); }
+    finally { b.disabled = false; }
+  };
+
+  // ---------- Offline and Pro ----------
+  D.onOffline((off) => { $("offline-banner").hidden = !off; render(); });
+  D.onPro(() => renderBoard());
+
+  // ---------- Start ----------
+  if (/^#work-\d+$/.test(location.hash)) {
+    const id = +location.hash.slice(6);
+    history.replaceState(null, "", location.pathname + location.search);
+    (async () => { try { D.openWork(await D.api(`/threads/${id}`), refresh); } catch (_) { /* gone */ } })();
+  }
+  skeleton();
+  route();
+  refresh();
+  timer = setInterval(() => { refresh(); if (view === "settings") loadDevices(); }, 3000);
+})();
 </script>
 </body>
 </html>

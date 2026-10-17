@@ -375,10 +375,21 @@ async fn a_goal_becomes_reviewed_work() {
     )
     .await;
     assert_eq!(work["resume"], true);
-    assert!(work["follow_up"]
+    // The checker's notes arrive the way the owner's "do this next" does.
+    let notes = &work["messages"][0];
+    assert_eq!(notes["kind"], "follow_up");
+    assert!(notes["text"]
         .as_str()
-        .expect("follow-up")
+        .expect("notes")
         .contains("Show the link on small screens"));
+    ok(
+        &r,
+        "POST",
+        &format!("/api/threads/{thread}/messages/delivered"),
+        RUNNER,
+        json!({"ids": [notes["id"]]}),
+    )
+    .await;
     ok(
         &r,
         "POST",
