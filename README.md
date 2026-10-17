@@ -15,6 +15,8 @@ To run an app on pay-per-use instead of a Max account, save an Anthropic API key
 
 Each piece of work runs in its own container with its own copy of the code. The only credential inside is that profile's Claude token, or on pay-per-use the run's proxy token. Work moves to *In review* only when the agent has committed to its branch.
 
+Open a card to talk to its agent while it works. *Change course now* stops its current step and gives it your message. *Do this next* waits until it finishes what it is doing. *Add a note* passes information along without interrupting. Work can be split into smaller tasks: stopping a task stops the smaller tasks inside it, except ones set to keep going on their own. If the PC or the runner stops in the middle of a step, the agent is told which step was cut off and checks what actually happened before it repeats anything that changes files or runs commands.
+
 Keep Docker Desktop's "Expose daemon on tcp://localhost:2375 without TLS" setting **off**. Containers can reach the host, and that port would give any agent full control of Docker.
 
 ## Layout
