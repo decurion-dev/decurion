@@ -54,15 +54,27 @@ impl Store {
         Ok((d, token))
     }
 
-    /// The device a cookie token belongs to, if it is still signed in.
+    /// The device a cookie token belongs to, if it is still signed in. Its
+    /// "last used" time is written at most once every five minutes, so the
+    /// board's polling does not turn into constant database writes.
     pub async fn device_for_token(&self, token: &str) -> Result<Option<i64>> {
+        let h = hash(token);
         let id: Option<i64> = sqlx::query_scalar(
-            "UPDATE devices SET last_seen = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-             WHERE token_hash = ? AND revoked_at IS NULL RETURNING id",
+            "SELECT id FROM devices WHERE token_hash = ? AND revoked_at IS NULL",
         )
-        .bind(hash(token))
+        .bind(&h)
         .fetch_optional(self.pool())
         .await?;
+        if let Some(id) = id {
+            sqlx::query(
+                "UPDATE devices SET last_seen = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ? AND (last_seen IS NULL
+                     OR last_seen < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-5 minutes'))",
+            )
+            .bind(id)
+            .execute(self.pool())
+            .await?;
+        }
         Ok(id)
     }
 
@@ -109,8 +121,15 @@ impl Store {
     }
 
     /// A fresh pairing code, valid for [`PAIRING_MINUTES`] and usable once.
+    /// Any earlier unused code stops working, so only the latest QR is live.
     pub async fn new_pairing_code(&self) -> Result<String> {
         let code = crate::new_secret();
+        sqlx::query(
+            "UPDATE pairing_codes SET used_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE used_at IS NULL",
+        )
+        .execute(self.pool())
+        .await?;
         sqlx::query(
             "INSERT INTO pairing_codes (code_hash, expires_at)
              VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?))",
@@ -134,6 +153,32 @@ impl Store {
         .execute(self.pool())
         .await?;
         Ok(done.rows_affected() == 1)
+    }
+
+    /// Uses up a pairing code and creates the device in one transaction, so
+    /// a failure never burns the code without a device to show for it.
+    pub async fn pair_device(&self, code: &str, name: &str) -> Result<Option<String>> {
+        let mut tx = self.pool().begin().await?;
+        let done = sqlx::query(
+            "UPDATE pairing_codes SET used_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE code_hash = ? AND used_at IS NULL
+               AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+        )
+        .bind(hash(code))
+        .execute(&mut *tx)
+        .await?;
+        if done.rows_affected() != 1 {
+            return Ok(None);
+        }
+        let token = crate::new_secret();
+        let name: String = name.chars().take(60).collect();
+        sqlx::query("INSERT INTO devices (name, token_hash) VALUES (?, ?)")
+            .bind(&name)
+            .bind(hash(&token))
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(Some(token))
     }
 
     pub async fn save_push(&self, device_id: i64, s: &PushSubscription) -> Result<()> {

@@ -7,7 +7,7 @@ use tower::ServiceExt;
 
 const OWNER: &str = "owner-test-key";
 const RUNNER: &str = "runner-test-key";
-const LOGIN: &str = "login-test-code";
+const LOGIN: &str = "abc123def456";
 
 async fn hub() -> (axum::Router, Store) {
     let store = Store::open("sqlite::memory:").await.expect("open store");
@@ -321,8 +321,9 @@ async fn login_code_opens_a_session_without_exposing_the_owner_key() {
     let resp = r
         .clone()
         .oneshot(
-            Request::get(format!("/login?code={OWNER}"))
-                .body(Body::empty())
+            Request::post("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!("code={OWNER}")))
                 .expect("req"),
         )
         .await
@@ -331,8 +332,9 @@ async fn login_code_opens_a_session_without_exposing_the_owner_key() {
     let resp = r
         .clone()
         .oneshot(
-            Request::get(format!("/login?code={LOGIN}"))
-                .body(Body::empty())
+            Request::post("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!("code={LOGIN}")))
                 .expect("req"),
         )
         .await
@@ -704,9 +706,10 @@ async fn cookies_are_secure_behind_https() {
     let resp = r
         .clone()
         .oneshot(
-            Request::get(format!("/login?code={LOGIN}"))
+            Request::post("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header("x-forwarded-proto", "https")
-                .body(Body::empty())
+                .body(Body::from(format!("code={LOGIN}")))
                 .expect("req"),
         )
         .await
@@ -826,4 +829,122 @@ async fn only_a_signed_in_device_can_subscribe() {
     assert_eq!(s, StatusCode::FORBIDDEN);
     let resp = get(&r, "/sw.js", None).await;
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn opening_the_login_link_signs_nothing_in() {
+    let (r, store) = hub().await;
+    let resp = get(&r, &format!("/login?code={LOGIN}"), None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers().get(header::SET_COOKIE).is_none());
+    assert!(store.devices().await.expect("devices").is_empty());
+}
+
+#[tokio::test]
+async fn cookie_writes_from_other_sites_are_refused() {
+    let (r, store) = hub().await;
+    let (_, token) = store
+        .add_device("Browser on this PC")
+        .await
+        .expect("device");
+    let cookie = format!("decurion_device={token}");
+    let post = |site: Option<&'static str>, origin: Option<&'static str>| {
+        let mut b = Request::post("/api/pairing")
+            .header(header::COOKIE, cookie.clone())
+            .header(header::HOST, "decurion.localhost:7420");
+        if let Some(s) = site {
+            b = b.header("sec-fetch-site", s);
+        }
+        if let Some(o) = origin {
+            b = b.header(header::ORIGIN, o);
+        }
+        r.clone().oneshot(b.body(Body::empty()).expect("req"))
+    };
+    // Another app on the same host (different port) is "same-site", not "same-origin".
+    assert_eq!(
+        post(Some("same-site"), None).await.expect("resp").status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(Some("cross-site"), None).await.expect("resp").status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(None, Some("http://decurion.localhost:5173"))
+            .await
+            .expect("resp")
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(None, None).await.expect("resp").status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(Some("same-origin"), None)
+            .await
+            .expect("resp")
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        post(None, Some("http://decurion.localhost:7420"))
+            .await
+            .expect("resp")
+            .status(),
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn a_new_pairing_code_retires_the_old_one() {
+    let (r, _) = hub().await;
+    let (_, first) = call(&r, "POST", "/api/pairing", Some(OWNER), Value::Null).await;
+    let (_, second) = call(&r, "POST", "/api/pairing", Some(OWNER), Value::Null).await;
+    let path = |p: &Value| {
+        p["url"]
+            .as_str()
+            .expect("url")
+            .trim_start_matches("https://hub.test")
+            .to_owned()
+    };
+    assert_eq!(
+        post_pair(&r, &path(&first)).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        post_pair(&r, &path(&second)).await.status(),
+        StatusCode::SEE_OTHER
+    );
+}
+
+#[tokio::test]
+async fn the_inbox_can_ask_for_the_latest_events() {
+    let (r, _) = hub().await;
+    let id = seed(&r).await;
+    for i in 0..30 {
+        call(
+            &r,
+            "POST",
+            &format!("/api/threads/{id}/events"),
+            Some(RUNNER),
+            json!({"kind":"message","text":format!("m{i}")}),
+        )
+        .await;
+    }
+    let (_, tail) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{id}/events?tail=3"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    let texts: Vec<&str> = tail
+        .as_array()
+        .expect("list")
+        .iter()
+        .filter_map(|e| e["event"]["text"].as_str())
+        .collect();
+    assert_eq!(texts, ["m27", "m28", "m29"]);
 }

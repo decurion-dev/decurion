@@ -34,12 +34,17 @@ impl Pusher {
             ES256KeyPair::from_bytes(&std::fs::read(&path)?)?
         } else {
             let k = ES256KeyPair::generate();
-            std::fs::write(&path, k.to_bytes())?;
+            crate::write_atomic(&path, &k.to_bytes())?;
             k
         };
+        // A push service that hangs or redirects must not stall the others.
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
         Ok(Self {
             key: Arc::new(key),
-            http: reqwest::Client::new(),
+            http,
         })
     }
 
@@ -98,8 +103,14 @@ impl Pusher {
         }) else {
             return;
         };
+        let mut sends = tokio::task::JoinSet::new();
         for (device, sub) in targets {
-            match self.send_one(&sub, &payload).await {
+            let me = self.clone();
+            let payload = payload.clone();
+            sends.spawn(async move { (device, me.send_one(&sub, &payload).await) });
+        }
+        while let Some(Ok((device, result))) = sends.join_next().await {
+            match result {
                 Ok(()) => {}
                 Err(SendError::Gone) => {
                     let _ = store.drop_push(device).await;

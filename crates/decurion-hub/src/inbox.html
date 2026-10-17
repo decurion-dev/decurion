@@ -40,6 +40,7 @@
 <body>
 <header><h1>Needs you</h1><span class="muted" id="status"></span></header>
 <div class="bar"><button id="notify" type="button" hidden>Turn on notifications</button></div>
+<div class="err" id="act-err" role="alert"></div>
 <div class="err" id="err"></div>
 <main id="list"></main>
 <script>
@@ -62,7 +63,7 @@ async function api(path, opts = {}) {
   return r.status === 204 ? null : r.json();
 }
 async function lastWords(id) {
-  const ev = await api(`/threads/${id}/events?after=0`);
+  const ev = await api(`/threads/${id}/events?tail=20`);
   const fin = [...ev].reverse().find(r => r.event.kind === "finished") ?? [...ev].reverse().find(r => r.event.kind === "message");
   return fin ? (fin.event.summary ?? fin.event.text ?? "") : "";
 }
@@ -79,11 +80,12 @@ async function refresh() {
         c.append(el("div", { className: "kind" }, `${kind} · ${names[t.app_id] ?? ""}`), el("div", { className: "title" }, t.title),
                  el("p", { className: "means" }, means));
         const said = await lastWords(t.id).catch(() => "");
-        if (said) c.append(el("p", { className: "said" }, said));
+        if (said) c.append(el("div", { className: "kind" }, "The agent says"), el("p", { className: "said" }, said));
         const row = el("div", { className: "actions" });
         for (const [to, label, cls] of ACTIONS[t.state]) {
           const b = el("button", { type: "button", className: cls }, label);
-          b.onclick = async () => { b.disabled = true; try { await api(`/threads/${t.id}/move`, { method: "POST", body: JSON.stringify({ to }) }); refresh(); } catch (e) { $("err").textContent = e.message; b.disabled = false; } };
+          // Action errors stay until the next tap, so a failed Accept is never mistaken for a done one.
+          b.onclick = async () => { b.disabled = true; $("act-err").textContent = ""; try { await api(`/threads/${t.id}/move`, { method: "POST", body: JSON.stringify({ to }) }); refresh(); } catch (e) { $("act-err").textContent = `"${label}" did not go through: ${e.message}`; b.disabled = false; } };
           row.append(b);
         }
         c.append(row); return c;

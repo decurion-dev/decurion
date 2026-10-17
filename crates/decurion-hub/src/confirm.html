@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pair with Decurion</title>
+<title>{{title}}</title>
 <style>
   :root { --bg:#f5f4f0; --card:#fff; --ink:#1d1c19; --muted:#6f6b61; --line:#e2dfd6; --accent:#3b5bdb; }
   @media (prefers-color-scheme: dark) {
@@ -20,11 +20,11 @@
 </head>
 <body>
 <main>
-  <h1>Pair this phone</h1>
-  <p>This phone will get your Decurion inbox and can approve work. Only do this on your own phone.</p>
-  <form method="post" action="/pair">
+  <h1>{{title}}</h1>
+  <p>{{text}}</p>
+  <form method="post" action="{{action}}">
     <input type="hidden" name="code" value="{{code}}">
-    <button>Pair this phone</button>
+    <button>{{button}}</button>
   </form>
 </main>
 </body>

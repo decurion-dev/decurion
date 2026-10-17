@@ -86,6 +86,13 @@ impl AppState {
 
 const COOKIE: &str = "decurion_device";
 
+/// Writes a file so that a crash mid-write never leaves a half-written one.
+pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
+}
+
 /// Random 256-bit token.
 pub fn new_secret() -> String {
     format!(
@@ -115,7 +122,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(board))
         .route("/inbox", get(inbox))
-        .route("/login", get(login))
+        .route("/login", get(login_page).post(login))
         .route("/pair", get(pair_page).post(pair))
         .route("/sw.js", get(service_worker))
         .route("/manifest.webmanifest", get(manifest))
@@ -151,10 +158,35 @@ fn same(a: &str, b: &str) -> bool {
             == 0
 }
 
+/// Cookies are sent by any page on the same host, whatever its port, so a
+/// cookie-authenticated write must come from the hub's own pages. Browsers say
+/// where a request came from in `Sec-Fetch-Site` (or, older ones, `Origin`).
+fn same_origin_write(req: &Request) -> bool {
+    use axum::http::Method;
+    if matches!(*req.method(), Method::GET | Method::HEAD) {
+        return true;
+    }
+    let h = req.headers();
+    if let Some(site) = h.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
+        return site == "same-origin";
+    }
+    let host = h.get(header::HOST).and_then(|v| v.to_str().ok());
+    let origin = h.get(header::ORIGIN).and_then(|v| v.to_str().ok());
+    match (host, origin) {
+        (Some(host), Some(origin)) => origin
+            .split_once("://")
+            .is_some_and(|(_, rest)| rest == host),
+        _ => false,
+    }
+}
+
 async fn require_key(State(st): State<AppState>, mut req: Request, next: Next) -> Response {
     let (caller, device) = match (bearer(req.headers()), device_cookie(req.headers())) {
         (Some(k), _) if same(k, &st.keys.owner) => (Caller::Owner, None),
         (Some(k), _) if same(k, &st.keys.runner) => (Caller::Runner, None),
+        (None, Some(_)) if !same_origin_write(&req) => {
+            return (StatusCode::FORBIDDEN, "cross-site request refused").into_response()
+        }
         (None, Some(t)) => match st.store.device_for_token(&t).await {
             Ok(Some(id)) => (Caller::Owner, Some(id)),
             Ok(None) => return (StatusCode::UNAUTHORIZED, "signed out").into_response(),
@@ -198,16 +230,38 @@ fn forbidden(what: &str) -> Response {
     (StatusCode::FORBIDDEN, format!("{what} is owner-only")).into_response()
 }
 
-fn page(html: &'static str) -> Response {
+fn page(html: impl Into<String>) -> Response {
     (
         [
             (header::CONTENT_SECURITY_POLICY, CSP),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             (header::CACHE_CONTROL, "no-store"),
+            (header::REFERRER_POLICY, "no-referrer"),
         ],
-        Html(html),
+        Html(html.into()),
     )
         .into_response()
+}
+
+/// A one-button page. Opening a sign-in link only shows this: link previews
+/// and prefetchers open links too, and must never get signed in.
+fn confirm_page(action: &str, code: &str, title: &str, text: &str, button: &str) -> Response {
+    // Codes are hex; anything else is not ours and is not echoed back.
+    if code.is_empty() || !code.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("This is not a Decurion sign-in link."),
+        )
+            .into_response();
+    }
+    page(
+        include_str!("confirm.html")
+            .replace("{{action}}", action)
+            .replace("{{code}}", code)
+            .replace("{{title}}", title)
+            .replace("{{text}}", text)
+            .replace("{{button}}", button),
+    )
 }
 
 async fn board() -> Response {
@@ -236,12 +290,22 @@ struct CodeQuery {
     code: String,
 }
 
-/// The link printed by the hub at start. Signs this browser in as a device;
-/// the owner key itself never reaches the browser.
+async fn login_page(Query(q): Query<CodeQuery>) -> Response {
+    confirm_page(
+        "/login",
+        &q.code,
+        "Sign in to Decurion",
+        "This browser will see your board and can approve work. Only do this on your own PC.",
+        "Sign in",
+    )
+}
+
+/// The "Sign in" button on the link printed by the hub at start. Signs this
+/// browser in as a device; the owner key itself never reaches the browser.
 async fn login(
     State(st): State<AppState>,
     headers: HeaderMap,
-    Query(q): Query<CodeQuery>,
+    axum::Form(q): axum::Form<CodeQuery>,
 ) -> Response {
     if !same(&q.code, &st.login_code) {
         return (StatusCode::UNAUTHORIZED, "wrong or expired login code").into_response();
@@ -269,28 +333,15 @@ fn device_name(headers: &HeaderMap) -> &'static str {
     }
 }
 
-/// Where a scanned pairing QR code lands. Opening the link only shows a
-/// button: link previews and prefetchers open links too, and must not use up
-/// the one-time code or get signed in.
+/// Where a scanned pairing QR code lands.
 async fn pair_page(Query(q): Query<CodeQuery>) -> Response {
-    // Codes are hex; anything else is not ours and is not echoed back.
-    if q.code.is_empty() || !q.code.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Html("This is not a Decurion pairing link."),
-        )
-            .into_response();
-    }
-    let html = include_str!("pair.html").replace("{{code}}", &q.code);
-    (
-        [
-            (header::CONTENT_SECURITY_POLICY, CSP),
-            (header::CACHE_CONTROL, "no-store"),
-            (header::REFERRER_POLICY, "no-referrer"),
-        ],
-        Html(html),
+    confirm_page(
+        "/pair",
+        &q.code,
+        "Pair this phone",
+        "This phone will get your Decurion inbox and can approve work. Only do this on your own phone.",
+        "Pair this phone",
     )
-        .into_response()
 }
 
 /// The "Pair this phone" button.
@@ -299,19 +350,13 @@ async fn pair(
     headers: HeaderMap,
     axum::Form(q): axum::Form<CodeQuery>,
 ) -> Response {
-    match st.store.redeem_pairing_code(&q.code).await {
-        Ok(true) => {}
-        Ok(false) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Html("This pairing code is used or expired. Make a new one on the board."),
-            )
-                .into_response()
-        }
-        Err(e) => return ApiError(e).into_response(),
-    }
-    match st.store.add_device(device_name(&headers)).await {
-        Ok((_, token)) => sign_in(&headers, &token, "/inbox"),
+    match st.store.pair_device(&q.code, device_name(&headers)).await {
+        Ok(Some(token)) => sign_in(&headers, &token, "/inbox"),
+        Ok(None) => (
+            StatusCode::UNAUTHORIZED,
+            Html("This pairing code is used or expired. Make a new one on the board."),
+        )
+            .into_response(),
         Err(e) => ApiError(e).into_response(),
     }
 }
@@ -321,6 +366,8 @@ struct Pairing {
     url: String,
     qr_svg: String,
     minutes: i64,
+    /// Set when the phone could not get notifications through this address.
+    warning: Option<&'static str>,
 }
 
 async fn new_pairing(
@@ -353,10 +400,14 @@ async fn new_pairing(
             .build(),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
+    let warning = (!url.starts_with("https://")).then_some(
+        "This address is not https, so the phone cannot get notifications and may not reach it at all. Start the hub with DECURION_PUBLIC_URL set to its Tailscale https address.",
+    );
     Json(Pairing {
         url,
         qr_svg,
         minutes: devices::PAIRING_MINUTES,
+        warning,
     })
     .into_response()
 }
@@ -450,9 +501,11 @@ async fn move_thread(
         .await
     {
         Ok(t) => {
-            if let (Some(p), Some((title, body))) =
-                (st.push.clone(), push::message_for(t.state, &t.title))
-            {
+            // Only what the agent did is news; the owner's own taps are not.
+            let news = (c == Caller::Runner)
+                .then(|| push::message_for(t.state, &t.title))
+                .flatten();
+            if let (Some(p), Some((title, body))) = (st.push.clone(), news) {
                 let store = st.store.clone();
                 tokio::spawn(async move { p.notify(&store, &title, &body).await });
             }
@@ -466,6 +519,8 @@ async fn move_thread(
 struct After {
     #[serde(default)]
     after: i64,
+    /// Instead of paging from the start, return the last `tail` events.
+    tail: Option<i64>,
 }
 
 async fn list_events(
@@ -473,7 +528,10 @@ async fn list_events(
     Path(id): Path<i64>,
     Query(q): Query<After>,
 ) -> ApiResult<Vec<decurion_proto::EventRecord>> {
-    Ok(Json(st.store.events(id, q.after).await?))
+    match q.tail {
+        Some(n) => Ok(Json(st.store.events_tail(id, n.clamp(1, 500)).await?)),
+        None => Ok(Json(st.store.events(id, q.after).await?)),
+    }
 }
 
 async fn add_event(

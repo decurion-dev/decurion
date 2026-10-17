@@ -313,6 +313,30 @@ impl Store {
             .collect()
     }
 
+    /// The newest `n` events, oldest first.
+    pub async fn events_tail(&self, thread_id: i64, n: i64) -> Result<Vec<EventRecord>> {
+        let rows = sqlx::query(
+            "SELECT * FROM (SELECT id, thread_id, at, body FROM events WHERE thread_id = ?
+                 ORDER BY id DESC LIMIT ?) ORDER BY id",
+        )
+        .bind(thread_id)
+        .bind(n)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                let body: String = r.try_get("body")?;
+                Ok(EventRecord {
+                    id: r.try_get("id")?,
+                    thread_id: r.try_get("thread_id")?,
+                    at: r.try_get("at")?,
+                    event: serde_json::from_str(&body)
+                        .map_err(|e| StoreError::Invalid(e.to_string()))?,
+                })
+            })
+            .collect()
+    }
+
     pub async fn audit_count(&self, thread_id: i64) -> Result<i64> {
         Ok(
             sqlx::query_scalar("SELECT COUNT(*) FROM audit WHERE thread_id = ?")
