@@ -1,8 +1,16 @@
 //! Types shared by the hub, the runner and the web board.
 
+pub mod goal;
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
+
+/// The version of the rules every runner must follow: how an agent's box is
+/// built and how work is handed between computers. The hub refuses a runner
+/// built with a different number, so a PC and a cloud worker can never run
+/// the same work under different rules. Bump it whenever either changes.
+pub const RULES_VERSION: u32 = 2;
 
 /// Where a piece of work is. A thread is in exactly one state at a time, and
 /// only the moves in [`ThreadState::can_move_to`] are allowed.
@@ -222,6 +230,36 @@ impl FromStr for Account {
     }
 }
 
+/// Which computer a piece of work runs on. The owner moves work between them
+/// with one menu choice; the rules are the same on both.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Place {
+    #[default]
+    Pc,
+    Cloud,
+}
+
+impl Place {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pc => "pc",
+            Self::Cloud => "cloud",
+        }
+    }
+}
+
+impl FromStr for Place {
+    type Err = UnknownState;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pc" => Ok(Self::Pc),
+            "cloud" => Ok(Self::Cloud),
+            other => Err(UnknownState(other.to_owned())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct App {
     pub id: i64,
@@ -260,7 +298,18 @@ pub struct Thread {
     /// The agent's session id, set on the first run so a restart resumes it.
     pub session_id: Option<String>,
     pub branch: Option<String>,
+    /// Where the work runs. A runner only picks up work for its own place,
+    /// and hands running work over when the owner moves it.
+    #[serde(default)]
+    pub place: Place,
     pub updated_at: String,
+    /// The bigger task this one is part of. Stopping the parent stops this
+    /// one first, unless it is `background`.
+    #[serde(default)]
+    pub parent_id: Option<i64>,
+    /// Keeps going when its parent is stopped.
+    #[serde(default)]
+    pub background: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -271,6 +320,22 @@ pub struct NewThread {
     /// Which AI does it. Defaults to Claude on the app's account.
     #[serde(default)]
     pub ai: Ai,
+    #[serde(default)]
+    pub parent_id: Option<i64>,
+    #[serde(default)]
+    pub background: bool,
+    /// See [`check_receipt`].
+    #[serde(default)]
+    pub receipt: Option<String>,
+    /// Where the work runs (the PC unless a cloud worker exists).
+    #[serde(default)]
+    pub place: Place,
+}
+
+/// The owner's "Move to PC / Move to cloud" choice.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaceRequest {
+    pub place: Place,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -278,6 +343,109 @@ pub struct MoveRequest {
     pub to: ThreadState,
     #[serde(default)]
     pub note: Option<String>,
+    /// The state the caller saw. Set, the move only happens if the thread is
+    /// still in it, so a tap on a screen that has gone stale (Stop on work
+    /// that has since finished) is refused instead of doing something else.
+    #[serde(default)]
+    pub expect: Option<ThreadState>,
+    /// See [`check_receipt`].
+    #[serde(default)]
+    pub receipt: Option<String>,
+}
+
+/// A receipt number is chosen by the browser or phone for each tap and sent
+/// again unchanged on a retry. The hub acts on a receipt once; a resend gets
+/// the first answer back instead of acting twice. 8 to 64 letters, digits,
+/// `-` or `_` (a UUID fits).
+pub fn check_receipt(r: &str) -> bool {
+    (8..=64).contains(&r.len())
+        && r.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// How a message from the owner reaches an agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageKind {
+    /// Change course now: the agent's current step is stopped and it gets
+    /// the message straight away.
+    Steer,
+    /// Do this next: the agent gets it when its current job is done.
+    FollowUp,
+    /// Extra information: the agent sees it at its next step without being
+    /// stopped.
+    Note,
+}
+
+impl MessageKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Steer => "steer",
+            Self::FollowUp => "follow_up",
+            Self::Note => "note",
+        }
+    }
+}
+
+impl FromStr for MessageKind {
+    type Err = UnknownState;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        [Self::Steer, Self::FollowUp, Self::Note]
+            .into_iter()
+            .find(|k| k.as_str() == s)
+            .ok_or_else(|| UnknownState(s.to_owned()))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewMessage {
+    pub kind: MessageKind,
+    pub text: String,
+    /// See [`check_receipt`].
+    #[serde(default)]
+    pub receipt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Message {
+    pub id: i64,
+    pub thread_id: i64,
+    pub kind: MessageKind,
+    pub text: String,
+    pub at: String,
+    /// When the runner handed it to the agent. Unset while it waits.
+    pub delivered_at: Option<String>,
+}
+
+/// What the runner checks while a run is going: whether the thread is still
+/// running (the owner may have stopped it), which computer it belongs on
+/// (the owner may have moved it) and messages not yet delivered.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Live {
+    pub state: ThreadState,
+    #[serde(default)]
+    pub place: Place,
+    pub messages: Vec<Message>,
+}
+
+/// The step an agent was in the middle of when its run was cut off.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Interrupted {
+    pub name: String,
+    pub summary: String,
+    /// See [`safe_to_redo`].
+    pub safe_to_redo: bool,
+}
+
+/// Whether a Claude Code tool only looks at things, so running it again
+/// after a crash changes nothing. Anything else (running commands, editing
+/// files, unknown tools) may already have happened and is never simply
+/// repeated: the agent is told to check first.
+pub fn safe_to_redo(tool: &str) -> bool {
+    matches!(
+        tool,
+        "Read" | "Glob" | "Grep" | "LS" | "WebFetch" | "WebSearch" | "TodoWrite" | "BashOutput"
+    )
 }
 
 /// What the runner gets when it claims queued work.
@@ -295,6 +463,93 @@ pub struct Claim {
     /// its own; the runner stops it here.
     #[serde(default)]
     pub budget_usd: Option<f64>,
+    /// Owner messages not yet delivered, oldest first. The runner gives them
+    /// to the agent with its starting prompt.
+    #[serde(default)]
+    pub messages: Vec<Message>,
+    /// Set when a resumed run was cut off in the middle of a step.
+    #[serde(default)]
+    pub interrupted: Option<Interrupted>,
+    /// Names of the app's test keys. The runner reads their values from the
+    /// vault on this PC; the hub never sends them.
+    #[serde(default)]
+    pub test_keys: Vec<String>,
+    /// Set for pay-per-use runs: the money set aside for this run alone, in
+    /// micro-dollars. The gatekeeper stops the run's API calls as it is used.
+    #[serde(default)]
+    pub reserved_micros: Option<i64>,
+    /// What earlier runs of this Claude session were charged, in
+    /// micro-dollars. Cost reports are running totals for the session, so
+    /// they include this.
+    #[serde(default)]
+    pub prior_micros: i64,
+    /// The latest saved copy of this work (code and the agent's session) held
+    /// by the hub. A runner whose own copy is not this one rebuilds from it,
+    /// which is how work continues on another computer.
+    #[serde(default)]
+    pub checkpoint: Option<i64>,
+}
+
+/// A saved test key as the board sees it. The value itself is never shown
+/// again after it is saved.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestKey {
+    pub name: String,
+    pub last_four: String,
+    pub added_at: String,
+}
+
+/// What a runner says when it starts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunnerHello {
+    pub runner: String,
+    pub rules_version: u32,
+}
+
+/// The hub's answer to [`RunnerHello`]. Sent with 200 when the runner may
+/// work, and with 409 when its rules version differs, so it can update itself
+/// to `hub_commit` and start again.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HelloReply {
+    /// Work this runner had in flight when it stopped, now queued to resume.
+    #[serde(default)]
+    pub paused: Vec<i64>,
+    pub rules_version: u32,
+    /// The git commit the hub was built from, or "unknown".
+    pub hub_commit: String,
+}
+
+/// A saved copy the runner finished uploading.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewCheckpoint {
+    /// The branch head inside the uploaded code bundle.
+    pub head: String,
+    /// The starting commit the runner's copy was made from. Work started
+    /// before Phase 2 has no starting commit on the hub yet; this sets it, so
+    /// another computer rebuilds the copy from the same place.
+    #[serde(default)]
+    pub base: Option<String>,
+}
+
+/// The credential a run needs, handed to a runner that has no local copy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunCredential {
+    /// The environment variable Claude Code reads it from.
+    pub var: String,
+    pub value: String,
+}
+
+/// A cloud worker's sign-up: the one-time code from the setup page, swapped
+/// for its own long-lived key on first start.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinRequest {
+    pub code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinReply {
+    pub name: String,
+    pub token: String,
 }
 
 /// A Max account that is out of usage, and the work waiting for it.
@@ -415,6 +670,23 @@ pub enum RunEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<String>,
     },
+    /// Written by the hub, never the runner: the owner sent the agent a
+    /// message.
+    Owner { via: MessageKind, text: String },
+    /// Written by the hub, never the runner: the run was cut off while the
+    /// agent was in the middle of this step.
+    Interrupted {
+        name: String,
+        summary: String,
+        safe_to_redo: bool,
+    },
+}
+
+impl RunEvent {
+    /// Kinds only the hub writes. The runner API refuses them.
+    pub fn hub_only(&self) -> bool {
+        matches!(self, Self::Owner { .. } | Self::Interrupted { .. })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -455,6 +727,40 @@ mod tests {
             assert_eq!(json, format!("\"{}\"", st.as_str()));
         }
         assert!("paused".parse::<ThreadState>().is_err());
+    }
+
+    #[test]
+    fn receipts_and_message_kinds() {
+        assert!(check_receipt("0b7e6c1a-6f43-4c0e-9d0a-2f1f1d3c9e11"));
+        assert!(!check_receipt("short"));
+        assert!(!check_receipt("has space in it"));
+        assert!(!check_receipt(&"x".repeat(65)));
+        for k in [MessageKind::Steer, MessageKind::FollowUp, MessageKind::Note] {
+            assert_eq!(k.as_str().parse::<MessageKind>().ok(), Some(k));
+            let json = serde_json::to_string(&k).unwrap_or_default();
+            assert_eq!(json, format!("\"{}\"", k.as_str()));
+        }
+        assert!(safe_to_redo("Read") && !safe_to_redo("Bash") && !safe_to_redo("Whatever"));
+        assert!(RunEvent::Owner {
+            via: MessageKind::Note,
+            text: "x".into()
+        }
+        .hub_only());
+        assert!(!RunEvent::Started.hub_only());
+    }
+
+    #[test]
+    fn place_defaults_to_pc_and_round_trips() {
+        let t: NewThread =
+            serde_json::from_str(r#"{"app_id":1,"title":"t","prompt":"p"}"#).expect("json");
+        assert_eq!(t.place, Place::Pc);
+        for p in [Place::Pc, Place::Cloud] {
+            assert_eq!(p.as_str().parse::<Place>().ok(), Some(p));
+            assert_eq!(
+                serde_json::to_string(&p).unwrap_or_default(),
+                format!("\"{}\"", p.as_str())
+            );
+        }
     }
 
     #[test]

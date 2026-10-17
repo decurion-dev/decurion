@@ -31,7 +31,12 @@ ENV PI_CODING_AGENT_DIR=/opt/pi-agent \
     PI_SKIP_VERSION_CHECK=1 \
     PI_TELEMETRY=0
 
-RUN useradd --create-home --shell /bin/bash agent
+# On Linux the agent must have the same user id as the runner, or neither can
+# write the other's files in the shared work folder. The cloud worker builds
+# with --build-arg AGENT_UID=<its runner's id>; Docker Desktop on Windows does
+# not care, so the default is the image's next free id.
+ARG AGENT_UID=
+RUN useradd ${AGENT_UID:+--uid "$AGENT_UID" --non-unique} --create-home --shell /bin/bash agent
 USER agent
 WORKDIR /work
 # Started through node so SIGUSR1 cannot open Node's debugger in pi: the agent

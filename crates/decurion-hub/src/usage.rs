@@ -8,7 +8,7 @@
 //! here.
 
 use crate::store::{Result, Store, StoreError};
-use decurion_proto::{Account, AccountMeter, RunEvent};
+use decurion_proto::{Account, AccountMeter, RunEvent, ThreadState};
 use sqlx::{Row, Sqlite, Transaction};
 
 /// Claude's window names are short snake_case words; anything else is not a
@@ -46,7 +46,7 @@ impl Store {
     /// Records a usage reading against the Max plan the thread's current run
     /// is on. Readings for a thread with no open run, or whose run is on a
     /// paid account, are dropped. Returns whether it was kept.
-    pub async fn record_usage(&self, thread_id: i64, e: &RunEvent) -> Result<bool> {
+    pub async fn record_usage(&self, thread_id: i64, runner: &str, e: &RunEvent) -> Result<bool> {
         let RunEvent::Usage {
             window,
             used_pct,
@@ -66,6 +66,16 @@ impl Store {
         let resets = resets_at.filter(|t| RESET_RANGE.contains(t));
         let status = status.as_deref().filter(|s| STATUSES.contains(s));
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        // Like any other event, only the runner holding the work reports on it.
+        let holder: Option<String> = sqlx::query_scalar("SELECT runner FROM threads WHERE id = ?")
+            .bind(thread_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if crate::store::state_in(&mut tx, thread_id).await? != ThreadState::Running
+            || holder.as_deref() != Some(crate::store::runner_actor(runner)?.as_str())
+        {
+            return Err(StoreError::Conflict);
+        }
         let account: Option<String> = sqlx::query_scalar(
             "SELECT account FROM runs WHERE thread_id = ? AND finished_at IS NULL
              ORDER BY id DESC LIMIT 1",

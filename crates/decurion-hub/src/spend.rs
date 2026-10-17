@@ -66,27 +66,35 @@ pub(crate) async fn cap_micros(tx: &mut Transaction<'_, Sqlite>, account: Accoun
 }
 
 /// Money an account used this month: real cost where known, otherwise the
-/// amount set aside.
+/// amount set aside. Helper jobs (coordinator, designer, checker) count too.
 pub(crate) async fn spent_micros(
     tx: &mut Transaction<'_, Sqlite>,
     account: Account,
 ) -> Result<i64> {
     Ok(sqlx::query_scalar(&format!(
-        "SELECT COALESCE(SUM(COALESCE(cost_micros, reserved_micros)), 0) FROM runs
-         WHERE account = ? AND (started_at >= {MONTH_START} OR finished_at IS NULL)"
+        "SELECT (SELECT COALESCE(SUM(COALESCE(cost_micros, reserved_micros)), 0) FROM runs
+                 WHERE account = ?1 AND (started_at >= {MONTH_START} OR finished_at IS NULL))
+              + (SELECT COALESCE(SUM(COALESCE(cost_micros, reserved_micros)), 0) FROM helper_jobs
+                 WHERE account = ?1 AND started_at IS NOT NULL
+                   AND (started_at >= {MONTH_START} OR finished_at IS NULL))"
     ))
     .bind(account.as_str())
     .fetch_one(&mut **tx)
     .await?)
 }
 
-/// Pay-per-use money an app's work used this month, across paid accounts.
+/// Pay-per-use money an app's work used this month, across paid accounts,
+/// helper jobs for its goals included.
 pub(crate) async fn app_spent_micros(tx: &mut Transaction<'_, Sqlite>, app_id: i64) -> Result<i64> {
     Ok(sqlx::query_scalar(&format!(
-        "SELECT COALESCE(SUM(COALESCE(r.cost_micros, r.reserved_micros)), 0)
-         FROM runs r JOIN threads t ON t.id = r.thread_id
-         WHERE t.app_id = ? AND r.account NOT IN ('A', 'B')
-           AND (r.started_at >= {MONTH_START} OR r.finished_at IS NULL)"
+        "SELECT (SELECT COALESCE(SUM(COALESCE(r.cost_micros, r.reserved_micros)), 0)
+                 FROM runs r JOIN threads t ON t.id = r.thread_id
+                 WHERE t.app_id = ?1 AND r.account NOT IN ('A', 'B')
+                   AND (r.started_at >= {MONTH_START} OR r.finished_at IS NULL))
+              + (SELECT COALESCE(SUM(COALESCE(h.cost_micros, h.reserved_micros)), 0)
+                 FROM helper_jobs h JOIN goals g ON g.id = h.goal_id
+                 WHERE g.app_id = ?1 AND h.account NOT IN ('A', 'B') AND h.started_at IS NOT NULL
+                   AND (h.started_at >= {MONTH_START} OR h.finished_at IS NULL))"
     ))
     .bind(app_id)
     .fetch_one(&mut **tx)
@@ -115,9 +123,43 @@ impl CapHit {
     }
 }
 
-/// Starts a run row. For a paid account, sets aside up to
-/// [`PER_RUN_MAX_MICROS`] of what is left under both the account's cap and the
-/// app's own cap, or says which cap is used up.
+/// How much to set aside for one run or helper job of an app on a paid
+/// account: up to [`PER_RUN_MAX_MICROS`] of what is left under both the
+/// account's cap and the app's own cap, or which cap is used up. Nothing for
+/// a Max account.
+pub(crate) async fn set_aside(
+    tx: &mut Transaction<'_, Sqlite>,
+    app_id: i64,
+    account: Account,
+) -> Result<std::result::Result<i64, CapHit>> {
+    if !account.is_paid() {
+        return Ok(Ok(0));
+    }
+    let cap = cap_micros(tx, account).await?;
+    let left = cap - spent_micros(tx, account).await?;
+    if left < MIN_RUN_MICROS {
+        return Ok(Err(CapHit::Account(account, to_usd(cap))));
+    }
+    let app_cap: Option<i64> =
+        sqlx::query_scalar("SELECT monthly_cap_micros FROM apps WHERE id = ?")
+            .bind(app_id)
+            .fetch_one(&mut **tx)
+            .await?;
+    let left = match app_cap {
+        Some(app_cap) => {
+            let app_left = app_cap - app_spent_micros(tx, app_id).await?;
+            if app_left < MIN_RUN_MICROS {
+                return Ok(Err(CapHit::App(to_usd(app_cap))));
+            }
+            left.min(app_left)
+        }
+        None => left,
+    };
+    Ok(Ok(left.min(PER_RUN_MAX_MICROS)))
+}
+
+/// Starts a run row, with the money [`set_aside`] for it, or says which cap
+/// is used up.
 pub(crate) async fn open_run(
     tx: &mut Transaction<'_, Sqlite>,
     thread_id: i64,
@@ -125,30 +167,9 @@ pub(crate) async fn open_run(
     account: Account,
     prior_micros: i64,
 ) -> Result<std::result::Result<i64, CapHit>> {
-    let reserve = if account.is_paid() {
-        let cap = cap_micros(tx, account).await?;
-        let left = cap - spent_micros(tx, account).await?;
-        if left < MIN_RUN_MICROS {
-            return Ok(Err(CapHit::Account(account, to_usd(cap))));
-        }
-        let app_cap: Option<i64> =
-            sqlx::query_scalar("SELECT monthly_cap_micros FROM apps WHERE id = ?")
-                .bind(app_id)
-                .fetch_one(&mut **tx)
-                .await?;
-        let left = match app_cap {
-            Some(app_cap) => {
-                let app_left = app_cap - app_spent_micros(tx, app_id).await?;
-                if app_left < MIN_RUN_MICROS {
-                    return Ok(Err(CapHit::App(to_usd(app_cap))));
-                }
-                left.min(app_left)
-            }
-            None => left,
-        };
-        left.min(PER_RUN_MAX_MICROS)
-    } else {
-        0
+    let reserve = match set_aside(tx, app_id, account).await? {
+        Ok(r) => r,
+        Err(hit) => return Ok(Err(hit)),
     };
     sqlx::query(
         "INSERT INTO runs (thread_id, account, reserved_micros, prior_micros) VALUES (?, ?, ?, ?)",
@@ -206,17 +227,21 @@ pub(crate) async fn record_cost(
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
 ) -> Result<()> {
+    // The report is a running total for the session; the limit applies to
+    // this run's own share of it.
     let reported = if cost_usd.is_finite() {
-        to_micros(cost_usd.clamp(0.0, MAX_REPORT_USD))
+        to_micros(cost_usd.clamp(0.0, 1e9))
     } else {
         return Ok(());
     };
     sqlx::query(
-        "UPDATE runs SET cost_micros = MAX(? - prior_micros, 0), input_tokens = ?, output_tokens = ?
-         WHERE id = (SELECT id FROM runs WHERE thread_id = ? AND finished_at IS NULL
+        "UPDATE runs SET cost_micros = MIN(MAX(?1 - prior_micros, 0), ?2),
+             input_tokens = ?3, output_tokens = ?4
+         WHERE id = (SELECT id FROM runs WHERE thread_id = ?5 AND finished_at IS NULL
                      ORDER BY id DESC LIMIT 1)",
     )
     .bind(reported)
+    .bind(to_micros(MAX_REPORT_USD))
     .bind(input_tokens.map(|n| n as i64))
     .bind(output_tokens.map(|n| n as i64))
     .bind(thread_id)
@@ -231,8 +256,10 @@ impl Store {
         let cap = cap_micros(&mut tx, Account::Api).await?;
         let api = spent_micros(&mut tx, Account::Api).await?;
         let max: i64 = sqlx::query_scalar(&format!(
-            "SELECT COALESCE(SUM(cost_micros), 0) FROM runs
-             WHERE account IN ('A', 'B') AND started_at >= {MONTH_START}"
+            "SELECT (SELECT COALESCE(SUM(cost_micros), 0) FROM runs
+                     WHERE account IN ('A', 'B') AND started_at >= {MONTH_START})
+                  + (SELECT COALESCE(SUM(cost_micros), 0) FROM helper_jobs
+                     WHERE account IN ('A', 'B') AND started_at >= {MONTH_START})"
         ))
         .fetch_one(&mut *tx)
         .await?;
@@ -344,5 +371,18 @@ fn check_cap(usd: f64) -> Result<()> {
         Err(StoreError::Invalid(
             "cap must be between $0 and $100,000".into(),
         ))
+    }
+}
+
+impl Store {
+    /// The account the thread's current run is billed to (`A`, `B` or `api`).
+    pub async fn open_run_account(&self, thread_id: i64) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT account FROM runs WHERE thread_id = ? AND finished_at IS NULL
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(thread_id)
+        .fetch_optional(self.pool())
+        .await?)
     }
 }

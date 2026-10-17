@@ -1,0 +1,16 @@
+# Keeps agent containers away from private addresses (see walls.sh).
+# PartOf + WantedBy docker.service: whenever Docker starts or restarts, this
+# runs again right after it, because Docker rebuilds its firewall rules on start.
+[Unit]
+Description=Decurion walls (agents cannot reach private networks)
+Requires=docker.service
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/decurion/walls.sh
+
+[Install]
+WantedBy=multi-user.target docker.service

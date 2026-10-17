@@ -146,6 +146,7 @@ async fn unknown_tokens_never_reach_the_api() {
         let resp = r
             .http
             .post(r.url("/v1/messages"))
+            .body("{}")
             .header(name, value)
             .send()
             .await
@@ -165,12 +166,14 @@ async fn a_token_dies_with_its_run() {
     let ok = r
         .http
         .post(r.url("/v1/messages"))
+        .body("{}")
         .header("x-api-key", &token);
     assert_eq!(ok.send().await.expect("send").status(), 200);
     drop(grant);
     let late = r
         .http
         .post(r.url("/v1/messages"))
+        .body("{}")
         .header("x-api-key", &token);
     assert_eq!(late.send().await.expect("send").status(), 401);
     assert_eq!(r.calls(), 1);
@@ -238,6 +241,7 @@ async fn client_credentials_are_not_passed_on() {
     let resp = r
         .http
         .post(r.url("/v1/messages"))
+        .body("{}")
         .header("authorization", &bearer)
         .header("proxy-authorization", "Basic c2VjcmV0")
         .send()
@@ -289,6 +293,7 @@ async fn only_the_calls_claude_code_makes_are_forwarded() {
             .http
             .request(method.parse().expect("method"), r.url(path))
             .header("x-api-key", grant.token())
+            .body("{}")
             .send()
             .await
             .expect("send");
@@ -365,4 +370,287 @@ async fn a_streaming_answer_stops_when_its_run_ends() {
         .await
         .expect("stream did not end");
     assert!(!matches!(rest, Ok(Some(ref b)) if b.as_ref() == b"event: two\n\n"));
+}
+
+/// A mock Messages API whose answer depends on the `x-mock` header.
+async fn priced_api() -> (Gatekeeper, SocketAddr, Arc<Mutex<u32>>) {
+    let calls: Arc<Mutex<u32>> = Arc::default();
+    let counted = calls.clone();
+    let upstream = serve(Router::new().route(
+        "/v1/messages",
+        axum::routing::post(move |h: HeaderMap| {
+            let counted = counted.clone();
+            async move {
+                if let Ok(mut n) = counted.lock() {
+                    *n += 1;
+                }
+                let mode = h.get("x-mock").and_then(|v| v.to_str().ok()).unwrap_or("");
+                let sse = |body: &'static str| {
+                    axum::http::Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from(body))
+                        .expect("response")
+                };
+                match mode {
+                    // Opus 5.5: 1000 in, 10000 cache read, 2000 5m writes, 400 out.
+                    "sse" => sse(concat!(
+                        "event: message_start\n",
+                        "data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-5-5\",",
+                        "\"usage\":{\"input_tokens\":1000,\"cache_read_input_tokens\":10000,",
+                        "\"cache_creation\":{\"ephemeral_5m_input_tokens\":2000,\"ephemeral_1h_input_tokens\":0},",
+                        "\"output_tokens\":1}}}\n\n",
+                        "event: content_block_delta\n",
+                        "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+                        "event: message_delta\n",
+                        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":400}}\n\n",
+                    )),
+                    // Cut off: no message_delta ever arrives.
+                    "cut" => sse(concat!(
+                        "data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-5-5\",",
+                        "\"usage\":{\"input_tokens\":1000,\"output_tokens\":1}}}\n\n",
+                        "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n",
+                    )),
+                    // A model the table does not know: priced at the top rates.
+                    "unknown" => sse(concat!(
+                        "data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-new-9\",",
+                        "\"usage\":{\"input_tokens\":1000,\"output_tokens\":0}}}\n\n",
+                        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":0}}\n\n",
+                    )),
+                    // A stream with nothing readable in it.
+                    "blank" => sse("data: {}\n\n"),
+                    "error" => axum::http::Response::builder()
+                        .status(529)
+                        .header("content-type", "application/json")
+                        .body(Body::from("{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}"))
+                        .expect("response"),
+                    "garbled" => axum::http::Response::builder()
+                        .header("content-type", "application/json")
+                        .body(Body::from("not json"))
+                        .expect("response"),
+                    // Sonnet 5.5, not streamed: 2000 in, 1000 out.
+                    _ => axum::http::Response::builder()
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            "{\"model\":\"claude-sonnet-5-5\",\"usage\":{\"input_tokens\":2000,\"output_tokens\":1000}}",
+                        ))
+                        .expect("response"),
+                }
+            }
+        }),
+    ))
+    .await;
+    let gate = Gatekeeper::new(&format!("http://{upstream}")).expect("gatekeeper");
+    let proxy = serve(gate.router()).await;
+    (gate, proxy, calls)
+}
+
+async fn ask(proxy: SocketAddr, token: &str, mode: &str) -> reqwest::StatusCode {
+    let resp = reqwest::Client::new()
+        .post(format!("http://{proxy}/v1/messages"))
+        .header("x-api-key", token)
+        .header("x-mock", mode)
+        .header("accept-encoding", "gzip, br")
+        .body("{\"model\":\"claude-opus-5-5\",\"max_tokens\":2000}")
+        .send()
+        .await
+        .expect("send");
+    let status = resp.status();
+    // Read to the end, as Claude Code does; the meter settles when it ends.
+    let _ = resp.bytes().await;
+    status
+}
+
+/// The meter adds its total when the answer finishes streaming; wait (up to
+/// two seconds) for it to land.
+async fn settled(grant: &decurion_runner::gatekeeper::Grant) -> u64 {
+    let mut last = grant.spent_micros();
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let now = grant.spent_micros();
+        if now == last && now > 0 {
+            return now;
+        }
+        last = now;
+    }
+    last
+}
+
+#[tokio::test]
+async fn streamed_answers_are_priced_from_their_usage() {
+    let (gate, proxy, _) = priced_api().await;
+    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(10_000_000));
+    assert_eq!(ask(proxy, grant.token(), "sse").await, 200);
+    // 1000*4 + 10000*0.2 + 2000*4*1.25 + 400*20 micro-dollars.
+    assert_eq!(settled(&grant).await, 4_000 + 2_000 + 10_000 + 8_000);
+}
+
+#[tokio::test]
+async fn plain_answers_are_priced_too() {
+    let (gate, proxy, _) = priced_api().await;
+    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(10_000_000));
+    assert_eq!(ask(proxy, grant.token(), "json").await, 200);
+    // Sonnet 5.5: 2000*2 + 1000*10.
+    assert_eq!(settled(&grant).await, 4_000 + 10_000);
+}
+
+#[tokio::test]
+async fn unknown_models_are_priced_at_the_top_rate() {
+    let (gate, proxy, _) = priced_api().await;
+    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(10_000_000));
+    ask(proxy, grant.token(), "unknown").await;
+    assert_eq!(settled(&grant).await, 15_000);
+}
+
+#[tokio::test]
+async fn errors_cost_nothing_and_unreadable_answers_cost_everything_left() {
+    let (gate, proxy, _) = priced_api().await;
+    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(1_000_000));
+    assert_eq!(ask(proxy, grant.token(), "error").await, 529);
+    assert_eq!(settled(&grant).await, 0);
+    ask(proxy, grant.token(), "garbled").await;
+    ask(proxy, grant.token(), "garbled").await;
+    // Charged the whole budget, once, not once per unreadable answer.
+    assert_eq!(settled(&grant).await, 1_000_000);
+    assert!(grant.used_up());
+}
+
+#[tokio::test]
+async fn calls_stop_once_the_run_has_spent_its_money() {
+    let (gate, proxy, calls) = priced_api().await;
+    // Each call holds its worst case first: about 44 bytes of input at 8 plus
+    // 2000 output at 20 = ~40,400. The real answer costs 24,000.
+    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(70_000));
+    assert_eq!(ask(proxy, grant.token(), "sse").await, 200);
+    settled(&grant).await;
+    // 24,000 spent + a 40,400 hold fits in 70,000; a third would not.
+    assert_eq!(ask(proxy, grant.token(), "sse").await, 200);
+    settled(&grant).await;
+    // Refused at the gatekeeper: the API is not called again.
+    let before = calls.lock().map(|n| *n).unwrap_or(0);
+    assert_eq!(ask(proxy, grant.token(), "sse").await, 400);
+    assert_eq!(calls.lock().map(|n| *n).unwrap_or(0), before);
+    assert!(grant.used_up());
+    // Counting tokens and listing models cost nothing and stay allowed.
+    let r = reqwest::Client::new()
+        .get(format!("http://{proxy}/v1/models"))
+        .header("x-api-key", grant.token())
+        .send()
+        .await
+        .expect("send");
+    assert_ne!(r.status(), 400);
+}
+
+#[tokio::test]
+async fn an_answer_cut_off_before_its_final_count_is_charged_its_max_tokens() {
+    let (gate, proxy, _) = priced_api().await;
+    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(10_000_000));
+    ask(proxy, grant.token(), "cut").await;
+    // Opus 5.5: 1000 in at 4, plus the request's max_tokens (2000) out at 20.
+    assert_eq!(settled(&grant).await, 4_000 + 40_000);
+}
+
+#[tokio::test]
+async fn finishing_waits_for_an_answer_still_streaming() {
+    // An answer whose final count only comes after half a second.
+    let slow = serve(Router::new().route(
+        "/v1/messages",
+        axum::routing::post(|| async {
+            let parts = futures_util::stream::unfold(0u8, |step| async move {
+                let chunk = match step {
+                    0 => concat!(
+                        "data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-5-5\",",
+                        "\"usage\":{\"input_tokens\":1000,\"output_tokens\":1}}}\n\n"
+                    ),
+                    1 => {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":10}}\n\n"
+                    }
+                    _ => return None,
+                };
+                Some((Ok::<_, std::convert::Infallible>(Bytes::from_static(chunk.as_bytes())), step + 1))
+            });
+            axum::http::Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(Body::from_stream(parts))
+                .expect("response")
+        }),
+    ))
+    .await;
+    let gate = Gatekeeper::new(&format!("http://{slow}")).expect("gatekeeper");
+    let proxy = serve(gate.router()).await;
+    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(10_000_000));
+    let mut resp = reqwest::Client::new()
+        .post(format!("http://{proxy}/v1/messages"))
+        .header("x-api-key", grant.token())
+        .body(r#"{"model":"claude-opus-5-5","max_tokens":100}"#)
+        .send()
+        .await
+        .expect("send");
+    // The opening chunk has arrived; the answer is still streaming.
+    resp.chunk().await.expect("chunk");
+    let reader = tokio::spawn(async move { while let Ok(Some(_)) = resp.chunk().await {} });
+    let started = std::time::Instant::now();
+    assert!(grant.finish(std::time::Duration::from_secs(5)).await);
+    // It waited for the answer to wind down and its charge to land: cut off
+    // by the run ending, it is charged at least its worst case.
+    assert!(started.elapsed() >= std::time::Duration::from_millis(300));
+    assert!(grant.spent_micros() >= 4_000 + 100 * 20);
+    reader.abort();
+}
+
+#[tokio::test]
+async fn a_stream_with_nothing_readable_costs_the_whole_budget() {
+    let (gate, proxy, _) = priced_api().await;
+    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(500_000));
+    ask(proxy, grant.token(), "blank").await;
+    assert_eq!(settled(&grant).await, 500_000);
+    assert!(grant.used_up());
+}
+
+#[tokio::test]
+async fn settings_the_meter_cannot_price_are_refused() {
+    let (gate, proxy, calls) = priced_api().await;
+    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(10_000_000));
+    for body in [
+        r#"{"model":"claude-opus-5-5","max_tokens":10,"fallbacks":"default"}"#,
+        r#"{"model":"claude-opus-5-5","max_tokens":10,"speed":"fast"}"#,
+        r#"{"model":"claude-opus-5-5","max_tokens":10,"service_tier":"priority"}"#,
+        r#"{"model":"claude-opus-5-5","max_tokens":10,"inference_geo":"us"}"#,
+        r#"{"model":"claude-opus-5-5","max_tokens":10,"tools":[{"type":"advisor_20260301","name":"advisor"}]}"#,
+        r#"{"model":"claude-opus-5-5","max_tokens":10,"tools":[{"type":"code_execution_20260521","name":"code_execution"}]}"#,
+        r#"{"model":"claude-opus-5-5","max_tokens":10,"mcp_servers":[]}"#,
+        "not json",
+    ] {
+        let r = reqwest::Client::new()
+            .post(format!("http://{proxy}/v1/messages"))
+            .header("x-api-key", grant.token())
+            .body(body)
+            .send()
+            .await
+            .expect("send");
+        assert_eq!(r.status(), 400, "{body}");
+    }
+    assert_eq!(calls.lock().map(|n| *n).unwrap_or(0), 0);
+    // Ordinary tools and settings still pass.
+    let r = reqwest::Client::new()
+        .post(format!("http://{proxy}/v1/messages"))
+        .header("x-api-key", grant.token())
+        .header("x-mock", "sse")
+        .body(r#"{"model":"claude-opus-5-5","max_tokens":10,"inference_geo":"global","tools":[{"name":"bash","input_schema":{}},{"type":"web_search_20260209","name":"web_search"}]}"#)
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn a_failed_call_gives_its_hold_back() {
+    let (gate, proxy, _) = priced_api().await;
+    // Room for exactly one worst case at a time.
+    let grant = gate.grant_with_budget(REAL_KEY.into(), Some(45_000));
+    assert_eq!(ask(proxy, grant.token(), "error").await, 529);
+    settled(&grant).await;
+    assert_eq!(ask(proxy, grant.token(), "error").await, 529);
+    assert_eq!(grant.spent_micros(), 0);
+    assert!(!grant.used_up());
 }

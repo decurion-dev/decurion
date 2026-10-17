@@ -1,0 +1,135 @@
+#!/bin/sh
+# Starts Decurion on Mac or Linux: makes sure Docker is running, prepares the
+# agent workspace image when it is missing or out of date, starts the hub and
+# the runner, and opens the board. Press Ctrl+C in this window to stop.
+set -u
+# The data folder holds the hub's keys, and its log holds the sign-in link,
+# so nothing Decurion writes should be readable by other accounts.
+umask 077
+
+here=$(cd "$(dirname "$0")" && pwd)
+share="$here/../share/decurion"
+port=7420
+data=${DECURION_DATA:-$HOME/decurion}
+logs="$data/logs"
+mkdir -p "$logs"
+chmod 700 "$data"
+
+fail() {
+    printf '\n%s\nLogs are in %s\n' "$1" "$logs" >&2
+    exit 1
+}
+
+open_url() {
+    if [ "$(uname -s)" = Darwin ]; then
+        open "$1"
+    elif command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$1" >/dev/null 2>&1 &
+    fi
+}
+
+sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
+# Prepares one agent workspace image ($1) from its folder in docker/ ($2);
+# $3 names it in the message. The image is rebuilt when the Dockerfile shipped
+# with this version changes. Fails when the image could not be built.
+prepare_image() {
+    context="$share/docker/$2"
+    want=$(sha256 "$context/Dockerfile")
+    have=$(docker image inspect -f '{{ index .Config.Labels "org.decurion.dockerfile" }}' "$1" 2>/dev/null)
+    [ -n "$want" ] && [ "$have" = "$want" ] && return 0
+    echo "Getting $3 ready. This happens once per version and takes a few minutes."
+    docker build --label "org.decurion.dockerfile=$want" -t "$1" "$context"
+}
+
+# Runs a program in the background with its output in the logs folder and
+# sets $pid. Not run in $(...), so the process stays this shell's child.
+start_logged() {
+    for f in "$logs/$2.log" "$logs/$2-errors.log"; do
+        [ -f "$f" ] && mv -f "$f" "${f%.log}.previous.log"
+    done
+    "$here/$1" >"$logs/$2.log" 2>"$logs/$2-errors.log" &
+    pid=$!
+}
+
+echo "Starting Decurion..."
+
+# Already running? Open the board instead of starting a second copy.
+if command -v curl >/dev/null 2>&1 &&
+    curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/"; then
+    open_url "http://decurion.localhost:$port/"
+    echo "Decurion is already running. Your board is open in your browser."
+    exit 0
+fi
+
+command -v docker >/dev/null 2>&1 ||
+    fail "Docker is not installed. Install Docker Desktop from https://www.docker.com/products/docker-desktop/ and then run decurion-start again."
+
+if ! docker info >/dev/null 2>&1; then
+    if [ "$(uname -s)" = Darwin ]; then
+        echo "Starting Docker Desktop. This can take a minute..."
+        open -a Docker 2>/dev/null
+    fi
+    tries=0
+    until docker info >/dev/null 2>&1; do
+        tries=$((tries + 1))
+        [ "$tries" -gt 60 ] &&
+            fail "Docker is not running. Start Docker, wait until it is ready, then run decurion-start again."
+        sleep 3
+    done
+fi
+
+# Claude work cannot run without its workspace, so Decurion stops if it is
+# not ready. ChatGPT and Grok work use a second workspace; if that one is not
+# ready, Claude work still runs.
+prepare_image decurion/claude-worker:dev claude-worker "the agent workspace" ||
+    fail "Could not prepare the agent workspace. Check that Docker is running and you are online, then try again."
+if ! prepare_image decurion/pi-worker:dev pi-worker "the workspace for ChatGPT and Grok work"; then
+    echo
+    echo "Could not prepare the workspace for ChatGPT and Grok work. Claude work runs as usual, but ChatGPT and Grok work will not run until it is ready. Decurion tries again the next time you start it."
+    echo
+fi
+
+start_logged decurion-hub hub
+hub=$pid
+runner=""
+trap 'kill $hub $runner 2>/dev/null; exit 0' INT TERM
+
+url=""
+tries=0
+while [ -z "$url" ]; do
+    kill -0 "$hub" 2>/dev/null || fail "Decurion could not start. The details are in hub-errors.log."
+    tries=$((tries + 1))
+    [ "$tries" -gt 100 ] && { kill "$hub" 2>/dev/null; fail "Decurion is taking too long to start."; }
+    url=$(sed -n 's/^Open the board: \([^ ]*\).*/\1/p' "$logs/hub.log" | head -n 1)
+    [ -z "$url" ] && sleep 0.3
+done
+
+start_logged decurion-runner runner
+runner=$pid
+open_url "$url"
+
+echo
+echo "Decurion is running. Your board is open in your browser."
+echo "Keep this window open. Press Ctrl+C to stop Decurion."
+echo "If the board did not open, paste this link into Chrome or Edge: $url"
+
+while kill -0 "$hub" 2>/dev/null; do
+    sleep 2
+    if ! kill -0 "$runner" 2>/dev/null; then
+        echo "The runner stopped. Restarting it."
+        sleep 8
+        start_logged decurion-runner runner
+        runner=$pid
+    fi
+done
+
+kill "$runner" 2>/dev/null
+wait "$hub" 2>/dev/null || fail "Decurion stopped because of a problem. The details are in hub-errors.log."
+echo "Decurion stopped."

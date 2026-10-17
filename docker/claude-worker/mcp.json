@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "browser": {
+      "type": "stdio",
+      "command": "/usr/local/bin/playwright-mcp",
+      "args": [
+        "--browser", "chromium",
+        "--headless",
+        "--isolated",
+        "--no-sandbox",
+        "--no-webmcp",
+        "--output-dir", "/tmp/playwright-mcp"
+      ],
+      "env": {
+        "PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright"
+      }
+    }
+  }
+}

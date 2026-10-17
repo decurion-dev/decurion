@@ -3,7 +3,11 @@ One coordinator. Every agent. Your rules. Decurion is an open-source control roo
 
 > Early development. Windows first. Nothing here is ready for daily use yet.
 
-## Try the skeleton (Windows, Docker Desktop)
+## Install
+
+Download the installer for Windows, or the `.tar.gz` for Mac or Linux, from the [Releases page](https://github.com/decurion-dev/decurion/releases). The [help pages](docs/help/src/README.md) walk you through installing, signing in your Claude accounts and adding your first app.
+
+## Run from source (Windows, Docker Desktop)
 
 1. Build the agent image: `docker build -t decurion/claude-worker:dev docker/claude-worker`
 2. Save a Claude token for profile A: run `claude setup-token`, then `python spike/wincred.py set A` and paste it (hidden input). It is stored in Windows Credential Manager as `decurion/claude-profile-A`.
@@ -24,7 +28,28 @@ Work can also go to ChatGPT (your OpenAI API key) or Grok (your xAI API key). De
 
 Decurion stops new work at the monthly cap, and stops a run once pi reports it has spent the money set aside for it. That per-run stop relies on what pi reports, and the agent holds the key while it runs, so the provider's own monthly limit is the real backstop: set it. (Claude pay-per-use is different: its key stays on your PC behind the gatekeeper.) ChatGPT work uses `gpt-5.5` and Grok work uses `grok-4.7`.
 
-Each piece of work runs in its own container with its own copy of the code. The only credential inside is the one that work runs on: that profile's Claude token, on Claude pay-per-use the run's proxy token, or for ChatGPT and Grok that provider's API key. Work moves to *In review* only when the agent has committed to its branch.
+Each piece of work runs in its own container with its own copy of the code. The only credentials inside are the one that work runs on (that profile's Claude token, on Claude pay-per-use the run's proxy token, or for ChatGPT and Grok that provider's API key) and any test keys you gave that app. Work moves to *In review* only when the agent has committed to its branch.
+
+### Test keys
+
+If an app's tests need keys (a Stripe test key, a test database key), add them on the board under *Settings*, *Test keys*. The name is the environment variable the app reads, for example `STRIPE_SECRET_KEY`.
+
+- Values are saved in Windows Credential Manager as `decurion/app-<id>/test-key/<NAME>`, never in Decurion's database, the app's folder or git. The board shows only the last four characters. (Off Windows, for development, they go in a private `vault` folder in Decurion's data folder.)
+- Live keys are refused: live Stripe keys, Anthropic, GitHub, GitLab and Slack tokens, AWS access keys and private keys.
+- Each run gets that app's test keys as environment variables, and no other app's.
+- The values are hidden from everything the board shows. If one turns up anywhere in the agent's new commits, the work stops before review instead of going to *In review*. A key that was already in the app's code before the agent started is not counted.
+
+Open a card to talk to its agent while it works. *Change course now* stops its current step and gives it your message. *Do this next* waits until it finishes what it is doing. *Add a note* passes information along without interrupting. Work can be split into smaller tasks: stopping a task stops the smaller tasks inside it, except ones set to keep going on their own. If the PC or the runner stops in the middle of a step, the agent is told which step was cut off and checks what actually happened before it repeats anything that changes files or runs commands. ChatGPT and Grok work reads your messages when its next run starts, not while it works.
+
+## Work on your PC or in the cloud
+
+Every piece of work runs on your PC or on a cloud worker, under the same rules: the same sealed box, the same single credential, the same board and inbox. Open a card and choose **Move to cloud** or **Move to PC**; running work saves its progress, stops, and carries on from the same spot on the other computer, with no new questions.
+
+To add a cloud worker, start the hub with `DECURION_PUBLIC_URL` set to its Tailscale https address (the same one your phone uses), then open **Settings**, **Add cloud worker** on the board and follow the three steps (see `docs/help/src/add-the-cloud-worker.md`). The server costs about $5 to $25 a month at a hosting company.
+
+How it works: the hub is the meeting point for code. Runners never clone your repo themselves; they get the starting commit from the hub, and at the end of every run (or when you move the work) they hand back a saved copy: the branch and the agent's session. The cloud worker gets the run's Claude credential from the hub only while that work is running on it, and never stores it. The hub refuses any runner built with different rules (`RULES_VERSION`), and the cloud worker then rebuilds itself to the hub's commit.
+
+Each agent also has its own private Chromium browser (Playwright) inside its box, for testing the pages it builds.
 
 Keep Docker Desktop's "Expose daemon on tcp://localhost:2375 without TLS" setting **off**. Containers can reach the host, and that port would give any agent full control of Docker.
 
@@ -32,9 +57,15 @@ Keep Docker Desktop's "Expose daemon on tcp://localhost:2375 without TLS" settin
 
 - `crates/decurion-proto` shared types and the allowed state moves
 - `crates/decurion-hub` board state (SQLite), API, board page
-- `crates/decurion-runner` starts one sealed agent container (Claude Code or pi) per piece of work
-- `docker/claude-worker` the Claude Code image
+- `crates/decurion-runner` starts one sealed agent container (Claude Code, or pi for ChatGPT and Grok) per piece of work, on the PC or a cloud worker
+- `docker/claude-worker` the Claude Code image, with its test browser
 - `docker/pi-worker` the pi image, for ChatGPT and Grok
+- `docker/cloud` how a cloud worker sets itself up, updates itself and walls off its agents
+- `docs/help` help pages
 - `docs/spikes` what we tested and learned
+- `docs/help` the help pages, `docs/adr` design decisions, `docs/addons` how to write an add-on
+- `packaging` the Windows installer and the Mac and Linux install scripts (see [RELEASING.md](RELEASING.md))
+
+Want to help? Read [CONTRIBUTING.md](CONTRIBUTING.md). Found a security problem? See [SECURITY.md](SECURITY.md).
 
 Licensed under Apache-2.0.
