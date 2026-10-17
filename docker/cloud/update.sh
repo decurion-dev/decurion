@@ -4,8 +4,8 @@
 # Runs as root before every start of decurion-runner.service. The runner
 # writes the hub's commit to /var/lib/decurion/wanted-commit when the hub says
 # it is out of date; this script then downloads that commit from GitHub
-# (or the newest main if that commit is not on GitHub), builds the runner and
-# the agent images as the `decurion` user, and installs them.
+# (or the newest main if that commit is not on GitHub), builds the runner, the
+# agent images and the gate image as the `decurion` user, and installs them.
 #
 # It must never leave the server without a working runner: if anything fails
 # while a working version is installed, it logs the problem and keeps the old
@@ -23,6 +23,7 @@ BUILT_FILE=/opt/decurion/built-commit
 WANTED_FILE=/var/lib/decurion/wanted-commit
 IMAGE=decurion/claude-worker:dev
 PI_IMAGE=decurion/pi-worker:dev
+GATE_IMAGE=decurion/gate:dev              # each box's way out, letting only listed sites through
 
 log() { echo "decurion-update: $*"; }
 
@@ -35,6 +36,12 @@ as_decurion() {
 
 have_working_version() {
   [ -x "$BIN" ] && [ -s "$BUILT_FILE" ] && docker image inspect "$IMAGE" >/dev/null 2>&1
+}
+
+# The gate image is there, or the checked-out version has none (older ones
+# do not), so a missing gate gets rebuilt even when nothing else changed.
+have_gate() {
+  [ ! -f "$SRC/docker/gate/Dockerfile" ] || docker image inspect "$GATE_IMAGE" >/dev/null 2>&1
 }
 
 # Something went wrong: keep what is installed, or fail if there is nothing yet.
@@ -61,7 +68,7 @@ fi
 built=$(cat "$BUILT_FILE" 2>/dev/null || true)
 
 # Nothing to do: the wanted version (or, with no wish, any version) is installed.
-if have_working_version && { [ -z "$wanted" ] || [ "$wanted" = "$built" ]; }; then
+if have_working_version && have_gate && { [ -z "$wanted" ] || [ "$wanted" = "$built" ]; }; then
   exit 0
 fi
 
@@ -88,7 +95,7 @@ if [ -z "$target" ]; then
     || give_up "could not find the main branch"
 fi
 
-if have_working_version && [ "$target" = "$built" ]; then
+if have_working_version && have_gate && [ "$target" = "$built" ]; then
   exit 0
 fi
 
@@ -96,7 +103,7 @@ log "building $target (this can take a while)"
 as_decurion git -C "$SRC" -c advice.detachedHead=false checkout --quiet --force --detach "$target" \
   || give_up "could not switch to $target"
 
-# 1. The runner. Built in place; installed only after the Claude image also builds.
+# 1. The runner. Built in place; installed only after the Claude and gate images also build.
 as_decurion cargo build --quiet --release --locked --manifest-path "$SRC/Cargo.toml" -p decurion-runner \
   || give_up "building the runner failed"
 
@@ -116,7 +123,29 @@ if as_decurion docker build --build-arg "AGENT_UID=$(id -u decurion)" \
 else
   log "building the ChatGPT and Grok image failed; keeping the one already installed (if any)"
   docker rmi "$PI_IMAGE-next" >/dev/null 2>&1 || true
+[ -n "$gate" ] && { docker rmi "$GATE_IMAGE-next" >/dev/null 2>&1 || true; }
 fi
+
+# 2c. The gate image, the same way, but not optional: a box cannot start
+#     without its gate. It builds from the whole checkout (the root
+#     .dockerignore leaves out target/ and .git). Older versions have none.
+gate=""
+if [ -f "$SRC/docker/gate/Dockerfile" ]; then
+  gate=1
+  as_decurion docker build --tag "$GATE_IMAGE-next" -f "$SRC/docker/gate/Dockerfile" "$SRC" \
+    || give_up "building the gate image failed"
+fi
+
+# Puts NAME back to image id OLD, or removes NAME if there was none before:
+# do not let a new image make an old runner look like a working version.
+put_back() {
+  local name=$1 old=$2
+  if [ -n "$old" ]; then
+    docker tag "$old" "$name" || log "could not put the old $name back"
+  else
+    docker rmi "$name" >/dev/null 2>&1 || true
+  fi
+}
 
 # 3. Install them all, images first: a new runner must never start with an old
 #    image. If the runner then fails to install, the old images are put back,
@@ -124,7 +153,12 @@ fi
 #    (rename), so a crash here never leaves half a file.
 old_image=$(docker image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null || true)
 old_pi_image=$(docker image inspect --format '{{.Id}}' "$PI_IMAGE" 2>/dev/null || true)
+old_gate=$(docker image inspect --format '{{.Id}}' "$GATE_IMAGE" 2>/dev/null || true)
 docker tag "$IMAGE-next" "$IMAGE" || give_up "installing the agent image failed"
+if [ -n "$gate" ] && ! docker tag "$GATE_IMAGE-next" "$GATE_IMAGE"; then
+  put_back "$IMAGE" "$old_image"
+  give_up "installing the gate image failed"
+fi
 pi_installed=""
 if [ -n "$pi_built" ]; then
   if docker tag "$PI_IMAGE-next" "$PI_IMAGE"; then
@@ -137,20 +171,9 @@ install -d -o root -g root -m 0755 "$(dirname "$BIN")"
 if ! { install -o root -g root -m 0755 "$SRC/target/release/decurion-runner" "$BIN.new" \
        && mv -f "$BIN.new" "$BIN"; }; then
   rm -f "$BIN.new"
-  if [ -n "$old_image" ]; then
-    docker tag "$old_image" "$IMAGE" || log "could not put the old agent image back"
-  else
-    # There was no image before, so no working version: do not let the new
-    # image make an old runner look like one.
-    docker rmi "$IMAGE" >/dev/null 2>&1 || true
-  fi
-  if [ -n "$pi_installed" ]; then
-    if [ -n "$old_pi_image" ]; then
-      docker tag "$old_pi_image" "$PI_IMAGE" || log "could not put the old ChatGPT and Grok image back"
-    else
-      docker rmi "$PI_IMAGE" >/dev/null 2>&1 || true
-    fi
-  fi
+  put_back "$IMAGE" "$old_image"
+  [ -n "$pi_installed" ] && put_back "$PI_IMAGE" "$old_pi_image"
+  [ -n "$gate" ] && put_back "$GATE_IMAGE" "$old_gate"
   give_up "installing the runner failed"
 fi
 docker rmi "$IMAGE-next" >/dev/null 2>&1 || true

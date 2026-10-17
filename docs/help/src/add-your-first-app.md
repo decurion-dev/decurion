@@ -26,6 +26,22 @@ Your app now shows in the list under **Add an app**. It also shows in the app me
 
 The change applies to work that starts or resumes after you click.
 
+## Choose which websites agents may use
+
+Agents work in a closed room with one door to the internet. Through it they can reach only the AIs (Claude, ChatGPT and Grok), the package stores where code libraries come from (npm, PyPI and crates.io), and the websites you add for that app. They can never reach your PC, your home network or your other devices.
+
+To let an app's agents use another website:
+
+1. Open **Settings** and find the app under **Apps**.
+2. Under **Websites**, type the site, such as `stripe.com`, and click **Add**. An entry like `stripe.com` also covers addresses under it, such as `api.stripe.com`.
+3. To take a site off the list, click the **×** next to it.
+
+Changes apply to work that starts or resumes after you save.
+
+If an agent tries a website that is not on the list, the visit is turned away and the agent carries on without it. You are not asked anything. The work's activity shows **Blocked a visit to** that site. If the work needs the site, add it and send the work back.
+
+A website on the list can receive information as well as send it, so add only sites you trust.
+
 ## Good to know
 
 - Each piece of work gets a fresh copy of the folder. Your own folder is never changed by an agent.

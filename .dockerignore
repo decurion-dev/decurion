@@ -1,0 +1,4 @@
+# Keep the build context small: the image is built from the sources only.
+target
+**/target
+.git

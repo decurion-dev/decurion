@@ -104,6 +104,24 @@ if (-not (Initialize-Image 'decurion/pi-worker:dev' 'pi-worker' 'the workspace f
     Write-Host ''
 }
 
+# The gate is each agent's only way out to the web. Its image is rebuilt
+# when any file of the gate's source shipped with this version changes.
+$gateImage = 'decurion/gate:dev'
+$gateContext = Join-Path $Here 'docker\gate'
+$gateWant = (Get-ChildItem -Recurse -File $gateContext | Sort-Object FullName | ForEach-Object {
+    $_.FullName.Substring($gateContext.Length) + ' ' + (Get-FileHash -Algorithm SHA256 $_.FullName).Hash
+}) -join "`n"
+$stream = [IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes($gateWant))
+$gateWant = (Get-FileHash -Algorithm SHA256 -InputStream $stream).Hash.ToLower()
+$have = docker image inspect -f '{{ index .Config.Labels "org.decurion.source" }}' $gateImage 2> $null
+if ($LASTEXITCODE -ne 0 -or "$have".Trim() -ne $gateWant) {
+    Write-Host 'Getting the agents'' website gate ready. This happens once per version and takes a few minutes.'
+    docker build --label "org.decurion.source=$gateWant" -t $gateImage $gateContext
+    if ($LASTEXITCODE -ne 0) {
+        Stop-WithMessage 'Could not prepare the agents'' website gate. Check that Docker Desktop is running and you are online, then try again.'
+    }
+}
+
 $hub = Start-Logged 'decurion-hub.exe' 'hub'
 $hubLog = Join-Path $Logs 'hub.log'
 $url = $null

@@ -25,12 +25,12 @@ Decurion also uses four free helper programs:
    - **Decurion - Save a Claude sign-in** saves your Claude accounts for Decurion. See [Connect your Claude accounts](connect-claude-accounts.md).
 6. If any helper programs are missing, the installer lists them on a page called **Helpers Decurion needs**. Leave each one checked to install it. The installer uses **winget**, the app installer built into Windows. Some helpers may ask for your permission.
 7. If Docker Desktop was just installed, restart your PC. Then open Docker Desktop once and finish its own setup.
-8. In Docker Desktop, open **Settings**, then **General**. Make sure **Expose daemon on tcp://localhost:2375 without TLS** is **off**. If it is on, any agent could take control of Docker.
+8. In Docker Desktop, open **Settings**, then **General**. Make sure **Expose daemon on tcp://localhost:2375 without TLS** is **off**. Agents cannot reach your PC, but other programs in Docker can, and with this on they could take control of Docker.
 
 ## Start Decurion for the first time
 
 1. Open the Start menu and click **Decurion**. A window opens. If Docker Desktop is not running yet, Decurion starts it and waits up to 3 minutes for it.
-2. The first time, Decurion gets the agent workspace ready. This takes a few minutes. It happens again only when you install a new version.
+2. The first time, Decurion gets the agent workspace and the agents' website gate ready. This takes a few minutes. It happens again only when you install a new version.
 3. Your board opens in your browser, on a page called **Sign in to Decurion**. Click **Sign in**.
 
 Keep the Decurion window open while you use it. Close the window to stop Decurion.
@@ -49,7 +49,7 @@ If the board does not open, the window shows a link. Paste it into Chrome or Edg
    - To install it for everyone on the computer instead, run `sudo ./install.sh --prefix /usr/local`. This asks for your password.
 6. Save your Claude tokens. On Mac and Linux this works differently from Windows. See [Connect your Claude accounts](connect-claude-accounts.md).
 7. Run `decurion-start`. If the terminal says the command is not found, use the full path that `install.sh` showed at the end, such as `~/.local/bin/decurion-start`.
-8. The first time, Decurion gets the agent workspace ready. This takes a few minutes.
+8. The first time, Decurion gets the agent workspace and the agents' website gate ready. This takes a few minutes.
 9. Your board opens in your browser. Click **Sign in**. If the board does not open, paste the link from the terminal into Chrome or Edge.
 
 Keep the terminal open while you use Decurion. Press Ctrl+C in it to stop Decurion.
@@ -59,7 +59,7 @@ To remove Decurion later, run `./install.sh --uninstall` from the unpacked folde
 ## If something goes wrong
 
 - **"Docker Desktop did not start."** Open Docker Desktop yourself, wait until it says it is running, then open Decurion again.
-- **"Could not prepare the agent workspace."** Check that Docker Desktop is running and that you are online. Then open Decurion again.
+- **"Could not prepare the agent workspace."** or **"Could not prepare the agents' website gate."** Check that Docker Desktop is running and that you are online. Then open Decurion again.
 - **"Decurion could not start."** The details are in `hub-errors.log`. On Windows it is in `%LOCALAPPDATA%\decurion\logs`. On a Mac or Linux it is in `~/decurion/logs`. See [When something fails](when-something-fails.md).
 - **The board says "Not signed in."** Close Decurion and open it again. Then click **Sign in** on the page that opens.
 - **"This is not a Decurion sign-in link."** Part of the link is missing. Copy the whole link again.

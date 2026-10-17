@@ -478,6 +478,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "decurion-gate"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "decurion-proto",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "decurion-hub"
 version = "0.1.0"
 dependencies = [

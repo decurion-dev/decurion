@@ -9,6 +9,8 @@
         "--isolated",
         "--no-sandbox",
         "--no-webmcp",
+        "--proxy-server", "http://gate:3128",
+        "--proxy-bypass", "localhost,127.0.0.1,[::1]",
         "--output-dir", "/tmp/playwright-mcp"
       ],
       "env": {

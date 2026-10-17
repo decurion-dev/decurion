@@ -9,7 +9,7 @@ Download the installer for Windows, or the `.tar.gz` for Mac or Linux, from the 
 
 ## Run from source (Windows, Docker Desktop)
 
-1. Build the agent image: `docker build -t decurion/claude-worker:dev docker/claude-worker`
+1. Build the agent image and its gate: `docker build -t decurion/claude-worker:dev docker/claude-worker` and `docker build -t decurion/gate:dev -f docker/gate/Dockerfile .`
 2. Save a Claude token for profile A: run `claude setup-token`, then `python spike/wincred.py set A` and paste it (hidden input). It is stored in Windows Credential Manager as `decurion/claude-profile-A`.
 3. Start the hub: `cargo run -p decurion-hub`. Open the login link it prints.
 4. Start the runner: `cargo run -p decurion-runner`.
@@ -51,7 +51,9 @@ How it works: the hub is the meeting point for code. Runners never clone your re
 
 Each agent also has its own private Chromium browser (Playwright) inside its box, for testing the pages it builds.
 
-Keep Docker Desktop's "Expose daemon on tcp://localhost:2375 without TLS" setting **off**. Containers can reach the host, and that port would give any agent full control of Docker.
+Each container sits on its own private network with no way out except its gate, a small proxy that lets through only the websites the app allows: the AI doing the work (Claude, ChatGPT or Grok), the package stores (npm, PyPI, crates.io), and any sites you add to the app in Settings, under Websites. An entry such as `stripe.com` covers `api.stripe.com` too. Anything else is turned away, shows on the board as "Blocked", and the agent carries on without it. The gate also refuses any site that points at your PC, your home network or Tailscale, so an agent cannot reach the hub or other devices. A site on the list can still receive data, so add only sites you trust.
+
+Keep Docker Desktop's "Expose daemon on tcp://localhost:2375 without TLS" setting **off**. The boxes can no longer reach your PC, but other containers you run can, and that port would give them full control of Docker.
 
 ## Layout
 

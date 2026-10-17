@@ -205,7 +205,7 @@ pub(crate) async fn close_open_run(tx: &mut Transaction<'_, Sqlite>, thread_id: 
              cost_micros = COALESCE(cost_micros, CASE WHEN EXISTS (
                  SELECT 1 FROM events e WHERE e.thread_id = runs.thread_id
                      AND e.at >= runs.started_at
-                     AND json_extract(e.body, '$.kind') IN ('started', 'message', 'tool')
+                     AND json_extract(e.body, '$.kind') IN ('started', 'message', 'tool', 'blocked')
              ) THEN reserved_micros ELSE 0 END)
          WHERE thread_id = ? AND finished_at IS NULL",
     )

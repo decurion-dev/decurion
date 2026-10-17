@@ -1,7 +1,7 @@
 use anyhow::{bail, Context};
 use decurion_proto::goal::{HelperClaim, HelperResult, HelperSource};
 use decurion_proto::{
-    App, Claim, HelloReply, JoinReply, JoinRequest, Live, MoveRequest, NewCheckpoint, Place,
+    sites, App, Claim, HelloReply, JoinReply, JoinRequest, Live, MoveRequest, NewCheckpoint, Place,
     RunCredential, RunEvent, RunnerHello, ThreadState, RULES_VERSION,
 };
 use decurion_runner::gatekeeper::{Gatekeeper, Grant, ANTHROPIC_API};
@@ -19,6 +19,7 @@ use decurion_runner::{
     redact, retriable, run_args, sibling, valid_branch, Acks, Action, Conversation, Credential,
     FirstResult, LeakScanner, PiRun, Sandbox, Start, Step, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
 };
+use decurion_runner::{gate_args, parse_gate_line, BoxNet, GateLine, GATE_IMAGE, RELAY_URL};
 use decurion_vault::{check_name, Vault};
 use reqwest::header::{HeaderMap, CONTENT_LENGTH, CONTENT_TYPE};
 use reqwest::StatusCode;
@@ -1577,10 +1578,34 @@ Containers, and delete it."
     }
 }
 
+/// Runs one claimed thread behind its site gate, which lets the box reach
+/// only the websites the app allows.
+async fn run(
+    hub: &Hub,
+    data: &Path,
+    gate: &Gate,
+    c: Claim,
+    keys: &[(String, String)],
+) -> anyhow::Result<()> {
+    // A pay-per-use box reaches the gatekeeper through its site gate, which
+    // passes that one address through and nothing else on the PC.
+    let exit = start_site_gate(
+        hub,
+        BoxNet::work(c.thread.id),
+        &c.app,
+        Some(c.thread.id),
+        gate.relay(Credential::for_account(c.account)).as_deref(),
+    )
+    .await?;
+    let outcome = run_in_box(hub, data, gate, c, keys).await;
+    exit.stop().await;
+    outcome
+}
+
 /// Runs one claimed thread to the end and reports the outcome. `keys` are the
 /// app's test keys: they go into the container, and their values are hidden
 /// from everything sent to the hub.
-async fn run(
+async fn run_in_box(
     hub: &Hub,
     data: &Path,
     gate: &Gate,
@@ -1629,7 +1654,7 @@ make sure Docker Desktop is running and delete that container there",
             // once its set-aside money is used.
             let budget = c.reserved_micros.map(|m| m.max(0) as u64);
             let g = gate.keeper.grant_with_budget(token, budget);
-            let v = vec![g.token().to_owned(), gate.url.clone()];
+            let v = vec![g.token().to_owned(), RELAY_URL.to_owned()];
             (Some(g), v)
         }
         Credential::Max(_) | Credential::OpenAi | Credential::Xai => (None, vec![token]),
@@ -1977,6 +2002,12 @@ async fn fail(hub: &Hub, id: i64, note: &str) {
 type ContainerEnv = Vec<(&'static str, String)>;
 
 impl Gate {
+    /// Where a box's site gate relays to: the gatekeeper, for Claude
+    /// pay-per-use boxes only. That one address is all of the PC the gate passes through.
+    fn relay(&self, cred: Credential) -> Option<String> {
+        (cred == Credential::PayPerUse).then(|| self.url.trim_start_matches("http://").to_owned())
+    }
+
     /// A helper container's credential. A pay-per-use container gets a token
     /// for the gatekeeper, held to the money set aside for the job, never the
     /// key; the grant is revoked when it drops, so the caller keeps it until
@@ -1996,7 +2027,8 @@ impl Gate {
             Credential::PayPerUse => {
                 let budget = reserved_micros.map(|m| m.max(0) as u64);
                 let g = self.keeper.grant_with_budget(token, budget);
-                let v = vec![g.token().to_owned(), self.url.clone()];
+                // The box reaches the gatekeeper only through its site gate.
+                let v = vec![g.token().to_owned(), RELAY_URL.to_owned()];
                 (Some(g), v)
             }
             Credential::Max(_) | Credential::OpenAi | Credential::Xai => (None, vec![token]),
@@ -2289,9 +2321,23 @@ async fn run_helper(
     // A job handed out again after a runner restart starts from scratch.
     let _ = docker_out(&["rm", "-f", &name]).await;
     hb.clean().await;
-    let r = helper_container(hub, data, gate, job, &name, &hb).await;
-    // `--rm` only applies if the docker client lived to see the exit.
-    let _ = docker_out(&["rm", "-f", &name]).await;
+    let net = BoxNet::helper(job.job_id);
+    let relay = gate.relay(if job.budget_usd.is_some() {
+        Credential::PayPerUse
+    } else {
+        Credential::Max(job.app.profile)
+    });
+    let r = match start_site_gate(hub, net.clone(), &job.app, None, relay.as_deref()).await {
+        Ok(exit) => {
+            let r = helper_container(hub, data, gate, job, &name, &net, &hb).await;
+            // `--rm` only applies if the docker client lived to see the exit,
+            // and the network can only go once the box has.
+            let _ = docker_out(&["rm", "-f", &name]).await;
+            exit.stop().await;
+            r
+        }
+        Err(e) => Err(e),
+    };
     hb.clean().await;
     r
 }
@@ -2317,6 +2363,7 @@ async fn helper_container(
     gate: &Gate,
     job: &HelperClaim,
     name: &str,
+    net: &BoxNet,
     hb: &HelperBox,
 ) -> anyhow::Result<HelperResult> {
     match &job.source {
@@ -2355,6 +2402,7 @@ async fn helper_container(
             src: &hb.dir,
             read_only: hb.read_only,
             home_volume: &hb.home_volume,
+            network: &net.network,
             out: hb.out.as_deref(),
         },
         &job.session_id,
@@ -2739,9 +2787,9 @@ const CLOUD_GATE_PORT: u16 = 7421;
 async fn start_gate(place: Place) -> anyhow::Result<Gate> {
     // Docker Desktop (Windows, Mac) forwards host.docker.internal to the
     // host's loopback, so nothing off this computer can reach it. On Linux,
-    // containers reach the host at the Docker bridge's own address (run_args
-    // maps host.docker.internal there), which only containers and the host
-    // itself can use.
+    // containers reach the host at the Docker bridge's own address (a box's
+    // gate maps host.docker.internal there), which only containers and the
+    // host itself can use.
     let addr = if cfg!(target_os = "linux") {
         let port = if place == Place::Cloud {
             CLOUD_GATE_PORT
@@ -2815,6 +2863,156 @@ async fn bridge_gateway() -> anyhow::Result<std::net::IpAddr> {
         .context("could not find the Docker bridge's address; is Docker running?")
 }
 
+/// A box's site gate: its network, the proxy container on it, and the task
+/// passing what the gate blocks on to the board.
+struct SiteGate {
+    net: BoxNet,
+    child: tokio::process::Child,
+    reader: tokio::task::JoinHandle<()>,
+}
+
+/// Removes a box's gate and network, if a runner that died left them.
+async fn clear_gate(net: &BoxNet) {
+    let _ = docker().args(["rm", "-f", &net.gate]).output().await;
+    let _ = docker()
+        .args(["network", "rm", &net.network])
+        .output()
+        .await;
+}
+
+/// Makes the box's network and starts its gate, letting through only the
+/// built-in sites and the app's own list. Returns once the gate is
+/// listening and connected to the outside. Blocked visits are posted to
+/// `thread`'s activity when there is one; helper jobs only log them.
+async fn start_site_gate(
+    hub: &Hub,
+    net: BoxNet,
+    app: &App,
+    thread: Option<i64>,
+    relay: Option<&str>,
+) -> anyhow::Result<SiteGate> {
+    clear_gate(&net).await;
+    match gate_up(hub, &net, app, thread, relay).await {
+        Ok((child, reader)) => Ok(SiteGate { net, child, reader }),
+        Err(e) => {
+            clear_gate(&net).await;
+            Err(e)
+        }
+    }
+}
+
+async fn gate_up(
+    hub: &Hub,
+    net: &BoxNet,
+    app: &App,
+    thread: Option<i64>,
+    relay: Option<&str>,
+) -> anyhow::Result<(tokio::process::Child, tokio::task::JoinHandle<()>)> {
+    let out = docker()
+        .args([
+            "network",
+            "create",
+            "--internal",
+            // Without this the PC itself takes an address on the network,
+            // and anything listening on the PC is in reach of the box.
+            "-o",
+            "com.docker.network.bridge.inhibit_ipv4=true",
+            &net.network,
+        ])
+        .output()
+        .await?;
+    if !out.status.success() {
+        bail!(
+            "could not make the box's network: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let mut child = docker()
+        .args(gate_args(net, &sites::for_app(&app.sites), relay))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .context("could not start the gate")?;
+    let stderr = child.stderr.take().context("no stderr")?;
+    let err_task = tokio::spawn(async move {
+        let mut tail = String::new();
+        let mut r = BufReader::new(stderr);
+        while let Ok(Some((line, _))) = read_capped_line(&mut r).await {
+            if tail.len() < STDERR_TAIL {
+                tail.push_str(&line);
+                tail.push('\n');
+            }
+        }
+        tail
+    });
+    let mut out = BufReader::new(child.stdout.take().context("no stdout")?);
+    let ready = tokio::time::timeout(Duration::from_secs(60), async {
+        while let Some((line, _)) = read_capped_line(&mut out).await? {
+            if parse_gate_line(&line) == Some(GateLine::Ready) {
+                return Ok(true);
+            }
+        }
+        std::io::Result::Ok(false)
+    })
+    .await;
+    if !matches!(ready, Ok(Ok(true))) {
+        let _ = child.kill().await;
+        let err = err_task.await.unwrap_or_default();
+        bail!(
+            "the box's gate did not start: {}. If the image is missing, build it with \
+             `docker build -t {GATE_IMAGE} -f docker/gate/Dockerfile .`",
+            err.trim()
+        );
+    }
+    // Only now does the gate get a way out; the box itself never does.
+    let out2 = docker()
+        .args(["network", "connect", "bridge", &net.gate])
+        .output()
+        .await?;
+    if !out2.status.success() {
+        bail!(
+            "could not connect the gate to the internet: {}",
+            String::from_utf8_lossy(&out2.stderr).trim()
+        );
+    }
+    let hub = hub.clone();
+    let reader = tokio::spawn(async move {
+        while let Ok(Some((line, _))) = read_capped_line(&mut out).await {
+            if let Some(GateLine::Blocked { host, reason }) = parse_gate_line(&line) {
+                match thread {
+                    Some(id) => hub.event(id, &RunEvent::Blocked { host, reason }).await,
+                    None => tracing::info!(%host, %reason, "helper box was blocked"),
+                }
+            }
+        }
+    });
+    Ok((child, reader))
+}
+
+impl SiteGate {
+    async fn stop(mut self) {
+        let _ = docker().args(["rm", "-f", &self.net.gate]).output().await;
+        let _ = self.child.wait().await;
+        let _ = self.reader.await;
+        // The box is removed as it exits, but give Docker a moment to let go
+        // of the network.
+        for _ in 0..5 {
+            let ok = docker()
+                .args(["network", "rm", &self.net.network])
+                .output()
+                .await
+                .is_ok_and(|o| o.status.success());
+            if ok {
+                return;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        tracing::warn!(network = %self.net.network, "could not remove the box's network");
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -2881,6 +3079,8 @@ async fn main() -> anyhow::Result<()> {
             "name=^decurion-thread-",
             "--filter",
             "name=^decurion-helper-",
+            "--filter",
+            "name=^decurion-gate-",
         ])
         .output()
         .await
@@ -2895,6 +3095,20 @@ async fn main() -> anyhow::Result<()> {
                 "stopping containers left by a previous runner"
             );
             let _ = docker().arg("rm").arg("-f").args(&ids).output().await;
+        }
+    }
+    // Then the boxes' own networks, now that nothing is attached to them.
+    if let Ok(out) = docker()
+        .args(["network", "ls", "-q", "--filter", "name=^decurion-net-"])
+        .output()
+        .await
+    {
+        let ids: Vec<String> = String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        if !ids.is_empty() {
+            let _ = docker().arg("network").arg("rm").args(&ids).output().await;
         }
     }
     clean_helper_leftovers(&data).await;

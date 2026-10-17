@@ -1,6 +1,7 @@
 //! Types shared by the hub, the runner and the web board.
 
 pub mod goal;
+pub mod sites;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -10,7 +11,7 @@ use std::str::FromStr;
 /// built and how work is handed between computers. The hub refuses a runner
 /// built with a different number, so a PC and a cloud worker can never run
 /// the same work under different rules. Bump it whenever either changes.
-pub const RULES_VERSION: u32 = 2;
+pub const RULES_VERSION: u32 = 3;
 
 /// Where a piece of work is. A thread is in exactly one state at a time, and
 /// only the moves in [`ThreadState::can_move_to`] are allowed.
@@ -271,6 +272,9 @@ pub struct App {
     /// the Max account in `profile`.
     #[serde(default)]
     pub pay_per_use: bool,
+    /// Websites this app's agents may reach on top of [`sites::BUILT_IN`].
+    #[serde(default)]
+    pub sites: Vec<String>,
     /// Most this app's pay-per-use work may spend in a month, across every
     /// paid account. `None` means only the accounts' own caps apply.
     #[serde(default)]
@@ -284,6 +288,8 @@ pub struct NewApp {
     pub profile: Profile,
     #[serde(default)]
     pub pay_per_use: bool,
+    #[serde(default)]
+    pub sites: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -637,6 +643,9 @@ pub enum RunEvent {
     Message { text: String },
     /// The agent used a tool.
     Tool { name: String, summary: String },
+    /// The box tried to reach a website that is not allowed, and the gate
+    /// turned it away. `reason` is in plain words.
+    Blocked { host: String, reason: String },
     /// The run ended. `ok` is the agent's own result, not a review. Cost and
     /// tokens are what the agent reported: for Claude Code, the whole
     /// session so far; for pi, this run.

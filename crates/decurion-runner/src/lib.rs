@@ -19,6 +19,16 @@ pub const IMAGE: &str = "decurion/claude-worker:dev";
 /// talks to many providers (`docker/pi-worker`).
 pub const PI_IMAGE: &str = "decurion/pi-worker:dev";
 
+/// The gate: a small proxy that is a box's only way out to the internet.
+pub const GATE_IMAGE: &str = "decurion/gate:dev";
+
+/// Where a box finds its gate, on the box's own network.
+pub const GATE_URL: &str = "http://gate:3128";
+
+/// Where a pay-per-use box reaches the gatekeeper: the gate passes this port
+/// straight through to it, and to nothing else on the PC.
+pub const RELAY_URL: &str = "http://gate:3129";
+
 /// Host environment variables the docker CLI itself needs. Nothing else from
 /// the runner's environment reaches the docker process, and `docker run` only
 /// forwards the variables named with `-e`.
@@ -154,10 +164,117 @@ pub fn valid_branch(b: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '.' | '-'))
 }
 
+/// The box's own network. It is `--internal` and the PC takes no address on
+/// it: nothing on it has a route out, so the gate is the only way to reach
+/// the internet, the owner's PC or the home network.
+pub fn network_name(thread_id: i64) -> String {
+    format!("decurion-net-{thread_id}")
+}
+
+pub fn gate_name(thread_id: i64) -> String {
+    format!("decurion-gate-{thread_id}")
+}
+
+/// One box's network and the gate on it. Work runs are named for their
+/// thread, helper jobs for their job, so the two never share a network.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoxNet {
+    pub network: String,
+    pub gate: String,
+}
+
+impl BoxNet {
+    pub fn work(thread_id: i64) -> Self {
+        BoxNet {
+            network: network_name(thread_id),
+            gate: gate_name(thread_id),
+        }
+    }
+
+    pub fn helper(job_id: i64) -> Self {
+        BoxNet {
+            network: format!("decurion-net-helper-{job_id}"),
+            gate: format!("decurion-gate-helper-{job_id}"),
+        }
+    }
+}
+
+/// Arguments for `docker run` of a box's gate. It starts on the box's network
+/// only, under the name `gate`; the runner connects it to the outside network
+/// once it is listening. Site names are checked by `sites::normalize`, so
+/// none contains a comma. With `relay` (the gatekeeper's `host:port`), the
+/// gate also passes its relay port through to that one address.
+pub fn gate_args(net: &BoxNet, sites: &[String], relay: Option<&str>) -> Vec<String> {
+    let mut a: Vec<String> = [
+        "run",
+        "--rm",
+        // The gate is built on this computer. Never fetch an image by that
+        // name from Docker Hub, where anyone could publish one.
+        "--pull",
+        "never",
+        "--name",
+        &net.gate,
+        "--network",
+        &net.network,
+        "--network-alias",
+        "gate",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--read-only",
+        "--memory",
+        "256m",
+        "--pids-limit",
+        "128",
+        "-e",
+        &format!("DECURION_SITES={}", sites.join(",")),
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    if let Some(r) = relay {
+        a.extend(
+            [
+                // Docker Desktop provides this name; plain Docker on Linux
+                // needs it mapped to the host, where the gatekeeper listens.
+                "--add-host",
+                GATE_HOST,
+                "-e",
+                &format!("DECURION_RELAY={r}"),
+            ]
+            .map(str::to_owned),
+        );
+    }
+    a.push(GATE_IMAGE.to_owned());
+    a
+}
+
+/// What the gate reports on its output, one JSON line each.
+#[derive(Debug, PartialEq)]
+pub enum GateLine {
+    Ready,
+    Blocked { host: String, reason: String },
+}
+
+pub fn parse_gate_line(line: &str) -> Option<GateLine> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    match v["event"].as_str()? {
+        "ready" => Some(GateLine::Ready),
+        "blocked" => Some(GateLine::Blocked {
+            host: clip(v["host"].as_str()?, 253),
+            reason: clip(v["reason"].as_str().unwrap_or("not allowed"), 200),
+        }),
+        _ => None,
+    }
+}
+
 const RULES: &str = "You are working in your own copy of the code on its own branch. \
 Commit your work to this branch as you go. Do not push and do not open pull requests; \
 Decurion does that after review. \
-A private Chromium browser is available through the Playwright browser tools for testing web pages you build.";
+A private Chromium browser is available through the Playwright browser tools for testing web pages you build. \
+You can reach only the websites on this app's list; others are blocked. If the work needs a \
+blocked site, carry on without it and say so in your final summary.";
 
 /// How a run begins, which decides what the agent is told.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -617,6 +734,8 @@ pub struct Sandbox<'a> {
     /// The coordinator only reads the code.
     pub read_only: bool,
     pub home_volume: &'a str,
+    /// The box's own network, behind its gate (see [`BoxNet`]).
+    pub network: &'a str,
     /// An empty host folder mounted writable at /out, for jobs that hand back
     /// a page.
     pub out: Option<&'a Path>,
@@ -641,6 +760,7 @@ pub fn run_args(
         src: worktree,
         read_only: false,
         home_volume: &home_volume(thread_id),
+        network: &network_name(thread_id),
         out: None,
     };
     let mut a = box_args(&sb, cred, test_keys, IMAGE)?;
@@ -701,6 +821,7 @@ pub fn pi_run_args(
         src: worktree,
         read_only: false,
         home_volume: &home_volume(thread_id),
+        network: &network_name(thread_id),
         out: None,
     };
     let mut a = box_args(&sb, cred, test_keys, PI_IMAGE)?;
@@ -817,6 +938,27 @@ fn box_args(
         "4g",
         "--pids-limit",
         "1024",
+        "--network",
+        sb.network,
+        // Claude Code, git, npm, pip, cargo and curl all send web traffic
+        // through these. Anything that ignores them has no way out at all.
+        "-e",
+        &format!("HTTPS_PROXY={GATE_URL}"),
+        "-e",
+        &format!("https_proxy={GATE_URL}"),
+        "-e",
+        &format!("HTTP_PROXY={GATE_URL}"),
+        "-e",
+        &format!("http_proxy={GATE_URL}"),
+        "-e",
+        "NO_PROXY=gate",
+        "-e",
+        "no_proxy=gate",
+        "-e",
+        "NODE_USE_ENV_PROXY=1",
+        // No update checks or telemetry: they would only be blocked.
+        "-e",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
         // Chromium needs more shared memory than Docker's 64 MB default.
         "--shm-size",
         "1g",
@@ -829,11 +971,8 @@ fn box_args(
         let mount = format!("type=bind,src={},dst=/out", mount_src(out)?);
         a.extend(["--mount".to_owned(), mount]);
     }
-    if cfg!(target_os = "linux") {
-        // Docker Desktop provides this name; plain Docker on Linux needs it
-        // mapped to the host, where the gatekeeper listens.
-        a.extend(["--add-host".to_owned(), GATE_HOST.to_owned()]);
-    }
+    // No `--add-host` for the gatekeeper: the box has no route to the host.
+    // Its gate relays to the gatekeeper instead (see `gate_args`).
     for v in cred.vars() {
         a.extend(["-e".to_owned(), (*v).to_owned()]);
     }
@@ -1668,6 +1807,80 @@ mod tests {
     }
 
     #[test]
+    fn boxes_sit_on_their_own_network_behind_the_gate() {
+        let a = run_args(
+            7,
+            Path::new("/w"),
+            "sid",
+            false,
+            Credential::Max(Profile::A),
+            None,
+            &[],
+        )
+        .unwrap_or_default();
+        assert!(a
+            .windows(2)
+            .any(|w| w[0] == "--network" && w[1] == "decurion-net-7"));
+        assert!(a.contains(&"HTTPS_PROXY=http://gate:3128".to_string()));
+        assert!(!a.iter().any(|x| x == "--network=host" || x == "host"));
+
+        // Planner, designer and checker boxes sit behind a gate of their own.
+        let h = coordinator_args(&[]).unwrap_or_default();
+        assert!(h
+            .windows(2)
+            .any(|w| w[0] == "--network" && w[1] == "decurion-net-helper-3"));
+        assert!(h.contains(&"HTTPS_PROXY=http://gate:3128".to_string()));
+        let hn = BoxNet::helper(3);
+        assert_eq!(hn.gate, "decurion-gate-helper-3");
+        assert_ne!(hn, BoxNet::work(3));
+
+        let g = gate_args(
+            &BoxNet::work(7),
+            &["api.anthropic.com".into(), "stripe.com".into()],
+            None,
+        );
+        let joined = g.join(" ");
+        assert!(joined.contains("--name decurion-gate-7"));
+        assert!(joined.contains("--network decurion-net-7 --network-alias gate"));
+        assert!(joined.contains("DECURION_SITES=api.anthropic.com,stripe.com"));
+        assert!(joined.contains("--cap-drop ALL"));
+        assert!(joined.contains("--pull never"));
+        assert_eq!(g.last().map(String::as_str), Some(GATE_IMAGE));
+        assert!(!joined.contains("DECURION_RELAY") && !joined.contains("host-gateway"));
+
+        let r = gate_args(&BoxNet::work(7), &[], Some("host.docker.internal:5123")).join(" ");
+        assert!(r.contains("-e DECURION_RELAY=host.docker.internal:5123 decurion/gate:dev"));
+        assert!(r.contains("--add-host host.docker.internal:host-gateway"));
+    }
+
+    #[test]
+    fn gate_lines_are_read_and_clipped() {
+        assert_eq!(
+            parse_gate_line(r#"{"event":"ready"}"#),
+            Some(GateLine::Ready)
+        );
+        assert_eq!(
+            parse_gate_line(
+                r#"{"event":"blocked","host":"evil.net","reason":"not on this app's list"}"#
+            ),
+            Some(GateLine::Blocked {
+                host: "evil.net".into(),
+                reason: "not on this app's list".into()
+            })
+        );
+        let long = format!(
+            r#"{{"event":"blocked","host":"{}","reason":"x"}}"#,
+            "a".repeat(5000)
+        );
+        assert!(matches!(
+            parse_gate_line(&long),
+            Some(GateLine::Blocked { host, .. }) if host.chars().count() <= 254
+        ));
+        assert_eq!(parse_gate_line("garbage"), None);
+        assert_eq!(parse_gate_line(r#"{"event":"other"}"#), None);
+    }
+
+    #[test]
     fn resume_uses_the_same_session() {
         let a = run_args(
             7,
@@ -1702,7 +1915,12 @@ mod tests {
             assert!(a.windows(2).any(|w| w[0] == "-e" && w[1] == var), "{var}");
         }
         let joined = a.join(" ");
-        assert!(!joined.contains("sk-ant") && !joined.contains("http"));
+        // The only addresses on the command line are the box's gate.
+        assert!(!joined.contains("sk-ant") && !joined.contains("ANTHROPIC_BASE_URL="));
+        assert!(joined
+            .split_whitespace()
+            .filter(|x| x.contains("http"))
+            .all(|x| x.ends_with(GATE_URL)));
         assert!(!a.iter().any(|x| x == "CLAUDE_CODE_OAUTH_TOKEN"));
         assert!(a
             .windows(2)
@@ -2404,6 +2622,7 @@ mod tests {
                 src: Path::new("C:\\data\\goals\\demo-5"),
                 read_only: true,
                 home_volume: &goal_home_volume(5),
+                network: "decurion-net-helper-3",
                 out: None,
             },
             "sid",
@@ -2495,6 +2714,7 @@ mod tests {
                 src: Path::new("/data/checks/demo-7-job4"),
                 read_only: false,
                 home_volume: &check_home_volume(4),
+                network: "decurion-net-helper-3",
                 out: Some(Path::new("/data/out/job4")),
             },
             "sid",
@@ -2524,6 +2744,7 @@ mod tests {
                 src: Path::new("/w"),
                 read_only: false,
                 home_volume: "v",
+                network: "decurion-net-helper-3",
                 out: Some(Path::new("/o,ut")),
             },
             "sid",

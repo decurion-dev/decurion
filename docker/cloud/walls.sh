@@ -11,6 +11,10 @@
 #   - the server itself (its own addresses, including its Tailscale one),
 #     except the runner's gatekeeper on port 7421.
 #
+# An agent's box is on its own internal network (a br-* bridge with no way
+# out) and reaches the internet only through its gate, a container on that
+# network and on docker0. The walls apply to the gates as they did to boxes.
+#
 # Traffic from containers passes Docker's DOCKER-USER chain (on its way out)
 # or the INPUT chain (when it is addressed to the server itself). We hang our
 # own chains off both, and only for packets that come in on a Docker bridge
@@ -52,6 +56,9 @@ wall() {
   ensure_chain "$tool" DECURION-OUT
   ensure_chain "$tool" DECURION-IN
 
+  # Box to gate, inside one box network: its addresses are private too, so
+  # let it on to Docker's own rules, which keep box networks apart.
+  ensure_first "$tool" DECURION-OUT -i br-+ -o br-+ -j RETURN
   # Leaving the server: refuse private destinations.
   for range in "${ranges[@]}"; do
     ensure "$tool" DECURION-OUT -d "$range" -j REJECT --reject-with "$reject"
@@ -63,9 +70,11 @@ wall() {
   ensure "$tool" DECURION-IN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
   # The one exception: the runner's gatekeeper, which lends pay-per-use runs
   # the API key without handing it over. It listens only on the Docker
-  # bridge's address, port 7421 (IPv4).
+  # bridge's address, port 7421 (IPv4), and only gates (on docker0) relay to it.
   if [ "$tool" = iptables ]; then
-    ensure_first "$tool" DECURION-IN -p tcp --dport 7421 -j ACCEPT
+    # Earlier walls opened it on every bridge.
+    "$tool" -w -D DECURION-IN -p tcp --dport 7421 -j ACCEPT 2>/dev/null || true
+    ensure_first "$tool" DECURION-IN -i docker0 -p tcp --dport 7421 -j ACCEPT
   fi
   ensure "$tool" DECURION-IN -j REJECT --reject-with "$reject"
 

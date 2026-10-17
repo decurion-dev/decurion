@@ -55,6 +55,8 @@
     menu: ["M4 6h16", "M4 12h16", "M4 18h16"],
     sun: ["c12,12,4", "M12 2v2", "M12 20v2", "m4.9 4.9 1.4 1.4", "m17.7 17.7 1.4 1.4", "M2 12h2", "M20 12h2", "m6.3 17.7-1.4 1.4", "m19.1 4.9-1.4 1.4"],
     moon: ["M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"],
+    shield: ["M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"],
+    globe: ["c12,12,10", "M2 12h20", "M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20z"],
   };
   const SVG = "http://www.w3.org/2000/svg";
   D.icon = (name, cls = "") => {
@@ -162,6 +164,7 @@
   D.tail = (id, n = 20) => D.api(`/threads/${id}/events?tail=${n}`);
 
   // The newest thing the agent said, whether its final summary or a message.
+  // Other events, such as a blocked website visit, are never its words.
   D.lastWords = (ev) => {
     const last = [...ev].reverse().find((r) => r.event.kind === "finished" || r.event.kind === "message");
     return last ? (last.event.summary ?? last.event.text ?? "") : "";
@@ -172,7 +175,9 @@
     if (t.state === "queued") return t.session_id ? "Waiting to pick up where it left off" : "Waiting to start";
     if (!ev?.length) return t.state === "running" ? "Starting up" : "";
     if (t.state === "running") {
-      const e = ev[ev.length - 1].event;
+      // A blocked website visit is a side note, not what the work is doing.
+      const e = [...ev].reverse().find((r) => r.event.kind !== "blocked")?.event;
+      if (!e) return "Working";
       if (e.kind === "started") return "Starting up its box";
       if (e.kind === "limit_hit") return "Paused: the Claude Max account ran out of usage";
       if (e.kind === "tool") return e.summary ? `${e.name}: ${e.summary}` : `Using ${e.name}`;
@@ -196,6 +201,13 @@
   D.aiLabel = (app, t) => (t?.ai === "chatgpt" ? "ChatGPT" : t?.ai === "grok" ? "Grok"
     : !app ? "" : app.pay_per_use ? "Claude pay-per-use" : `Claude ${app.profile}`);
   D.plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+  // "Blocked a visit to evil.net (not on this app's list)". The reason comes
+  // from the gate in plain words; a leading "is" reads badly in brackets.
+  D.blockedWhy = (e) => String(e.reason ?? "").trim().replace(/^is /, "");
+  D.blockedText = (e) => {
+    const why = D.blockedWhy(e);
+    return `Blocked a visit to ${e.host || "a website"}${why ? ` (${why})` : ""}`;
+  };
 
   // ---------- Simple and Pro view ----------
   const store = {
@@ -381,7 +393,7 @@
 
   function timeline(ev, pro) {
     const ol = el("ol", { className: "timeline" });
-    const item = (icCls, ic, ...kids) => ol.append(el("li", {}, el("span", { className: `ic ${icCls}` }, icon(ic)), el("div", { className: "txt" }, ...kids)));
+    const item = (icCls, ic, ...kids) => ol.append(el("li", { className: icCls === "quiet" ? "quiet" : "" }, el("span", { className: `ic ${icCls}` }, icon(ic)), el("div", { className: "txt" }, ...kids)));
     const when = (r) => el("span", { className: "when" }, D.clock(r.at));
     for (let i = 0; i < ev.length; i++) {
       const r = ev[i], e = r.event;
@@ -390,6 +402,27 @@
       else if (e.kind === "message") item("say", "question", `Agent: ${e.text}`, when(r));
       else if (e.kind === "owner") item("", "send", D.ownerLine(e), when(r));
       else if (e.kind === "interrupted") item("", "alert", D.ownerLine(e), when(r));
+      else if (e.kind === "blocked") {
+        // The box was turned away from a website. Nothing for the owner to do;
+        // the agent carries on. Simple view folds a run of them into one line.
+        let j = i;
+        while (j + 1 < ev.length && ev[j + 1].event.kind === "blocked") j++;
+        const run = ev.slice(i, j + 1);
+        if (pro || run.length === 1) {
+          for (const b of run) item("quiet", "shield", D.blockedText(b.event), when(b));
+        } else {
+          const hosts = [...new Set(run.map((b) => b.event.host || "a website"))];
+          const names = hosts.length > 3 ? `${hosts.slice(0, 3).join(", ")} and ${D.plural(hosts.length - 3, "other")}` : hosts.join(", ");
+          const det = el("details", { className: "fold" },
+            el("summary", { className: "tools-sum" }, icon("right"), `Blocked ${D.plural(run.length, "visit")} to ${names}`),
+            ...run.map((b) => {
+              const why = D.blockedWhy(b.event);
+              return el("div", { className: "hint" }, `${b.event.host || "a website"}${why ? ` (${why})` : ""}`, when(b));
+            }));
+          item("quiet", "shield", det);
+        }
+        i = j;
+      }
       else if (e.kind === "finished") {
         const cost = pro && e.cost_usd != null ? `${D.money(e.cost_usd)} so far` : "";
         item(e.ok ? "ok" : "bad", e.ok ? "done" : "failed", el("b", {}, e.ok ? "Finished" : "Could not finish"), when(r), el("div", {}, e.summary), cost && el("div", { className: "hint" }, cost));

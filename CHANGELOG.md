@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Usage meters and a cap per account.** The board shows how much of each Max plan's week and five hours is used, and what each paid account (Claude pay-per-use, ChatGPT, Grok) spent this month against its own cap.
 - **A cap per app.** Each app can have its own monthly cap across all paid AIs, coordinator and review work included.
 - Contribution guide, security policy, code of conduct, issue and pull request templates, and a cargo-deny configuration for dependency license and source checks.
+- **Website limits for agents.** Each agent's container is on its own closed network whose only way out is a small gate. The gate lets through only the AIs (Claude, ChatGPT, Grok), the package stores (npm, PyPI, crates.io) and the websites you add for each app in Settings. Anything else is turned away and shows in the work's activity as a blocked visit. Agents can no longer reach your PC, home network or Tailscale devices. Installers build the gate the first time Decurion starts.
 
 ## [0.1.0] - Unreleased
 
