@@ -1217,10 +1217,6 @@ async fn runner_join(State(st): State<AppState>, Json(j): Json<JoinRequest>) -> 
     }
 }
 
-/// Checks the caller is a runner holding `thread`, and that the hub can keep
-/// files. Returns the runner and the file store.
-// Responses are what axum handlers return; boxing them buys nothing here.
-#[allow(clippy::result_large_err)]
 /// Whether a runner call reads a work's saved copies or changes them.
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Access {
@@ -1228,6 +1224,11 @@ enum Access {
     Write,
 }
 
+/// Checks the caller is a runner holding `thread` (or the PC runner, for a
+/// read), and that the hub can keep files. Returns the runner and the file
+/// store.
+// Responses are what axum handlers return; boxing them buys nothing here.
+#[allow(clippy::result_large_err)]
 async fn holding(
     st: &AppState,
     runner: Option<axum::Extension<RunnerId>>,
