@@ -1,18 +1,23 @@
 use anyhow::{bail, Context};
-use decurion_proto::{Claim, MoveRequest, RunEvent, ThreadState};
+use decurion_proto::{Claim, Live, MoveRequest, RunEvent, ThreadState};
 use decurion_runner::gatekeeper::{Gatekeeper, ANTHROPIC_API};
 use decurion_runner::{
-    container_name, parse_line, prompt_for, run_args, Credential, BUDGET_STOP, DOCKER_CLI_ENV,
-    LIMIT_STOP,
+    container_name, is_turn_start, parse_line, part_done, prompt_for, run_args, Action,
+    Conversation, Credential, Step, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
 };
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 const RUNNER: &str = "local";
+/// How often a run asks the hub for owner messages and whether it was stopped.
+const POLL: Duration = Duration::from_secs(2);
 
+#[derive(Clone)]
 struct Hub {
     base: String,
     key: String,
@@ -20,6 +25,32 @@ struct Hub {
 }
 
 impl Hub {
+    /// What a run checks while it goes. Short timeout: a slow hub must not
+    /// hold up reading the agent's output for long.
+    async fn live(&self, thread: i64) -> anyhow::Result<Live> {
+        let path = format!("/threads/{thread}/live");
+        let r = self
+            .http
+            .get(format!("{}/api{path}", self.base))
+            .bearer_auth(&self.key)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await?;
+        if !r.status().is_success() {
+            bail!("hub {path}: {}", r.status());
+        }
+        Ok(r.json().await?)
+    }
+
+    async fn delivered(&self, thread: i64, ids: &[i64]) -> anyhow::Result<()> {
+        self.post(
+            &format!("/threads/{thread}/messages/delivered"),
+            &serde_json::json!({ "ids": ids }),
+        )
+        .await
+        .map(|_| ())
+    }
+
     async fn post<T: serde::Serialize>(
         &self,
         path: &str,
@@ -265,6 +296,227 @@ struct Gate {
     url: String,
 }
 
+/// Writes to the agent's stdin from its own task, so an agent that stops
+/// reading cannot stall the stdout reader or the hub poll. Owner messages are
+/// acked to the hub only after they were written; an ack that fails is tried
+/// again with the next one (the hub may then deliver a message twice, never
+/// lose one). A failed write is not fatal: the container is gone, and what
+/// was not written stays undelivered for the next run.
+fn spawn_writer(
+    hub: Hub,
+    thread: i64,
+    stdin: ChildStdin,
+) -> (mpsc::UnboundedSender<Step>, JoinHandle<()>) {
+    let (tx, mut rx) = mpsc::unbounded_channel::<Step>();
+    let task = tokio::spawn(async move {
+        let mut stdin = Some(stdin);
+        let mut unacked: Vec<i64> = Vec::new();
+        while let Some(step) = rx.recv().await {
+            let mut written = true;
+            for a in step.actions {
+                match a {
+                    Action::Write(line) => {
+                        let ok = match stdin.as_mut() {
+                            Some(s) => {
+                                s.write_all(line.as_bytes()).await.is_ok()
+                                    && s.flush().await.is_ok()
+                            }
+                            None => false,
+                        };
+                        if !ok {
+                            if stdin.take().is_some() {
+                                tracing::warn!(
+                                    thread,
+                                    "could not write to the agent; it has stopped"
+                                );
+                            }
+                            written = false;
+                        }
+                    }
+                    // Dropping stdin closes it: Claude finishes what it has and exits.
+                    Action::Close => stdin = None,
+                }
+            }
+            if written {
+                unacked.extend(step.delivered);
+            }
+            if !unacked.is_empty() {
+                match hub.delivered(thread, &unacked).await {
+                    Ok(()) => unacked.clear(),
+                    Err(err) => tracing::warn!(%err, thread, "could not ack owner messages"),
+                }
+            }
+        }
+    });
+    (tx, task)
+}
+
+/// Reads the agent's stdout in its own task, a line at a time, into a
+/// channel the run loop can wait on alongside the hub poll.
+fn spawn_reader(stdout: ChildStdout) -> (mpsc::Receiver<String>, JoinHandle<std::io::Result<()>>) {
+    // Few lines in flight: each may be up to MAX_LINE.
+    let (tx, rx) = mpsc::channel(8);
+    let task = tokio::spawn(async move {
+        let mut r = BufReader::new(stdout);
+        while let Some(line) = read_capped_line(&mut r).await? {
+            if tx.send(line).await.is_err() {
+                break;
+            }
+        }
+        Ok(())
+    });
+    (rx, task)
+}
+
+/// Drains stderr alongside stdout so a chatty container cannot fill the pipe
+/// and stall; keeps only its tail.
+fn spawn_stderr_tail(stderr: ChildStderr) -> JoinHandle<String> {
+    tokio::spawn(async move {
+        let mut tail = String::new();
+        let mut r = BufReader::new(stderr);
+        while let Ok(Some(line)) = read_capped_line(&mut r).await {
+            tail.push_str(&line);
+            tail.push('\n');
+            if tail.len() > STDERR_TAIL {
+                let cut = tail.len() - STDERR_TAIL;
+                let cut = (cut..tail.len())
+                    .find(|i| tail.is_char_boundary(*i))
+                    .unwrap_or(0);
+                tail.drain(..cut);
+            }
+        }
+        tail
+    })
+}
+
+enum Ended {
+    /// The owner stopped the work while it ran.
+    Stopped,
+    /// The agent's output ended. `result` is its last result line, if any,
+    /// and `after_result` says the agent printed more after it.
+    Exited {
+        result: Option<RunEvent>,
+        /// The usage-limit report on that last result line, if any (with
+        /// the reset time when Claude gave one).
+        limit: Option<Option<i64>>,
+        after_result: bool,
+    },
+}
+
+/// Shows a result that turned out not to be the run's last as progress.
+async fn report_part(hub: &Hub, thread: i64, e: &RunEvent, from_interrupt: bool) {
+    if let RunEvent::Finished { ok, summary, .. } = e {
+        if let Some(m) = part_done(*ok, summary, from_interrupt) {
+            hub.event(thread, &m).await;
+        }
+    }
+}
+
+/// Follows a run until the agent's output ends or the owner stops it: posts
+/// what the agent does, and passes owner messages to it as the
+/// [`Conversation`] decides.
+async fn follow(
+    hub: &Hub,
+    id: i64,
+    mut conv: Conversation,
+    to_agent: mpsc::UnboundedSender<Step>,
+    mut lines: mpsc::Receiver<String>,
+) -> Ended {
+    let send = |step: Step| {
+        if !step.actions.is_empty() || !step.delivered.is_empty() {
+            // Fails only if the writer is gone, and then so is the agent.
+            let _ = to_agent.send(step);
+        }
+    };
+    let mut poll = tokio::time::interval(POLL);
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut hub_down = false;
+    // Claude Code's outcome is the last result line it prints. Anything after
+    // it, or a container that does not exit cleanly, means the agent may have
+    // printed a fake result: its cost is then not trusted and the hub charges
+    // the whole amount set aside. Earlier results (a follow-up's first part,
+    // the turn a steer stopped) are only progress.
+    let mut result: Option<(RunEvent, bool)> = None;
+    // A usage-limit report is held the same way: an agent could print a fake
+    // one to freeze its account, so only Claude's real, final result counts.
+    let mut limit: Option<Option<i64>> = None;
+    let mut after_result = false;
+    loop {
+        tokio::select! {
+            line = lines.recv() => {
+                let Some(line) = line else { break };
+                if result.is_some() && !line.trim().is_empty() {
+                    after_result = true;
+                }
+                if is_turn_start(&line) {
+                    conv.on_turn_start();
+                }
+                let events = parse_line(&line);
+                if events.iter().any(|e| matches!(e, RunEvent::Finished { .. })) {
+                    limit = None;
+                }
+                for e in events {
+                    let (ok, stop) = match &e {
+                        // Out of money or out of usage: nothing more goes to
+                        // the agent, whatever is waiting.
+                        RunEvent::Finished { ok, summary, .. } => {
+                            (*ok, summary == BUDGET_STOP || summary == LIMIT_STOP)
+                        }
+                        RunEvent::LimitHit { reset_epoch } => {
+                            limit = Some(*reset_epoch);
+                            continue;
+                        }
+                        _ => {
+                            hub.event(id, &e).await;
+                            continue;
+                        }
+                    };
+                    if let Some((prev, from_interrupt)) = result.take() {
+                        report_part(hub, id, &prev, from_interrupt).await;
+                    }
+                    let from_interrupt = !ok && conv.interrupting();
+                    send(conv.on_result(stop));
+                    if conv.closed() {
+                        // Nothing more was asked of it: this may be the last.
+                        result = Some((e, from_interrupt));
+                        after_result = false;
+                    } else {
+                        report_part(hub, id, &e, from_interrupt).await;
+                    }
+                }
+            }
+            _ = poll.tick() => match hub.live(id).await {
+                Ok(live) if live.state != ThreadState::Running => return Ended::Stopped,
+                Ok(live) => {
+                    hub_down = false;
+                    send(conv.on_messages(&live.messages));
+                }
+                // Keep going; the next tick tries again.
+                Err(err) => {
+                    if !hub_down {
+                        tracing::warn!(%err, id, "could not check on the run with the hub");
+                    }
+                    hub_down = true;
+                }
+            },
+        }
+    }
+    Ended::Exited {
+        result: result.map(|(e, _)| e),
+        limit,
+        after_result,
+    }
+}
+
+/// Stops a run's container now, whatever the agent is doing.
+async fn kill(child: &mut Child, id: i64) {
+    let _ = docker()
+        .args(["rm", "-f", &container_name(id)])
+        .output()
+        .await;
+    let _ = child.kill().await;
+}
+
 /// Runs one claimed thread to the end and reports the outcome.
 async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()> {
     let id = c.thread.id;
@@ -311,7 +563,12 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
     for (name, value) in cred.vars().iter().zip(values) {
         cmd.env(name, value);
     }
-    let prompt = prompt_for(&c.thread.prompt, c.resume);
+    let prompt = prompt_for(
+        &c.thread.prompt,
+        c.resume,
+        &c.messages,
+        c.interrupted.as_ref(),
+    );
     // Tell the hub before launching: from here the run may cost money, and if
     // the hub cannot be told, the run does not start.
     hub.post(&format!("/threads/{id}/events"), &RunEvent::Started)
@@ -326,68 +583,34 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
         .spawn()
         .context("could not start docker")?;
 
-    {
-        use tokio::io::AsyncWriteExt;
-        let mut stdin = child.stdin.take().context("no stdin")?;
-        stdin.write_all(prompt.as_bytes()).await?;
-        // Dropping stdin closes it, which tells Claude the task is complete.
-    }
+    // Stdin stays open so owner messages can follow the prompt. The claim's
+    // undelivered messages are in the prompt and are acked once it is written.
+    let (conv, first) = Conversation::start(&prompt, &c.messages);
+    let (to_agent, writer) = spawn_writer(hub.clone(), id, child.stdin.take().context("no stdin")?);
+    let _ = to_agent.send(first);
+    let stderr_task = spawn_stderr_tail(child.stderr.take().context("no stderr")?);
+    let (lines, reader) = spawn_reader(child.stdout.take().context("no stdout")?);
 
-    // Drain stderr alongside stdout so a chatty container cannot fill the pipe
-    // and stall; keep only its tail.
-    let stderr = child.stderr.take().context("no stderr")?;
-    let stderr_task = tokio::spawn(async move {
-        let mut tail = String::new();
-        let mut r = BufReader::new(stderr);
-        while let Ok(Some(line)) = read_capped_line(&mut r).await {
-            tail.push_str(&line);
-            tail.push('\n');
-            if tail.len() > STDERR_TAIL {
-                let cut = tail.len() - STDERR_TAIL;
-                let cut = (cut..tail.len())
-                    .find(|i| tail.is_char_boundary(*i))
-                    .unwrap_or(0);
-                tail.drain(..cut);
-            }
+    let (result, limit, after_result) = match follow(hub, id, conv, to_agent, lines).await {
+        Ended::Stopped => {
+            // The owner already moved it; the hub has the last word.
+            tracing::info!(id, "stopped by the owner");
+            kill(&mut child, id).await;
+            let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
+            return Ok(());
         }
-        tail
-    });
-    let stdout = child.stdout.take().context("no stdout")?;
-    let mut out = BufReader::new(stdout);
-    // Claude Code's result is the last line it prints. Anything after it, or a
-    // container that does not exit cleanly, means the agent may have printed a
-    // fake result: its cost is then not trusted and the hub charges the whole
-    // amount set aside.
-    let mut result: Option<RunEvent> = None;
-    // A usage-limit report is held the same way: an agent could print a fake
-    // one to freeze its account, so only Claude's real, final result counts.
-    let mut limit: Option<Option<i64>> = None;
-    let mut after_result = false;
-    while let Some(line) = read_capped_line(&mut out).await? {
-        if result.is_some() && !line.trim().is_empty() {
-            after_result = true;
-        }
-        let events = parse_line(&line);
-        if events
-            .iter()
-            .any(|e| matches!(e, RunEvent::Finished { .. }))
-        {
-            limit = None;
-        }
-        for e in events {
-            match e {
-                RunEvent::Finished { .. } => {
-                    result = Some(e);
-                    after_result = false;
-                }
-                RunEvent::LimitHit { reset_epoch } => limit = Some(reset_epoch),
-                _ => hub.event(id, &e).await,
-            }
-        }
-    }
+        Ended::Exited {
+            result,
+            limit,
+            after_result,
+        } => (result, limit, after_result),
+    };
+    reader.await.context("stdout reader")??;
     let status = child.wait().await?;
     // The container is gone; its token goes with it.
     drop(grant);
+    // The container is gone, so the writer is only finishing its acks.
+    let _ = writer.await;
     let finished = match result {
         Some(RunEvent::Finished {
             ok,
@@ -414,11 +637,34 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
     };
     let max_limit = limit.filter(|_| !after_result && c.budget_usd.is_none());
     let err = stderr_task.await.unwrap_or_default();
-    // The agent's own "done" is not enough: work only goes to review if it
-    // actually left commits on its branch.
-    let (to, note) = match finished {
+    let (to, note) = outcome(data, &wt, &c, finished, max_limit, status, &err).await;
+    if let (ThreadState::Queued, Some(reset_epoch)) = (to, max_limit) {
+        // The hub saves the outage and requeues the work in one step.
+        hub.post(
+            &format!("/threads/{id}/events"),
+            &RunEvent::LimitHit { reset_epoch },
+        )
+        .await
+        .map(|_| ())
+    } else {
+        hub.move_to(id, to, &note).await
+    }
+}
+
+/// Where the work goes after the run. The agent's own "done" is not enough:
+/// work only goes to review if it actually left commits on its branch.
+async fn outcome(
+    data: &Path,
+    wt: &Path,
+    c: &Claim,
+    finished: Option<(bool, String)>,
+    max_limit: Option<Option<i64>>,
+    status: ExitStatus,
+    stderr: &str,
+) -> (ThreadState, String) {
+    match finished {
         Some((true, _)) if status.success() => {
-            match new_commits(data, &wt, c.thread.branch.as_deref().unwrap_or_default()).await {
+            match new_commits(data, wt, c.thread.branch.as_deref().unwrap_or_default()).await {
                 Ok(0) => (
                     ThreadState::Failed,
                     "agent said it finished but saved no commits".to_owned(),
@@ -456,20 +702,9 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
             ThreadState::Failed,
             format!(
                 "container ended without a result ({status}): {}",
-                err.trim()
+                stderr.trim()
             ),
         ),
-    };
-    if let (ThreadState::Queued, Some(reset_epoch)) = (to, max_limit) {
-        // The hub saves the outage and requeues the work in one step.
-        hub.post(
-            &format!("/threads/{id}/events"),
-            &RunEvent::LimitHit { reset_epoch },
-        )
-        .await
-        .map(|_| ())
-    } else {
-        hub.move_to(id, to, &note).await
     }
 }
 
