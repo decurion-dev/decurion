@@ -2,6 +2,7 @@ use anyhow::{bail, Context};
 use decurion_proto::{Claim, MoveRequest, RunEvent, ThreadState};
 use decurion_runner::{
     container_name, parse_line, prompt_for, run_args, Credential, BUDGET_STOP, DOCKER_CLI_ENV,
+    LIMIT_STOP,
 };
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -383,6 +384,9 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
             ThreadState::Failed,
             format!("container exited with {status} after the agent reported: {summary}"),
         ),
+        // The Max account is out: back to the queue, where it waits for the
+        // reset (or the owner moves it to pay-per-use).
+        Some((false, summary)) if summary == LIMIT_STOP => (ThreadState::Queued, summary),
         // Out of money for this run, not broken: the owner can give it more.
         Some((false, summary)) if summary == BUDGET_STOP => (ThreadState::NeedsYou, summary),
         Some((false, summary)) => (ThreadState::Failed, summary),

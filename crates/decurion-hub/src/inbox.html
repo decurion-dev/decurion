@@ -35,11 +35,14 @@
   button.danger { color:var(--bad); }
   .bar { display:flex; gap:8px; margin:6px 0 16px; }
   .err { color:var(--bad); margin-bottom:12px; }
+  .limit { background:var(--card); border:1px solid var(--warn); border-radius:var(--radius); padding:14px; margin-bottom:12px; }
+  .limit p { margin:0 0 10px; }
 </style>
 </head>
 <body>
 <header><h1>Needs you</h1><span class="muted" id="status"></span></header>
 <div class="bar"><button id="notify" type="button" hidden>Turn on notifications</button></div>
+<div id="limits"></div>
 <div class="err" id="act-err" role="alert"></div>
 <div class="err" id="err"></div>
 <main id="list"></main>
@@ -68,8 +71,21 @@ async function lastWords(id) {
   const last = [...ev].reverse().find(r => r.event.kind === "finished" || r.event.kind === "message");
   return last ? (last.event.summary ?? last.event.text ?? "") : "";
 }
+async function showLimits() {
+  const limits = await api("/limits");
+  $("limits").replaceChildren(...limits.map(l => {
+    const when = new Date(l.until).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const d = el("div", { className: "limit" });
+    d.append(el("div", { className: "kind" }, "Account out of usage"),
+             el("p", {}, `Claude Max ${l.profile} is out until about ${when}. ${l.waiting} waiting; they restart on their own then. Or continue them now on pay-per-use, within this month's cap.`));
+    const b = el("button", { type: "button", className: "primary" }, "Continue on pay-per-use");
+    b.onclick = async () => { b.disabled = true; try { await api(`/limits/${l.profile}/pay-per-use`, { method: "POST" }); refresh(); } catch (e) { $("act-err").textContent = e.message; b.disabled = false; } };
+    d.append(b); return d;
+  }));
+}
 async function refresh() {
   try {
+    await showLimits();
     const [apps, threads] = await Promise.all([api("/apps"), api("/threads")]);
     const names = Object.fromEntries(apps.map(a => [a.id, a.name]));
     const mine = threads.filter(t => t.state in MEANS).sort((a, b) => b.updated_at.localeCompare(a.updated_at));

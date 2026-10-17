@@ -1453,3 +1453,223 @@ async fn a_started_box_without_a_trusted_cost_is_charged_its_budget() {
     .await;
     assert_eq!(spend(&r).await["pay_per_use_usd"], 10.0);
 }
+
+async fn app_on(r: &axum::Router, name: &str, profile: &str) -> i64 {
+    let (s, app) = call(
+        r,
+        "POST",
+        "/api/apps",
+        Some(OWNER),
+        json!({"name":name,"repo_path":"C:\\repos\\x","profile":profile}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    app["id"].as_i64().expect("id")
+}
+
+async fn claim_id(r: &axum::Router) -> Option<i64> {
+    let (s, c) = call(
+        r,
+        "POST",
+        "/api/runner/claim",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await;
+    (s == StatusCode::OK).then(|| c["thread"]["id"].as_i64().expect("id"))
+}
+
+/// The runner's side of a run that hits the Max limit.
+async fn hit_limit(r: &axum::Router, id: i64, reset_epoch: Option<i64>) {
+    call(
+        r,
+        "POST",
+        &format!("/api/threads/{id}/events"),
+        Some(RUNNER),
+        json!({"kind":"started"}),
+    )
+    .await;
+    call(
+        r,
+        "POST",
+        &format!("/api/threads/{id}/events"),
+        Some(RUNNER),
+        json!({"kind":"message","text":"working"}),
+    )
+    .await;
+    let ev = match reset_epoch {
+        Some(e) => json!({"kind":"limit_hit","reset_epoch":e}),
+        None => json!({"kind":"limit_hit"}),
+    };
+    let (s, _) = call(
+        r,
+        "POST",
+        &format!("/api/threads/{id}/events"),
+        Some(RUNNER),
+        ev,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, _) = call(
+        r,
+        "POST",
+        &format!("/api/threads/{id}/move"),
+        Some(RUNNER),
+        json!({"to":"queued"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn work_on_an_exhausted_max_account_waits_while_other_work_runs() {
+    let (r, _) = hub().await;
+    let a = app_on(&r, "on-a", "A").await;
+    let b = app_on(&r, "on-b", "B").await;
+    let a1 = add_work(&r, a, "a1").await;
+    let a2 = add_work(&r, a, "a2").await;
+    let b1 = add_work(&r, b, "b1").await;
+
+    assert_eq!(claim_id(&r).await, Some(a1));
+    hit_limit(&r, a1, None).await;
+
+    let (_, limits) = call(&r, "GET", "/api/limits", Some(OWNER), Value::Null).await;
+    assert_eq!(limits[0]["profile"], "A");
+    assert_eq!(limits[0]["waiting"], 2);
+
+    // A's work waits; B's runs.
+    assert_eq!(claim_id(&r).await, Some(b1));
+    assert_eq!(claim_id(&r).await, None);
+    let _ = a2;
+}
+
+#[tokio::test]
+async fn one_tap_moves_waiting_work_to_pay_per_use() {
+    let (r, store) = hub().await;
+    let a = app_on(&r, "on-a", "A").await;
+    let a1 = add_work(&r, a, "a1").await;
+    let a2 = add_work(&r, a, "a2").await;
+    assert_eq!(claim_id(&r).await, Some(a1));
+    hit_limit(&r, a1, None).await;
+    assert_eq!(claim_id(&r).await, None);
+
+    let (s, _) = call(
+        &r,
+        "POST",
+        "/api/limits/A/pay-per-use",
+        Some(RUNNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, moved) = call(
+        &r,
+        "POST",
+        "/api/limits/A/pay-per-use",
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(moved["moved"], 2);
+
+    // Both now run on pay-per-use, with a budget, under the cap; a1 resumes.
+    let (_, c) = call(
+        &r,
+        "POST",
+        "/api/runner/claim",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await;
+    assert_eq!(c["thread"]["id"], a1);
+    assert_eq!(c["resume"], true);
+    assert!(c["budget_usd"].as_f64().is_some_and(|b| b > 0.0));
+    let account: String =
+        sqlx::query_scalar("SELECT account FROM runs WHERE thread_id = ? ORDER BY id DESC LIMIT 1")
+            .bind(a1)
+            .fetch_one(store.pool())
+            .await
+            .expect("run");
+    assert_eq!(account, "api");
+    assert_eq!(claim_id(&r).await, Some(a2));
+}
+
+#[tokio::test]
+async fn waiting_work_restarts_on_its_own_after_the_reset() {
+    let (r, store) = hub().await;
+    let a = app_on(&r, "on-a", "A").await;
+    let a1 = add_work(&r, a, "a1").await;
+    assert_eq!(claim_id(&r).await, Some(a1));
+    hit_limit(&r, a1, None).await;
+    assert_eq!(claim_id(&r).await, None);
+    // Time passes beyond the reset.
+    sqlx::query("UPDATE profile_limits SET until = '2000-01-01T00:00:00.000Z'")
+        .execute(store.pool())
+        .await
+        .expect("age");
+    assert_eq!(claim_id(&r).await, Some(a1));
+    let (_, limits) = call(&r, "GET", "/api/limits", Some(OWNER), Value::Null).await;
+    assert_eq!(limits, json!([]));
+}
+
+#[tokio::test]
+async fn a_believable_reset_time_is_used_and_a_silly_one_is_not() {
+    let (r, store) = hub().await;
+    let a = app_on(&r, "on-a", "A").await;
+    let a1 = add_work(&r, a, "a1").await;
+    assert_eq!(claim_id(&r).await, Some(a1));
+    let in_two_hours: i64 =
+        sqlx::query_scalar("SELECT CAST(strftime('%s','now','+2 hours') AS INTEGER)")
+            .fetch_one(store.pool())
+            .await
+            .expect("now");
+    hit_limit(&r, a1, Some(in_two_hours)).await;
+    let until: String = sqlx::query_scalar("SELECT until FROM profile_limits WHERE profile = 'A'")
+        .fetch_one(store.pool())
+        .await
+        .expect("limit");
+    let expect: String =
+        sqlx::query_scalar("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ?, 'unixepoch')")
+            .bind(in_two_hours)
+            .fetch_one(store.pool())
+            .await
+            .expect("fmt");
+    assert_eq!(until, expect);
+
+    // A reset a year away falls back to an hour.
+    let a2 = add_work(&r, a, "a2").await;
+    sqlx::query("DELETE FROM profile_limits")
+        .execute(store.pool())
+        .await
+        .expect("clear");
+    let _ = claim_id(&r).await; // a1 resumes
+    call(
+        &r,
+        "POST",
+        &format!("/api/threads/{a1}/move"),
+        Some(RUNNER),
+        json!({"to":"in_review"}),
+    )
+    .await;
+    assert_eq!(claim_id(&r).await, Some(a2));
+    hit_limit(&r, a2, Some(in_two_hours + 365 * 86_400)).await;
+    let soon: bool = sqlx::query_scalar(
+        "SELECT until < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+61 minutes') FROM profile_limits WHERE profile = 'A'",
+    )
+    .fetch_one(store.pool())
+    .await
+    .expect("limit");
+    assert!(soon);
+}
+
+#[tokio::test]
+async fn a_limit_on_a_pay_per_use_run_does_not_block_a_max_account() {
+    let (r, _) = hub().await;
+    let app = ppu_app(&r).await;
+    let id = add_work(&r, app, "paid").await;
+    assert_eq!(claim_id(&r).await, Some(id));
+    hit_limit(&r, id, None).await;
+    let (_, limits) = call(&r, "GET", "/api/limits", Some(OWNER), Value::Null).await;
+    assert_eq!(limits, json!([]));
+}
