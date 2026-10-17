@@ -54,6 +54,8 @@ fn thread_from(row: &SqliteRow) -> Result<Thread> {
         session_id: row.try_get("session_id")?,
         branch: row.try_get("branch")?,
         updated_at: row.try_get("updated_at")?,
+        parent_id: None,
+        background: false,
     })
 }
 
@@ -324,6 +326,8 @@ impl Store {
                     resume,
                     budget_usd: pay_per_use
                         .then(|| crate::spend::claude_budget_usd(prior, reserved)),
+                    messages: vec![],
+                    interrupted: None,
                 }),
                 capped,
             });
