@@ -130,6 +130,26 @@ pub fn router(state: AppState) -> Router {
         .route("/pair", get(pair_page).post(pair))
         .route("/sw.js", get(service_worker))
         .route("/manifest.webmanifest", get(manifest))
+        .route(
+            "/ui.css",
+            get(|| async { asset("text/css; charset=utf-8", include_str!("ui.css")) }),
+        )
+        .route(
+            "/ui.js",
+            get(|| async { asset("text/javascript; charset=utf-8", include_str!("ui.js")) }),
+        )
+        .route(
+            "/icon.svg",
+            get(|| async { asset("image/svg+xml", include_str!("icon.svg")) }),
+        )
+        .route(
+            "/icon-192.png",
+            get(|| async { asset("image/png", &include_bytes!("icon-192.png")[..]) }),
+        )
+        .route(
+            "/icon-512.png",
+            get(|| async { asset("image/png", &include_bytes!("icon-512.png")[..]) }),
+        )
         .route("/healthz", get(|| async { "ok" }))
         .nest("/api", api)
         .with_state(state)
@@ -607,6 +627,20 @@ async fn service_worker() -> Response {
             (header::CACHE_CONTROL, "no-cache"),
         ],
         include_str!("sw.js"),
+    )
+        .into_response()
+}
+
+/// The board's and inbox's shared stylesheet, script and icons. `no-cache`
+/// so a new hub build is picked up on the next load.
+fn asset(content_type: &'static str, body: impl IntoResponse) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "no-cache"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        body,
     )
         .into_response()
 }

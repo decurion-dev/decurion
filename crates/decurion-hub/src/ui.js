@@ -1,0 +1,412 @@
+// Decurion's shared screen code: talking to the hub, icons, status labels,
+// the confirm and toast pieces, and the work panel. Used by the board and
+// the phone inbox so both look and behave the same.
+"use strict";
+(() => {
+  const D = {};
+  window.D = D;
+
+  // ---------- Small helpers ----------
+  D.$ = (id) => document.getElementById(id);
+  // el("div", { className: "x" }, "text", childNode, ...). Strings become text, never HTML.
+  D.el = (tag, attrs = {}, ...kids) => {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs ?? {})) {
+      if (v == null || v === false) continue;
+      if (k === "dataset") Object.assign(e.dataset, v);
+      else if (k.startsWith("aria-") || k === "role" || k === "for") e.setAttribute(k, v === true ? "true" : v);
+      else e[k] = v;
+    }
+    for (const k of kids.flat()) if (k != null && k !== false) e.append(k instanceof Node ? k : String(k));
+    return e;
+  };
+
+  const ICONS = {
+    queued: ["c12,12,8"],
+    running: ["M21 12a9 9 0 1 1-6.22-8.56"],
+    needs_you: ["M18 11V6a2 2 0 0 0-4 0v5", "M14 10V4a2 2 0 0 0-4 0v2", "M10 10.5V6a2 2 0 0 0-4 0v8", "M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-6-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"],
+    question: ["M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"],
+    in_review: ["M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z", "c12,12,3"],
+    done: ["M20 6 9 17l-5-5"],
+    failed: ["M18 6 6 18", "M6 6l12 12"],
+    close: ["M18 6 6 18", "M6 6l12 12"],
+    right: ["m9 18 6-6-6-6"],
+    left: ["m15 18-6-6 6-6"],
+    plus: ["M12 5v14", "M5 12h14"],
+    alert: ["M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z", "M12 9v4", "M12 17h.01"],
+    offline: ["M2 2l20 20", "M8.5 16.5a5 5 0 0 1 7 0", "M2 8.8a15 15 0 0 1 4.2-2.6", "M10.7 5c4-.4 8.1.9 11.3 3.8", "M16.9 11.3a10 10 0 0 1 2.2 1.7", "M5 13a10 10 0 0 1 5.2-2.8", "M12 20h.01"],
+    bell: ["M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9", "M10.3 21a1.9 1.9 0 0 0 3.4 0"],
+    inbox: ["M22 12h-6l-2 3h-4l-2-3H2", "M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1z"],
+    board: ["M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z", "M9 3v18", "M15 3v18"],
+    settings: ["M4 21v-7", "M4 10V3", "M12 21v-9", "M12 8V3", "M20 21v-5", "M20 12V3", "M1 14h6", "M9 8h6", "M17 16h6"],
+    app: ["M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2z"],
+    ai: ["M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z", "M19 17v4", "M17 19h4"],
+    pc: ["M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z", "M8 21h8", "M12 17v4"],
+    phone: ["M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z", "M12 18h.01"],
+    money: ["M12 2v20", "M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"],
+    start: ["m6 3 14 9-14 9z"],
+    tool: ["M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z"],
+    retry: ["M3 12a9 9 0 1 0 3-6.7L3 8", "M3 3v5h5"],
+    branch: ["M6 3v12", "c18,6,3", "c6,18,3", "M18 9a9 9 0 0 1-9 9"],
+    send: ["M12 19V5", "m5 12 7-7 7 7"],
+    trash: ["M3 6h18", "M8 6V4h8v2", "M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"],
+    menu: ["M4 6h16", "M4 12h16", "M4 18h16"],
+    sun: ["c12,12,4", "M12 2v2", "M12 20v2", "m4.9 4.9 1.4 1.4", "m17.7 17.7 1.4 1.4", "M2 12h2", "M20 12h2", "m6.3 17.7-1.4 1.4", "m19.1 4.9-1.4 1.4"],
+    moon: ["M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"],
+  };
+  const SVG = "http://www.w3.org/2000/svg";
+  D.icon = (name, cls = "") => {
+    const s = document.createElementNS(SVG, "svg");
+    s.setAttribute("viewBox", "0 0 24 24");
+    s.setAttribute("class", `i ${cls}`.trim());
+    s.setAttribute("aria-hidden", "true");
+    for (const d of ICONS[name] ?? []) {
+      let p;
+      if (d.startsWith("c")) {
+        const [cx, cy, r] = d.slice(1).split(",");
+        p = document.createElementNS(SVG, "circle");
+        p.setAttribute("cx", cx); p.setAttribute("cy", cy); p.setAttribute("r", r);
+      } else {
+        p = document.createElementNS(SVG, "path");
+        p.setAttribute("d", d);
+      }
+      s.append(p);
+    }
+    if (name === "running") s.classList.add("spin");
+    return s;
+  };
+
+  // The Decurion mark: a leader's chevron above a squad of ten.
+  D.mark = (size = 28) => {
+    const s = document.createElementNS(SVG, "svg");
+    s.setAttribute("viewBox", "0 0 32 32");
+    s.setAttribute("width", size); s.setAttribute("height", size);
+    s.setAttribute("aria-hidden", "true");
+    s.innerHTML = '<rect width="32" height="32" rx="8" fill="var(--accent)"/>' +
+      '<path d="M9 13.5 16 7l7 6.5" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+      [7, 11.5, 16, 20.5, 25].map((x) => `<circle cx="${x}" cy="19" r="1.55" fill="#fff"/><circle cx="${x}" cy="24" r="1.55" fill="#fff"/>`).join("");
+    return s;
+  };
+
+  // ---------- States ----------
+  // One word, one symbol and one color per state, everywhere.
+  D.STATES = {
+    queued: { word: "Queued", col: "Queued" },
+    running: { word: "Running", col: "Running" },
+    needs_you: { word: "Needs you", col: "Needs you" },
+    in_review: { word: "In review", col: "In review" },
+    done: { word: "Done", col: "Done" },
+    failed: { word: "Failed", col: "Failed" },
+  };
+  D.ORDER = ["needs_you", "running", "in_review", "queued", "done", "failed"];
+  D.pill = (state) => D.el("span", { className: `pill ${state}` }, D.icon(state), D.STATES[state]?.word ?? state);
+
+  // What the owner can do from each state. `confirm` marks the ones that
+  // stop work, which always ask first.
+  D.MOVES = {
+    in_review: [
+      { to: "done", label: "Accept", kind: "primary", done: "Accepted. Marked as done." },
+      { to: "queued", label: "Send back", kind: "", done: "Sent back. The agent will pick up where it left off." },
+      { to: "failed", label: "Reject", kind: "danger", done: "Rejected.",
+        confirm: (t) => [`Reject "${t.title}"?`, "Its changes stay on its branch, but the work is closed.", "Reject work", "Keep it"] },
+    ],
+    needs_you: [
+      { to: "queued", label: "Continue", kind: "primary", done: "Continuing. The agent will pick up where it left off." },
+      { to: "failed", label: "Stop", kind: "danger", done: "Stopped.",
+        confirm: (t) => [`Stop "${t.title}"?`, "Changes so far are kept on its branch.", "Stop work", "Keep it"] },
+    ],
+    failed: [{ to: "queued", label: "Retry", kind: "primary", done: "Queued again. The agent will pick up where it left off." }],
+    queued: [
+      { to: "failed", label: "Cancel", kind: "danger", done: "Cancelled.",
+        confirm: (t) => [`Cancel "${t.title}"?`, "It has not finished. Anything it saved stays on its branch.", "Cancel work", "Keep it"] },
+    ],
+  };
+
+  // ---------- Talking to the hub ----------
+  D.signedOutText = "Not signed in. Open the login link the hub printed when it started.";
+  const offlineHooks = [];
+  D.offline = false;
+  D.onOffline = (fn) => offlineHooks.push(fn);
+  function setOffline(v) {
+    if (v === D.offline) return;
+    D.offline = v;
+    if (v) D.offlineSince = new Date();
+    document.body.classList.toggle("offline", v);
+    for (const fn of offlineHooks) fn(v);
+  }
+  D.api = async (path, opts = {}) => {
+    let r;
+    try {
+      r = await fetch("/api" + path, { headers: { "content-type": "application/json" }, ...opts });
+    } catch (_) {
+      setOffline(true);
+      throw new Error("Can't reach your PC right now.");
+    }
+    setOffline(false);
+    if (r.status === 401) { const e = new Error(D.signedOutText); e.signedOut = true; throw e; }
+    if (!r.ok) throw new Error((await r.text()) || `The hub said ${r.status}.`);
+    return r.status === 204 ? null : r.json();
+  };
+
+  // Events come in pages of 500; fetch them all so the outcome is never cut off.
+  D.events = async (id, after = 0) => {
+    let ev = [], page;
+    do {
+      page = await D.api(`/threads/${id}/events?after=${ev.length ? ev[ev.length - 1].id : after}`);
+      ev = ev.concat(page);
+    } while (page.length === 500);
+    return ev;
+  };
+  D.tail = (id, n = 20) => D.api(`/threads/${id}/events?tail=${n}`);
+
+  // The newest thing the agent said, whether its final summary or a message.
+  D.lastWords = (ev) => {
+    const last = [...ev].reverse().find((r) => r.event.kind === "finished" || r.event.kind === "message");
+    return last ? (last.event.summary ?? last.event.text ?? "") : "";
+  };
+
+  // One line for a card: what the work is doing now, or asking.
+  D.cardLine = (t, ev) => {
+    if (t.state === "queued") return t.session_id ? "Waiting to pick up where it left off" : "Waiting to start";
+    if (!ev?.length) return t.state === "running" ? "Starting up" : "";
+    if (t.state === "running") {
+      const e = ev[ev.length - 1].event;
+      if (e.kind === "started") return "Starting up its box";
+      if (e.kind === "tool") return e.summary ? `${e.name}: ${e.summary}` : `Using ${e.name}`;
+      if (e.kind === "message") return e.text;
+    }
+    return D.lastWords(ev);
+  };
+
+  // ---------- Words and numbers ----------
+  D.money = (n) => "$" + (n ?? 0).toFixed(2);
+  D.clock = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  D.ago = (iso) => {
+    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (s < 45) return "just now";
+    if (s < 3600) return `${Math.round(s / 60)} min ago`;
+    if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+    const d = new Date(iso);
+    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  };
+  D.aiLabel = (app) => (!app ? "" : app.pay_per_use ? "Claude pay-per-use" : `Claude ${app.profile}`);
+  D.plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+
+  // ---------- Simple and Pro view ----------
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (_) { /* private window */ } },
+  };
+  D.store = store;
+  const proHooks = [];
+  D.pro = store.get("decurion.pro") === "1";
+  D.setPro = (v) => { D.pro = v; store.set("decurion.pro", v ? "1" : "0"); document.body.classList.toggle("pro", v); for (const fn of proHooks) fn(v); };
+  D.onPro = (fn) => proHooks.push(fn);
+  D.switchEl = (label, get, set, onChange) => {
+    const b = D.el("button", { type: "button", className: "switch", role: "switch" },
+      D.el("span", { className: "track" }), D.el("span", {}, label), D.el("span", { className: "state" }));
+    const paint = () => { b.setAttribute("aria-checked", get() ? "true" : "false"); b.lastChild.textContent = get() ? "On" : "Off"; };
+    b.onclick = () => { set(!get()); paint(); };
+    if (onChange) onChange(paint);
+    paint();
+    return b;
+  };
+
+  // ---------- Toasts and confirmations ----------
+  D.toast = (text, icon = "done") => {
+    let box = document.querySelector(".toasts");
+    if (!box) { box = D.el("div", { className: "toasts", role: "status", "aria-live": "polite" }); document.body.append(box); }
+    const t = D.el("div", { className: "toast" }, D.icon(icon), D.el("span", {}, text));
+    box.append(t);
+    setTimeout(() => t.remove(), 6000);
+  };
+
+  // Resolves true only when the owner presses the yes button.
+  D.confirm = ([title, text, yes, no]) => new Promise((resolve) => {
+    const d = D.el("dialog", { className: "confirm", "aria-labelledby": "cf-t" },
+      D.el("div", { className: "body" }, D.el("h2", { id: "cf-t" }, title), D.el("p", {}, text)));
+    const keep = D.el("button", { type: "button", className: "btn" }, no);
+    const go = D.el("button", { type: "button", className: "btn danger" }, yes);
+    d.append(D.el("div", { className: "row" }, keep, go));
+    let answer = false;
+    keep.onclick = () => d.close();
+    go.onclick = () => { answer = true; d.close(); };
+    d.addEventListener("close", () => { d.remove(); resolve(answer); });
+    document.body.append(d);
+    d.showModal();
+    keep.focus();
+  });
+
+  // Moves a thread, asking first when the move stops work. Returns true when it went through.
+  D.move = async (t, m, onError) => {
+    if (m.confirm && !(await D.confirm(m.confirm(t)))) return false;
+    try {
+      await D.api(`/threads/${t.id}/move`, { method: "POST", body: JSON.stringify({ to: m.to }) });
+      D.toast(m.done, m.to === "failed" ? "close" : "done");
+      return true;
+    } catch (e) {
+      const msg = `"${m.label}" did not go through. ${e.message}`;
+      if (onError) onError(msg); else D.toast(msg, "alert");
+      return false;
+    }
+  };
+  D.moveButtons = (t, { size = "", onMoved, onError, quiet = false } = {}) => (D.MOVES[t.state] ?? []).map((m) => {
+    const cls = quiet ? (m.kind === "danger" ? "btn quiet danger-text" : "btn quiet") : m.kind === "danger" ? "btn quiet danger-text" : `btn ${m.kind}`;
+    const b = D.el("button", { type: "button", className: `${cls} ${size}`.trim() }, m.label);
+    b.onclick = async (ev) => {
+      ev.stopPropagation();
+      if (D.offline) return;
+      b.disabled = true;
+      const ok = await D.move(t, m, onError);
+      b.disabled = false;
+      if (ok && onMoved) onMoved(m);
+    };
+    return b;
+  });
+
+  // ---------- The work panel ----------
+  // One piece of work in full: what it was asked, what it says now, what it
+  // did step by step, and the buttons to act. Opens as a side panel on a
+  // computer and full screen on a phone. The phone's back button closes it.
+  let panel, current, timer, apps = {}, onChange = () => {};
+  D.setApps = (list) => { apps = Object.fromEntries(list.map((a) => [a.id, a])); };
+  D.appName = (id) => apps[id]?.name ?? "";
+
+  function ensurePanel() {
+    if (panel) return panel;
+    panel = D.el("dialog", { className: "panel", "aria-labelledby": "wk-title" });
+    document.body.append(panel);
+    panel.addEventListener("close", () => {
+      clearInterval(timer);
+      current = null;
+      if (history.state?.work) history.back();
+    });
+    panel.addEventListener("click", (e) => { if (e.target === panel) panel.close(); });
+    window.addEventListener("popstate", () => { if (panel.open && !history.state?.work) panel.close(); });
+    return panel;
+  }
+
+  function timeline(ev, pro) {
+    const ol = D.el("ol", { className: "timeline" });
+    const item = (icCls, icon, ...kids) => ol.append(D.el("li", {}, D.el("span", { className: `ic ${icCls}` }, D.icon(icon)), D.el("div", { className: "txt" }, ...kids)));
+    const when = (r) => D.el("span", { className: "when" }, D.clock(r.at));
+    for (let i = 0; i < ev.length; i++) {
+      const r = ev[i], e = r.event;
+      if (e.kind === "started") item("", "start", "Started its sealed box", when(r));
+      else if (e.kind === "message") item("say", "question", e.text, when(r));
+      else if (e.kind === "finished") {
+        const cost = pro && e.cost_usd != null ? ` · ${D.money(e.cost_usd)} so far` : "";
+        item(e.ok ? "ok" : "bad", e.ok ? "done" : "failed", D.el("b", {}, e.ok ? "Finished" : "Could not finish"), when(r), D.el("div", {}, e.summary), cost && D.el("div", { className: "hint" }, cost.slice(3)));
+      } else if (e.kind === "tool") {
+        // Simple view folds a run of tool calls into one line.
+        let j = i;
+        while (j + 1 < ev.length && ev[j + 1].event.kind === "tool") j++;
+        const run = ev.slice(i, j + 1);
+        if (pro) {
+          for (const t of run) item("", "tool", D.el("div", { className: "tool" }, D.el("b", {}, t.event.name), " ", t.event.summary), when(t));
+        } else {
+          const counts = {};
+          for (const t of run) counts[t.event.name] = (counts[t.event.name] ?? 0) + 1;
+          const sum = Object.entries(counts).map(([n, c]) => (c > 1 ? `${n} ×${c}` : n)).join(", ");
+          const det = D.el("details", { className: "fold" },
+            D.el("summary", { className: "tools-sum" }, D.icon("right"), `Worked: ${D.plural(run.length, "step")} (${sum})`),
+            ...run.map((t) => D.el("div", { className: "tool" }, D.el("b", {}, t.event.name), " ", t.event.summary)));
+          item("", "tool", det);
+        }
+        i = j;
+      }
+    }
+    if (!ev.length) ol.append(D.el("li", {}, D.el("span", { className: "ic" }, D.icon("queued")), D.el("div", { className: "txt hint" }, "No activity yet.")));
+    return ol;
+  }
+
+  function renderWork(t, ev) {
+    const app = apps[t.app_id];
+    const said = D.lastWords(ev);
+    const head = D.el("header", { className: "work-head" },
+      D.el("div", { className: "top" }, D.pill(t.state), D.el("span", { className: "grow" }),
+        Object.assign(D.el("button", { type: "button", className: "btn icon quiet", "aria-label": "Close" }, D.icon("close", "l")), { onclick: () => panel.close() })),
+      D.el("h2", { id: "wk-title" }, t.title),
+      D.el("div", { className: "meta" },
+        D.el("span", { className: "tag" }, D.icon("app"), D.appName(t.app_id) || "Unknown app"),
+        app && D.el("span", { className: "tag dot-sep" }, D.icon("ai"), D.aiLabel(app)),
+        D.el("span", { className: "tag dot-sep" }, D.icon("pc"), "Your PC"),
+        D.el("span", { className: "tag dot-sep" }, `Updated ${D.ago(t.updated_at)}`)));
+    const body = D.el("div", { className: "work-body live" });
+    const err = D.el("div", { className: "notice bad", role: "alert", hidden: true });
+    body.append(err);
+    if (said && t.state !== "running") {
+      const label = { needs_you: "The agent is asking", in_review: "The agent's summary", failed: "What went wrong", done: "The agent's summary", queued: "Last thing it said" }[t.state];
+      body.append(D.el("section", {}, D.el("div", { className: "section-title" }, label), D.el("div", { className: `callout ${t.state}` }, said)));
+    }
+    body.append(D.el("section", {},
+      D.el("details", { className: "fold", open: t.state === "queued" || !ev.length },
+        D.el("summary", { className: "section-title" }, D.icon("right"), "What you asked"),
+        D.el("p", { className: "asked" }, t.prompt))));
+    body.append(D.el("section", {}, D.el("div", { className: "section-title" }, "Activity"), timeline(ev, D.pro)));
+    if (D.pro) {
+      const last = [...ev].reverse().find((r) => r.event.kind === "finished");
+      const kv = D.el("dl", { className: "kv" });
+      const row = (k, v) => v != null && v !== "" && kv.append(D.el("dt", {}, k), D.el("dd", {}, String(v)));
+      row("Work id", t.id);
+      row("Branch", t.branch);
+      row("Session", t.session_id);
+      row("Repo", app?.repo_path);
+      if (last?.event.cost_usd != null) row("Cost so far", D.money(last.event.cost_usd) + (app?.pay_per_use ? "" : " (Max account, not billed)"));
+      if (last?.event.input_tokens != null) row("Tokens", `${last.event.input_tokens.toLocaleString()} in, ${(last.event.output_tokens ?? 0).toLocaleString()} out`);
+      row("Last change", new Date(t.updated_at).toLocaleString());
+      body.append(D.el("section", {}, D.el("div", { className: "section-title" }, "Details"), kv));
+    }
+    const moves = D.moveButtons(t, {
+      onMoved: () => { panel.close(); onChange(); },
+      onError: (m) => { err.hidden = false; err.replaceChildren(D.icon("alert"), D.el("span", { className: "grow" }, m)); },
+    });
+    // On a computer the main button sits on the right.
+    const foot = D.el("footer", { className: "work-foot" }, ...moves.reverse());
+    if (D.offline) foot.prepend(D.el("p", { className: "hint", style: "width:100%" }, "Answer when your PC is back."));
+    moves.forEach((b) => (b.disabled = D.offline));
+    const keepScroll = panel.querySelector(".work-body")?.scrollTop ?? 0;
+    panel.replaceChildren(head, body, ...(moves.length || D.offline ? [foot] : []));
+    body.scrollTop = keepScroll;
+  }
+
+  D.openWork = async (t, changed) => {
+    ensurePanel();
+    onChange = changed ?? (() => {});
+    current = { id: t.id, sig: "" };
+    let ev = [];
+    const draw = (thread) => {
+      const sig = JSON.stringify([thread.state, thread.updated_at, ev.length, D.pro, D.offline]);
+      if (sig === current?.sig) return;
+      current.sig = sig;
+      renderWork(thread, ev);
+    };
+    panel.replaceChildren(D.el("div", { className: "work-head" }, D.pill(t.state), D.el("h2", { id: "wk-title" }, t.title)),
+      D.el("div", { className: "work-body" }, ...[0, 1, 2].map(() => D.el("div", { className: "skeleton", style: "height:64px" }))));
+    if (!panel.open) {
+      if (!history.state?.work) history.pushState({ work: t.id }, "", `#work-${t.id}`);
+      panel.showModal();
+    }
+    const load = async () => {
+      if (!current || current.id !== t.id) return;
+      try {
+        const [thread, more] = await Promise.all([D.api(`/threads/${t.id}`), D.events(t.id, ev.length ? ev[ev.length - 1].id : 0)]);
+        ev = ev.concat(more);
+        if (current?.id === t.id) draw(thread);
+        t = thread;
+      } catch (e) {
+        if (current?.id === t.id && !current.sig) {
+          panel.querySelector(".work-body").replaceChildren(D.el("div", { className: "notice bad" }, D.icon("alert"),
+            D.el("span", { className: "grow" }, `Couldn't load this work. ${e.message}`)));
+        }
+      }
+    };
+    await load();
+    clearInterval(timer);
+    timer = setInterval(load, 3000);
+  };
+  D.onPro(() => { if (current) current.sig = ""; });
+  D.onOffline(() => { if (current) current.sig = ""; });
+
+  document.body.classList.toggle("pro", D.pro);
+})();

@@ -6,6 +6,7 @@ self.addEventListener("push", (event) => {
   try { note = { ...note, ...event.data.json() }; } catch (_) {}
   event.waitUntil(self.registration.showNotification(note.title, {
     body: note.body,
+    icon: "/icon-192.png",
     tag: "decurion-inbox",
     renotify: true,
     data: { url: note.url },

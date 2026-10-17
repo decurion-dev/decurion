@@ -1453,3 +1453,28 @@ async fn a_started_box_without_a_trusted_cost_is_charged_its_budget() {
     .await;
     assert_eq!(spend(&r).await["pay_per_use_usd"], 10.0);
 }
+
+#[tokio::test]
+async fn pages_load_their_shared_look_without_signing_in() {
+    let (r, _) = hub().await;
+    for (path, kind) in [
+        ("/ui.css", "text/css"),
+        ("/ui.js", "text/javascript"),
+        ("/icon.svg", "image/svg+xml"),
+        ("/icon-192.png", "image/png"),
+        ("/icon-512.png", "image/png"),
+    ] {
+        let resp = r
+            .clone()
+            .oneshot(Request::get(path).body(Body::empty()).expect("req"))
+            .await
+            .expect("resp");
+        assert_eq!(resp.status(), StatusCode::OK, "{path}");
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(ct.starts_with(kind), "{path}: {ct}");
+    }
+}
