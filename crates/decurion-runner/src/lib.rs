@@ -176,7 +176,8 @@ pub enum Action {
 }
 
 /// What to do next, and which owner messages that hands to the agent. The
-/// ids are acked to the hub only after every write in `actions` succeeded.
+/// ids count as written only if every write in `actions` succeeded, and are
+/// acked to the hub only once Claude has since read them (see [`Acks`]).
 #[derive(Debug, Default, PartialEq)]
 pub struct Step {
     pub actions: Vec<Action>,
@@ -197,7 +198,8 @@ pub struct Step {
 /// Erring towards "nothing waiting" only closes stdin early, which is safe:
 /// Claude still finishes everything already written, and whatever was not
 /// written stays undelivered with the hub for the next run. Erring the other
-/// way would keep stdin open and the run would never end, so only writes
+/// way would keep stdin open and the run would never end (the runner then
+/// gives up after a long silence, see [`Conversation::give_up`]), so only writes
 /// that are sure to start a turn set `waiting`: the prompt, a follow-up
 /// (written only when Claude is idle), and a steer (always behind an
 /// interrupt, so it cannot be folded into the turn it stops). A note may be
@@ -303,6 +305,22 @@ impl Conversation {
         step
     }
 
+    /// Claude has been silent between turns for too long: the turn this was
+    /// waiting for is not coming. Closes stdin so the run can end; held
+    /// follow-ups stay undelivered with the hub for the next run.
+    pub fn give_up(&mut self) -> Step {
+        if self.closed {
+            return Step::default();
+        }
+        self.closed = true;
+        self.waiting = false;
+        self.interrupting = false;
+        Step {
+            actions: vec![Action::Close],
+            delivered: vec![],
+        }
+    }
+
     /// Stdin is closed: nothing more will be written.
     pub fn closed(&self) -> bool {
         self.closed
@@ -315,10 +333,87 @@ impl Conversation {
     }
 }
 
+/// Owner messages written to the agent, waiting for proof that Claude read
+/// them before they are acked to the hub. A write only reaches a pipe: if the
+/// container dies before Claude reads it, an acked message would be lost for
+/// good. So a message counts as read once a turn start or a result line was
+/// read from stdout after it was written; one never followed by either stays
+/// unacked and the hub hands it to the next run (it may then arrive twice,
+/// never not at all). `T` is when, from one clock: the write's end and the
+/// line's arrival in the pipe, not when the run loop got to it, so a line
+/// that sat in a queue cannot vouch for a later write.
+///
+/// An agent could print a fake boundary line, which only gets its own owner's
+/// messages marked read sooner.
+#[derive(Debug)]
+pub struct Acks<T> {
+    written: Vec<(T, i64)>,
+    due: Vec<i64>,
+}
+
+impl<T: Ord + Copy> Default for Acks<T> {
+    fn default() -> Self {
+        Acks {
+            written: Vec::new(),
+            due: Vec::new(),
+        }
+    }
+}
+
+impl<T: Ord + Copy> Acks<T> {
+    /// These were written to stdin, the last write ending at `at`.
+    pub fn wrote(&mut self, at: T, ids: &[i64]) {
+        self.written.extend(ids.iter().map(|id| (at, *id)));
+    }
+
+    /// A boundary line arrived at `at`: the ids to ack now, being the ones
+    /// written before it and any whose ack failed earlier.
+    pub fn boundary(&mut self, at: T) -> Vec<i64> {
+        let (read, unread): (Vec<_>, Vec<_>) = self.written.iter().partition(|(w, _)| *w < at);
+        self.written = unread;
+        self.due.extend(read.into_iter().map(|(_, id)| id));
+        std::mem::take(&mut self.due)
+    }
+
+    /// The ack for these failed: try again with the next ones.
+    pub fn failed(&mut self, ids: Vec<i64>) {
+        let mut ids = ids;
+        ids.append(&mut self.due);
+        self.due = ids;
+    }
+
+    /// The run's output ended: the ids already read whose ack failed. Ones
+    /// never followed by a boundary stay with the hub.
+    pub fn last_try(&mut self) -> Vec<i64> {
+        std::mem::take(&mut self.due)
+    }
+
+    /// Written but not yet shown to be read.
+    pub fn unread(&self) -> usize {
+        self.written.len()
+    }
+}
+
 /// Whether a stream-json output line is Claude Code starting a turn.
 pub fn is_turn_start(line: &str) -> bool {
     serde_json::from_str::<Value>(line)
         .is_ok_and(|v| v["type"] == "system" && v["subtype"] == "init")
+}
+
+/// A `result` line's subtype, such as `success` or `error_during_execution`.
+pub fn result_subtype(line: &str) -> Option<String> {
+    let v = serde_json::from_str::<Value>(line).ok()?;
+    if v["type"] != "result" {
+        return None;
+    }
+    v["subtype"].as_str().map(str::to_owned)
+}
+
+/// Whether a result line is the turn an interrupt stopped: Claude reports
+/// that as `error_during_execution`. Any other failure after a steer is a
+/// real error and is shown as one.
+pub fn is_interrupted_turn(line: &str, interrupting: bool) -> bool {
+    interrupting && result_subtype(line).as_deref() == Some("error_during_execution")
 }
 
 /// How a `result` that was not the run's last shows on the board: a part of
@@ -1040,6 +1135,80 @@ mod tests {
         assert!(p.contains("…). It may or may not have finished. Check what actually happened (files, git status, git log) before doing it again; never simply repeat it."));
         assert!(!p.contains("sk-ant") && !p.contains(&"x".repeat(300)));
         assert!(p.find("cut off") < p.find("Messages from the owner"));
+    }
+
+    #[test]
+    fn giving_up_closes_stdin_once_and_leaves_follow_ups_with_the_hub() {
+        let (mut c, _) = Conversation::start("p", &[]);
+        c.on_turn_start();
+        c.on_messages(&[msg(1, MessageKind::Steer, "s")]);
+        c.on_messages(&[msg(2, MessageKind::FollowUp, "later")]);
+        // The stopped turn ends; the steer's turn never starts.
+        assert_eq!(c.on_result(false), Step::default());
+        assert!(!c.closed());
+        let s = c.give_up();
+        assert_eq!(s.actions, [Action::Close]);
+        assert!(s.delivered.is_empty(), "the follow-up was never written");
+        assert!(c.closed() && !c.interrupting());
+        assert_eq!(c.give_up(), Step::default());
+        assert_eq!(c.on_result(false), Step::default());
+        assert_eq!(
+            c.on_messages(&[msg(3, MessageKind::Note, "n")]),
+            Step::default()
+        );
+    }
+
+    #[test]
+    fn messages_are_acked_only_after_claude_shows_it_read_them() {
+        let mut a: Acks<u32> = Acks::default();
+        // Claim messages go in the prompt at 10.
+        a.wrote(10, &[1, 2]);
+        // A line that reached the pipe before the write vouches for nothing.
+        assert!(a.boundary(5).is_empty());
+        assert!(a.boundary(10).is_empty(), "not strictly after the write");
+        assert_eq!(a.boundary(11), [1, 2]);
+        assert!(a.boundary(12).is_empty(), "acked once");
+        // A note written mid-turn waits for the turn's result.
+        a.wrote(20, &[3]);
+        assert_eq!(a.unread(), 1);
+        assert_eq!(a.boundary(30), [3]);
+        // A failed ack goes again at the next boundary, with what is new.
+        a.failed(vec![3]);
+        a.wrote(40, &[4]);
+        assert_eq!(a.boundary(35), [3]);
+        a.failed(vec![3]);
+        assert_eq!(a.boundary(41), [3, 4]);
+        // At the end: retry what was read, leave what was not.
+        a.failed(vec![3, 4]);
+        a.wrote(50, &[5]);
+        assert_eq!(a.last_try(), [3, 4]);
+        assert!(a.last_try().is_empty());
+        assert_eq!(a.unread(), 1);
+    }
+
+    #[test]
+    fn only_an_interrupted_turn_is_hidden() {
+        let stopped = r#"{"type":"result","subtype":"error_during_execution","is_error":true}"#;
+        let other = r#"{"type":"result","subtype":"success","is_error":true,"result":"Failed to authenticate"}"#;
+        assert_eq!(
+            result_subtype(stopped).as_deref(),
+            Some("error_during_execution")
+        );
+        assert_eq!(result_subtype(other).as_deref(), Some("success"));
+        assert_eq!(
+            result_subtype(r#"{"type":"system","subtype":"init"}"#),
+            None
+        );
+        assert_eq!(result_subtype("not json"), None);
+        assert!(is_interrupted_turn(stopped, true));
+        assert!(
+            !is_interrupted_turn(stopped, false),
+            "no interrupt was sent"
+        );
+        assert!(
+            !is_interrupted_turn(other, true),
+            "a real error after a steer"
+        );
     }
 
     #[test]
