@@ -1109,6 +1109,17 @@ impl Store {
             } else {
                 app.profile.as_str().to_owned()
             };
+            // A Max account that ran out waits for its reset, like work runs do.
+            let out_of_usage: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM profile_limits WHERE profile = ?
+                     AND until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            )
+            .bind(&account)
+            .fetch_one(&mut *tx)
+            .await?;
+            if out_of_usage {
+                continue;
+            }
             let Some(reserved) = reserve(&mut tx, &account).await? else {
                 let cap = crate::spend::to_usd(cap_micros(&mut tx).await?);
                 let why = format!("This month's pay-per-use limit of ${cap:.2} is used up.");

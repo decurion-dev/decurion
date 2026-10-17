@@ -657,3 +657,29 @@ async fn stopping_a_goal_cancels_waiting_work() {
     // The design job for the plan was cancelled too.
     no_helper(&r).await;
 }
+
+#[tokio::test]
+async fn helpers_wait_while_their_max_account_is_out() {
+    let (r, store) = hub().await;
+    let app = app(&r, false).await;
+    ok(
+        &r,
+        "POST",
+        "/api/goals",
+        OWNER,
+        json!({"app_id": app, "text": "Go"}),
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO profile_limits (profile, until) VALUES ('A', strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+1 hour'))",
+    )
+    .execute(store.pool())
+    .await
+    .expect("limit");
+    no_helper(&r).await;
+    sqlx::query("DELETE FROM profile_limits")
+        .execute(store.pool())
+        .await
+        .expect("clear");
+    helper(&r, "coordinator", r#"{"say": "Back."}"#, None).await;
+}
