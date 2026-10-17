@@ -1,6 +1,6 @@
 [package]
 name = "decurion-runner"
-description = "Decurion runner: starts one sealed Claude Code container per piece of work"
+description = "Decurion runner: starts one sealed agent container (Claude Code or pi) per piece of work"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

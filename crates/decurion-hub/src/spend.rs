@@ -194,8 +194,9 @@ pub(crate) async fn close_open_run(tx: &mut Transaction<'_, Sqlite>, thread_id: 
     Ok(())
 }
 
-/// Records what Claude Code said a run cost. The report is a running total
-/// for the session, so earlier runs' charges are taken off. If it comes in
+/// Records what the agent said a run cost. Claude Code's report is a running
+/// total for the session, so earlier runs' charges are taken off; a pi run's
+/// row has no earlier charges, because pi reports only the run. If it comes in
 /// above the amount set aside, the real figure is kept: the month's total
 /// must show what was spent.
 pub(crate) async fn record_cost(
