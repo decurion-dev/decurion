@@ -9,7 +9,6 @@ umask 077
 
 here=$(cd "$(dirname "$0")" && pwd)
 share="$here/../share/decurion"
-image=decurion/claude-worker:dev
 port=7420
 data=${DECURION_DATA:-$HOME/decurion}
 logs="$data/logs"
@@ -35,6 +34,18 @@ sha256() {
     else
         shasum -a 256 "$1" | cut -d' ' -f1
     fi
+}
+
+# Prepares one agent workspace image ($1) from its folder in docker/ ($2);
+# $3 names it in the message. The image is rebuilt when the Dockerfile shipped
+# with this version changes. Fails when the image could not be built.
+prepare_image() {
+    context="$share/docker/$2"
+    want=$(sha256 "$context/Dockerfile")
+    have=$(docker image inspect -f '{{ index .Config.Labels "org.decurion.dockerfile" }}' "$1" 2>/dev/null)
+    [ -n "$want" ] && [ "$have" = "$want" ] && return 0
+    echo "Getting $3 ready. This happens once per version and takes a few minutes."
+    docker build --label "org.decurion.dockerfile=$want" -t "$1" "$context"
 }
 
 # Runs a program in the background with its output in the logs folder and
@@ -74,14 +85,15 @@ if ! docker info >/dev/null 2>&1; then
     done
 fi
 
-# The image is rebuilt when the Dockerfile shipped with this version changes.
-context="$share/docker/claude-worker"
-want=$(sha256 "$context/Dockerfile")
-have=$(docker image inspect -f '{{ index .Config.Labels "org.decurion.dockerfile" }}' "$image" 2>/dev/null)
-if [ "$have" != "$want" ]; then
-    echo "Getting the agent workspace ready. This happens once per version and takes a few minutes."
-    docker build --label "org.decurion.dockerfile=$want" -t "$image" "$context" ||
-        fail "Could not prepare the agent workspace. Check that Docker is running and you are online, then try again."
+# Claude work cannot run without its workspace, so Decurion stops if it is
+# not ready. ChatGPT and Grok work use a second workspace; if that one is not
+# ready, Claude work still runs.
+prepare_image decurion/claude-worker:dev claude-worker "the agent workspace" ||
+    fail "Could not prepare the agent workspace. Check that Docker is running and you are online, then try again."
+if ! prepare_image decurion/pi-worker:dev pi-worker "the workspace for ChatGPT and Grok work"; then
+    echo
+    echo "Could not prepare the workspace for ChatGPT and Grok work. Claude work runs as usual, but ChatGPT and Grok work will not run until it is ready. Decurion tries again the next time you start it."
+    echo
 fi
 
 start_logged decurion-hub hub

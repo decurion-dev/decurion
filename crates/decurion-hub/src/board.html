@@ -44,6 +44,10 @@
   .meter > span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--steel); transition: width .4s var(--ease); }
   .meter.near > span { background: var(--amber-line); }
   .usage.near .num b { color: var(--amber); }
+  /* One line per Claude Max plan under the pay-per-use total. */
+  .usage .plan { display: flex; justify-content: space-between; gap: 8px; margin-top: 3px; font-size: 12px; }
+  .usage .plan span:last-child { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .usage .plan.near span:last-child { color: var(--amber); font-weight: 600; }
 
   main.main { min-width: 0; display: flex; flex-direction: column; }
   .topbar {
@@ -88,6 +92,8 @@
   .composer .bar input#title:focus { background: var(--surface); border-color: var(--focus); }
   .composer .bar .grow { flex: 1; }
   .composer .bar select#parent { max-width: 260px; }
+  .composer .bar select#ai { min-width: 120px; }
+  .composer .bar input#title { flex-basis: 150px; }
   .composer .bar .check { font-size: 13px; color: var(--muted); }
   .kbd-hint { font-size: 12px; color: var(--faint); white-space: nowrap; }
   kbd { font: 600 11px/1 var(--font); padding: 3px 5px; border-radius: 5px; border: 1px solid var(--line); background: var(--surface-2); color: var(--muted); }
@@ -202,6 +208,18 @@
   .spend-big .num span { font: 400 14px var(--font); color: var(--muted); letter-spacing: 0; margin-left: 6px; }
   .spend-big.near .num { color: var(--amber); }
   .spend-big .meter { height: 8px; background: var(--surface-3); }
+  /* Accounts: Max plan allowances and pay-per-use caps. */
+  .acct-meters { flex: 1 1 260px; min-width: 0; display: grid; gap: 10px; }
+  .acct-meter { display: grid; gap: 5px; font-size: 13px; }
+  .acct-meter .line { display: flex; justify-content: space-between; gap: 2px 12px; flex-wrap: wrap; }
+  .acct-meter .line > span:first-child { color: var(--muted); }
+  .acct-meter .line b { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .acct-meter .meter { height: 8px; }
+  .acct-out { display: flex; align-items: center; gap: 6px; color: var(--amber); font-size: 13px; font-weight: 600; }
+  .row-cap { flex-basis: 100%; display: grid; gap: 6px; padding-left: 44px; }
+  .row-cap .cap-row { align-items: center; }
+  .row-cap .money-in { width: 140px; }
+  .row-cap .field-error:empty { display: none; }
   .qr { display: grid; gap: 12px; justify-items: start; }
   .qr-box { background: #fff; padding: 14px; border-radius: var(--radius-l); box-shadow: 0 0 0 1px var(--line); line-height: 0; }
   .qr-box svg { width: 196px; height: 196px; display: block; }
@@ -268,6 +286,8 @@
     .composer .bar .btn.primary { flex: 1 1 100%; }
     .form-grid { grid-template-columns: 1fr; }
     .scard { padding: 16px; }
+    .row-cap { padding-left: 0; }
+    .row-cap .money-in { flex: 1 1 120px; width: auto; max-width: none; }
     .wcard .t { font-size: 15.5px; }
   }
 
@@ -297,7 +317,7 @@
       <a class="nav-item" href="#settings" data-route="settings" data-key="nav-settings"></a>
     </nav>
     <nav class="nav apps" aria-label="Filter by app" id="app-nav"></nav>
-    <a class="usage" href="#settings/spending" id="usage" hidden></a>
+    <a class="usage" href="#settings/accounts" id="usage" hidden></a>
   </aside>
 
   <main class="main" id="main">
@@ -321,6 +341,7 @@
           <textarea id="prompt" rows="3" placeholder="For example: add a page where clients book a treatment, pick a time and get a confirmation email" aria-describedby="add-err"></textarea>
           <div class="bar">
             <select id="app" aria-label="App"></select>
+            <select id="ai" aria-label="Which AI does the work"><option value="claude">Claude</option><option value="chatgpt">ChatGPT</option><option value="grok">Grok</option></select>
             <select id="place" aria-label="Where it runs" hidden><option value="pc">On your PC</option><option value="cloud">In the cloud</option></select>
             <input id="title" type="text" placeholder="Title (optional)" aria-label="Title (optional)" maxlength="120" autocomplete="off">
             <select id="parent" aria-label="Part of other work" hidden></select>
@@ -340,7 +361,7 @@
     <div class="content" id="view-settings" hidden>
       <div class="settings">
         <section class="scard wide live" id="set-apps" aria-labelledby="h-apps">
-          <header><span class="ic" data-icon="app"></span><div><h2 id="h-apps">Apps</h2><p>Each app is a git checkout on this PC. Agents work on their own copy and never touch yours.</p></div></header>
+          <header><span class="ic" data-icon="app"></span><div><h2 id="h-apps">Apps</h2><p>Each app is a git checkout on this PC. Agents work on their own copy and never touch yours. An app can also have its own monthly cap on pay-per-use money, across Claude, ChatGPT and Grok.</p></div></header>
           <ul class="rows" id="app-rows"></ul>
           <form id="add-app" class="form-grid" novalidate>
             <h3 class="full">Add an app</h3>
@@ -358,13 +379,13 @@
             </div>
             <div class="field">
               <label for="app-profile">Claude account</label>
-              <select id="app-profile" aria-describedby="app-profile-hint"><option value="A">Max account A</option><option value="B">Max account B</option></select>
-              <span class="hint" id="app-profile-hint">Which signed-in Max account the agents use.</span>
+              <select id="app-profile" aria-describedby="app-profile-hint"><option value="A">Max plan A</option><option value="B">Max plan B</option></select>
+              <span class="hint" id="app-profile-hint">Which signed-in Claude Max plan the agents use.</span>
             </div>
             <div class="field">
               <span class="label">Billing</span>
-              <label class="check"><input type="checkbox" id="app-ppu"> Pay-per-use instead of a Max account</label>
-              <span class="hint">Billed by use, under your monthly cap. Switch any time.</span>
+              <label class="check"><input type="checkbox" id="app-ppu"> Pay-per-use instead of a Max plan</label>
+              <span class="hint">Billed by use, under the Claude pay-per-use cap. Switch any time.</span>
             </div>
             <div class="full actions">
               <button class="btn primary" type="submit" id="add-app-btn">Add app</button>
@@ -379,17 +400,10 @@
           <div><a class="btn" id="add-cloud" href="/cloud"></a></div>
         </section>
 
-        <section class="scard live" id="set-spending" aria-labelledby="h-spend">
-          <header><span class="ic" data-icon="money"></span><div><h2 id="h-spend">Spending</h2><p>Pay-per-use work stops and asks you when this month's total reaches the cap. Each run can spend at most $10 of what is left.</p></div></header>
+        <section class="scard wide live" id="set-accounts" aria-labelledby="h-accounts">
+          <header><span class="ic" data-icon="money"></span><div><h2 id="h-accounts">Accounts</h2><p>Claude A and Claude B are flat-rate Max plans. Their bars show how much of this week's allowance and of the current five-hour allowance is used, as Claude last said while working. The other accounts are billed by use: work on them stops and asks you when the month's total reaches that account's cap. Each run can spend at most $10 of what is left.</p></div></header>
           <div class="spend-big" id="spend-big"></div>
-          <form id="cap-form" class="field" novalidate>
-            <label for="cap">Monthly cap</label>
-            <div class="cap-row">
-              <div class="money-in"><span>$</span><input id="cap" type="number" min="0" step="1" inputmode="decimal" aria-describedby="cap-err"></div>
-              <button class="btn" type="submit">Save cap</button>
-            </div>
-            <span class="field-error" id="cap-err" role="alert"></span>
-          </form>
+          <ul class="rows" id="account-rows"><li class="empty">Loading…</li></ul>
         </section>
 
         <section class="scard wide live" id="set-keys" aria-labelledby="h-keys">
@@ -427,6 +441,7 @@
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
   let apps = [], threads = [], spend = null, devices = null, limits = [], workers = [];
+  let accounts = null;          // /accounts: Max plan meters and pay-per-use caps
   let hasCloud = false;
   const limitErr = {};          // profile -> message from a failed "Continue on pay-per-use"
   let loaded = false, loadErr = null, busy = false, timer = 0;
@@ -440,6 +455,33 @@
   const appById = (id) => apps.find((a) => a.id === id);
   const shownThreads = () => threads.filter((t) => filter === "all" || String(t.app_id) === filter);
   const lineOf = (t) => D.cardLine(t, tails.get(t.id)?.ev);
+
+  // ---------- Which AI, which account ----------
+  const AI_NAMES = { chatgpt: "ChatGPT", grok: "Grok" };
+  // The account an app's Claude work runs on.
+  const claudeAcct = (app) => (!app ? "" : app.pay_per_use ? "pay-per-use" : `Max plan ${app.profile}`);
+  // Who does a piece of work. Claude names its account in Pro view.
+  const aiOf = (t, app, full = D.pro) => AI_NAMES[t.ai] ?? (full && app ? `Claude ${claudeAcct(app)}` : "Claude");
+  const isMax = (a) => a.account === "A" || a.account === "B";
+  const pct = (n) => `${Math.round(n)}%`;
+  // Nothing in a list is redrawn while the owner is typing in it.
+  const typingIn = (id) => { const a = document.activeElement; return a?.tagName === "INPUT" && $(id).contains(a); };
+  function meterEl(frac, near, label, now, max) {
+    return el("div", { className: `meter${near ? " near" : ""}`, role: "meter", "aria-valuemin": "0", "aria-valuemax": String(max), "aria-valuenow": String(now), "aria-label": label },
+      el("span", { style: `width:${(Math.max(0, Math.min(1, frac)) * 100).toFixed(1)}%` }));
+  }
+  // Pay-per-use money across Claude, ChatGPT and Grok.
+  function paidTotals() {
+    const paid = (accounts ?? []).filter((a) => !isMax(a));
+    const spent = paid.reduce((s, a) => s + (a.spent_usd ?? 0), 0);
+    const cap = paid.reduce((s, a) => s + (a.cap_usd ?? 0), 0);
+    const near = paid.filter((a) => (a.cap_usd > 0 ? a.spent_usd >= 0.8 * a.cap_usd : a.spent_usd > 0));
+    return { paid, spent, cap, near };
+  }
+  // A Max plan's fullest allowance, 0 to 100, or null before any reading.
+  const planUsed = (a) => (a.week_pct == null && a.five_hour_pct == null ? null : Math.max(a.week_pct ?? 0, a.five_hour_pct ?? 0));
+  const planNear = (a) => a.limited || (planUsed(a) ?? 0) >= 80;
+  const appsOn = (a) => apps.filter((x) => !x.pay_per_use && x.profile === a.account).map((x) => x.name);
 
   // Re-renders without losing keyboard focus: focus is restored by data-key.
   function keepFocus(fn) {
@@ -490,7 +532,7 @@
       loadDevices();
       loadKeys();
       const part = h.split("/")[1];
-      const target = part && $(`set-${part}`);
+      const target = part && $(`set-${part === "spending" ? "accounts" : part}`); // Spending became Accounts
       if (target) requestAnimationFrame(() => target.scrollIntoView({ block: "start" }));
       else window.scrollTo(0, 0);
     }
@@ -514,10 +556,12 @@
     if (busy) return;
     busy = true;
     try {
-      const [a, th, sp, lim, wk] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/spend"),
+      const [a, th, sp, lim, wk, ac] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/spend"),
         D.api("/limits").catch(() => []), // older hubs have no /limits
-        D.api("/workers").catch(() => [])]);
+        D.api("/workers").catch(() => []),
+        D.api("/accounts").catch(() => null)]);
       apps = a; threads = th; spend = sp; limits = Array.isArray(lim) ? lim : [];
+      accounts = Array.isArray(ac) ? ac : null;
       workers = Array.isArray(wk) ? wk : [];
       hasCloud = workers.some((w) => w.place === "cloud");
       D.setApps(a);
@@ -584,19 +628,40 @@
           ...apps.map((a) => item(String(a.id), a.name, counts[a.id] ?? 0, needs[a.id] ?? 0, "app")));
       });
     }
-    if (spend && changed("usage", spend)) {
-      const { pay_per_use_usd: used, cap_usd: cap, max_equivalent_usd: max } = spend;
-      const pct = cap > 0 ? Math.min(1, used / cap) : (used > 0 ? 1 : 0);
-      const near = cap > 0 ? used >= 0.8 * cap : used > 0;
+    if (spend && changed("usage", [spend, accounts, apps.map((a) => [a.profile, a.pay_per_use]), Math.floor(Date.now() / 60000)])) {
       const u = $("usage");
       u.hidden = false;
-      u.classList.toggle("near", near);
+      if (!accounts) {
+        // No account figures: the Claude pay-per-use total alone.
+        const { pay_per_use_usd: used, cap_usd: cap, max_equivalent_usd: max } = spend;
+        const near = cap > 0 ? used >= 0.8 * cap : used > 0;
+        u.classList.toggle("near", near);
+        u.removeAttribute("title");
+        u.replaceChildren(
+          el("span", { className: "lbl" }, "Pay-per-use this month"),
+          el("span", { className: "num" }, el("b", {}, D.money(used)), el("span", {}, ` of ${D.money(cap)}`)),
+          meterEl(cap > 0 ? used / cap : (used > 0 ? 1 : 0), near, "Pay-per-use spent this month", used, cap),
+          el("span", { className: "hint" }, `Max plans used ${D.money(max)} worth`));
+        return;
+      }
+      const { paid, spent, cap, near } = paidTotals();
+      u.classList.toggle("near", near.length > 0);
+      u.title = paid.map((a) => `${a.label}: ${D.money(a.spent_usd)} of ${D.money(a.cap_usd)}`).join("\n");
+      // Each Max plan in use or with a reading, under the money.
+      const plans = accounts.filter((a) => isMax(a) && (a.seen_at || appsOn(a).length));
       u.replaceChildren(
         el("span", { className: "lbl" }, "Pay-per-use this month"),
-        el("span", { className: "num" }, el("b", {}, D.money(used)), el("span", {}, ` of ${D.money(cap)}`)),
-        el("span", { className: `meter${near ? " near" : ""}`, role: "meter", "aria-valuemin": "0", "aria-valuemax": String(cap), "aria-valuenow": String(used), "aria-label": "Pay-per-use spent this month" },
-          el("span", { style: `width:${(pct * 100).toFixed(1)}%` })),
-        el("span", { className: "hint" }, `Max accounts used ${D.money(max)} worth`));
+        el("span", { className: "num" }, el("b", {}, D.money(spent)), el("span", {}, ` of ${D.money(cap)}`)),
+        meterEl(cap > 0 ? spent / cap : (spent > 0 ? 1 : 0), near.length > 0, "Pay-per-use spent this month", spent, cap),
+        near.length ? el("span", { className: "hint" }, `${near.map((a) => a.label).join(" and ")} near ${near.length === 1 ? "its" : "their"} cap`) : null,
+        ...plans.flatMap((a) => {
+          const used = planUsed(a);
+          // The fuller allowance is the one that runs out first.
+          const text = a.limited ? "used up" : used == null ? "no reading yet"
+            : (a.five_hour_pct ?? -1) > (a.week_pct ?? -1) ? `${pct(a.five_hour_pct)} of 5 hours` : `${pct(a.week_pct)} of week`;
+          const line = el("span", { className: `plan${planNear(a) ? " near" : ""}` }, el("span", {}, a.label), el("span", {}, text));
+          return used == null ? [line] : [line, meterEl(used / 100, planNear(a), `${a.label} allowance used`, Math.round(used), 100)];
+        }));
     }
   }
 
@@ -651,7 +716,7 @@
     const box = $("limits");
     box.hidden = !limits.length;
     keepFocus(() => box.replaceChildren(...limits.map((l) => {
-      const text = `Claude Max ${l.profile} is out of usage until about ${untilText(l.until)}. ` +
+      const text = `Claude Max plan ${l.profile} is out of usage until about ${untilText(l.until)}. ` +
         (l.waiting > 0 ? `${l.waiting} waiting; they restart on their own then.` : "New work for it waits until then.");
       let btn = null;
       if (l.waiting > 0) {
@@ -692,8 +757,20 @@
     $("place").hidden = !hasCloud;
     if (!hasCloud) $("place").value = "pc";
     fillParents();
+    showClaudeChoice();
     $("start").disabled = D.offline;
   }
+
+  // The Claude choice names the account the chosen app's Claude work runs on.
+  function showClaudeChoice() {
+    const app = appById(+$("app").value);
+    $("ai").options[0].textContent = app ? `Claude (${claudeAcct(app)})` : "Claude";
+  }
+  {
+    const last = D.store.get("decurion.board.ai");
+    if (last && [...$("ai").options].some((o) => o.value === last)) $("ai").value = last;
+  }
+  $("ai").onchange = () => D.store.set("decurion.board.ai", $("ai").value);
 
   // "Part of": open work in the same app. Kept while the owner is choosing.
   function fillParents() {
@@ -732,7 +809,7 @@
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("add-thread").requestSubmit(); }
     });
   }
-  $("app").onchange = () => { D.store.set("decurion.board.lastApp", $("app").value); fillParents(); };
+  $("app").onchange = () => { D.store.set("decurion.board.lastApp", $("app").value); fillParents(); showClaudeChoice(); };
 
   $("add-thread").onsubmit = async (e) => {
     e.preventDefault();
@@ -749,12 +826,14 @@
     btn.replaceChildren(icon("running"), "Starting");
     try {
       const parent = $("parent").value;
-      await D.send("/threads", { app_id, title, prompt: text, place: $("place").value,
+      const ai = $("ai").value;
+      await D.send("/threads", { app_id, title, prompt: text, ai, place: $("place").value,
         parent_id: parent ? +parent : null, background: !!parent && $("background").checked });
       prompt.value = ""; $("title").value = ""; $("title").placeholder = "Title (optional)"; grow();
       $("background").checked = false;
       D.store.set("decurion.board.lastApp", String(app_id));
-      D.toast(`Started "${title}". An agent will pick it up.`);
+      D.store.set("decurion.board.ai", ai);
+      D.toast(`Started "${title}". ${AI_NAMES[ai] ?? "Claude"} will pick it up.`);
       refresh();
     } catch (x) {
       err.textContent = `Couldn't start the work. ${x.message}`;
@@ -805,7 +884,7 @@
     const parts = [
       el("div", { className: "meta" },
         el("span", { className: "tag app" }, icon("app"), el("span", {}, D.appName(t.app_id) || "Unknown app")),
-        D.pro && app && el("span", { className: "tag ai dot-sep" }, icon("ai"), el("span", {}, D.aiLabel(app))),
+        el("span", { className: "tag ai dot-sep", title: `Done by ${aiOf(t, app, true)}` }, icon("ai"), el("span", {}, aiOf(t, app))),
         hasCloud && el("span", { className: "tag place dot-sep", title: t.place === "cloud" ? "Runs in the cloud" : "Runs on your PC" },
           icon(t.place === "cloud" ? "cloud" : "pc"), el("span", {}, t.place === "cloud" ? "Cloud" : "PC")),
         el("span", { className: "when", title: new Date(t.updated_at).toLocaleString() }, D.ago(t.updated_at))),
@@ -837,7 +916,7 @@
 
     const shown = shownThreads();
     const sig = ["board", filter, D.pro, D.offline, hasCloud, folds, Math.floor(Date.now() / 30000), apps.map((a) => [a.id, a.name, a.pay_per_use, a.profile]),
-      shown.map((t) => [t.id, t.state, t.place, t.updated_at, t.title, t.branch, lineOf(t), D.treeLine(t)])];
+      shown.map((t) => [t.id, t.state, t.ai, t.place, t.updated_at, t.title, t.branch, lineOf(t), D.treeLine(t)])];
     if (!changed("board", sig)) return;
 
     keepFocus(() => {
@@ -903,24 +982,30 @@
   // ---------- Settings ----------
   function renderSettings() {
     if (!loaded) return;
-    if (changed("set-apps", [apps, D.offline])) {
+    const appSpend = Object.fromEntries((spend?.apps ?? []).map((x) => [x.app_id, x]));
+    if (!typingIn("app-rows") && changed("set-apps", [apps, spend?.apps, D.offline])) {
       keepFocus(() => {
         $("app-rows").replaceChildren(...(apps.length ? apps.map((a) => {
           const b = el("button", { type: "button", className: "btn sm", dataset: { key: `ppu-${a.id}` } },
-            a.pay_per_use ? `Switch to Max account ${a.profile}` : "Switch to pay-per-use");
+            a.pay_per_use ? `Switch to Max plan ${a.profile}` : "Switch to pay-per-use");
           b.onclick = async () => {
             b.disabled = true;
             try {
               await D.api(`/apps/${a.id}/pay-per-use`, { method: "POST", body: JSON.stringify({ on: !a.pay_per_use }) });
-              D.toast(a.pay_per_use ? `${a.name} now uses Max account ${a.profile}.` : `${a.name} now uses pay-per-use.`);
+              D.toast(a.pay_per_use ? `${a.name} now uses Max plan ${a.profile}.` : `${a.name} now uses pay-per-use.`);
               await refresh();
             } catch (e) { D.toast(`Couldn't switch ${a.name}. ${e.message}`, "alert"); b.disabled = false; }
           };
+          const sp = appSpend[a.id];
+          const spent = sp && (sp.spent_usd > 0 || sp.cap_usd != null)
+            ? `Pay-per-use this month: ${D.money(sp.spent_usd)}${sp.cap_usd != null ? ` of its own ${D.money(sp.cap_usd)} cap` : ""}` : "";
           return el("li", {},
             el("span", { className: "ic" }, icon("app")),
-            el("div", { className: "who" }, el("b", {}, a.name), el("span", { className: "mono" }, a.repo_path)),
-            el("span", { className: "acct" }, icon(a.pay_per_use ? "money" : "ai"), a.pay_per_use ? "Pay-per-use" : `Max account ${a.profile}`),
-            b);
+            el("div", { className: "who" }, el("b", {}, a.name), el("span", { className: "mono" }, a.repo_path),
+              spent ? el("span", { className: "hint" }, spent) : null),
+            el("span", { className: "acct" }, icon(a.pay_per_use ? "money" : "ai"), a.pay_per_use ? "Claude pay-per-use" : `Claude Max plan ${a.profile}`),
+            b,
+            appCap(a));
         }) : [el("li", { className: "empty" }, "No apps yet. Add one below.")]));
       });
     }
@@ -950,28 +1035,124 @@
         }));
       });
     }
-    if (spend && changed("set-spend", spend)) {
-      const { pay_per_use_usd: used, cap_usd: cap, max_equivalent_usd: max } = spend;
-      const pct = cap > 0 ? Math.min(1, used / cap) : (used > 0 ? 1 : 0);
-      const near = cap > 0 ? used >= 0.8 * cap : used > 0;
+    if (spend && !typingIn("account-rows") && changed("set-accounts", [spend, accounts, apps.map((a) => [a.name, a.profile, a.pay_per_use]), D.offline, Math.floor(Date.now() / 60000)])) {
+      const { spent, cap, near } = paidTotals();
+      const max = spend.max_equivalent_usd;
       const box = $("spend-big");
-      box.classList.toggle("near", near);
+      box.classList.toggle("near", near.length > 0);
       box.replaceChildren(
-        el("span", { className: "hint" }, "Pay-per-use this month"),
-        el("div", { className: "num" }, D.money(used), el("span", {}, `of ${D.money(cap)} cap`)),
-        el("div", { className: `meter${near ? " near" : ""}`, role: "meter", "aria-valuemin": "0", "aria-valuemax": String(cap), "aria-valuenow": String(used), "aria-label": "Pay-per-use spent this month" },
-          el("span", { style: `width:${(pct * 100).toFixed(1)}%` })),
-        el("span", { className: "hint" }, near && cap > 0 ? `${Math.round(pct * 100)}% of the cap is used. Raise it below if you need more.`
-          : `Max accounts used ${D.money(max)} worth this month. That isn't billed; it's what the same work would cost pay-per-use.`));
-      if (document.activeElement !== $("cap")) $("cap").value = cap;
+        el("span", { className: "hint" }, "Pay-per-use this month, all accounts"),
+        el("div", { className: "num" }, D.money(spent), el("span", {}, `of ${D.money(cap)} in caps`)),
+        meterEl(cap > 0 ? spent / cap : (spent > 0 ? 1 : 0), near.length > 0, "Pay-per-use spent this month", spent, cap),
+        el("span", { className: "hint" }, near.length
+          ? `${near.map((a) => a.label).join(" and ")} ${near.length === 1 ? "is" : "are"} near the cap. Raise it below if you need more.`
+          : `This month's work on the Max plans would have cost ${D.money(max)} on pay-per-use. You aren't billed for it.`));
+      keepFocus(() => $("account-rows").replaceChildren(...(accounts
+        ? accounts.map((a) => (isMax(a) ? maxRow(a) : paidRow(a)))
+        : [el("li", { className: "empty" }, "Couldn't load the accounts. They show up again on the next refresh.")])));
     }
+  }
+
+  // A Claude Max plan: this week's and the current five hours' allowance.
+  function maxRow(a) {
+    const users = appsOn(a);
+    const about = [`Max plan ${a.account}, flat rate`, users.length ? `used by ${users.join(", ")}` : "no app uses it now"];
+    if (a.seen_at) about.push(`last reported ${D.ago(a.seen_at)}`);
+    const meters = el("div", { className: "acct-meters" });
+    if (!a.seen_at) meters.append(el("span", { className: "hint" }, "No reading yet. It shows up after work runs on this plan."));
+    for (const [name, used, renews] of [["This week", a.week_pct, a.week_resets_at], ["Current five hours", a.five_hour_pct, a.five_hour_resets_at]]) {
+      if (used == null) continue;
+      meters.append(el("div", { className: "acct-meter" },
+        el("div", { className: "line" }, el("span", {}, name),
+          el("span", {}, el("b", {}, `${pct(used)} used`), renews ? ` · renews ${untilText(renews)}` : "")),
+        meterEl(used / 100, used >= 80 || (a.limited && used >= 100), `${a.label}, ${name.toLowerCase()}, used`, Math.round(used), 100)));
+    }
+    if (a.limited) meters.append(el("p", { className: "acct-out" }, icon("alert"), `Used up for now${a.resets_at ? `, back ${untilText(a.resets_at)}` : ""}.`));
+    return el("li", {},
+      el("span", { className: "ic" }, icon("ai")),
+      el("div", { className: "who" }, el("b", {}, a.label), el("span", { className: "hint" }, about.join(" · "))),
+      meters);
+  }
+
+  // A pay-per-use account: this month's money against its cap, which the owner can change.
+  function paidRow(a) {
+    const used = a.spent_usd ?? 0, cap = a.cap_usd ?? 0;
+    const near = cap > 0 ? used >= 0.8 * cap : used > 0;
+    const id = `acct-cap-${a.account}`;
+    const input = el("input", { id, type: "number", min: "0", step: "1", inputMode: "decimal", value: String(cap), dataset: { key: id }, "aria-describedby": `${id}-err` });
+    const err = el("span", { className: "field-error", id: `${id}-err`, role: "alert" });
+    const save = el("button", { type: "button", className: "btn sm", dataset: { key: `${id}-save` } }, "Save cap");
+    save.disabled = D.offline;
+    save.onclick = async () => {
+      const v = input.value.trim();
+      if (v === "" || !(+v >= 0)) { err.textContent = `Enter a monthly cap in dollars for ${a.label}, 0 or more.`; input.setAttribute("aria-invalid", "true"); input.focus(); return; }
+      save.disabled = true;
+      try {
+        await D.api("/spend/cap", { method: "POST", body: JSON.stringify({ account: a.account, cap_usd: +v }) });
+        input.blur();
+        D.toast(`${a.label} cap set to ${D.money(+v)} a month.`);
+        await refresh();
+      } catch (x) { err.textContent = `Couldn't save the cap. ${x.message}`; save.disabled = false; }
+    };
+    input.addEventListener("input", () => { err.textContent = ""; input.removeAttribute("aria-invalid"); });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); save.click(); } });
+    const about = cap > 0 ? "Billed by use" : "Billed by use · the cap is $0, so set one to use it";
+    return el("li", {},
+      el("span", { className: "ic" }, icon("money")),
+      el("div", { className: "who" }, el("b", {}, a.label), el("span", { className: "hint" }, about)),
+      el("div", { className: "acct-meters" },
+        el("div", { className: "acct-meter" },
+          el("div", { className: "line" }, el("span", {}, "This month"), el("span", {}, el("b", {}, D.money(used)), ` of ${D.money(cap)}`)),
+          meterEl(cap > 0 ? used / cap : (used > 0 ? 1 : 0), near, `${a.label} spent this month`, used, cap))),
+      el("div", { className: "row-cap" },
+        el("label", { className: "label", htmlFor: id }, "Monthly cap"),
+        el("div", { className: "cap-row" }, el("div", { className: "money-in" }, el("span", {}, "$"), input), save),
+        err));
+  }
+
+  // An app's own monthly cap on pay-per-use money, across every AI. Empty means none.
+  function appCap(a) {
+    const id = `app-cap-${a.id}`;
+    const input = el("input", { id, type: "number", min: "0", step: "1", inputMode: "decimal", placeholder: "No cap",
+      value: a.monthly_cap_usd == null ? "" : String(a.monthly_cap_usd), dataset: { key: id }, "aria-describedby": `${id}-err` });
+    const err = el("span", { className: "field-error", id: `${id}-err`, role: "alert" });
+    const setCap = async (cap_usd, btn) => {
+      btn.disabled = true;
+      err.textContent = "";
+      try {
+        await D.api(`/apps/${a.id}/cap`, { method: "POST", body: JSON.stringify({ cap_usd }) });
+        input.blur();
+        D.toast(cap_usd == null ? `${a.name} has no cap of its own now.` : `${a.name} can spend up to ${D.money(cap_usd)} a month.`);
+        await refresh();
+      } catch (x) { err.textContent = `Couldn't save the cap. ${x.message}`; btn.disabled = false; }
+    };
+    const save = el("button", { type: "button", className: "btn sm", dataset: { key: `${id}-save` } }, "Save cap");
+    save.disabled = D.offline;
+    save.onclick = () => {
+      const v = input.value.trim();
+      if (v === "") return setCap(null, save);
+      if (!(+v >= 0)) { err.textContent = "Enter dollars, 0 or more, or leave it empty for no cap."; input.setAttribute("aria-invalid", "true"); input.focus(); return; }
+      setCap(+v, save);
+    };
+    input.addEventListener("input", () => { err.textContent = ""; input.removeAttribute("aria-invalid"); });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); save.click(); } });
+    let clear = null;
+    if (a.monthly_cap_usd != null) {
+      clear = el("button", { type: "button", className: "btn quiet sm", dataset: { key: `${id}-clear` } }, "Remove cap");
+      clear.disabled = D.offline;
+      clear.onclick = () => setCap(null, clear);
+    }
+    return el("div", { className: "row-cap" },
+      el("label", { className: "label", htmlFor: id }, "Own monthly cap"),
+      el("div", { className: "cap-row" }, el("div", { className: "money-in" }, el("span", {}, "$"), input), save, clear),
+      err);
   }
 
   function fieldErr(input, errEl, msg) {
     $(errEl).textContent = msg || "";
     if (msg) $(input).setAttribute("aria-invalid", "true"); else $(input).removeAttribute("aria-invalid");
   }
-  for (const [i, e] of [["app-name", "app-name-err"], ["app-path", "app-path-err"], ["cap", "cap-err"]]) $(i).addEventListener("input", () => fieldErr(i, e, ""));
+  for (const [i, e] of [["app-name", "app-name-err"], ["app-path", "app-path-err"]]) $(i).addEventListener("input", () => fieldErr(i, e, ""));
 
   $("add-app").onsubmit = async (e) => {
     e.preventDefault();
@@ -993,18 +1174,6 @@
       else if (/repo_path/.test(x.message)) fieldErr("app-path", "app-path-err", "Use the full path, without commas or quotes.");
       else $("app-err").textContent = `Couldn't add the app. ${x.message}`;
     } finally { btn.disabled = false; }
-  };
-
-  $("cap-form").onsubmit = async (e) => {
-    e.preventDefault();
-    const v = $("cap").value.trim();
-    if (v === "" || !(+v >= 0)) { fieldErr("cap", "cap-err", "Enter a monthly cap in dollars, 0 or more."); return; }
-    try {
-      await D.api("/spend/cap", { method: "POST", body: JSON.stringify({ cap_usd: +v }) });
-      $("cap").blur();
-      D.toast(`Monthly cap set to ${D.money(+v)}.`);
-      refresh();
-    } catch (x) { fieldErr("cap", "cap-err", `Couldn't save the cap. ${x.message}`); }
   };
 
   async function loadDevices() {

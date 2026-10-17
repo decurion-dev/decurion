@@ -1,4 +1,4 @@
-//! The one Claude credential a run needs, for a cloud worker that has no copy
+//! The one credential a run needs, for a cloud worker that has no copy
 //! of its own. On the PC it is read from Windows Credential Manager under the
 //! same names the PC runner uses, falling back to environment variables
 //! (tests, a hub on Linux). It is handed out only for work running on the
@@ -6,8 +6,8 @@
 
 use decurion_proto::RunCredential;
 
-/// `(variable Claude Code reads, Credential Manager name, fallback variable)`
-/// for the account a run is billed to: `A`, `B` or `api`.
+/// `(variable the agent reads, Credential Manager name, fallback variable)`
+/// for the account a run is billed to: `A`, `B`, `api`, `openai` or `xai`.
 pub fn names(account: &str) -> Option<(&'static str, String, String)> {
     match account {
         "A" | "B" => Some((
@@ -19,6 +19,16 @@ pub fn names(account: &str) -> Option<(&'static str, String, String)> {
             "ANTHROPIC_API_KEY",
             "decurion/anthropic-api".to_owned(),
             "DECURION_ANTHROPIC_API_KEY".to_owned(),
+        )),
+        "openai" => Some((
+            "OPENAI_API_KEY",
+            "decurion/openai-api".to_owned(),
+            "DECURION_OPENAI_API_KEY".to_owned(),
+        )),
+        "xai" => Some((
+            "XAI_API_KEY",
+            "decurion/xai-api".to_owned(),
+            "DECURION_XAI_API_KEY".to_owned(),
         )),
         _ => None,
     }

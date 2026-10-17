@@ -53,6 +53,7 @@ Source: "{#BinDir}\decurion-runner.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "start-decurion.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "save-claude-sign-in.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoRoot}\docker\claude-worker\Dockerfile"; DestDir: "{app}\docker\claude-worker"; Flags: ignoreversion
+Source: "{#RepoRoot}\docker\pi-worker\Dockerfile"; DestDir: "{app}\docker\pi-worker"; Flags: ignoreversion
 Source: "{#RepoRoot}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoRoot}\NOTICE"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#RepoRoot}\README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme

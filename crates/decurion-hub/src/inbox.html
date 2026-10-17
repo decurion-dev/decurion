@@ -577,7 +577,7 @@ function boardCard(t, anim) {
   const b = el("button", { type: "button", className: "wcard" + (anim === "still" ? " still" : ""), dataset: { state: t.state, key: t.id, anim } },
     el("div", { className: "meta" },
       el("span", { className: "tag" }, D.icon("app"), el("span", {}, D.appName(t.app_id) || "Unknown app")),
-      app && el("span", { className: "tag dot-sep" }, D.aiLabel(app))),
+      app && el("span", { className: "tag dot-sep" }, D.aiLabel(app, t))),
     el("div", { className: "t" }, t.title),
     line && el("div", { className: "says" }, line),
     el("div", { className: "foot" },
@@ -610,7 +610,7 @@ function renderBoard() {
     const app = S.apps[t.app_id];
     return {
       key: t.id,
-      sig: JSON.stringify([t.state, t.updated_at, t.title, D.appName(t.app_id), D.aiLabel(app), D.cardLine(t, tailNow(t, 5))]),
+      sig: JSON.stringify([t.state, t.updated_at, t.title, D.appName(t.app_id), D.aiLabel(app, t), D.cardLine(t, tailNow(t, 5))]),
       build: (anim) => boardCard(t, anim),
     };
   }));

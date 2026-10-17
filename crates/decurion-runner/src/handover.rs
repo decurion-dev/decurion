@@ -104,8 +104,9 @@ pub fn save_edits_args(thread_id: i64, worktree: &Path) -> anyhow::Result<[Vec<S
     ])
 }
 
-/// `docker run` that writes the agent's Claude Code sessions as a tar
-/// archive to stdout.
+/// `docker run` that writes the agent's sessions as a tar archive to stdout:
+/// Claude Code's, or pi's for ChatGPT and Grok work. A thread has only one of
+/// them, so a missing folder is skipped rather than failing the save.
 pub fn session_export_args(thread_id: i64) -> Vec<String> {
     sealed_args(
         thread_id,
@@ -113,7 +114,15 @@ pub fn session_export_args(thread_id: i64) -> Vec<String> {
         false,
         &[],
         "tar",
-        &["-C", "/home/agent", "-cf", "-", ".claude/projects"],
+        &[
+            "--ignore-failed-read",
+            "-C",
+            "/home/agent",
+            "-cf",
+            "-",
+            ".claude/projects",
+            ".pi/sessions",
+        ],
     )
 }
 
@@ -268,11 +277,13 @@ mod tests {
                 .any(|w| w[0] == "--name" && w[1] == "decurion-thread-7-tool"));
         }
         assert!(out.ends_with(&[
+            "--ignore-failed-read".into(),
             "-C".into(),
             "/home/agent".into(),
             "-cf".into(),
             "-".into(),
-            ".claude/projects".into()
+            ".claude/projects".into(),
+            ".pi/sessions".into()
         ]));
         assert!(!out.contains(&"-i".to_string()));
         assert!(inp.contains(&"-i".to_string()));
