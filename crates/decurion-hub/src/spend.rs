@@ -56,11 +56,14 @@ pub(crate) async fn cap_micros(tx: &mut Transaction<'_, Sqlite>) -> Result<i64> 
 }
 
 /// Pay-per-use money used this month: real cost where known, otherwise the
-/// amount set aside.
+/// amount set aside. Helper jobs (coordinator, designer, checker) count too.
 pub(crate) async fn api_spent_micros(tx: &mut Transaction<'_, Sqlite>) -> Result<i64> {
     Ok(sqlx::query_scalar(&format!(
-        "SELECT COALESCE(SUM(COALESCE(cost_micros, reserved_micros)), 0) FROM runs
-         WHERE account = 'api' AND (started_at >= {MONTH_START} OR finished_at IS NULL)"
+        "SELECT (SELECT COALESCE(SUM(COALESCE(cost_micros, reserved_micros)), 0) FROM runs
+                 WHERE account = 'api' AND (started_at >= {MONTH_START} OR finished_at IS NULL))
+              + (SELECT COALESCE(SUM(COALESCE(cost_micros, reserved_micros)), 0) FROM helper_jobs
+                 WHERE account = 'api' AND started_at IS NOT NULL
+                   AND (started_at >= {MONTH_START} OR finished_at IS NULL))"
     ))
     .fetch_one(&mut **tx)
     .await?)
@@ -138,17 +141,21 @@ pub(crate) async fn record_cost(
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
 ) -> Result<()> {
+    // The report is a running total for the session; the limit applies to
+    // this run's own share of it.
     let reported = if cost_usd.is_finite() {
-        to_micros(cost_usd.clamp(0.0, MAX_REPORT_USD))
+        to_micros(cost_usd.clamp(0.0, 1e9))
     } else {
         return Ok(());
     };
     sqlx::query(
-        "UPDATE runs SET cost_micros = MAX(? - prior_micros, 0), input_tokens = ?, output_tokens = ?
-         WHERE id = (SELECT id FROM runs WHERE thread_id = ? AND finished_at IS NULL
+        "UPDATE runs SET cost_micros = MIN(MAX(?1 - prior_micros, 0), ?2),
+             input_tokens = ?3, output_tokens = ?4
+         WHERE id = (SELECT id FROM runs WHERE thread_id = ?5 AND finished_at IS NULL
                      ORDER BY id DESC LIMIT 1)",
     )
     .bind(reported)
+    .bind(to_micros(MAX_REPORT_USD))
     .bind(input_tokens.map(|n| n as i64))
     .bind(output_tokens.map(|n| n as i64))
     .bind(thread_id)
@@ -163,8 +170,10 @@ impl Store {
         let cap = cap_micros(&mut tx).await?;
         let api = api_spent_micros(&mut tx).await?;
         let max: i64 = sqlx::query_scalar(&format!(
-            "SELECT COALESCE(SUM(cost_micros), 0) FROM runs
-             WHERE account IN ('A', 'B') AND started_at >= {MONTH_START}"
+            "SELECT (SELECT COALESCE(SUM(cost_micros), 0) FROM runs
+                     WHERE account IN ('A', 'B') AND started_at >= {MONTH_START})
+                  + (SELECT COALESCE(SUM(cost_micros), 0) FROM helper_jobs
+                     WHERE account IN ('A', 'B') AND started_at >= {MONTH_START})"
         ))
         .fetch_one(&mut *tx)
         .await?;

@@ -7,6 +7,7 @@
 - [Install Decurion](install.md)
 - [Connect your Claude accounts](connect-claude-accounts.md)
 - [Add your first app](add-your-first-app.md)
+- [Give an app its test keys](add-test-keys.md)
 - [Choose your rules](choose-your-rules.md)
 - [Connect your phone](connect-your-phone.md)
 
@@ -14,6 +15,7 @@
 
 - [Give your first goal](give-your-first-goal.md)
 - [Answer requests](answer-requests.md)
+- [Talk to an agent while it works](talk-to-a-running-agent.md)
 - [Review and merge work](review-and-merge.md)
 
 # When things go wrong

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/decurion-proto", "crates/decurion-hub", "crates/decurion-runner", "crates/decurion-gate"]
+members = ["crates/decurion-proto", "crates/decurion-vault", "crates/decurion-hub", "crates/decurion-runner", "crates/decurion-gate"]
 
 [workspace.package]
 edition = "2021"

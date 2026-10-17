@@ -2,38 +2,60 @@
 
 This page helps you give Decurion something to build.
 
-> **Coming soon.** This part of Decurion is still being built. This page shows how it will work.
+A **goal** is what you want, in plain words. Your **project lead**, one agent
+you talk to, turns it into finished, checked work.
 
-## How it will work
+## Start a goal
 
-Decurion will have a **coordinator**, one agent you talk to.
+1. Open the board at <http://decurion.localhost:7420> and choose **Goals**. On
+   your phone, open the inbox and tap **Goals**.
+2. Choose the app.
+3. Type what you want, such as "Add a password reset page to the portal." Say
+   what you want, not how to code it.
+4. Press **Start**.
 
-1. Press Ctrl+K on the board, or open **Chat** on your phone.
-2. Type what you want in plain words, such as "Add a password reset page to the portal."
-3. The coordinator replies with a plan, split into pieces of work.
-4. Check the plan and approve it. The pieces start running.
+## Answer a few questions
 
-## What you can do today
+Your project lead reads the app's code first, then asks you a few questions.
+Each question has choices, with its suggestion marked. Tap a choice, or write
+your own answer. You can also type a message at any time.
 
-Today you give each agent its task yourself. One task is one **piece of work**.
+## Look at the plan, then approve it
 
-1. Open the board at <http://decurion.localhost:7420>.
-2. At the top, choose the app from the menu.
-3. In **Title**, type a short name for the work, such as "Password reset page."
-4. In **What should the agent do?**, describe the task in plain words. Say what you want, not how to code it. For example: "Add a page where users can reset their password by email. Add tests for it."
-5. Click **Add work**.
+When it knows enough, your project lead shows a plan split into pieces of
+work, each with how you will know it is done.
 
-The work shows under **Queued**, then moves to **Running** when an agent starts. Click the card at any time to see what the agent is doing.
+- Press **Open the visual plan** to see a page of pictures: how the app looks
+  today beside how it will look after the change. For a new app, you see
+  mockups.
+- Want something different? Type it. You get a new plan.
+- Happy with it? Press **Approve plan**. That is the only approval the goal needs.
 
-When the agent finishes and has saved its changes, the work moves to **In review**. See [Review and merge work](review-and-merge.md).
+## While the work runs
 
-## Tips for a good task
+Each piece of work runs on its own and shows on the board. When a piece is
+built, a checker agent tries it in a separate copy, takes "as built"
+pictures, and either passes it or sends it back with notes. A piece gets at
+most two checks; if it still has problems, it is marked **needs a look**.
 
-- Ask for one thing at a time.
+You can stop the goal at any time with **Stop goal**.
+
+## When it is ready
+
+When every piece is finished, your project lead writes up what was done in
+plain words and your phone gets a notice. Look at the pictures and the work,
+then review and merge it as usual. See [Review and merge work](review-and-merge.md).
+
+## Tips for a good goal
+
 - Say how you will know it works, such as "Users get an email with a link."
-- Ask the agent to add or run tests.
+- One goal per change you would describe in one sentence.
+- You can still add a single piece of work yourself on the board with
+  **New work**.
 
 ## If something goes wrong
 
-- **The work stays in Queued.** The part of Decurion that starts agents may not be running. Close Decurion and start it again.
-- **The work moves to Failed.** See [When something fails](when-something-fails.md).
+- **"Your project lead got stuck."** Press **Try again**.
+- **"This month's pay-per-use limit is used up."** Raise the cap in Settings,
+  then press **Try again**.
+- **A piece moves to Failed.** See [When something fails](when-something-fails.md).

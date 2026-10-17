@@ -33,6 +33,7 @@
     background: var(--surface-3); color: var(--ink);
     font: 650 12px/22px var(--font); text-align: center; font-variant-numeric: tabular-nums;
   }
+  .goals-link { font-size: 14px; color: var(--accent-ink); white-space: nowrap; }
   .updated { margin-left: auto; font-size: 12px; color: var(--faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
   .appbar .banner { border-top: 1px solid var(--amber-line); }
 
@@ -97,6 +98,7 @@
     display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
   }
   .said .q.open { display: block; -webkit-line-clamp: unset; }
+  .said .since { font-size: 14px; line-height: 1.5; color: var(--ink); white-space: pre-wrap; }
   .more {
     justify-self: start; margin: 0 -6px -4px; padding: 6px; border: 0; background: none; cursor: pointer;
     font: 600 13px/1 var(--font); color: var(--ink); text-decoration: underline; text-underline-offset: 3px;
@@ -191,6 +193,21 @@
     .iacts .sub { justify-content: flex-start; }
     .iacts .sub .btn { flex: 0 0 auto; width: auto; min-width: 120px; }
   }
+
+  /* ---------- Work panel: task tree and messages (same in board.html and inbox.html) ---------- */
+  .work-body .part { display: contents; }
+  .talk { display: grid; gap: 8px; }
+  .talk .section-title { display: block; margin-bottom: 0; }
+  .talk textarea { min-height: 76px; }
+  .talk .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .talk .waiting { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+  .talk .field-error:empty { display: none; }
+  .kids { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); }
+  .kids li, .tree-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .kids li { padding: 8px 10px; }
+  .kids li + li { border-top: 1px solid var(--line); }
+  .kids .nm, .tree-row .nm { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+  @media (max-width: 640px) { .talk .row .btn { flex: 1 1 100%; } }
 </style>
 </head>
 <body>
@@ -200,6 +217,7 @@
     <h1 id="title">Needs you</h1>
     <span class="count" id="count" hidden></span>
     <span class="updated" id="updated" aria-live="off"></span>
+    <a class="goals-link" href="/goals">Goals</a>
   </div>
   <div class="banner" id="offline" role="status" hidden></div>
   <div class="chips" id="chips" role="group" aria-label="Show work by state" hidden></div>
@@ -265,6 +283,12 @@ async function loadTail(t, n, always = false) {
   try { tails.set(tailKey(t, n), { u: t.updated_at, ev: await D.tail(t.id, n) }); } catch (_) { /* keep what we had */ }
 }
 
+// What you sent, or a step that got cut off, after the agent last spoke.
+function sinceLines(ev) {
+  const i = ev.findLastIndex((r) => r.event.kind === "finished" || r.event.kind === "message");
+  return ev.slice(i + 1).map((r) => D.ownerLine(r.event)).filter(Boolean).slice(-3);
+}
+
 const byNewest = (a, b) => b.updated_at.localeCompare(a.updated_at);
 // What is waiting on a decision comes first, then failures, then reviews.
 const URGENCY = { needs_you: 0, failed: 1, in_review: 2 };
@@ -296,6 +320,7 @@ async function refresh() {
     D.setApps(apps);
     S.apps = Object.fromEntries(apps.map((a) => [a.id, a]));
     S.threads = list; S.err = null; S.signedOut = false; S.updated = new Date();
+    D.setThreads(list);
     const jobs = inboxItems().map((t) => loadTail(t, 20));
     if (S.tab === "board") jobs.push(...boardTails());
     await Promise.all(jobs);
@@ -410,6 +435,8 @@ function inboxCard(t, anim) {
     };
     card.append(el("div", { className: "said" }, el("div", { className: "lbl" }, "The agent says"), q, more));
   }
+  const since = sinceLines(tailNow(t, 20) ?? []);
+  if (since.length) card.append(el("div", { className: "said" }, el("div", { className: "lbl" }, said ? "Since then" : "Recently"), el("p", { className: "since" }, since.join("\n"))));
   card.append(el("div", { className: "err-slot", role: "alert" }));
   const moves = D.moveButtons(t, {
     onMoved: () => { card.classList.add("leaving"); setTimeout(refresh, 180); },
@@ -420,6 +447,9 @@ function inboxCard(t, anim) {
     const [main, ...rest] = moves;
     card.append(el("div", { className: "iacts" }, main, rest.length > 0 && el("div", { className: "sub" }, ...rest)));
   }
+  const tell = el("button", { type: "button", className: "btn quiet" }, D.icon("question"), "Tell the agent something");
+  tell.onclick = () => D.openWork(t, refresh, { talk: true });
+  card.append(el("div", { className: "iacts" }, tell));
   card.addEventListener("click", (e) => { if (!e.target.closest("button, a")) open(); });
   return card;
 }
@@ -481,7 +511,7 @@ function renderInbox() {
       build: (anim) => limitCard(l, anim),
     })), ...items.map((t) => ({
       key: t.id,
-      sig: JSON.stringify([t.state, t.updated_at, t.title, D.appName(t.app_id), D.lastWords(tailNow(t, 20) ?? []), D.offline]),
+      sig: JSON.stringify([t.state, t.updated_at, t.title, D.appName(t.app_id), D.lastWords(tailNow(t, 20) ?? []), sinceLines(tailNow(t, 20) ?? []), D.offline]),
       build: (anim) => inboxCard(t, anim),
     }))]);
   }
