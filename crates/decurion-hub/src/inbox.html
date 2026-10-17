@@ -3,128 +3,673 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#1f1e1b">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e1014" media="(prefers-color-scheme: dark)">
 <link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="stylesheet" href="/ui.css">
 <title>Decurion inbox</title>
 <style>
-  :root { --bg:#f5f4f0; --card:#fff; --ink:#1d1c19; --muted:#6f6b61; --line:#e2dfd6;
-          --accent:#3b5bdb; --ok:#2b8a3e; --warn:#c77700; --bad:#c92a2a; --radius:14px; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#151513; --card:#1f1e1b; --ink:#ecebe6; --muted:#9a968b; --line:#33312c;
-            --accent:#7b93f0; --ok:#59c26d; --warn:#f0a43a; --bad:#f06464; }
+  /* The phone inbox: a calm control room. Open it, see what needs you, act, leave. */
+  :root { --tabbar-h: 64px; --side: 16px; }
+  html { scroll-padding-top: 120px; }
+  body { min-height: 100dvh; overscroll-behavior-y: none; }
+
+  /* ---------- Top bar ---------- */
+  .appbar {
+    position: sticky; top: 0; z-index: 30;
+    padding-top: env(safe-area-inset-top);
+    background: var(--bg);
+    transition: box-shadow .2s var(--ease);
   }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.45 system-ui, "Segoe UI", sans-serif;
-         padding:16px 16px calc(24px + env(safe-area-inset-bottom)); }
-  header { display:flex; align-items:baseline; gap:10px; margin-bottom:14px; }
-  h1 { font-size:22px; margin:0; }
-  .muted { color:var(--muted); font-size:13px; }
-  .empty { text-align:center; padding:48px 12px; color:var(--muted); }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:14px; margin-bottom:12px; }
-  .card[data-state="in_review"] { border-left:4px solid var(--accent); }
-  .card[data-state="needs_you"] { border-left:4px solid var(--warn); }
-  .card[data-state="failed"] { border-left:4px solid var(--bad); }
-  .kind { font-size:12px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); }
-  .title { font-size:18px; font-weight:600; margin:2px 0 6px; }
-  .means { margin:0 0 8px; }
-  .said { font-size:14px; color:var(--muted); white-space:pre-wrap; max-height:9em; overflow:auto; margin:0 0 10px; }
-  .actions { display:flex; gap:8px; flex-wrap:wrap; }
-  button { font:inherit; font-weight:600; border-radius:10px; padding:12px 16px; min-height:44px; flex:1 1 auto;
-           border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
-  button.danger { color:var(--bad); }
-  .bar { display:flex; gap:8px; margin:6px 0 16px; }
-  .err { color:var(--bad); margin-bottom:12px; }
+  .appbar.scrolled { box-shadow: 0 1px 0 var(--line); }
+  .bar { height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 var(--side); max-width: 640px; margin: 0 auto; }
+  .bar svg { flex: none; border-radius: 7px; }
+  .bar h1 { font-size: 20px; font-weight: 700; line-height: 1; white-space: nowrap; }
+  .count {
+    min-width: 22px; height: 22px; padding: 0 7px; border-radius: 99px;
+    background: var(--surface-3); color: var(--ink);
+    font: 650 12px/22px var(--font); text-align: center; font-variant-numeric: tabular-nums;
+  }
+  .updated { margin-left: auto; font-size: 12px; color: var(--faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .appbar .banner { border-top: 1px solid var(--amber-line); }
+
+  /* Board filter chips, part of the sticky top bar on the board tab. */
+  .chips {
+    display: flex; gap: 8px; overflow-x: auto; padding: 2px var(--side) 12px;
+    max-width: 640px; margin: 0 auto; scrollbar-width: none; scroll-padding: 0 var(--side);
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
+            mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
+  }
+  .chips::-webkit-scrollbar { display: none; }
+  .chip {
+    flex: none; display: inline-flex; align-items: center; gap: 7px; height: 40px; padding: 0 14px;
+    border-radius: 99px; border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+    font: 600 14px/1 var(--font); cursor: pointer; white-space: nowrap;
+    transition: background-color .15s var(--ease), color .15s var(--ease), border-color .15s var(--ease);
+  }
+  .chip .n { color: var(--faint); font-variant-numeric: tabular-nums; }
+  .chip.zero { color: var(--muted); }
+  .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber-line); }
+  .chip[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+  .chip[aria-pressed="true"] .n { color: inherit; opacity: .72; }
+  .chip:last-child { margin-right: 24px; }
+
+  /* ---------- Content ---------- */
+  .page { max-width: 640px; margin: 0 auto; padding: 4px var(--side) calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 28px); }
+  .view { display: grid; gap: 12px; animation: fade .2s var(--ease); }
+  .list { display: grid; gap: 12px; }
+  body.offline .live { transition: opacity .2s var(--ease); }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+
+  /* ---------- Inbox cards ---------- */
+  .icard {
+    position: relative; display: grid; gap: 10px; padding: 14px 14px 14px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l);
+    box-shadow: 0 1px 2px rgba(15, 18, 24, .04);
+    cursor: pointer; overflow-wrap: anywhere;
+    animation: rise .28s var(--ease) both;
+    transition: transform .14s var(--ease), opacity .2s var(--ease), border-color .14s var(--ease);
+  }
+  .icard.still, .wcard.still { animation: none; }
+  .icard:active:not(:has(.btn:active, .more:active)) { transform: scale(.99); }
+  .icard[data-state="needs_you"] { background: var(--amber-soft); border-color: var(--amber-line); }
+  .icard.leaving { opacity: 0; transform: translateX(16px); pointer-events: none; }
+  .icard .meta { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; color: var(--muted); }
+  .icard .meta .app { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .icard .meta .when { white-space: nowrap; color: var(--faint); }
+  .icard .meta .when::before { content: "·"; margin-right: 8px; }
+  .icard .meta .chev { margin-left: auto; color: var(--faint); }
+  .icard .h { margin: 0; font-size: inherit; }
+  .icard .ttl {
+    display: block; width: 100%; padding: 0; margin: 0; border: 0; background: none; text-align: left; cursor: pointer;
+    font: 650 17px/1.3 var(--font-display); letter-spacing: -0.01em; color: var(--ink);
+  }
+  .icard .ttl:focus-visible { outline-offset: 4px; }
+  .icard .means { font-size: 14px; line-height: 1.45; color: var(--muted); margin-top: -4px; }
+  .said { background: var(--bg); border-radius: var(--radius); padding: 10px 12px 11px; display: grid; gap: 4px; }
+  .icard[data-state="needs_you"] .said { background: var(--surface); }
+  .said .lbl { font-size: 12px; font-weight: 650; color: var(--muted); }
+  .said .q {
+    font-size: 15px; line-height: 1.5; color: var(--ink); white-space: pre-wrap;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
+  }
+  .said .q.open { display: block; -webkit-line-clamp: unset; }
+  .more {
+    justify-self: start; margin: 0 -6px -4px; padding: 6px; border: 0; background: none; cursor: pointer;
+    font: 600 13px/1 var(--font); color: var(--ink); text-decoration: underline; text-underline-offset: 3px;
+    text-decoration-color: var(--field-line);
+  }
+  .iacts { display: grid; gap: 8px; margin-top: 2px; }
+  .iacts .sub { display: flex; gap: 8px; }
+  .iacts .sub .btn { flex: 1 1 0; min-width: 0; }
+  .iacts .btn { width: 100%; min-height: 48px; border-radius: var(--radius); font-size: 16px; }
+  .icard[data-state="needs_you"] .iacts .btn:not(.primary):not(.quiet) { background: var(--surface); }
+  .err-slot:empty { display: none; }
+  .icard.limit { cursor: default; }
+  .icard.limit .lim { font-size: 15px; line-height: 1.5; color: var(--ink); }
+  .notice { align-items: center; }
+  .notice svg.i { margin-top: 0; }
+  .notice.bad { align-items: flex-start; }
+  .notice.bad svg.i { margin-top: 2px; }
+
+  /* Notifications prompt */
+  .ask { padding: 12px 12px 12px 14px; border-radius: var(--radius-l); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+  .ask .ic { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-2); color: var(--ink); flex: none; }
+  .ask .ic svg.i { width: 16px; height: 16px; margin: 0; }
+  .ask .grow { font-size: 14px; line-height: 1.4; }
+  .ask .btn { margin: 0; flex: none; }
+
+  /* ---------- Board cards ---------- */
+  .wcard { padding: 14px; border-radius: var(--radius-l); }
+  .wcard:active { transform: scale(.99); }
+  .wcard .meta { flex-wrap: nowrap; min-width: 0; }
+  .wcard .meta .tag:first-child { min-width: 0; overflow: hidden; }
+  .wcard .meta .tag span { overflow: hidden; text-overflow: ellipsis; }
+  .wcard .t { font-size: 16px; margin-top: 6px; }
+  .wcard .says { font-size: 14px; margin-top: 4px; }
+  .wcard[data-state="running"] .says { font: 13px/1.5 var(--mono); }
+  .wcard .foot { margin-top: 10px; }
+  .wcard .foot .acts { margin-left: auto; color: var(--faint); }
+  .wcard .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--steel); animation: breathe 1.8s ease-in-out infinite; }
+  .board-more { text-align: center; font-size: 13px; color: var(--faint); padding: 4px 0; }
+  @keyframes breathe { 50% { opacity: .3; } }
+
+  /* ---------- Loading, empty, error, signed out ---------- */
+  .sk { cursor: default; animation: none; box-shadow: none; }
+  .sk .skeleton { border-radius: 6px; }
+  .calm { padding: 56px 24px 32px; gap: 12px; animation: rise .3s var(--ease) both; }
+  .calm .halo {
+    width: 72px; height: 72px; border-radius: 50%; display: grid; place-items: center; margin-bottom: 6px;
+    background: var(--surface); box-shadow: inset 0 0 0 1px var(--line), 0 0 0 10px color-mix(in srgb, var(--surface) 45%, transparent);
+    color: var(--muted);
+  }
+  .calm .halo svg.i { width: 30px; height: 30px; stroke-width: 1.8; }
+  .calm h3 { font-size: 18px; font-weight: 650; }
+  .calm p { font-size: 14px; max-width: 30ch; line-height: 1.5; }
+  .calm .btn { margin-top: 6px; }
+  .calm .why { font-size: 13px; color: var(--faint); margin-top: -4px; overflow-wrap: anywhere; }
+  .calm .glance { margin-top: 8px; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); text-decoration: none; padding: 8px 12px; border-radius: 99px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+  .calm .glance svg.i { width: 14px; height: 14px; color: var(--faint); }
+  .solo { min-height: calc(100dvh - 160px); display: grid; place-items: center; }
+  .solo .card { width: 100%; max-width: 360px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l); padding: 28px 22px; text-align: center; display: grid; gap: 10px; justify-items: center; }
+  .solo .card .halo { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-2); color: var(--muted); margin-bottom: 4px; }
+  .solo .card .halo svg.i { width: 26px; height: 26px; }
+  .solo h2 { font-size: 18px; }
+  .solo p { color: var(--muted); font-size: 15px; }
+
+  /* ---------- Bottom tab bar ---------- */
+  .tabbar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+    padding-bottom: env(safe-area-inset-bottom);
+    background: var(--surface);
+    border-top: 1px solid var(--line);
+  }
+  .tabbar .tabs { display: flex; max-width: 480px; margin: 0 auto; }
+  .tab {
+    flex: 1; height: var(--tabbar-h); display: grid; justify-items: center; align-content: center; gap: 4px;
+    color: var(--muted); text-decoration: none; font: 600 12px/1 var(--font); position: relative;
+    transition: color .15s var(--ease);
+  }
+  .tab .ind { position: relative; width: 60px; height: 30px; border-radius: 99px; display: grid; place-items: center; transition: background-color .2s var(--ease); }
+  .tab svg.i { width: 22px; height: 22px; stroke-width: 1.9; }
+  .tab[aria-current="page"] { color: var(--accent-ink); }
+  .tab[aria-current="page"] .ind { background: var(--accent-soft); }
+  .tab:focus-visible { outline-offset: -4px; border-radius: var(--radius); }
+  .tab .badge {
+    position: absolute; top: -3px; left: calc(50% + 5px); min-width: 18px; height: 18px; padding: 0 5px;
+    border-radius: 99px; background: var(--amber); color: var(--surface); box-shadow: 0 0 0 2px var(--surface);
+    font: 700 11px/18px var(--font); text-align: center; font-variant-numeric: tabular-nums;
+  }
+  body.signed-out .tabbar { display: none; }
+
+  @media (min-width: 641px) {
+    .iacts { grid-template-columns: auto 1fr; justify-content: start; }
+    .iacts > .btn { width: auto; min-width: 160px; }
+    .iacts .sub { justify-content: flex-start; }
+    .iacts .sub .btn { flex: 0 0 auto; width: auto; min-width: 120px; }
+  }
 </style>
 </head>
 <body>
-<header><h1>Needs you</h1><span class="muted" id="status"></span></header>
-<div class="bar"><button id="notify" type="button" hidden>Turn on notifications</button></div>
-<div class="err" id="act-err" role="alert"></div>
-<div class="err" id="err"></div>
-<main id="list"></main>
+<header class="appbar" id="appbar">
+  <div class="bar">
+    <span id="mark"></span>
+    <h1 id="title">Needs you</h1>
+    <span class="count" id="count" hidden></span>
+    <span class="updated" id="updated" aria-live="off"></span>
+  </div>
+  <div class="banner" id="offline" role="status" hidden></div>
+  <div class="chips" id="chips" role="group" aria-label="Show work by state" hidden></div>
+</header>
+
+<main class="page" id="page">
+  <section class="view" id="view-inbox" aria-labelledby="title">
+    <div class="notice ask" id="notify" hidden></div>
+    <div class="err-slot" id="act-err" role="alert"></div>
+    <div class="list live" id="inbox"></div>
+  </section>
+  <section class="view" id="view-board" aria-labelledby="title" hidden>
+    <div class="list live" id="board"></div>
+  </section>
+  <section class="solo" id="signed-out" hidden>
+    <div class="card" role="alert"></div>
+  </section>
+</main>
+
+<nav class="tabbar" aria-label="Sections">
+  <div class="tabs">
+    <a class="tab" id="tab-inbox" href="#inbox"><span class="ind"><span class="badge" id="badge" hidden></span></span><span>Inbox</span></a>
+    <a class="tab" id="tab-board" href="#board"><span class="ind"></span><span>Board</span></a>
+  </div>
+</nav>
+
+<script src="/ui.js"></script>
 <script>
+"use strict";
+const { el, $ } = D;
+
+// What each state in the inbox means, in one plain line.
 const MEANS = {
-  in_review: ["Ready for review", "The agent finished and saved its work. Accept it, or send it back with the agent picking up where it left off."],
-  needs_you: ["Waiting on you", "The agent stopped to ask for something only you can decide."],
-  failed: ["Stopped", "This piece of work could not finish. You can retry it."],
+  needs_you: "The agent stopped to ask for something only you can decide.",
+  in_review: "The agent finished and saved its work. Accept it, or send it back with the agent picking up where it left off.",
+  failed: "This piece of work could not finish. You can retry it.",
 };
-const ACTIONS = {
-  in_review: [["done", "Accept", "primary"], ["queued", "Send back", ""], ["failed", "Reject", "danger"]],
-  needs_you: [["queued", "Continue", "primary"], ["failed", "Stop", "danger"]],
-  failed: [["queued", "Retry", "primary"]],
+const CHIPS = ["running", "in_review", "needs_you", "queued", "done", "failed"];
+const BOARD_EMPTY = {
+  running: "Nothing is running right now.",
+  in_review: "Nothing is waiting for review.",
+  needs_you: "No agent is waiting on you.",
+  queued: "Nothing is waiting to start.",
+  done: "Nothing is done yet.",
+  failed: "Nothing has failed.",
 };
-const $ = id => document.getElementById(id);
-function el(tag, attrs = {}, text = "") { const e = document.createElement(tag); Object.assign(e, attrs); e.textContent = text; return e; }
-async function api(path, opts = {}) {
-  const r = await fetch("/api" + path, { headers: { "content-type": "application/json" }, ...opts });
-  if (r.status === 401) throw new Error("This phone is signed out. Scan a new pairing code on the board.");
-  if (!r.ok) throw new Error(await r.text());
-  return r.status === 204 ? null : r.json();
+const EMPTY_ICON = { running: "pc", in_review: "in_review", needs_you: "done", queued: "queued", done: "done", failed: "done" };
+const BOARD_LIMIT = 40;
+
+const S = {
+  tab: "inbox", threads: null, apps: {}, limits: [], err: null, signedOut: false, updated: null,
+  chip: null, actErr: null, open: new Set(), notifyOn: false,
+};
+const scrollMem = {};
+
+// ---------- Recent agent activity, cached so a quiet card costs nothing ----------
+const tails = new Map();
+const tailKey = (t, n) => `${n}|${t.id}`;
+const tailNow = (t, n) => tails.get(tailKey(t, n))?.ev ?? null;
+async function loadTail(t, n, always = false) {
+  const c = tails.get(tailKey(t, n));
+  if (c && c.u === t.updated_at && !always) return;
+  try { tails.set(tailKey(t, n), { u: t.updated_at, ev: await D.tail(t.id, n) }); } catch (_) { /* keep what we had */ }
 }
-async function lastWords(id) {
-  const ev = await api(`/threads/${id}/events?tail=20`);
-  // The newest thing the agent said, whether its final summary or a message.
-  const last = [...ev].reverse().find(r => r.event.kind === "finished" || r.event.kind === "message");
-  return last ? (last.event.summary ?? last.event.text ?? "") : "";
-}
+
+const byNewest = (a, b) => b.updated_at.localeCompare(a.updated_at);
+const inboxItems = () => (S.threads ?? []).filter((t) => t.state in MEANS).sort(byNewest);
+const counts = () => {
+  const c = Object.fromEntries(CHIPS.map((s) => [s, 0]));
+  for (const t of S.threads ?? []) if (t.state in c) c[t.state]++;
+  return c;
+};
+const chipNow = () => {
+  if (S.chip) return S.chip;
+  const c = counts();
+  return D.ORDER.find((s) => c[s] > 0) ?? "running";
+};
+const boardItems = () => (S.threads ?? []).filter((t) => t.state === chipNow()).sort(byNewest);
+const wantsTail = (s) => s === "running" || s === "needs_you" || s === "in_review" || s === "failed";
+const boardTails = () => boardItems().slice(0, BOARD_LIMIT).filter((t) => wantsTail(t.state))
+  .map((t) => loadTail(t, 5, t.state === "running"));
+
+// ---------- Loading ----------
+let busy = false, again = false;
 async function refresh() {
+  if (busy) { again = true; return; }
+  busy = true;
   try {
-    const [apps, threads] = await Promise.all([api("/apps"), api("/threads")]);
-    const names = Object.fromEntries(apps.map(a => [a.id, a.name]));
-    const mine = threads.filter(t => t.state in MEANS).sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-    if (!mine.length) { $("list").replaceChildren(el("div", { className: "empty" }, "Nothing needs you right now.")); }
-    else {
-      const cards = await Promise.all(mine.map(async t => {
-        const [kind, means] = MEANS[t.state];
-        const c = el("article", { className: "card" }); c.dataset.state = t.state;
-        c.append(el("div", { className: "kind" }, `${kind} · ${names[t.app_id] ?? ""}`), el("div", { className: "title" }, t.title),
-                 el("p", { className: "means" }, means));
-        const said = await lastWords(t.id).catch(() => "");
-        if (said) c.append(el("div", { className: "kind" }, "The agent says"), el("p", { className: "said" }, said));
-        const row = el("div", { className: "actions" });
-        for (const [to, label, cls] of ACTIONS[t.state]) {
-          const b = el("button", { type: "button", className: cls }, label);
-          // Action errors stay until the next tap, so a failed Accept is never mistaken for a done one.
-          b.onclick = async () => { b.disabled = true; $("act-err").textContent = ""; try { await api(`/threads/${t.id}/move`, { method: "POST", body: JSON.stringify({ to }) }); refresh(); } catch (e) { $("act-err").textContent = `"${label}" did not go through: ${e.message}`; b.disabled = false; } };
-          row.append(b);
-        }
-        c.append(row); return c;
-      }));
-      $("list").replaceChildren(...cards);
-    }
-    $("status").textContent = `${mine.length} · ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
-    $("err").textContent = "";
-  } catch (e) { $("err").textContent = e.message; }
+    // Hubs without the limits endpoint answer 404; that just means no limits.
+    const [apps, list, limits] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/limits").catch(() => [])]);
+    S.limits = Array.isArray(limits) ? limits : [];
+    D.setApps(apps);
+    S.apps = Object.fromEntries(apps.map((a) => [a.id, a]));
+    S.threads = list; S.err = null; S.signedOut = false; S.updated = new Date();
+    const jobs = inboxItems().map((t) => loadTail(t, 20));
+    if (S.tab === "board") jobs.push(...boardTails());
+    await Promise.all(jobs);
+    const live = new Set(list.map((t) => String(t.id)));
+    for (const k of tails.keys()) if (!live.has(k.split("|")[1])) tails.delete(k);
+  } catch (e) {
+    S.err = e;
+    if (e.signedOut) S.signedOut = true;
+  }
+  busy = false;
+  render();
+  if (again) { again = false; refresh(); }
 }
+
+// ---------- Drawing ----------
+// Rebuilds only the cards whose content changed, so scroll position and
+// taps in progress survive the five-second refresh.
+function reconcile(box, items) {
+  if (box.dataset.mode !== "cards") { box.replaceChildren(); box.dataset.mode = "cards"; box._cards = new Map(); }
+  const first = !box._painted;
+  const old = box._cards, next = new Map(), els = [];
+  for (const it of items) {
+    let c = old.get(it.key);
+    if (!c || c.sig !== it.sig) c = { sig: it.sig, el: it.build(c ? "still" : first ? "first" : "new") };
+    next.set(it.key, c); els.push(c.el);
+  }
+  const cur = [...box.children];
+  const sameKeys = cur.length === els.length && cur.every((e, i) => e.dataset.key === els[i].dataset.key);
+  if (sameKeys) cur.forEach((e, i) => { if (e !== els[i]) e.replaceWith(els[i]); });
+  else box.replaceChildren(...els);
+  els.forEach((e, i) => { if (e.dataset.anim === "first") e.style.animationDelay = `${Math.min(i, 6) * 40}ms`; delete e.dataset.anim; });
+  box._cards = next; box._painted = true;
+}
+function setMode(box, mode, sig, build) {
+  if (box.dataset.mode === mode && box.dataset.sig === sig) return;
+  box.dataset.mode = mode; box.dataset.sig = sig; box._cards = new Map();
+  box.replaceChildren(...[build()].flat());
+}
+// Cards that finish animating stop animating, so moving them never replays it.
+document.addEventListener("animationend", (e) => { if (e.target.matches?.(".icard, .wcard")) e.target.classList.add("still"); });
+
+const skeletonCard = (big) => el("div", { className: "icard sk", "aria-hidden": "true" },
+  el("div", { className: "skeleton", style: "width:42%;height:18px" }),
+  el("div", { className: "skeleton", style: "width:78%;height:20px" }),
+  el("div", { className: "skeleton", style: "width:92%;height:14px" }),
+  big && el("div", { className: "skeleton", style: "width:100%;height:64px;border-radius:12px" }),
+  big && el("div", { className: "skeleton", style: "width:100%;height:48px;border-radius:12px" }));
+const skeletons = () => [skeletonCard(true), skeletonCard(true), skeletonCard(false)];
+
+function errorState(what) {
+  const retry = el("button", { type: "button", className: "btn" }, D.icon("retry"), "Try again");
+  retry.onclick = () => { retry.disabled = true; refresh(); };
+  return el("div", { className: "empty-state calm" },
+    el("div", { className: "halo" }, D.icon(D.offline ? "offline" : "alert")),
+    el("h3", {}, `Couldn't load your ${what}.`),
+    el("p", {}, D.offline ? "Your work is safe. Your phone can't reach your PC right now." : "Your work is safe."),
+    !D.offline && S.err?.message && el("p", { className: "why" }, `The hub said: ${S.err.message}`),
+    retry);
+}
+
+function renderShell() {
+  const n = inboxItems().length + S.limits.length;
+  document.body.classList.toggle("signed-out", S.signedOut);
+  $("title").textContent = S.signedOut ? "Decurion" : S.tab === "inbox" ? "Needs you" : "Board";
+  $("count").hidden = !(S.tab === "inbox" && n > 0 && !S.signedOut);
+  $("count").textContent = n;
+  $("count").setAttribute("aria-label", D.plural(n, "item"));
+  $("badge").hidden = n === 0;
+  $("badge").textContent = n > 99 ? "99+" : n;
+  $("tab-inbox").setAttribute("aria-label", n ? `Inbox, ${D.plural(n, "item")} need you` : "Inbox");
+  for (const t of ["inbox", "board"]) {
+    const on = S.tab === t && !S.signedOut;
+    if (on) $("tab-" + t).setAttribute("aria-current", "page"); else $("tab-" + t).removeAttribute("aria-current");
+    $("view-" + t).hidden = !on;
+  }
+  $("chips").hidden = S.tab !== "board" || S.signedOut || !S.threads;
+  $("updated").textContent = S.updated && !S.signedOut ? `Updated ${D.clock(S.updated.toISOString())}` : "";
+  $("signed-out").hidden = !S.signedOut;
+  $("notify").hidden = !S.notifyOn || S.signedOut;
+  if (S.signedOut) {
+    $("signed-out").firstElementChild.replaceChildren(
+      el("div", { className: "halo" }, D.icon("phone")),
+      el("h2", {}, "This phone is signed out."),
+      el("p", {}, "Scan a new pairing code on the board."));
+  }
+}
+
+function inboxCard(t, anim) {
+  const said = D.lastWords(tailNow(t, 20) ?? []);
+  const open = () => D.openWork(t, refresh);
+  const card = el("article", { className: "icard" + (anim === "still" ? " still" : ""), dataset: { state: t.state, key: t.id, anim } });
+  const ttl = el("button", { type: "button", className: "ttl" }, t.title);
+  ttl.onclick = open;
+  card.append(
+    el("div", { className: "meta" }, D.pill(t.state),
+      el("span", { className: "app" }, D.appName(t.app_id)),
+      el("span", { className: "when", dataset: { at: t.updated_at } }, D.ago(t.updated_at)),
+      el("span", { className: "chev" }, D.icon("right"))),
+    el("h2", { className: "h" }, ttl),
+    el("p", { className: "means" }, MEANS[t.state]));
+  if (said) {
+    const q = el("p", { className: "q" + (S.open.has(t.id) ? " open" : "") }, said);
+    const more = el("button", { type: "button", className: "more", hidden: true, "aria-expanded": S.open.has(t.id) ? "true" : "false" },
+      S.open.has(t.id) ? "Show less" : "Show more");
+    more.onclick = (e) => {
+      e.stopPropagation();
+      const now = !S.open.has(t.id);
+      if (now) S.open.add(t.id); else S.open.delete(t.id);
+      q.classList.toggle("open", now);
+      more.textContent = now ? "Show less" : "Show more";
+      more.setAttribute("aria-expanded", now ? "true" : "false");
+    };
+    card.append(el("div", { className: "said" }, el("div", { className: "lbl" }, "The agent says"), q, more));
+  }
+  card.append(el("div", { className: "err-slot", role: "alert" }));
+  const moves = D.moveButtons(t, {
+    onMoved: () => { card.classList.add("leaving"); setTimeout(refresh, 180); },
+    onError: (msg) => { S.actErr = { id: t.id, msg }; placeErr(); },
+  });
+  moves.forEach((b) => (b.disabled = D.offline));
+  if (moves.length) {
+    const [main, ...rest] = moves;
+    card.append(el("div", { className: "iacts" }, main, rest.length > 0 && el("div", { className: "sub" }, ...rest)));
+  }
+  card.addEventListener("click", (e) => { if (!e.target.closest("button, a")) open(); });
+  return card;
+}
+// An account that ran out of usage: its work waits until the limit lifts,
+// or the owner moves it to pay-per-use now.
+const untilText = (iso) => {
+  const d = new Date(iso);
+  return d.toDateString() === new Date().toDateString() ? D.clock(iso)
+    : d.toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" });
+};
+function limitCard(l, anim) {
+  const key = `limit-${l.profile}`;
+  const card = el("article", { className: "icard limit" + (anim === "still" ? " still" : ""), dataset: { state: "needs_you", key, anim } },
+    el("div", { className: "meta" }, el("span", { className: "pill needs_you" }, D.icon("money"), "Account out of usage")),
+    el("p", { className: "lim" }, `Claude Max ${l.profile} is out until about ${untilText(l.until)}. ${l.waiting} waiting; they restart on their own then. Or continue them now on pay-per-use, within this month's cap.`),
+    el("div", { className: "err-slot", role: "alert" }));
+  const label = "Continue on pay-per-use";
+  const b = el("button", { type: "button", className: "btn primary", disabled: D.offline }, label);
+  b.onclick = async () => {
+    if (D.offline) return;
+    b.disabled = true;
+    try {
+      await D.api(`/limits/${encodeURIComponent(l.profile)}/pay-per-use`, { method: "POST" });
+      D.toast(`Moved to pay-per-use. ${D.plural(l.waiting, "piece")} of work will continue now.`);
+      card.classList.add("leaving");
+      setTimeout(refresh, 180);
+    } catch (e) {
+      S.actErr = { id: key, msg: `"${label}" did not go through. ${e.message}` };
+      placeErr();
+      b.disabled = false;
+    }
+  };
+  card.append(el("div", { className: "iacts" }, b));
+  return card;
+}
+const errNotice = (msg) => el("div", { className: "notice bad" }, D.icon("alert"), el("span", { className: "grow" }, msg));
+
+function renderInbox() {
+  const box = $("inbox");
+  const items = inboxItems();
+  if (!S.threads) {
+    if (S.err) setMode(box, "error", `${D.offline}|${S.err.message}`, () => errorState("inbox"));
+    else setMode(box, "loading", "", skeletons);
+  } else if (!items.length && !S.limits.length) {
+    const c = counts();
+    setMode(box, "empty", `${c.running}|${c.queued}|${S.notifyOn}`, () => {
+      const granted = "Notification" in window && Notification.permission === "granted";
+      const busyLine = [c.running && `${c.running} running`, c.queued && `${c.queued} queued`].filter(Boolean).join(", ");
+      return el("div", { className: "empty-state calm" },
+        el("div", { className: "halo" }, D.icon("done")),
+        el("h3", {}, "Nothing needs you right now."),
+        el("p", {}, granted ? "We'll notify you when an agent needs a decision." : "When an agent needs a decision, it shows up here."),
+        busyLine && el("a", { className: "glance", href: "#board" }, `${busyLine} on the board`, D.icon("right")));
+    });
+  } else {
+    reconcile(box, [...S.limits.map((l) => ({
+      key: `limit-${l.profile}`,
+      sig: JSON.stringify([l.profile, l.until, l.waiting, D.offline]),
+      build: (anim) => limitCard(l, anim),
+    })), ...items.map((t) => ({
+      key: t.id,
+      sig: JSON.stringify([t.state, t.updated_at, t.title, D.appName(t.app_id), D.lastWords(tailNow(t, 20) ?? []), D.offline]),
+      build: (anim) => inboxCard(t, anim),
+    }))]);
+  }
+  placeErr();
+  requestAnimationFrame(measureQuotes);
+}
+// A failed action's error shows on its card, or at the top once the work has
+// left the inbox, and stays until the next tap on an action.
+function placeErr() {
+  const top = $("act-err");
+  if (!S.actErr) { top.replaceChildren(); return; }
+  const card = $("inbox").querySelector(`[data-key="${CSS.escape(String(S.actErr.id))}"]`);
+  const slot = card ? card.querySelector(".err-slot") : top;
+  if (card) top.replaceChildren();
+  if (slot.dataset.msg !== S.actErr.msg || !slot.firstChild) { slot.dataset.msg = S.actErr.msg; slot.replaceChildren(errNotice(S.actErr.msg)); }
+}
+// "Show more" only appears when the quote is actually cut off.
+function measureQuotes() {
+  for (const q of document.querySelectorAll("#inbox .q")) {
+    const more = q.nextElementSibling;
+    if (!more || !q.clientHeight) continue;
+    more.hidden = !(q.classList.contains("open") || q.scrollHeight > q.clientHeight + 2);
+  }
+}
+// The next tap on any action clears the last error.
+$("inbox").addEventListener("click", (e) => {
+  if (!e.target.closest(".iacts .btn") || !S.actErr) return;
+  S.actErr = null;
+  document.querySelectorAll(".err-slot").forEach((s) => { s.replaceChildren(); delete s.dataset.msg; });
+}, true);
+
+function renderChips() {
+  const c = counts(), sel = chipNow();
+  const sig = JSON.stringify([c, sel]);
+  const box = $("chips");
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.replaceChildren(...CHIPS.map((s) => {
+    const b = el("button", { type: "button", className: "chip" + (c[s] ? "" : " zero"), "aria-pressed": s === sel ? "true" : "false", dataset: { s } },
+      s === "needs_you" && c[s] > 0 && s !== sel && el("span", { className: "dot", "aria-hidden": "true" }),
+      D.STATES[s].word, el("span", { className: "n" }, c[s]));
+    b.onclick = async () => {
+      if (S.chip === s && s === sel) return;
+      S.chip = s;
+      render();
+      window.scrollTo({ top: 0 });
+      await Promise.all(boardTails());
+      render();
+    };
+    return b;
+  }));
+  if (box.dataset.sel !== sel) {
+    box.dataset.sel = sel;
+    const on = box.querySelector('[aria-pressed="true"]');
+    if (on) box.scrollTo({ left: on.offsetLeft - (box.clientWidth - on.offsetWidth) / 2, behavior: box.dataset.ready ? "smooth" : "instant" });
+    box.dataset.ready = "1";
+  }
+}
+
+function boardCard(t, anim) {
+  const app = S.apps[t.app_id];
+  const line = D.cardLine(t, tailNow(t, 5));
+  const b = el("button", { type: "button", className: "wcard" + (anim === "still" ? " still" : ""), dataset: { state: t.state, key: t.id, anim } },
+    el("div", { className: "meta" },
+      el("span", { className: "tag" }, D.icon("app"), el("span", {}, D.appName(t.app_id) || "Unknown app")),
+      app && el("span", { className: "tag dot-sep" }, D.aiLabel(app))),
+    el("div", { className: "t" }, t.title),
+    line && el("div", { className: "says" }, line),
+    el("div", { className: "foot" },
+      t.state === "running" && el("span", { className: "live-dot", "aria-hidden": "true" }),
+      el("span", { dataset: { at: t.updated_at } }, D.ago(t.updated_at)),
+      el("span", { className: "acts" }, D.icon("right"))));
+  b.onclick = () => D.openWork(t, refresh);
+  return b;
+}
+
+function renderBoard() {
+  const box = $("board");
+  if (!S.threads) {
+    if (S.err) setMode(box, "error", `${D.offline}|${S.err.message}`, () => errorState("board"));
+    else setMode(box, "loading", "", skeletons);
+    return;
+  }
+  renderChips();
+  const sel = chipNow(), all = boardItems(), items = all.slice(0, BOARD_LIMIT);
+  if (!items.length) {
+    const none = !S.threads.length;
+    setMode(box, "empty", `${sel}|${none}`, () => el("div", { className: "empty-state calm" },
+      el("div", { className: "halo" }, D.icon(none ? "board" : EMPTY_ICON[sel])),
+      el("h3", {}, none ? "No work yet." : BOARD_EMPTY[sel]),
+      none && el("p", {}, "Start work from the board on your PC.")));
+    return;
+  }
+  box.querySelector(".board-more")?.remove();
+  reconcile(box, items.map((t) => {
+    const app = S.apps[t.app_id];
+    return {
+      key: t.id,
+      sig: JSON.stringify([t.state, t.updated_at, t.title, D.appName(t.app_id), D.aiLabel(app), D.cardLine(t, tailNow(t, 5))]),
+      build: (anim) => boardCard(t, anim),
+    };
+  }));
+  const extra = all.length - items.length;
+  if (extra > 0) box.append(el("p", { className: "board-more", dataset: { key: "more" } }, `Showing the ${BOARD_LIMIT} most recent. ${D.plural(extra, "more is", "more are")} on your PC's board.`));
+}
+
+function render() {
+  renderShell();
+  if (!S.signedOut) {
+    if (S.tab === "inbox") renderInbox(); else renderBoard();
+  }
+  for (const e of document.querySelectorAll("[data-at]")) e.textContent = D.ago(e.dataset.at);
+}
+
+// ---------- Tabs: #inbox and #board, so the back button works ----------
+const routeOf = (h) => (h === "#board" ? "board" : h === "" || h === "#" || h === "#inbox" ? "inbox" : null);
+function setTab(tab) {
+  if (tab === S.tab) return;
+  scrollMem[S.tab] = window.scrollY;
+  S.tab = tab;
+  render();
+  window.scrollTo(0, scrollMem[tab] ?? 0);
+  if (tab === "board" && S.threads) Promise.all(boardTails()).then(render);
+}
+window.addEventListener("hashchange", () => { const r = routeOf(location.hash); if (r) setTab(r); });
+for (const t of ["inbox", "board"]) {
+  $("tab-" + t).addEventListener("click", (e) => {
+    if (S.tab !== t) return;
+    e.preventDefault();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+}
+$("tab-inbox").querySelector(".ind").prepend(D.icon("inbox"));
+$("tab-board").querySelector(".ind").append(D.icon("board"));
+$("mark").replaceWith(D.mark(26));
+if (location.hash.startsWith("#work-")) history.replaceState(null, "", location.pathname);
+S.tab = routeOf(location.hash) ?? "inbox";
+
+const topBar = $("appbar");
+window.addEventListener("scroll", () => topBar.classList.toggle("scrolled", window.scrollY > 2), { passive: true });
+
+// ---------- Offline ----------
+$("offline").append(D.icon("offline"), el("span", {}, "Can't reach your PC. Answer when it's back."));
+D.onOffline((off) => { $("offline").hidden = !off; render(); });
+
+// ---------- Notifications ----------
 function b64ToBytes(b64) {
   const s = atob(b64.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((b64.length + 3) % 4));
-  return Uint8Array.from(s, c => c.charCodeAt(0));
+  return Uint8Array.from(s, (c) => c.charCodeAt(0));
 }
 async function setUpNotifications() {
   if (!("serviceWorker" in navigator) || !("PushManager" in window) || !window.isSecureContext) return;
   const reg = await navigator.serviceWorker.register("/sw.js");
   const existing = await reg.pushManager.getSubscription();
-  const btn = $("notify");
   async function subscribe() {
-    const { key } = await api("/push/key");
+    const { key } = await D.api("/push/key");
     const sub = existing ?? await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
     const j = sub.toJSON();
-    await api("/push/subscribe", { method: "POST", body: JSON.stringify({ endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth }) });
+    await D.api("/push/subscribe", { method: "POST", body: JSON.stringify({ endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth }) });
   }
   if (Notification.permission === "granted") { await subscribe(); return; }
   if (Notification.permission === "denied") return;
-  btn.hidden = false;
+  const box = $("notify");
+  const text = el("span", { className: "grow" }, "Get a notification when an agent needs you.");
+  const btn = el("button", { type: "button", className: "btn primary sm" }, "Turn on");
+  box.replaceChildren(el("span", { className: "ic" }, D.icon("bell")), text, btn);
   btn.onclick = async () => {
     btn.disabled = true;
     try {
-      if (await Notification.requestPermission() === "granted") { await subscribe(); btn.hidden = true; }
-      else { btn.disabled = false; }
-    } catch (e) { $("err").textContent = e.message; btn.disabled = false; }
+      if (await Notification.requestPermission() === "granted") {
+        await subscribe();
+        S.notifyOn = false; render();
+        D.toast("Notifications are on. We'll let you know when an agent needs you.", "bell");
+      } else if (Notification.permission === "denied") { S.notifyOn = false; render(); }
+      else btn.disabled = false;
+    } catch (e) {
+      box.classList.add("bad");
+      text.textContent = `Couldn't turn on notifications. ${e.message}`;
+      btn.textContent = "Try again";
+      btn.disabled = false;
+    }
   };
+  S.notifyOn = true;
+  render();
 }
-setUpNotifications().catch(e => $("err").textContent = e.message);
-refresh(); setInterval(refresh, 5000);
+setUpNotifications().catch(() => { /* notifications are optional; the inbox still works */ });
+
+render();
+refresh();
+setInterval(() => { if (!document.hidden) refresh(); }, 5000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 </script>
 </body>

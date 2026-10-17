@@ -327,13 +327,13 @@
     const said = D.lastWords(ev);
     const head = D.el("header", { className: "work-head" },
       D.el("div", { className: "top" }, D.pill(t.state), D.el("span", { className: "grow" }),
-        Object.assign(D.el("button", { type: "button", className: "btn icon quiet", "aria-label": "Close" }, D.icon("close", "l")), { onclick: () => panel.close() })),
+        Object.assign(D.el("button", { type: "button", className: "btn icon quiet close", "aria-label": "Close" }, D.icon("close", "l")), { onclick: () => panel.close() })),
       D.el("h2", { id: "wk-title" }, t.title),
       D.el("div", { className: "meta" },
         D.el("span", { className: "tag" }, D.icon("app"), D.appName(t.app_id) || "Unknown app"),
         app && D.el("span", { className: "tag dot-sep" }, D.icon("ai"), D.aiLabel(app)),
         D.el("span", { className: "tag dot-sep" }, D.icon("pc"), "Your PC"),
-        D.el("span", { className: "tag dot-sep" }, `Updated ${D.ago(t.updated_at)}`)));
+        D.el("span", { className: "tag dot-sep updated" }, `Updated ${D.ago(t.updated_at)}`)));
     const body = D.el("div", { className: "work-body live" });
     const err = D.el("div", { className: "notice bad", role: "alert", hidden: true });
     body.append(err);
