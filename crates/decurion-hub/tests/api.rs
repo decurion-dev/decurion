@@ -1453,3 +1453,203 @@ async fn a_started_box_without_a_trusted_cost_is_charged_its_budget() {
     .await;
     assert_eq!(spend(&r).await["pay_per_use_usd"], 10.0);
 }
+
+async fn app_with(r: &axum::Router, name: &str, pay_per_use: bool) -> i64 {
+    let (s, app) = call(
+        r,
+        "POST",
+        "/api/apps",
+        Some(OWNER),
+        json!({"name": name, "repo_path": "C:\\repos\\x", "profile": "B", "pay_per_use": pay_per_use}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    app["id"].as_i64().expect("app id")
+}
+
+async fn work(r: &axum::Router, app: i64, ai: &str) -> i64 {
+    let (s, t) = call(
+        r,
+        "POST",
+        "/api/threads",
+        Some(OWNER),
+        json!({"app_id": app, "title": "t", "prompt": "p", "ai": ai}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{t}");
+    assert_eq!(t["ai"], ai);
+    t["id"].as_i64().expect("thread id")
+}
+
+async fn claim_one(r: &axum::Router) -> (StatusCode, Value) {
+    call(
+        r,
+        "POST",
+        "/api/runner/claim",
+        Some(RUNNER),
+        json!({"runner":"local"}),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn each_ai_runs_on_its_own_account() {
+    let (r, _) = hub().await;
+    let app = app_with(&r, "mix", false).await;
+    work(&r, app, "claude").await;
+    work(&r, app, "grok").await;
+    work(&r, app, "chatgpt").await;
+    let mut seen = vec![];
+    for _ in 0..3 {
+        let (s, c) = claim_one(&r).await;
+        assert_eq!(s, StatusCode::OK);
+        seen.push((c["account"].clone(), c["budget_usd"].is_number()));
+    }
+    assert_eq!(
+        seen,
+        vec![
+            (json!("B"), false),
+            (json!("xai"), true),
+            (json!("openai"), true)
+        ]
+    );
+    let (s, _) = call(
+        &r,
+        "POST",
+        "/api/threads",
+        Some(OWNER),
+        json!({"app_id": app, "title": "t", "prompt": "p", "ai": "gemini"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn every_paid_account_has_its_own_cap() {
+    let (r, _) = hub().await;
+    let (_, acc) = call(&r, "GET", "/api/accounts", Some(OWNER), json!(null)).await;
+    let labels: Vec<&str> = acc
+        .as_array()
+        .expect("accounts")
+        .iter()
+        .filter_map(|a| a["label"].as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "Claude A",
+            "Claude B",
+            "Claude pay-per-use",
+            "ChatGPT",
+            "Grok"
+        ]
+    );
+    assert_eq!(acc[2]["cap_usd"], 100.0);
+    assert_eq!(acc[4]["cap_usd"], 25.0);
+    assert!(acc[0]["cap_usd"].is_null());
+
+    let (s, _) = call(
+        &r,
+        "POST",
+        "/api/spend/cap",
+        Some(OWNER),
+        json!({"account":"xai","cap_usd":0.0}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = call(
+        &r,
+        "POST",
+        "/api/spend/cap",
+        Some(OWNER),
+        json!({"account":"A","cap_usd":5.0}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    // Grok is out of money; Claude pay-per-use is not, and is not held up.
+    let app = app_with(&r, "paid", true).await;
+    let grok = work(&r, app, "grok").await;
+    work(&r, app, "claude").await;
+    let (s, c) = claim_one(&r).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(c["account"], "api");
+    let (_, t) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{grok}"),
+        Some(OWNER),
+        json!(null),
+    )
+    .await;
+    assert_eq!(t["state"], "needs_you");
+}
+
+#[tokio::test]
+async fn an_app_cap_limits_that_apps_paid_work_only() {
+    let (r, _) = hub().await;
+    let capped = app_with(&r, "capped", true).await;
+    let other = app_with(&r, "other", true).await;
+    let (s, _) = call(
+        &r,
+        "POST",
+        &format!("/api/apps/{capped}/cap"),
+        Some(OWNER),
+        json!({"cap_usd": 4.0}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), json!(null)).await;
+    assert_eq!(apps[0]["monthly_cap_usd"], 4.0);
+
+    // The first run gets only what the app has left, not the usual $10.
+    work(&r, capped, "claude").await;
+    let (_, c) = claim_one(&r).await;
+    assert_eq!(c["account"], "api");
+    assert!((c["budget_usd"].as_f64().unwrap_or(0.0) - 3.6).abs() < 1e-9);
+
+    // Nothing left for that app; the other app still runs.
+    let second = work(&r, capped, "grok").await;
+    work(&r, other, "claude").await;
+    let (_, c) = claim_one(&r).await;
+    assert_eq!(c["app"]["name"], "other");
+    assert_eq!(c["budget_usd"], 9.0);
+    let (_, t) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{second}"),
+        Some(OWNER),
+        json!(null),
+    )
+    .await;
+    assert_eq!(t["state"], "needs_you");
+
+    let (_, sp) = call(&r, "GET", "/api/spend", Some(OWNER), json!(null)).await;
+    let capped_row = sp["apps"]
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["app_id"] == capped))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(capped_row["spent_usd"], 4.0);
+    assert_eq!(capped_row["cap_usd"], 4.0);
+
+    // Removing the cap lets it run again.
+    let (s, _) = call(
+        &r,
+        "POST",
+        &format!("/api/apps/{capped}/cap"),
+        Some(OWNER),
+        json!({"cap_usd": null}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = call(
+        &r,
+        "POST",
+        &format!("/api/apps/{capped}/cap"),
+        Some(RUNNER),
+        json!({"cap_usd": 1.0}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}

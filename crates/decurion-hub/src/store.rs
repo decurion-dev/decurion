@@ -3,7 +3,7 @@
 //! in the same transaction.
 
 use decurion_proto::{
-    App, Claim, EventRecord, NewApp, NewThread, Profile, RunEvent, Thread, ThreadState,
+    Account, Ai, App, Claim, EventRecord, NewApp, NewThread, Profile, RunEvent, Thread, ThreadState,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
 use sqlx::{Row, SqlitePool};
@@ -41,16 +41,19 @@ pub struct Store {
     pool: SqlitePool,
 }
 
-const THREAD_COLS: &str = "id, app_id, title, prompt, state, session_id, branch, updated_at";
+const THREAD_COLS: &str = "id, app_id, title, prompt, state, ai, session_id, branch, updated_at";
+const APP_COLS: &str = "id, name, repo_path, profile, pay_per_use, monthly_cap_micros";
 
 fn thread_from(row: &SqliteRow) -> Result<Thread> {
     let state: String = row.try_get("state")?;
+    let ai: String = row.try_get("ai")?;
     Ok(Thread {
         id: row.try_get("id")?,
         app_id: row.try_get("app_id")?,
         title: row.try_get("title")?,
         prompt: row.try_get("prompt")?,
         state: ThreadState::from_str(&state).map_err(|e| StoreError::Invalid(e.to_string()))?,
+        ai: Ai::from_str(&ai).map_err(|e| StoreError::Invalid(e.to_string()))?,
         session_id: row.try_get("session_id")?,
         branch: row.try_get("branch")?,
         updated_at: row.try_get("updated_at")?,
@@ -65,6 +68,9 @@ fn app_from(row: &SqliteRow) -> Result<App> {
         repo_path: row.try_get("repo_path")?,
         profile: Profile::from_str(&profile).map_err(|e| StoreError::Invalid(e.to_string()))?,
         pay_per_use: row.try_get("pay_per_use")?,
+        monthly_cap_usd: row
+            .try_get::<Option<i64>, _>("monthly_cap_micros")?
+            .map(crate::spend::to_usd),
     })
 }
 
@@ -92,10 +98,10 @@ impl Store {
     pub async fn add_app(&self, a: &NewApp) -> Result<App> {
         check_app_name(&a.name)?;
         check_repo_path(&a.repo_path)?;
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             "INSERT INTO apps (name, repo_path, profile, pay_per_use) VALUES (?, ?, ?, ?)
-             RETURNING id, name, repo_path, profile, pay_per_use",
-        )
+             RETURNING {APP_COLS}"
+        ))
         .bind(&a.name)
         .bind(&a.repo_path)
         .bind(a.profile.as_str())
@@ -112,20 +118,27 @@ impl Store {
     }
 
     pub async fn apps(&self) -> Result<Vec<App>> {
-        let rows =
-            sqlx::query("SELECT id, name, repo_path, profile, pay_per_use FROM apps ORDER BY name")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query(&format!("SELECT {APP_COLS} FROM apps ORDER BY name"))
+            .fetch_all(&self.pool)
+            .await?;
         rows.iter().map(app_from).collect()
     }
 
     pub async fn app(&self, id: i64) -> Result<App> {
-        let row =
-            sqlx::query("SELECT id, name, repo_path, profile, pay_per_use FROM apps WHERE id = ?")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await?
-                .ok_or(StoreError::NotFound)?;
+        let row = sqlx::query(&format!("SELECT {APP_COLS} FROM apps WHERE id = ?"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        app_from(&row)
+    }
+
+    async fn app_in(&self, tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, id: i64) -> Result<App> {
+        let row = sqlx::query(&format!("SELECT {APP_COLS} FROM apps WHERE id = ?"))
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or(StoreError::NotFound)?;
         app_from(&row)
     }
 
@@ -135,11 +148,13 @@ impl Store {
         }
         self.app(t.app_id).await?;
         let row = sqlx::query(&format!(
-            "INSERT INTO threads (app_id, title, prompt) VALUES (?, ?, ?) RETURNING {THREAD_COLS}"
+            "INSERT INTO threads (app_id, title, prompt, ai) VALUES (?, ?, ?, ?)
+             RETURNING {THREAD_COLS}"
         ))
         .bind(t.app_id)
         .bind(t.title.trim())
         .bind(t.prompt.trim())
+        .bind(t.ai.as_str())
         .fetch_one(&self.pool)
         .await?;
         thread_from(&row)
@@ -231,16 +246,8 @@ impl Store {
                 return Ok(ClaimOutcome { work: None, capped });
             };
             let t = thread_from(&row)?;
-            let (profile, pay_per_use): (String, bool) =
-                sqlx::query_as("SELECT profile, pay_per_use FROM apps WHERE id = ?")
-                    .bind(t.app_id)
-                    .fetch_one(&mut *tx)
-                    .await?;
-            let account = if pay_per_use {
-                "api".to_owned()
-            } else {
-                profile
-            };
+            let app = self.app_in(&mut tx, t.app_id).await?;
+            let account = Account::for_work(t.ai, &app);
             let started: bool = sqlx::query_scalar(
                 "SELECT EXISTS (SELECT 1 FROM events WHERE thread_id = ?
                          AND json_extract(body, '$.kind') IN ('message', 'tool'))",
@@ -254,34 +261,36 @@ impl Store {
             } else {
                 0
             };
-            let Some(reserved) = crate::spend::open_run(&mut tx, t.id, &account, prior).await?
-            else {
-                // The month's pay-per-use money is used up: a hard stop for the owner.
-                let cap = crate::spend::to_usd(crate::spend::cap_micros(&mut tx).await?);
-                let done = sqlx::query(
-                    "UPDATE threads SET state = 'needs_you',
+            let reserved =
+                match crate::spend::open_run(&mut tx, t.id, t.app_id, account, prior).await? {
+                    Ok(r) => r,
+                    Err(hit) => {
+                        // The month's pay-per-use money is used up: a hard stop for the owner.
+                        let done = sqlx::query(
+                            "UPDATE threads SET state = 'needs_you',
                          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                      WHERE id = ? AND state = 'queued'",
-                )
-                .bind(t.id)
-                .execute(&mut *tx)
-                .await?;
-                if done.rows_affected() != 1 {
-                    return Err(StoreError::Conflict);
-                }
-                let note = format!("monthly pay-per-use cap of ${cap:.2} reached");
-                audit(
-                    &mut tx,
-                    t.id,
-                    &actor,
-                    ThreadState::Queued,
-                    ThreadState::NeedsYou,
-                    Some(&note),
-                )
-                .await?;
-                capped.push(t);
-                continue;
-            };
+                        )
+                        .bind(t.id)
+                        .execute(&mut *tx)
+                        .await?;
+                        if done.rows_affected() != 1 {
+                            return Err(StoreError::Conflict);
+                        }
+                        let note = hit.note();
+                        audit(
+                            &mut tx,
+                            t.id,
+                            &actor,
+                            ThreadState::Queued,
+                            ThreadState::NeedsYou,
+                            Some(&note),
+                        )
+                        .await?;
+                        capped.push(t);
+                        continue;
+                    }
+                };
             let session = t
                 .session_id
                 .clone()
@@ -322,7 +331,9 @@ impl Store {
                     thread,
                     app,
                     resume,
-                    budget_usd: pay_per_use
+                    account,
+                    budget_usd: account
+                        .is_paid()
                         .then(|| crate::spend::claude_budget_usd(prior, reserved)),
                 }),
                 capped,

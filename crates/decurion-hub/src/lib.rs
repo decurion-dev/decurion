@@ -121,6 +121,8 @@ pub fn router(state: AppState) -> Router {
         .route("/spend", get(get_spend))
         .route("/spend/cap", post(set_cap))
         .route("/apps/{id}/pay-per-use", post(set_pay_per_use))
+        .route("/apps/{id}/cap", post(set_app_cap))
+        .route("/accounts", get(list_accounts))
         .route("/push/subscribe", post(push_subscribe))
         .layer(middleware::from_fn_with_state(state.clone(), require_key));
     Router::new()
@@ -656,6 +658,9 @@ async fn get_spend(State(st): State<AppState>) -> ApiResult<decurion_proto::Spen
 #[derive(Deserialize)]
 struct Cap {
     cap_usd: f64,
+    /// Which paid account; the Anthropic key if left out.
+    #[serde(default)]
+    account: Option<decurion_proto::Account>,
 }
 
 async fn set_cap(
@@ -666,7 +671,8 @@ async fn set_cap(
     if c != Caller::Owner {
         return forbidden("changing the spending cap");
     }
-    match st.store.set_cap(b.cap_usd).await {
+    let account = b.account.unwrap_or(decurion_proto::Account::Api);
+    match st.store.set_cap(account, b.cap_usd).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => ApiError(e).into_response(),
     }
@@ -687,6 +693,31 @@ async fn set_pay_per_use(
         return forbidden("choosing how an app is billed");
     }
     match st.store.set_pay_per_use(id, b.on).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn list_accounts(State(st): State<AppState>) -> ApiResult<Vec<decurion_proto::AccountMeter>> {
+    Ok(Json(st.store.accounts().await?))
+}
+
+#[derive(Deserialize)]
+struct AppCap {
+    /// `null` removes the app's own cap.
+    cap_usd: Option<f64>,
+}
+
+async fn set_app_cap(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+    Json(b): Json<AppCap>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("changing an app's spending cap");
+    }
+    match st.store.set_app_cap(id, b.cap_usd).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => ApiError(e).into_response(),
     }

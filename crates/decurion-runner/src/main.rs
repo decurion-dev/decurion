@@ -1,5 +1,5 @@
 use anyhow::{bail, Context};
-use decurion_proto::{Claim, MoveRequest, RunEvent, ThreadState};
+use decurion_proto::{Account, Claim, MoveRequest, Profile, RunEvent, ThreadState};
 use decurion_runner::{
     container_name, parse_line, prompt_for, run_args, Credential, BUDGET_STOP, DOCKER_CLI_ENV,
 };
@@ -268,10 +268,11 @@ async fn run(hub: &Hub, data: &Path, c: Claim) -> anyhow::Result<()> {
         .await;
 
     let wt = workspace(data, &c).await?;
-    let cred = if c.budget_usd.is_some() {
-        Credential::PayPerUse
-    } else {
-        Credential::Max(c.app.profile)
+    let cred = match c.account {
+        Account::A => Credential::Max(Profile::A),
+        Account::B => Credential::Max(Profile::B),
+        Account::Api => Credential::PayPerUse,
+        other => bail!("this runner cannot run {} work yet", other.label()),
     };
     let token = secret(cred)?;
     let prompt = prompt_for(&c.thread.prompt, c.resume);
