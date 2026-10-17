@@ -87,6 +87,8 @@
   .composer .bar input#title:hover { background: var(--surface-2); }
   .composer .bar input#title:focus { background: var(--surface); border-color: var(--focus); }
   .composer .bar .grow { flex: 1; }
+  .composer .bar select#parent { max-width: 260px; }
+  .composer .bar .check { font-size: 13px; color: var(--muted); }
   .kbd-hint { font-size: 12px; color: var(--faint); white-space: nowrap; }
   kbd { font: 600 11px/1 var(--font); padding: 3px 5px; border-radius: 5px; border: 1px solid var(--line); background: var(--surface-2); color: var(--muted); }
   .composer .field-error { padding: 0 18px 12px; }
@@ -148,6 +150,7 @@
   .wcard .foot .working { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
   .wcard .foot .working svg.i { width: 13px; height: 13px; }
   .wcard .pro { display: flex; align-items: center; gap: 5px; }
+  .wcard .tree { font-size: 12px; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
   .wcard .pro svg.i { width: 12px; height: 12px; }
   .sk-card { height: 104px; }
 
@@ -260,12 +263,28 @@
     .composer textarea#prompt { padding: 8px 14px 6px; }
     .composer .bar { padding: 8px 10px 10px; }
     .composer .bar select, .composer .bar input#title { max-width: none; flex: 1 1 100%; }
+    .composer .bar select#parent { max-width: none; }
     .composer .bar .grow, .kbd-hint { display: none; }
     .composer .bar .btn.primary { flex: 1 1 100%; }
     .form-grid { grid-template-columns: 1fr; }
     .scard { padding: 16px; }
     .wcard .t { font-size: 15.5px; }
   }
+
+  /* ---------- Work panel: task tree and messages (same in board.html and inbox.html) ---------- */
+  .work-body .part { display: contents; }
+  .talk { display: grid; gap: 8px; }
+  .talk .section-title { display: block; margin-bottom: 0; }
+  .talk textarea { min-height: 76px; }
+  .talk .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .talk .waiting { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+  .talk .field-error:empty { display: none; }
+  .kids { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); }
+  .kids li, .tree-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .kids li { padding: 8px 10px; }
+  .kids li + li { border-top: 1px solid var(--line); }
+  .kids .nm, .tree-row .nm { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+  @media (max-width: 640px) { .talk .row .btn { flex: 1 1 100%; } }
 </style>
 </head>
 <body>
@@ -303,6 +322,8 @@
             <select id="app" aria-label="App"></select>
             <select id="place" aria-label="Where it runs" hidden><option value="pc">On your PC</option><option value="cloud">In the cloud</option></select>
             <input id="title" type="text" placeholder="Title (optional)" aria-label="Title (optional)" maxlength="120" autocomplete="off">
+            <select id="parent" aria-label="Part of other work" hidden></select>
+            <label class="check" id="bg-wrap" hidden><input type="checkbox" id="background"> Keep going if the parent stops</label>
             <span class="grow"></span>
             <span class="kbd-hint" id="kbd-hint"></span>
             <button class="btn primary" id="start" type="submit"></button>
@@ -368,6 +389,11 @@
             </div>
             <span class="field-error" id="cap-err" role="alert"></span>
           </form>
+        </section>
+
+        <section class="scard wide live" id="set-keys" aria-labelledby="h-keys">
+          <header><span class="ic" data-icon="key"></span><div><h2 id="h-keys">Test keys</h2><p>Test keys reach this app's agents while they work. They are kept in Windows' secure store and shown again only as their last four characters. Live keys are refused.</p></div></header>
+          <div id="key-apps"><p class="hint">Loading…</p></div>
         </section>
 
         <section class="scard live" id="set-phones" aria-labelledby="h-phones">
@@ -460,6 +486,7 @@
     if (view === "settings") {
       renderSettings();
       loadDevices();
+      loadKeys();
       const part = h.split("/")[1];
       const target = part && $(`set-${part}`);
       if (target) requestAnimationFrame(() => target.scrollIntoView({ block: "start" }));
@@ -493,6 +520,7 @@
       hasCloud = workers.some((w) => w.place === "cloud");
       D.setApps(a);
       D.setCloud(hasCloud);
+      D.setThreads(th);
       await loadTails(th);
       loaded = true; loadErr = null;
     } catch (e) {
@@ -661,8 +689,26 @@
     // The choice of computer only shows once there is a cloud worker.
     $("place").hidden = !hasCloud;
     if (!hasCloud) $("place").value = "pc";
+    fillParents();
     $("start").disabled = D.offline;
   }
+
+  // "Part of": open work in the same app. Kept while the owner is choosing.
+  function fillParents() {
+    const sel = $("parent");
+    const app = +$("app").value;
+    const open = threads.filter((t) => t.app_id === app && ACTIVE.has(t.state));
+    if (document.activeElement !== sel && changed("parents", [app, open.map((t) => [t.id, t.title])])) {
+      const keep = sel.value;
+      sel.replaceChildren(el("option", { value: "" }, "Not part of other work"),
+        ...open.map((t) => el("option", { value: String(t.id) }, `Part of: ${t.title}`)));
+      sel.value = open.some((t) => String(t.id) === keep) ? keep : "";
+    }
+    sel.hidden = !open.length && !sel.value;
+    $("bg-wrap").hidden = !sel.value;
+    if (!sel.value) $("background").checked = false;
+  }
+  $("parent").onchange = fillParents;
 
   function deriveTitle(prompt) {
     const first = (prompt.split(/\r?\n/).find((l) => l.trim()) ?? "").trim().replace(/\s+/g, " ");
@@ -684,7 +730,7 @@
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("add-thread").requestSubmit(); }
     });
   }
-  $("app").onchange = () => D.store.set("decurion.board.lastApp", $("app").value);
+  $("app").onchange = () => { D.store.set("decurion.board.lastApp", $("app").value); fillParents(); };
 
   $("add-thread").onsubmit = async (e) => {
     e.preventDefault();
@@ -700,8 +746,11 @@
     btn.disabled = true;
     btn.replaceChildren(icon("running"), "Starting");
     try {
-      await D.api("/threads", { method: "POST", body: JSON.stringify({ app_id, title, prompt: text, place: $("place").value }) });
+      const parent = $("parent").value;
+      await D.send("/threads", { app_id, title, prompt: text, place: $("place").value,
+        parent_id: parent ? +parent : null, background: !!parent && $("background").checked });
       prompt.value = ""; $("title").value = ""; $("title").placeholder = "Title (optional)"; grow();
+      $("background").checked = false;
       D.store.set("decurion.board.lastApp", String(app_id));
       D.toast(`Started "${title}". An agent will pick it up.`);
       refresh();
@@ -760,6 +809,7 @@
         el("span", { className: "when", title: new Date(t.updated_at).toLocaleString() }, D.ago(t.updated_at))),
       el("h3", { className: "t" }, hit),
       line && el("p", { className: "says" }, line),
+      D.treeLine(t) && el("p", { className: "tree" }, D.treeLine(t)),
       D.pro && el("div", { className: "pro" }, icon("branch"), `${t.branch || "no branch yet"} · #${t.id}`),
       (acts.length || t.state === "running") && el("div", { className: "foot" },
         acts.length ? el("span", { className: "acts" }, ...acts) : null,
@@ -785,7 +835,7 @@
 
     const shown = shownThreads();
     const sig = ["board", filter, D.pro, D.offline, hasCloud, folds, Math.floor(Date.now() / 30000), apps.map((a) => [a.id, a.name, a.pay_per_use, a.profile]),
-      shown.map((t) => [t.id, t.state, t.place, t.updated_at, t.title, t.branch, lineOf(t)])];
+      shown.map((t) => [t.id, t.state, t.place, t.updated_at, t.title, t.branch, lineOf(t), D.treeLine(t)])];
     if (!changed("board", sig)) return;
 
     keepFocus(() => {
@@ -978,6 +1028,59 @@
           b);
       }) : [el("li", { className: "empty" }, "No phones paired yet.")]));
     });
+  }
+
+  // Drawn when Settings opens and after each change, not on the timer, so a
+  // half-typed key is never wiped. Values go to the hub once and never come back.
+  async function loadKeys() {
+    let sections;
+    try {
+      const list = await D.api("/apps");
+      sections = await Promise.all(list.map(keySection));
+    } catch (e) {
+      $("key-apps").replaceChildren(el("p", { className: "field-error" }, `Couldn't load test keys. ${e.message}`));
+      return;
+    }
+    $("key-apps").replaceChildren(...(sections.length ? sections : [el("p", { className: "hint" }, "Add an app first.")]));
+  }
+  async function keySection(a) {
+    const keys = await D.api(`/apps/${a.id}/test-keys`);
+    const id = (s) => `key-${a.id}-${s}`;
+    const rows = el("ul", { className: "rows" }, ...(keys.length ? keys.map((k) => {
+      const b = el("button", { type: "button", className: "btn quiet danger-text sm" }, icon("trash"), "Remove");
+      b.onclick = async () => {
+        const ok = await D.confirm([`Remove ${k.name} from ${a.name}?`, "Its agents stop getting it from their next run.", "Remove key", "Keep it"]);
+        if (!ok) return;
+        try { await D.api(`/apps/${a.id}/test-keys/${encodeURIComponent(k.name)}/remove`, { method: "POST" }); D.toast(`Removed ${k.name}.`); await loadKeys(); }
+        catch (x) { D.toast(`Couldn't remove ${k.name}. ${x.message}`, "alert"); }
+      };
+      return el("li", {},
+        el("span", { className: "ic" }, icon("key")),
+        el("div", { className: "who" }, el("b", {}, k.name), el("span", { className: "hint" }, `••••${k.last_four}`)),
+        b);
+    }) : [el("li", { className: "empty" }, "No test keys yet.")]));
+    const name = el("input", { id: id("name"), type: "text", placeholder: "STRIPE_SECRET_KEY", autocomplete: "off", spellcheck: false });
+    const value = el("input", { id: id("value"), type: "password", placeholder: "sk_test_…", autocomplete: "off", spellcheck: false });
+    const err = el("span", { className: "field-error", id: id("err"), role: "alert" });
+    value.setAttribute("aria-describedby", id("err"));
+    const show = el("button", { type: "button", className: "btn quiet sm" }, "Show");
+    show.onclick = () => { const hidden = value.type === "password"; value.type = hidden ? "text" : "password"; show.textContent = hidden ? "Hide" : "Show"; };
+    const form = el("form", { className: "form-grid", noValidate: true },
+      el("div", { className: "field" }, el("label", { htmlFor: id("name") }, "Name"), name,
+        el("span", { className: "hint" }, "The setting your app reads it from.")),
+      el("div", { className: "field" }, el("label", { htmlFor: id("value") }, "Key"), value, show),
+      el("div", { className: "full actions" }, el("button", { className: "btn primary", type: "submit" }, "Save key"), err));
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      err.textContent = "";
+      try {
+        await D.api(`/apps/${a.id}/test-keys`, { method: "POST", body: JSON.stringify({ name: name.value.trim(), value: value.value }) });
+        value.value = "";
+        D.toast(`Saved ${name.value.trim()} for ${a.name}.`);
+        await loadKeys();
+      } catch (x) { err.textContent = x.message; }
+    };
+    return el("div", {}, el("h3", { style: "margin:8px 0" }, a.name), rows, form);
   }
 
   $("pair").onclick = async () => {

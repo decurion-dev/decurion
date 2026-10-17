@@ -23,6 +23,15 @@ pub const JOIN_HOURS: i64 = 24;
 pub const NO_CLOUD_WORKER: &str =
     "There is no cloud worker yet. Add one first: Settings, Add cloud worker.";
 
+const HAS_CLOUD_WORKER: &str = "SELECT EXISTS (SELECT 1 FROM runners WHERE removed_at IS NULL)";
+
+/// Whether a cloud worker is set up, read inside the caller's transaction.
+pub(crate) async fn cloud_worker_in(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<bool> {
+    Ok(sqlx::query_scalar(HAS_CLOUD_WORKER)
+        .fetch_one(&mut **tx)
+        .await?)
+}
+
 /// A computer that runs work, as the board shows it.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Worker {
@@ -137,11 +146,9 @@ impl Store {
     }
 
     pub async fn has_cloud_worker(&self) -> Result<bool> {
-        Ok(
-            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM runners WHERE removed_at IS NULL)")
-                .fetch_one(self.pool())
-                .await?,
-        )
+        Ok(sqlx::query_scalar(HAS_CLOUD_WORKER)
+            .fetch_one(self.pool())
+            .await?)
     }
 
     /// Moves work to the PC or the cloud. Running work keeps running until

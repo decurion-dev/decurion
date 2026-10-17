@@ -58,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
     let pusher = decurion_hub::push::Pusher::load_or_create(&dir)?;
     let state = AppState::new(store, keys, code, public_url)
         .with_push(pusher)
+        .with_vault(decurion_vault::Vault::system(&dir))
         .with_files(dir.join("saved-work"));
     axum::serve(listener, router(state))
         .with_graceful_shutdown(async {

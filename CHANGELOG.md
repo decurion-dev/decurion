@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Installers and a release workflow that builds them into a draft GitHub release.
 - Built-in help pages that explain each part of Decurion in plain language.
 - A design for add-ons, so new kinds of agents and tools can plug in later.
+- **Talk to a running agent.** Change its course now, give it a follow-up for when it finishes, or add a note, from the board or the phone. Messages wait safely with the hub until the agent has read them.
+- **Tasks within tasks.** Work can belong to a bigger task. Stopping a task stops its smaller tasks first, unless they were set to keep going on their own.
+- **Receipts.** Every tap and message carries a receipt number, so a resend after a dropped connection never acts twice, and a tap from an out-of-date screen is ignored.
+- **Interrupted, checking.** After a crash the agent is told which step was cut off. A step that only looked at things is redone; one that changed something is checked first, never blindly repeated.
 - Contribution guide, security policy, code of conduct, issue and pull request templates, and a cargo-deny configuration for dependency license and source checks.
 
 ## [0.1.0] - Unreleased

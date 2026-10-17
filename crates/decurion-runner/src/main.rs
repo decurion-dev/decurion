@@ -1,9 +1,9 @@
 use anyhow::{bail, Context};
 use decurion_proto::{
-    Claim, HelloReply, JoinReply, JoinRequest, MoveRequest, NewCheckpoint, Place, RunCredential,
-    RunEvent, RunnerHello, Thread, ThreadState, RULES_VERSION,
+    Claim, HelloReply, JoinReply, JoinRequest, Live, MoveRequest, NewCheckpoint, Place,
+    RunCredential, RunEvent, RunnerHello, ThreadState, RULES_VERSION,
 };
-use decurion_runner::gatekeeper::{Gatekeeper, ANTHROPIC_API};
+use decurion_runner::gatekeeper::{Gatekeeper, Grant, ANTHROPIC_API};
 use decurion_runner::handover::{
     bundle_spec, host_git_args, host_git_env, is_sha, move_note, reuse_workspace, save_edits_args,
     session_export_args, session_import_args, tool_container_name, CODE_CAP, SESSION_CAP,
@@ -12,16 +12,21 @@ use decurion_runner::identity::{
     hub_url, place_from_env, write_atomic, CloudRunner, PC_HUB, PC_NAME,
 };
 use decurion_runner::{
-    backoff, container_name, home_volume, parse_line, prompt_for, retriable, run_args, sibling,
-    Credential, Start, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
+    backoff, container_name, hide, hide_cut, home_volume, is_interrupted_turn, is_turn_start,
+    parse_line_hiding, part_done, prompt_for, retriable, run_args, sibling, Acks, Action,
+    Conversation, Credential, LeakScanner, Start, Step, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
 };
+use decurion_vault::{check_name, Vault};
 use reqwest::header::{HeaderMap, CONTENT_LENGTH, CONTENT_TYPE};
 use reqwest::StatusCode;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::process::{ExitStatus, Stdio};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 /// How long the last steps of a run (saving a checkpoint, reporting the
 /// outcome) keep trying while the hub is out of reach. A cloud worker's hub is
@@ -31,8 +36,6 @@ const FINAL_RETRY: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// How long a download keeps trying. The hub just handed out the work, so it
 /// is awake; this only covers a short hiccup.
 const DOWNLOAD_RETRY: Duration = Duration::from_secs(2 * 60);
-/// How often a running thread's place is checked, to notice a move.
-const WATCH_EVERY: Duration = Duration::from_secs(5);
 /// Longest a throwaway container may take.
 const TOOL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
@@ -63,6 +66,15 @@ impl HubError {
     }
 }
 
+/// How often a run asks the hub for owner messages and whether it was stopped.
+const POLL: Duration = Duration::from_secs(2);
+/// How long Claude may print nothing at all after a result while stdin is
+/// still open before the runner decides the turn it waits for is not coming.
+const IDLE_LIMIT: Duration = Duration::from_secs(5 * 60);
+/// Most ids the hub marks delivered in one call.
+const ACK_BATCH: usize = 500;
+
+#[derive(Clone)]
 struct Hub {
     base: String,
     key: String,
@@ -103,6 +115,26 @@ impl Hub {
         Ok(r)
     }
 
+    /// What a run checks while it goes. Short timeout: a slow hub must not
+    /// hold up reading the agent's output for long.
+    async fn live(&self, thread: i64) -> anyhow::Result<Live> {
+        let path = format!("/threads/{thread}/live");
+        let req = self
+            .http
+            .get(self.url(&path))
+            .timeout(Duration::from_secs(10));
+        Ok(self.send(&path, req).await?.json().await?)
+    }
+
+    async fn delivered(&self, thread: i64, ids: &[i64]) -> anyhow::Result<()> {
+        self.post(
+            &format!("/threads/{thread}/messages/delivered"),
+            &serde_json::json!({ "ids": ids }),
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn post<T: serde::Serialize>(
         &self,
         path: &str,
@@ -113,11 +145,6 @@ impl Hub {
             .post(self.url(path))
             .timeout(CALL_TIMEOUT)
             .json(body);
-        self.send(path, req).await
-    }
-
-    async fn get(&self, path: &str) -> Result<reqwest::Response, HubError> {
-        let req = self.http.get(self.url(path)).timeout(CALL_TIMEOUT);
         self.send(path, req).await
     }
 
@@ -133,6 +160,8 @@ impl Hub {
             &MoveRequest {
                 to,
                 note: Some(note.to_owned()),
+                expect: None,
+                receipt: None,
             },
         )
         .await?;
@@ -242,6 +271,37 @@ fn secret(cred: Credential) -> anyhow::Result<String> {
             .map(|s| s.trim().to_owned())
             .with_context(|| format!("{var} not set ({target})"))
     }
+}
+
+/// The app's test keys as (name, value), from this PC's key store. The hub
+/// sends only their names.
+fn test_keys(hub: &Hub, data: &Path, c: &Claim) -> anyhow::Result<Vec<(String, String)>> {
+    // Test keys live only in the PC's key store, which never leaves it.
+    if hub.place == Place::Cloud && !c.test_keys.is_empty() {
+        bail!(
+            "this app uses test keys, which stay on the PC, so its work cannot run on the \
+cloud worker yet. Move it to the PC and try again."
+        );
+    }
+    let vault = Vault::system(data);
+    c.test_keys
+        .iter()
+        .map(|name| {
+            // The hub checked the name when it was saved; check it again here,
+            // where it becomes an environment variable.
+            check_name(name).map_err(|e| anyhow::anyhow!("test key {name:?}: {e}"))?;
+            let value = vault
+                .get(c.app.id, name)
+                .map_err(|e| anyhow::anyhow!("test key {name}: {e}"))?
+                .with_context(|| {
+                    format!(
+                        "test key {name} is listed on the board but is missing from this PC's \
+key store; save it again on the board"
+                    )
+                })?;
+            Ok((name.clone(), value))
+        })
+        .collect()
 }
 
 /// The run's credential. The PC keeps its own; a cloud worker keeps none and
@@ -501,8 +561,7 @@ fn base_file(dir: &Path) -> PathBuf {
 /// Fetches the agent's branch into a runner-owned bare repo with hooks off.
 /// Nothing the agent wrote is trusted except the commits themselves.
 async fn fetch_branch(data: &Path, dir: &Path, branch: &str) -> anyhow::Result<PathBuf> {
-    let name = dir.file_name().context("workspace name")?;
-    let bare = sibling(&data.join("review").join(name), "git");
+    let bare = review_repo(data, dir)?;
     if !bare.exists() {
         std::fs::create_dir_all(&bare)?;
         git(&bare, &["init", "--quiet", "--bare"]).await?;
@@ -737,16 +796,138 @@ async fn save_checkpoint(
     Ok(cp)
 }
 
+/// The runner-owned bare repo the agent's commits are fetched into.
+fn review_repo(data: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
+    let name = dir.file_name().context("workspace name")?;
+    Ok(sibling(&data.join("review").join(name), "git"))
+}
+
+/// The agent's commits in the review repo: from the recorded start to its
+/// branch.
+fn new_range(dir: &Path, branch: &str) -> anyhow::Result<String> {
+    let base = std::fs::read_to_string(base_file(dir)).context("missing base commit")?;
+    Ok(format!("{}..refs/heads/{branch}", base.trim()))
+}
+
+/// Names of the test keys whose values appear anywhere in the agent's new
+/// commits, read from the review repo after [`new_commits`] fetched them.
+/// Every object the branch adds (commits, trees and file contents) is read
+/// raw, exactly as it would be pushed, so a value cannot hide in a binary
+/// file, a file name, an author field or a commit message, nor behind
+/// anything git would leave out when printing a commit.
+///
+/// A key whose value was already in the code the agent started from is not
+/// counted: the app's repo holds it anyway (publishable keys often are), and
+/// any change to the file it sits in would otherwise stop the work.
+async fn leaked_keys(
+    data: &Path,
+    dir: &Path,
+    branch: &str,
+    keys: &[(String, String)],
+) -> anyhow::Result<Vec<String>> {
+    if keys.is_empty() {
+        return Ok(vec![]);
+    }
+    let bare = review_repo(data, dir)?;
+    let range = new_range(dir, branch)?;
+    let objects = git(
+        &bare,
+        &["rev-list", "--objects", "--no-object-names", &range, "--"],
+    )
+    .await?;
+    let found = scan_objects(&bare, &objects, keys).await?;
+    if found.is_empty() {
+        return Ok(found);
+    }
+    let base = std::fs::read_to_string(base_file(dir)).context("missing base commit")?;
+    let listing = git(&bare, &["ls-tree", "-r", "-z", base.trim(), "--"]).await?;
+    // Each entry is "<mode> <type> <id>\t<path>"; only file contents matter.
+    let blobs: String = listing
+        .split('\0')
+        .filter_map(|e| e.split('\t').next())
+        .filter_map(|meta| match meta.split(' ').collect::<Vec<_>>()[..] {
+            [_, "blob", id] => Some(format!("{id}\n")),
+            _ => None,
+        })
+        .collect();
+    let suspects: Vec<(String, String)> = keys
+        .iter()
+        .filter(|(k, _)| found.contains(k))
+        .cloned()
+        .collect();
+    let already = scan_objects(&bare, &blobs, &suspects).await?;
+    Ok(found.into_iter().filter(|k| !already.contains(k)).collect())
+}
+
+/// Which keys appear in the raw contents of the listed objects (one id per
+/// line), streamed through a [`LeakScanner`], not held.
+async fn scan_objects(
+    bare: &Path,
+    objects: &str,
+    keys: &[(String, String)],
+) -> anyhow::Result<Vec<String>> {
+    if objects.trim().is_empty() {
+        return Ok(vec![]);
+    }
+    let mut child = Command::new("git")
+        .envs(host_git_env())
+        .args(host_git_args())
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .arg("-C")
+        .arg(bare)
+        .args(["cat-file", "--batch"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .context("could not start git")?;
+    let mut stdin = child.stdin.take().context("no stdin")?;
+    let mut stdout = child.stdout.take().context("no stdout")?;
+    let mut stderr = child.stderr.take().context("no stderr")?;
+    let mut scanner = LeakScanner::new(keys);
+    // Written while the output is read, so neither pipe can fill and stall.
+    let ask = async {
+        use tokio::io::AsyncWriteExt;
+        stdin.write_all(objects.as_bytes()).await?;
+        stdin.write_all(b"\n").await?;
+        drop(stdin);
+        std::io::Result::Ok(())
+    };
+    let scan = async {
+        let mut buf = vec![0u8; 64 << 10];
+        loop {
+            let n = stdout.read(&mut buf).await?;
+            if n == 0 {
+                return std::io::Result::Ok(());
+            }
+            scanner.feed(&buf[..n]);
+        }
+    };
+    let mut err = Vec::new();
+    let (asked, read, _) = tokio::join!(ask, scan, stderr.read_to_end(&mut err));
+    asked?;
+    read?;
+    let status = child.wait().await?;
+    if !status.success() {
+        bail!("git cat-file: {}", String::from_utf8_lossy(&err).trim());
+    }
+    Ok(scanner.found())
+}
+
 const MAX_LINE: usize = 1 << 20;
 const STDERR_TAIL: usize = 8 << 10;
 
 /// Reads one line, keeping at most `MAX_LINE` bytes of it, so a container
-/// cannot make the runner hold an unbounded line in memory.
+/// cannot make the runner hold an unbounded line in memory. The flag says
+/// whether the line was cut.
 async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
-) -> std::io::Result<Option<String>> {
+) -> std::io::Result<Option<(String, bool)>> {
     let mut buf = Vec::new();
     let mut seen_any = false;
+    let mut cut = false;
     loop {
         let chunk = r.fill_buf().await?;
         if chunk.is_empty() {
@@ -758,6 +939,7 @@ async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
             None => (chunk.len(), false),
         };
         let room = MAX_LINE.saturating_sub(buf.len());
+        cut |= take > room;
         buf.extend_from_slice(&chunk[..take.min(room)]);
         r.consume(take);
         if done {
@@ -770,7 +952,7 @@ async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
     while buf.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
         buf.pop();
     }
-    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+    Ok(Some((String::from_utf8_lossy(&buf).into_owned(), cut)))
 }
 
 fn docker() -> Command {
@@ -784,47 +966,11 @@ fn docker() -> Command {
     cmd
 }
 
-/// What changed about running work while the agent was at it.
-enum Watch {
-    /// The owner moved it to another computer.
-    Moved(Place),
-    /// It is no longer this runner's: stopped or taken back by the owner, or
-    /// this worker was removed.
-    Lost,
-}
-
-/// Waits until the running work is moved to another computer or stops being
-/// this runner's. A hub that is out of reach or briefly failing changes
-/// nothing; it is asked again.
-async fn watch_place(hub: &Hub, id: i64) -> Watch {
-    loop {
-        tokio::time::sleep(WATCH_EVERY).await;
-        let t = match hub.get(&format!("/threads/{id}")).await {
-            Ok(r) => r.json::<Thread>().await.map_err(anyhow::Error::from),
-            // The hub answers 404 to a cloud worker once the work is not
-            // running there; 401 or 403 means this worker was removed.
-            Err(HubError::Refused(
-                _,
-                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND,
-                _,
-            )) => return Watch::Lost,
-            Err(e) => Err(e.into()),
-        };
-        match t {
-            Ok(t) if t.state != ThreadState::Running => return Watch::Lost,
-            Ok(t) if t.place != hub.place => return Watch::Moved(t.place),
-            Ok(_) => {}
-            Err(err) => tracing::debug!(%err, id, "could not check where the work belongs"),
-        }
-    }
-}
-
-/// Stops the agent's container and the docker process watching it.
-async fn stop_agent(id: i64, child: &mut tokio::process::Child) {
-    let name = container_name(id);
-    let _ = docker().args(["stop", "-t", "20", &name]).output().await;
-    let _ = docker().args(["rm", "-f", &name]).output().await;
-    let _ = child.kill().await;
+/// Stops the agent gently first, so Claude Code can save its session for
+/// the computer the work moves to, then makes sure its container is gone.
+async fn stop_agent(hub: &Hub, id: i64, child: &mut Child) {
+    let _ = docker_out(&["stop", "-t", "20", &container_name(id)]).await;
+    kill(hub, child, id).await;
 }
 
 /// Hands running work to the other computer: stop the agent, keep its
@@ -840,10 +986,10 @@ async fn hand_over(
     wt: &Path,
     branch: &str,
     to: Place,
-    mut child: tokio::process::Child,
+    child: &mut Child,
 ) {
     tracing::info!(id, to = to.as_str(), "work was moved; handing it over");
-    stop_agent(id, &mut child).await;
+    stop_agent(hub, id, child).await;
     if let Err(err) = save_edits(id, wt).await {
         tracing::warn!(%err, id, "could not save unfinished edits");
     }
@@ -873,8 +1019,420 @@ struct Gate {
     url: String,
 }
 
-/// Runs one claimed thread to the end and reports the outcome.
-async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()> {
+/// Owner messages a step wrote to stdin, and when its last write ended.
+type Wrote = (Instant, Vec<i64>);
+
+/// Writes to the agent's stdin from its own task, so an agent that stops
+/// reading cannot stall the stdout reader or the hub poll. Reports back the
+/// owner messages of each step whose writes all succeeded; [`follow`] acks
+/// them once Claude shows it read them. A failed write is not fatal: the
+/// container is gone, and what was not written stays undelivered for the
+/// next run.
+fn spawn_writer(
+    thread: i64,
+    stdin: ChildStdin,
+    wrote: mpsc::UnboundedSender<Wrote>,
+) -> (mpsc::UnboundedSender<Step>, JoinHandle<()>) {
+    let (tx, mut rx) = mpsc::unbounded_channel::<Step>();
+    let task = tokio::spawn(async move {
+        let mut stdin = Some(stdin);
+        while let Some(step) = rx.recv().await {
+            let mut written = true;
+            for a in step.actions {
+                match a {
+                    Action::Write(line) => {
+                        let ok = match stdin.as_mut() {
+                            Some(s) => {
+                                s.write_all(line.as_bytes()).await.is_ok()
+                                    && s.flush().await.is_ok()
+                            }
+                            None => false,
+                        };
+                        if !ok {
+                            if stdin.take().is_some() {
+                                tracing::warn!(
+                                    thread,
+                                    "could not write to the agent; it has stopped"
+                                );
+                            }
+                            written = false;
+                        }
+                    }
+                    // Dropping stdin closes it: Claude finishes what it has and exits.
+                    Action::Close => stdin = None,
+                }
+            }
+            if written && !step.delivered.is_empty() {
+                // Fails only if the run loop is gone; the ids then stay
+                // unacked and the hub hands them to the next run.
+                let _ = wrote.send((Instant::now(), step.delivered));
+            }
+        }
+    });
+    (tx, task)
+}
+
+/// Reads the agent's stdout in its own task, a line at a time, into a
+/// channel the run loop can wait on alongside the hub poll. Each line comes
+/// with when it was read off the pipe (see [`Acks`]).
+fn spawn_reader(
+    stdout: ChildStdout,
+) -> (
+    mpsc::Receiver<(Instant, String)>,
+    JoinHandle<std::io::Result<()>>,
+) {
+    // Few lines in flight: each may be up to MAX_LINE.
+    let (tx, rx) = mpsc::channel(8);
+    let task = tokio::spawn(async move {
+        let mut r = BufReader::new(stdout);
+        while let Some((line, _)) = read_capped_line(&mut r).await? {
+            if tx.send((Instant::now(), line)).await.is_err() {
+                break;
+            }
+        }
+        Ok(())
+    });
+    (rx, task)
+}
+
+/// Drains stderr alongside stdout so a chatty container cannot fill the pipe
+/// and stall; keeps only its tail. Each line is hidden before it goes in, so
+/// trimming the tail cannot cut a test key's value in half.
+fn spawn_stderr_tail(stderr: ChildStderr, secrets: Vec<String>) -> JoinHandle<String> {
+    tokio::spawn(async move {
+        let mut tail = String::new();
+        let mut r = BufReader::new(stderr);
+        while let Ok(Some((line, cut))) = read_capped_line(&mut r).await {
+            let line = if cut {
+                hide_cut(&line, &secrets)
+            } else {
+                hide(&line, &secrets)
+            };
+            tail.push_str(&line);
+            tail.push('\n');
+            if tail.len() > STDERR_TAIL {
+                let cut = tail.len() - STDERR_TAIL;
+                let cut = (cut..tail.len())
+                    .find(|i| tail.is_char_boundary(*i))
+                    .unwrap_or(0);
+                tail.drain(..cut);
+            }
+        }
+        tail
+    })
+}
+
+enum Ended {
+    /// The owner stopped the work while it ran, or it is no longer this
+    /// runner's (a cloud worker that was removed).
+    Stopped,
+    /// The owner moved the work to another computer while it ran.
+    Moved(Place),
+    /// The agent's output ended. `result` is its last result line, if any,
+    /// and `after_result` says the agent printed more after it.
+    Exited {
+        result: Option<RunEvent>,
+        /// The usage-limit report on that last result line, if any (with
+        /// the reset time when Claude gave one).
+        limit: Option<Option<i64>>,
+        after_result: bool,
+    },
+}
+
+/// How a result shows as progress if it turns out not to be the run's last.
+fn progress(e: &RunEvent, from_interrupt: bool) -> Option<RunEvent> {
+    match e {
+        RunEvent::Finished { ok, summary, .. } => part_done(*ok, summary, from_interrupt),
+        _ => None,
+    }
+}
+
+/// Acks owner messages Claude has read. Ones the hub did not take go back
+/// to `acks` for the next try.
+async fn ack(hub: &Hub, id: i64, acks: &mut Acks<Instant>, ids: Vec<i64>) {
+    let mut failed = Vec::new();
+    for batch in ids.chunks(ACK_BATCH) {
+        if let Err(err) = hub.delivered(id, batch).await {
+            tracing::warn!(%err, id, "could not ack owner messages; trying again later");
+            failed.extend_from_slice(batch);
+        }
+    }
+    if !failed.is_empty() {
+        acks.failed(failed);
+    }
+}
+
+/// What the board says when the runner gives up waiting for Claude's next turn.
+const GAVE_UP: &str = "Claude went quiet for five minutes while Decurion waited for its \
+next step, so Decurion stopped waiting and let the run finish. Any follow-up it had not \
+been given yet is kept for the next run.";
+
+/// What a run must hold back: test-key values never reach the hub, and once
+/// the gatekeeper has refused calls for the run's money, nothing more goes
+/// to the agent.
+#[derive(Clone, Copy)]
+struct Guard<'a> {
+    secrets: &'a [String],
+    grant: Option<&'a Grant>,
+}
+
+/// Follows a run until the agent's output ends or the owner stops it: posts
+/// what the agent does, passes owner messages to it as the [`Conversation`]
+/// decides, and acks them once Claude has read them.
+async fn follow(
+    hub: &Hub,
+    id: i64,
+    mut conv: Conversation,
+    to_agent: mpsc::UnboundedSender<Step>,
+    mut lines: mpsc::Receiver<(Instant, String)>,
+    mut wrote: mpsc::UnboundedReceiver<Wrote>,
+    guard: Guard<'_>,
+) -> Ended {
+    let send = |step: Step| {
+        if !step.actions.is_empty() || !step.delivered.is_empty() {
+            // Fails only if the writer is gone, and then so is the agent.
+            let _ = to_agent.send(step);
+        }
+    };
+    let mut poll = tokio::time::interval(POLL);
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut hub_down = false;
+    let mut acks: Acks<Instant> = Acks::default();
+    // Claude Code's outcome is the last result line it prints. Anything after
+    // it, or a container that does not exit cleanly, means the agent may have
+    // printed a fake result: its cost is then not trusted and the hub charges
+    // the whole amount set aside. Earlier results (a follow-up's first part,
+    // the turn a steer stopped) are only progress. The held result comes
+    // with the progress it shows if it turns out not to be the last.
+    let mut result: Option<(RunEvent, Option<RunEvent>)> = None;
+    // A usage-limit report is held the same way: an agent could print a fake
+    // one to freeze its account, so only Claude's real, final result counts.
+    let mut limit: Option<Option<i64>> = None;
+    let mut after_result = false;
+    // The latest result already shown as progress, and whether anything came
+    // after it: the run's outcome if the runner has to give up on the turn
+    // that was to follow it.
+    let mut last_part: Option<RunEvent> = None;
+    let mut after_part = false;
+    // A result came and no turn has started since, so Claude is idle. A long
+    // tool inside a turn is never cut short by the idle watchdog.
+    let mut between_turns = false;
+    let mut last_line = Instant::now();
+    let ended = loop {
+        tokio::select! {
+            line = lines.recv() => {
+                let Some((at, line)) = line else {
+                    break Ended::Exited {
+                        result: result.map(|(e, _)| e),
+                        limit,
+                        after_result,
+                    };
+                };
+                last_line = at;
+                while let Ok((w, ids)) = wrote.try_recv() {
+                    acks.wrote(w, &ids);
+                }
+                if !line.trim().is_empty() {
+                    after_result |= result.is_some();
+                    after_part |= last_part.is_some();
+                }
+                let turn_start = is_turn_start(&line);
+                if turn_start {
+                    conv.on_turn_start();
+                    between_turns = false;
+                }
+                let events = parse_line_hiding(&line, guard.secrets);
+                let is_result = events.iter().any(|e| matches!(e, RunEvent::Finished { .. }));
+                if turn_start || is_result {
+                    // Claude has read what was written before this line.
+                    let ids = acks.boundary(at);
+                    if !ids.is_empty() {
+                        ack(hub, id, &mut acks, ids).await;
+                    }
+                }
+                if is_result {
+                    limit = None;
+                }
+                for e in events {
+                    let (ok, stop) = match &e {
+                        // Out of money or out of usage: nothing more goes to
+                        // the agent, whatever is waiting.
+                        RunEvent::Finished { ok, summary, .. } => (
+                            *ok,
+                            summary == BUDGET_STOP
+                                || summary == LIMIT_STOP
+                                || guard.grant.is_some_and(Grant::used_up),
+                        ),
+                        RunEvent::LimitHit { reset_epoch } => {
+                            limit = Some(*reset_epoch);
+                            continue;
+                        }
+                        _ => {
+                            hub.event(id, &e).await;
+                            continue;
+                        }
+                    };
+                    if let Some((_, Some(part))) = result.take() {
+                        hub.event(id, &part).await;
+                    }
+                    // Only Claude's own report of a stopped turn is hidden;
+                    // any other failure after a steer is shown as an error.
+                    let from_interrupt = !ok && is_interrupted_turn(&line, conv.interrupting());
+                    let part = progress(&e, from_interrupt);
+                    send(conv.on_result(stop));
+                    between_turns = true;
+                    if conv.closed() {
+                        // Nothing more was asked of it: this may be the last.
+                        result = Some((e, part));
+                        after_result = false;
+                    } else {
+                        if let Some(part) = part {
+                            hub.event(id, &part).await;
+                        }
+                        last_part = Some(e);
+                        after_part = false;
+                    }
+                }
+            }
+            _ = poll.tick() => match hub.live(id).await {
+                Ok(live) if live.state != ThreadState::Running => break Ended::Stopped,
+                Ok(live) if live.place != hub.place => break Ended::Moved(live.place),
+                // The hub answers 404 to a cloud worker once the work is not
+                // running there; 401 or 403 means this worker was removed.
+                Err(err) if lost(&err) => break Ended::Stopped,
+                Ok(live) => {
+                    hub_down = false;
+                    send(conv.on_messages(&live.messages));
+                }
+                // Keep going; the next tick tries again.
+                Err(err) => {
+                    if !hub_down {
+                        tracing::warn!(%err, id, "could not check on the run with the hub");
+                    }
+                    hub_down = true;
+                }
+            },
+            // Stdin stays open while a turn is expected. If Claude prints
+            // nothing at all for this long after a result, that turn is not
+            // coming (or Claude is stuck): close stdin so the run can end.
+            _ = tokio::time::sleep_until(last_line + IDLE_LIMIT),
+                if between_turns && !conv.closed() =>
+            {
+                tracing::warn!(id, "Claude has been idle too long with input still open; closing it");
+                send(conv.give_up());
+                hub.event(id, &RunEvent::Message { text: GAVE_UP.to_owned() }).await;
+                // Already shown as progress; it is the outcome unless Claude
+                // prints another result.
+                if let Some(e) = last_part.take() {
+                    result = Some((e, None));
+                    after_result = after_part;
+                }
+            }
+        }
+    };
+    // One more try for acks that failed. Messages written but never followed
+    // by a turn start or a result stay with the hub for the next run.
+    while let Ok((w, ids)) = wrote.try_recv() {
+        acks.wrote(w, &ids);
+    }
+    let ids = acks.last_try();
+    if !ids.is_empty() {
+        ack(hub, id, &mut acks, ids).await;
+    }
+    if acks.unread() > 0 {
+        tracing::info!(
+            id,
+            count = acks.unread(),
+            "owner messages Claude may not have read stay undelivered for the next run"
+        );
+    }
+    ended
+}
+
+/// Whether the hub said the running work is no longer this runner's.
+fn lost(err: &anyhow::Error) -> bool {
+    matches!(
+        err.downcast_ref::<HubError>(),
+        Some(HubError::Refused(
+            _,
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND,
+            _,
+        ))
+    )
+}
+
+/// Removes a thread's container and checks that it is really gone. Tried a
+/// few times: docker refuses to remove a container it is still taking down.
+async fn remove_container(id: i64) -> bool {
+    let name = container_name(id);
+    for attempt in 0..3 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        match docker_out(&["rm", "-f", &name]).await {
+            // Fails when there is no such container too; the check says.
+            Ok(out) if !out.status.success() => tracing::debug!(
+                id,
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "docker rm failed"
+            ),
+            Ok(_) => {}
+            Err(err) => tracing::warn!(%err, id, "could not run docker rm"),
+        }
+        let filter = format!("name=^{name}$");
+        match docker_out(&["ps", "-aq", "--filter", &filter]).await {
+            Ok(out) if out.status.success() && out.stdout.trim_ascii().is_empty() => return true,
+            Ok(out) if !out.status.success() => tracing::warn!(
+                id,
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "could not check that the container is gone"
+            ),
+            Ok(_) => {}
+            Err(err) => tracing::warn!(%err, id, "could not run docker ps"),
+        }
+    }
+    false
+}
+
+/// A docker command's output, given up on if docker hangs.
+async fn docker_out(args: &[&str]) -> anyhow::Result<std::process::Output> {
+    let out = tokio::time::timeout(
+        Duration::from_secs(30),
+        docker().args(args).kill_on_drop(true).output(),
+    )
+    .await
+    .context("docker did not answer")??;
+    Ok(out)
+}
+
+/// Stops a run's container now, whatever the agent is doing. If docker
+/// cannot be made to remove it, the owner is told to: the agent may still be
+/// working with nobody watching.
+async fn kill(hub: &Hub, child: &mut Child, id: i64) {
+    let gone = remove_container(id).await;
+    let _ = child.kill().await;
+    if !gone {
+        let name = container_name(id);
+        tracing::error!(id, container = %name, "could not stop the agent's container");
+        let text = format!(
+            "Decurion could not stop this agent's box (the Docker container named {name}), \
+so it may still be working. Stop it yourself: open Docker Desktop, find {name} under \
+Containers, and delete it."
+        );
+        hub.event(id, &RunEvent::Message { text }).await;
+    }
+}
+
+/// Runs one claimed thread to the end and reports the outcome. `keys` are the
+/// app's test keys: they go into the container, and their values are hidden
+/// from everything sent to the hub.
+async fn run(
+    hub: &Hub,
+    data: &Path,
+    gate: &Gate,
+    c: Claim,
+    keys: &[(String, String)],
+) -> anyhow::Result<()> {
     let id = c.thread.id;
     let session = c
         .thread
@@ -883,11 +1441,16 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
         .context("claim has no session")?;
     let branch = c.thread.branch.clone().context("claim has no branch")?;
     // Only one copy of a thread may ever run: clear any container left behind
-    // by a runner that died.
-    let _ = docker()
-        .args(["rm", "-f", &container_name(id), &tool_container_name(id)])
-        .output()
-        .await;
+    // by a runner that died, and do not start another while it may be there.
+    if !remove_container(id).await {
+        bail!(
+            "could not remove the Docker container {} left from an earlier run; \
+make sure Docker Desktop is running and delete that container there",
+            container_name(id)
+        );
+    }
+    // A save or restore box left by a runner that died.
+    let _ = docker_out(&["rm", "-f", &tool_container_name(id)]).await;
 
     let (wt, rebuilt) = workspace(hub, data, &c, &branch).await?;
     let start = Start::pick(c.resume, rebuilt, c.checkpoint.is_some());
@@ -907,7 +1470,10 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
     // The grant is revoked when it drops, on every way out of this function.
     let (grant, values) = match cred {
         Credential::PayPerUse => {
-            let g = gate.keeper.grant(token);
+            // The gatekeeper prices every answer and stops the run's calls
+            // once its set-aside money is used.
+            let budget = c.reserved_micros.map(|m| m.max(0) as u64);
+            let g = gate.keeper.grant_with_budget(token, budget);
             let v = vec![g.token().to_owned(), gate.url.clone()];
             (Some(g), v)
         }
@@ -921,7 +1487,17 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
     for (name, value) in cred.vars().iter().zip(values) {
         cmd.env(name, value);
     }
-    let prompt = prompt_for(&c.thread.prompt, start);
+    for (name, value) in keys {
+        cmd.env(name, value);
+    }
+    let secrets: Vec<String> = keys.iter().map(|(_, v)| v.clone()).collect();
+    let prompt = prompt_for(
+        &c.thread.prompt,
+        start,
+        &c.test_keys,
+        &c.messages,
+        c.interrupted.as_ref(),
+    );
     // Tell the hub before launching: from here the run may cost money, and if
     // the hub cannot be told, the run does not start.
     hub.post(&format!("/threads/{id}/events"), &RunEvent::Started)
@@ -935,6 +1511,7 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
             start.resumes(),
             cred,
             c.budget_usd,
+            &c.test_keys,
         )?)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -943,85 +1520,68 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
         .spawn()
         .context("could not start docker")?;
 
-    {
-        let mut stdin = child.stdin.take().context("no stdin")?;
-        stdin.write_all(prompt.as_bytes()).await?;
-        // Dropping stdin closes it, which tells Claude the task is complete.
-    }
+    // Stdin stays open so owner messages can follow the prompt. The claim's
+    // undelivered messages are in the prompt and are acked once Claude has
+    // read it.
+    let (conv, first) = Conversation::start(&prompt, &c.messages);
+    let (wrote_tx, wrote) = mpsc::unbounded_channel();
+    let (to_agent, writer) = spawn_writer(id, child.stdin.take().context("no stdin")?, wrote_tx);
+    let _ = to_agent.send(first);
+    let stderr_task = spawn_stderr_tail(child.stderr.take().context("no stderr")?, secrets.clone());
+    let (lines, reader) = spawn_reader(child.stdout.take().context("no stdout")?);
 
-    // Drain stderr alongside stdout so a chatty container cannot fill the pipe
-    // and stall; keep only its tail.
-    let stderr = child.stderr.take().context("no stderr")?;
-    let stderr_task = tokio::spawn(async move {
-        let mut tail = String::new();
-        let mut r = BufReader::new(stderr);
-        while let Ok(Some(line)) = read_capped_line(&mut r).await {
-            tail.push_str(&line);
-            tail.push('\n');
-            if tail.len() > STDERR_TAIL {
-                let cut = tail.len() - STDERR_TAIL;
-                let cut = (cut..tail.len())
-                    .find(|i| tail.is_char_boundary(*i))
-                    .unwrap_or(0);
-                tail.drain(..cut);
-            }
-        }
-        tail
-    });
-    let stdout = child.stdout.take().context("no stdout")?;
-    let mut out = BufReader::new(stdout);
-    // Claude Code's result is the last line it prints. Anything after it, or a
-    // container that does not exit cleanly, means the agent may have printed a
-    // fake result: its cost is then not trusted and the hub charges the whole
-    // amount set aside.
-    let read = async {
-        let mut result: Option<RunEvent> = None;
-        // A usage-limit report is held the same way: an agent could print a fake
-        // one to freeze its account, so only Claude's real, final result counts.
-        let mut limit: Option<Option<i64>> = None;
-        let mut after_result = false;
-        while let Some(line) = read_capped_line(&mut out).await? {
-            if result.is_some() && !line.trim().is_empty() {
-                after_result = true;
-            }
-            let events = parse_line(&line);
-            if events
-                .iter()
-                .any(|e| matches!(e, RunEvent::Finished { .. }))
-            {
-                limit = None;
-            }
-            for e in events {
-                match e {
-                    RunEvent::Finished { .. } => {
-                        result = Some(e);
-                        after_result = false;
-                    }
-                    RunEvent::LimitHit { reset_epoch } => limit = Some(reset_epoch),
-                    _ => hub.event(id, &e).await,
-                }
-            }
-        }
-        anyhow::Ok((result, limit, after_result))
-    };
-    // While the agent works, watch for the owner moving the work elsewhere.
-    let (result, limit, after_result) = tokio::select! {
-        r = read => r?,
-        w = watch_place(hub, id) => {
-            match w {
-                Watch::Moved(to) => hand_over(hub, data, id, &wt, &branch, to, child).await,
-                // Nothing is saved or reported: the work is not ours to touch.
-                Watch::Lost => {
-                    tracing::warn!(id, "the work was taken back or this worker was removed; stopping it");
-                    stop_agent(id, &mut child).await;
-                }
-            }
+    let (result, limit, after_result) = match follow(
+        hub,
+        id,
+        conv,
+        to_agent,
+        lines,
+        wrote,
+        Guard {
+            secrets: &secrets,
+            grant: grant.as_ref(),
+        },
+    )
+    .await
+    {
+        Ended::Stopped => {
+            // The owner already moved it; the hub has the last word. Nothing
+            // is saved: the work is not this runner's to touch any more.
+            tracing::info!(id, "stopped by the owner");
+            kill(hub, &mut child, id).await;
+            let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
             return Ok(());
         }
+        Ended::Moved(to) => {
+            hand_over(hub, data, id, &wt, &branch, to, &mut child).await;
+            let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
+            return Ok(());
+        }
+        Ended::Exited {
+            result,
+            limit,
+            after_result,
+        } => (result, limit, after_result),
     };
+    reader.await.context("stdout reader")??;
     let status = child.wait().await?;
     // The container is gone; its token goes with it.
+    // For pay-per-use, the gatekeeper's count is the cost: it saw every call,
+    // including any the agent made itself, and runs outside the container.
+    // Answers still finishing are waited for, so their cost is in; if they do
+    // not finish in time the count is not trusted and the hub charges the
+    // whole set-aside amount.
+    let metered_usd = match &grant {
+        Some(g) if g.finish(Duration::from_secs(30)).await => {
+            Some((c.prior_micros as u64 + g.spent_micros()) as f64 / 1_000_000.0)
+        }
+        _ => None,
+    };
+    let used_up = grant.as_ref().is_some_and(|g| g.used_up());
+    let pay_per_use = grant.is_some();
     drop(grant);
+    // The container is gone, so the writer has nothing left to do.
+    let _ = writer.await;
     let finished = match result {
         Some(RunEvent::Finished {
             ok,
@@ -1031,12 +1591,25 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
             output_tokens,
         }) => {
             let trusted = status.success() && !after_result;
+            let reported = cost_usd.filter(|_| trusted);
+            // The higher of the gatekeeper's count and Claude's own report;
+            // a pay-per-use run whose count is unknown reports nothing.
+            let cost = if pay_per_use {
+                metered_usd.map(|m| reported.map_or(m, |r| m.max(r)))
+            } else {
+                reported
+            };
+            let summary = if !ok && used_up {
+                BUDGET_STOP.to_owned()
+            } else {
+                summary
+            };
             hub.event(
                 id,
                 &RunEvent::Finished {
                     ok,
                     summary: summary.clone(),
-                    cost_usd: cost_usd.filter(|_| trusted),
+                    cost_usd: cost,
                     input_tokens,
                     output_tokens,
                 },
@@ -1044,54 +1617,39 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
             .await;
             Some((ok, summary))
         }
-        _ => None,
+        _ => {
+            // No result line at all: still report what the gatekeeper saw,
+            // and say so if the run was stopped by its budget.
+            let summary = if used_up {
+                BUDGET_STOP.to_owned()
+            } else {
+                String::new()
+            };
+            if let Some(cost) = metered_usd {
+                hub.event(
+                    id,
+                    &RunEvent::Finished {
+                        ok: false,
+                        summary: summary.clone(),
+                        cost_usd: Some(cost),
+                        input_tokens: None,
+                        output_tokens: None,
+                    },
+                )
+                .await;
+            }
+            used_up.then_some((false, summary))
+        }
     };
     let max_limit = limit.filter(|_| !after_result && c.budget_usd.is_none());
     let err = stderr_task.await.unwrap_or_default();
-    // The agent's own "done" is not enough: work only goes to review if it
-    // actually left commits on its branch.
-    let (to, note) = match finished {
-        Some((true, _)) if status.success() => match new_commits(data, &wt, &branch).await {
-            Ok(0) => (
-                ThreadState::Failed,
-                "agent said it finished but saved no commits".to_owned(),
-            ),
-            Ok(n) => (
-                ThreadState::InReview,
-                format!("agent finished with {n} new commit(s); ready for review"),
-            ),
-            Err(e) => (ThreadState::Failed, format!("could not check commits: {e}")),
-        },
-        Some((true, summary)) => (
-            ThreadState::Failed,
-            format!("container exited with {status} after the agent reported: {summary}"),
-        ),
-        // The Max account is out: back to the queue, where it waits for the
-        // reset (or the owner moves it to pay-per-use). Only for a Max run,
-        // and only when the report was Claude's last line; anything else
-        // goes to the owner rather than looping.
-        Some((false, summary)) if summary == LIMIT_STOP => {
-            if max_limit.is_some() {
-                (ThreadState::Queued, summary)
-            } else {
-                (
-                    ThreadState::NeedsYou,
-                    "Claude reported a usage limit that Decurion could not confirm; check the account."
-                        .to_owned(),
-                )
-            }
-        }
-        // Out of money for this run, not broken: the owner can give it more.
-        Some((false, summary)) if summary == BUDGET_STOP => (ThreadState::NeedsYou, summary),
-        Some((false, summary)) => (ThreadState::Failed, summary),
-        None => (
-            ThreadState::Failed,
-            format!(
-                "container ended without a result ({status}): {}",
-                err.trim()
-            ),
-        ),
+    let exit = Exit {
+        status,
+        stderr: &err,
+        pay_per_use,
+        used_up,
     };
+    let (to, note) = outcome(data, &wt, &c, finished, max_limit, exit, keys).await;
     // Save the work whatever the outcome, so it can continue anywhere later.
     // A failed save is logged and the outcome is still reported, except that
     // unsaved work never goes back in the queue, where another computer could
@@ -1114,6 +1672,7 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
             }
         }
     };
+    let note = hide(&note, &secrets);
     with_retry("report the outcome", FINAL_RETRY, async || {
         if let (ThreadState::Queued, Some(reset_epoch)) = (to, max_limit) {
             // The hub saves the outage and requeues the work in one step.
@@ -1128,6 +1687,119 @@ async fn run(hub: &Hub, data: &Path, gate: &Gate, c: Claim) -> anyhow::Result<()
         }
     })
     .await
+}
+
+/// How the container ended: its exit status, the tail of its stderr, and
+/// whether the gatekeeper ran out of the run's money.
+struct Exit<'a> {
+    status: ExitStatus,
+    stderr: &'a str,
+    /// A pay-per-use run, and whether the gatekeeper stopped it for money.
+    pay_per_use: bool,
+    used_up: bool,
+}
+
+/// Where the work goes after the run. The agent's own "done" is not enough:
+/// work only goes to review if it actually left commits on its branch, and
+/// none of them holds a test key.
+async fn outcome(
+    data: &Path,
+    wt: &Path,
+    c: &Claim,
+    finished: Option<(bool, String)>,
+    max_limit: Option<Option<i64>>,
+    exit: Exit<'_>,
+    keys: &[(String, String)],
+) -> (ThreadState, String) {
+    let Exit {
+        status,
+        stderr,
+        pay_per_use,
+        used_up,
+    } = exit;
+    let branch = c.thread.branch.as_deref().unwrap_or_default();
+    match finished {
+        Some((true, _)) if status.success() => match new_commits(data, wt, branch).await {
+            Ok(0) => (
+                ThreadState::Failed,
+                "agent said it finished but saved no commits".to_owned(),
+            ),
+            Ok(n) => match leaked_keys(data, wt, branch, keys).await {
+                Ok(found) if found.is_empty() => (
+                    ThreadState::InReview,
+                    format!("agent finished with {n} new commit(s); ready for review"),
+                ),
+                Ok(found) => (
+                    ThreadState::Failed,
+                    format!(
+                        "found the test key{} {} in the agent's commits, so the work was not \
+sent for review. Retry it and the agent will be asked to rewrite its branch without {}.",
+                        if found.len() == 1 { "" } else { "s" },
+                        found.join(", "),
+                        if found.len() == 1 { "it" } else { "them" },
+                    ),
+                ),
+                // Fail closed: unchecked work does not go to review.
+                Err(e) => (
+                    ThreadState::Failed,
+                    format!("could not check commits for test keys: {e}"),
+                ),
+            },
+            Err(e) => (ThreadState::Failed, format!("could not check commits: {e}")),
+        },
+        Some((true, summary)) => (
+            ThreadState::Failed,
+            format!("container exited with {status} after the agent reported: {summary}"),
+        ),
+        // The Max account is out: back to the queue, where it waits for the
+        // reset (or the owner moves it to pay-per-use). Only for a Max run,
+        // and only when the report was Claude's last line; anything else
+        // goes to the owner rather than looping.
+        Some((false, summary)) if summary == LIMIT_STOP => {
+            if max_limit.is_some() {
+                (ThreadState::Queued, summary)
+            } else {
+                (
+                    ThreadState::NeedsYou,
+                    "Claude reported a usage limit that Decurion could not confirm; check the account."
+                        .to_owned(),
+                )
+            }
+        }
+        // Out of money for this run, not broken: the owner can give it more.
+        // Decided by the gatekeeper's count, or by Claude Code's own limit on
+        // a pay-per-use run; never by text alone on a Max run.
+        Some((false, summary)) if used_up || (pay_per_use && summary == BUDGET_STOP) => {
+            (ThreadState::NeedsYou, BUDGET_STOP.to_owned())
+        }
+        Some((false, summary)) => (ThreadState::Failed, summary),
+        None => (
+            ThreadState::Failed,
+            format!(
+                "container ended without a result ({status}): {}",
+                stderr.trim()
+            ),
+        ),
+    }
+}
+
+/// Marks a run that could not finish as failed.
+async fn fail(hub: &Hub, id: i64, note: &str) {
+    hub.event(
+        id,
+        &RunEvent::Finished {
+            ok: false,
+            summary: note.to_owned(),
+            cost_usd: None,
+            input_tokens: None,
+            output_tokens: None,
+        },
+    )
+    .await;
+    let _ = with_retry("report the failure", FINAL_RETRY, async || {
+        hub.move_to(id, ThreadState::Failed, note).await
+    })
+    .await;
 }
 
 /// A cloud worker's identity: read from `cloud-runner.json`, or on first
@@ -1484,24 +2156,20 @@ async fn main() -> anyhow::Result<()> {
                     checkpoint = ?claim.checkpoint,
                     "running"
                 );
-                if let Err(err) = run(&hub, &data, &gate, claim).await {
-                    tracing::error!(%err, id, "run failed");
-                    hub.event(
-                        id,
-                        &RunEvent::Finished {
-                            ok: false,
-                            summary: err.to_string(),
-                            cost_usd: None,
-                            input_tokens: None,
-                            output_tokens: None,
-                        },
-                    )
-                    .await;
-                    let note = err.to_string();
-                    let _ = with_retry("report the failure", FINAL_RETRY, async || {
-                        hub.move_to(id, ThreadState::Failed, &note).await
-                    })
-                    .await;
+                // Read here, not in `run`, so its errors can be hidden too.
+                let keys = match test_keys(&hub, &data, &claim) {
+                    Ok(k) => k,
+                    Err(err) => {
+                        tracing::error!(%err, id, "could not read test keys");
+                        fail(&hub, id, &err.to_string()).await;
+                        continue;
+                    }
+                };
+                let secrets: Vec<String> = keys.iter().map(|(_, v)| v.clone()).collect();
+                if let Err(err) = run(&hub, &data, &gate, claim, &keys).await {
+                    let note = hide(&err.to_string(), &secrets);
+                    tracing::error!(err = %note, id, "run failed");
+                    fail(&hub, id, &note).await;
                 }
             }
             // The hub was updated while this runner was waiting for work.
@@ -1519,5 +2187,142 @@ async fn main() -> anyhow::Result<()> {
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn commit(dir: &Path, author: &str, msg: &str) -> anyhow::Result<String> {
+        git(
+            dir,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "--author",
+                author,
+                "-m",
+                msg,
+            ],
+        )
+        .await
+    }
+
+    /// The leak check against real git: values in a file's contents, a
+    /// binary file, a file name and an author field are all found, and a key
+    /// that is not there is not reported.
+    #[tokio::test]
+    async fn leak_check_reads_the_agents_commits() -> anyhow::Result<()> {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("git not found; skipping");
+            return Ok(());
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let data =
+            std::env::temp_dir().join(format!("decurion-leak-{}-{nanos}", std::process::id()));
+        let dir = data.join("workspaces").join("demo-7");
+        std::fs::create_dir_all(&dir)?;
+        let branch = "decurion/7";
+        let r = async {
+            git(&dir, &["init", "--quiet"]).await?;
+            // A publishable key the app already ships with.
+            std::fs::write(dir.join("public.js"), "pk = 'public-test-value-1234';\n")?;
+            git(&dir, &["add", "."]).await?;
+            commit(&dir, "t <t@example.invalid>", "base").await?;
+            std::fs::write(base_file(&dir), git(&dir, &["rev-parse", "HEAD"]).await?)?;
+            git(&dir, &["switch", "--quiet", "-c", branch]).await?;
+            let keys = |names: &[&str]| -> Vec<(String, String)> {
+                names
+                    .iter()
+                    .map(|n| {
+                        (
+                            n.to_string(),
+                            format!("{}-test-value-1234", n.to_lowercase()),
+                        )
+                    })
+                    .collect()
+            };
+            // A clean commit first: nothing is found, even though it changes
+            // the file holding a key that was there before the agent.
+            std::fs::write(dir.join("app.txt"), "uses $STRIPE_SECRET_KEY by name\n")?;
+            std::fs::write(
+                dir.join("public.js"),
+                "pk = 'public-test-value-1234';\nmore();\n",
+            )?;
+            git(&dir, &["add", "."]).await?;
+            commit(&dir, "t <t@example.invalid>", "clean").await?;
+            assert_eq!(new_commits(&data, &dir, branch).await?, 1);
+            let all = keys(&["STRIPE", "BLOB", "FILE", "AUTHOR", "UNUSED", "PUBLIC"]);
+            assert!(leaked_keys(&data, &dir, branch, &all).await?.is_empty());
+            assert!(leaked_keys(&data, &dir, branch, &[]).await?.is_empty());
+
+            std::fs::write(dir.join("config.env"), "KEY=stripe-test-value-1234\n")?;
+            let mut blob = vec![0u8, 159, 146, 150];
+            blob.extend_from_slice(b"blob-test-value-1234");
+            std::fs::write(dir.join("data.bin"), blob)?;
+            std::fs::write(dir.join("file-test-value-1234-é"), "x")?;
+            git(&dir, &["add", "."]).await?;
+            commit(&dir, "author-test-value-1234 <a@example.invalid>", "leak").await?;
+            assert_eq!(new_commits(&data, &dir, branch).await?, 2);
+            assert_eq!(
+                leaked_keys(&data, &dir, branch, &all).await?,
+                ["STRIPE", "BLOB", "FILE", "AUTHOR"]
+            );
+
+            // A hand-made commit whose message hides a value after a NUL,
+            // which `git log` would stop printing at.
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]).await?;
+            let parent = git(&dir, &["rev-parse", "HEAD"]).await?;
+            let raw = format!(
+                "tree {tree}\nparent {parent}\nauthor t <t@example.invalid> 0 +0000\n\
+                 committer t <t@example.invalid> 0 +0000\n\nhello\0message-test-value-1234\n"
+            );
+            let mut p = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args([
+                    "hash-object",
+                    "-t",
+                    "commit",
+                    "-w",
+                    "--literally",
+                    "--stdin",
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()?;
+            {
+                use std::io::Write;
+                p.stdin.take().context("stdin")?.write_all(raw.as_bytes())?;
+            }
+            let out = p.wait_with_output()?;
+            let id = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+            git(&dir, &["update-ref", &format!("refs/heads/{branch}"), &id]).await?;
+            assert_eq!(new_commits(&data, &dir, branch).await?, 3);
+            let with_message = keys(&["STRIPE", "MESSAGE"]);
+            assert_eq!(
+                leaked_keys(&data, &dir, branch, &with_message).await?,
+                ["STRIPE", "MESSAGE"]
+            );
+            anyhow::Ok(())
+        }
+        .await;
+        let _ = std::fs::remove_dir_all(&data);
+        r
     }
 }

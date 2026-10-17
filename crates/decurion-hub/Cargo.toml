@@ -13,6 +13,7 @@ reqwest.workspace = true
 axum.workspace = true
 base64 = "0.22"
 decurion-proto = { path = "../decurion-proto" }
+decurion-vault = { path = "../decurion-vault" }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 serde.workspace = true

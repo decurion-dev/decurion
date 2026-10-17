@@ -44,6 +44,7 @@
     cloud: ["M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9z"],
     pc: ["M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z", "M8 21h8", "M12 17v4"],
     phone: ["M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z", "M12 18h.01"],
+    key: ["m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4", "m21 2-9.6 9.6", "c7.5,15.5,5.5"],
     money: ["M12 2v20", "M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"],
     start: ["m6 3 14 9-14 9z"],
     tool: ["M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z"],
@@ -239,19 +240,6 @@
     keep.focus();
   });
 
-  // Moves a thread, asking first when the move stops work. Returns true when it went through.
-  D.move = async (t, m, onError) => {
-    if (m.confirm && !(await D.confirm(m.confirm(t)))) return false;
-    try {
-      await D.api(`/threads/${t.id}/move`, { method: "POST", body: JSON.stringify({ to: m.to }) });
-      D.toast(m.done, m.to === "failed" ? "close" : "done");
-      return true;
-    } catch (e) {
-      const msg = `"${m.label}" did not go through. ${e.message}`;
-      if (onError) onError(msg); else D.toast(msg, "alert");
-      return false;
-    }
-  };
   D.moveButtons = (t, { size = "", onMoved, onError, quiet = false } = {}) => (D.MOVES[t.state] ?? []).map((m) => {
     const cls = quiet ? (m.kind === "danger" ? "btn quiet danger-text" : "btn quiet") : m.kind === "danger" ? "btn quiet danger-text" : `btn ${m.kind}`;
     const b = D.el("button", { type: "button", className: `${cls} ${size}`.trim() }, m.label);
@@ -266,26 +254,122 @@
     return b;
   });
 
-  // ---------- The work panel ----------
-  // One piece of work in full: what it was asked, what it says now, what it
-  // did step by step, and the buttons to act. Opens as a side panel on a
-  // computer and full screen on a phone. The phone's back button closes it.
-  let panel, current, timer, apps = {}, onChange = () => {};
+  let apps = {};
   D.setApps = (list) => { apps = Object.fromEntries(list.map((a) => [a.id, a])); };
+  D.appName = (id) => apps[id]?.name ?? "";
+
+  document.body.classList.toggle("pro", D.pro);
+})();
+
+// ---------- Crash-safety additions ----------
+// A receipt and one retry for every change, moves that name the state you
+// saw, Stop for running work, the task tree, messages to the agent, and the
+// work panel that shows them.
+(() => {
+  const { el, icon } = D;
+  const VIA = { steer: "change of course", follow_up: "next", note: "note" };
+
+  // ---------- Receipts ----------
+  D.receipt = () => {
+    if (window.crypto?.randomUUID) return crypto.randomUUID();
+    const b = new Uint8Array(16);
+    if (window.crypto?.getRandomValues) crypto.getRandomValues(b);
+    else for (let i = 0; i < b.length; i++) b[i] = Math.floor(Math.random() * 256);
+    return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  };
+  // Every change carries a receipt. If the PC can't be reached, the same
+  // receipt goes once more, so the hub never does the same thing twice.
+  D.send = async (path, body) => {
+    const opts = { method: "POST", body: JSON.stringify({ ...body, receipt: D.receipt() }) };
+    try {
+      return await D.api(path, opts);
+    } catch (e) {
+      // D.api marks the page offline only when the request never got an answer.
+      if (!D.offline) throw e;
+      await new Promise((ok) => setTimeout(ok, 1000));
+      return D.api(path, opts);
+    }
+  };
+
+  // ---------- What is part of what ----------
+  let all = [];
+  D.setThreads = (list) => { all = list ?? []; };
+  const active = (t) => t.state !== "done" && t.state !== "failed";
+  const kidsOf = (id) => all.filter((k) => k.parent_id === id);
+  // The smaller tasks that stop too when this one stops (background ones keep going).
+  const stopsToo = (id) => kidsOf(id).filter((k) => !k.background).flatMap((k) => [...(active(k) ? [k] : []), ...stopsToo(k.id)]);
+  const alsoStops = (t) => {
+    const n = stopsToo(t.id).length;
+    return n ? ` ${D.plural(n, "smaller task")} inside it ${n === 1 ? "stops" : "stop"} too. Ones set to keep going on their own don't.` : "";
+  };
+  D.kidsOf = kidsOf;
+  D.treeLine = (t) => {
+    const notes = [], n = kidsOf(t.id).length;
+    if (t.parent_id != null) notes.push(`Part of: ${all.find((p) => p.id === t.parent_id)?.title ?? "other work"}`);
+    if (t.parent_id != null && t.background) notes.push("keeps going on its own");
+    if (n) notes.push(D.plural(n, "smaller task"));
+    return notes.join(" · ");
+  };
+
+  // ---------- Moves ----------
+  for (const list of Object.values(D.MOVES)) {
+    for (const m of list) {
+      if (m.to !== "failed" || !m.confirm) continue;
+      const ask = m.confirm;
+      m.confirm = (t) => { const [title, text, ...rest] = ask(t); return [title, text + alsoStops(t), ...rest]; };
+    }
+  }
+  D.MOVES.running = [{ to: "failed", label: "Stop", kind: "danger", done: "Stopped.",
+    confirm: (t) => [`Stop "${t.title}"?`, "The agent stops now. Changes so far are kept on its branch." + alsoStops(t), "Stop work", "Keep it"] }];
+  // Moves a thread, asking first when the move stops work, with a receipt and
+  // the state you saw: a tap on a screen that
+  // has gone stale (Stop on work that has since finished) is refused.
+  D.move = async (t, m, onError) => {
+    if (m.confirm && !(await D.confirm(m.confirm(t)))) return false;
+    try {
+      await D.send(`/threads/${t.id}/move`, { to: m.to, expect: t.state });
+      D.toast(m.done, m.to === "failed" ? "close" : "done");
+      return true;
+    } catch (e) {
+      const msg = `"${m.label}" did not go through. ${e.message}`;
+      if (onError) onError(msg); else D.toast(msg, "alert");
+      return false;
+    }
+  };
+
+  // ---------- Log lines ----------
+  // Owner and cut-off lines are written by the hub only. Agent messages are
+  // always labelled, so an agent can't pass its words off as yours.
+  D.ownerLine = (e) => {
+    if (e.kind === "owner") return `You (${VIA[e.via] ?? e.via}): ${e.text}`;
+    if (e.kind === "interrupted") {
+      return `Interrupted while running ${e.name}${e.summary ? `: ${e.summary}` : ""}. ` +
+        (e.safe_to_redo ? "Safe to run again." : "Checking what happened before redoing it.");
+    }
+    return null;
+  };
+
+  // ---------- The work panel ----------
+  // ui.js's panel, plus the task tree and a message box. The panel's body is
+  // kept while it refreshes and the message box is updated in place, so a
+  // refresh never takes away what you are typing.
+  let apps = {}, panel, cur = null, timer;
+  const setApps = D.setApps;
+  D.setApps = (list) => { apps = Object.fromEntries(list.map((a) => [a.id, a])); setApps(list); };
   // Whether a cloud worker is set up, so work can move between it and the PC.
   // The board says; elsewhere it is asked once when work is first opened.
   let cloud = null;
   D.setCloud = (v) => { cloud = !!v; };
   D.PLACES = { pc: ["pc", "Your PC"], cloud: ["cloud", "Cloud"] };
-  D.appName = (id) => apps[id]?.name ?? "";
+  const drafts = {};
 
   function ensurePanel() {
     if (panel) return panel;
-    panel = D.el("dialog", { className: "panel", "aria-labelledby": "wk-title" });
+    panel = el("dialog", { className: "panel", "aria-labelledby": "wk-title" });
     document.body.append(panel);
     panel.addEventListener("close", () => {
       clearInterval(timer);
-      current = null;
+      cur = null;
       if (history.state?.work) history.back();
     });
     panel.addEventListener("click", (e) => { if (e.target === panel) panel.close(); });
@@ -294,122 +378,226 @@
   }
 
   function timeline(ev, pro) {
-    const ol = D.el("ol", { className: "timeline" });
-    const item = (icCls, icon, ...kids) => ol.append(D.el("li", {}, D.el("span", { className: `ic ${icCls}` }, D.icon(icon)), D.el("div", { className: "txt" }, ...kids)));
-    const when = (r) => D.el("span", { className: "when" }, D.clock(r.at));
+    const ol = el("ol", { className: "timeline" });
+    const item = (icCls, ic, ...kids) => ol.append(el("li", {}, el("span", { className: `ic ${icCls}` }, icon(ic)), el("div", { className: "txt" }, ...kids)));
+    const when = (r) => el("span", { className: "when" }, D.clock(r.at));
     for (let i = 0; i < ev.length; i++) {
       const r = ev[i], e = r.event;
       if (e.kind === "started") item("", "start", "Started its sealed box", when(r));
       else if (e.kind === "limit_hit") item("bad", "alert", "The Claude Max account ran out of usage", when(r));
-      else if (e.kind === "message") item("say", "question", e.text, when(r));
+      else if (e.kind === "message") item("say", "question", `Agent: ${e.text}`, when(r));
+      else if (e.kind === "owner") item("", "send", D.ownerLine(e), when(r));
+      else if (e.kind === "interrupted") item("", "alert", D.ownerLine(e), when(r));
       else if (e.kind === "finished") {
-        const cost = pro && e.cost_usd != null ? ` · ${D.money(e.cost_usd)} so far` : "";
-        item(e.ok ? "ok" : "bad", e.ok ? "done" : "failed", D.el("b", {}, e.ok ? "Finished" : "Could not finish"), when(r), D.el("div", {}, e.summary), cost && D.el("div", { className: "hint" }, cost.slice(3)));
+        const cost = pro && e.cost_usd != null ? `${D.money(e.cost_usd)} so far` : "";
+        item(e.ok ? "ok" : "bad", e.ok ? "done" : "failed", el("b", {}, e.ok ? "Finished" : "Could not finish"), when(r), el("div", {}, e.summary), cost && el("div", { className: "hint" }, cost));
       } else if (e.kind === "tool") {
         // Simple view folds a run of tool calls into one line.
         let j = i;
         while (j + 1 < ev.length && ev[j + 1].event.kind === "tool") j++;
         const run = ev.slice(i, j + 1);
         if (pro) {
-          for (const t of run) item("", "tool", D.el("div", { className: "tool" }, D.el("b", {}, t.event.name), " ", t.event.summary), when(t));
+          for (const t of run) item("", "tool", el("div", { className: "tool" }, el("b", {}, t.event.name), " ", t.event.summary), when(t));
         } else {
           const counts = {};
           for (const t of run) counts[t.event.name] = (counts[t.event.name] ?? 0) + 1;
           const sum = Object.entries(counts).map(([n, c]) => (c > 1 ? `${n} ×${c}` : n)).join(", ");
-          const det = D.el("details", { className: "fold" },
-            D.el("summary", { className: "tools-sum" }, D.icon("right"), `Worked: ${D.plural(run.length, "step")} (${sum})`),
-            ...run.map((t) => D.el("div", { className: "tool" }, D.el("b", {}, t.event.name), " ", t.event.summary)));
-          item("", "tool", det);
+          item("", "tool", el("details", { className: "fold" },
+            el("summary", { className: "tools-sum" }, icon("right"), `Worked: ${D.plural(run.length, "step")} (${sum})`),
+            ...run.map((t) => el("div", { className: "tool" }, el("b", {}, t.event.name), " ", t.event.summary))));
         }
         i = j;
       }
     }
-    if (!ev.length) ol.append(D.el("li", {}, D.el("span", { className: "ic" }, D.icon("queued")), D.el("div", { className: "txt hint" }, "No activity yet.")));
+    if (!ev.length) ol.append(el("li", {}, el("span", { className: "ic" }, icon("queued")), el("div", { className: "txt hint" }, "No activity yet.")));
     return ol;
   }
 
-  function renderWork(t, ev) {
-    const app = apps[t.app_id];
+  const TALK = [["steer", "Change course now"], ["follow_up", "Do this next"], ["note", "Add a note"]];
+  const HOW = {
+    running: "Change course now stops its current step and gives it your message. Do this next waits until it finishes what it's doing. A note adds information without stopping it.",
+    queued: "This work is waiting for its turn. Whatever you send reaches the agent when it starts.",
+  };
+  const HOW_IDLE = "The agent isn't working on this right now. Change course now or Do this next sends the work back to the agent with your message. A note waits for the next time it works.";
+  function sentText(t, kind) {
+    if (kind === "note") return t.state === "running" ? "Note added. The agent sees it at its next step." : "Note added. The agent sees it the next time it works.";
+    if (t.state === "queued") return "Sent. The agent gets it when it starts.";
+    if (t.state === "running") return kind === "steer" ? "Sent. The agent stops its current step and reads it." : "Sent. The agent gets it when it finishes what it's doing.";
+    return `Sent. "${t.title}" went back to the agent with your message.`;
+  }
+
+  function talkBox(c) {
+    const id = c.id;
+    let sending = false;
+    const ta = el("textarea", { id: "wk-msg", rows: 3, maxLength: 4000, placeholder: "Your message to the agent",
+      "aria-describedby": "wk-msg-how wk-msg-err", dataset: { key: "wk-msg" } });
+    ta.value = drafts[id] ?? "";
+    const how = el("p", { className: "hint", id: "wk-msg-how" });
+    const waiting = el("p", { className: "waiting", hidden: true });
+    const err = el("p", { className: "field-error", id: "wk-msg-err", role: "alert" });
+    ta.oninput = () => { drafts[id] = ta.value; err.textContent = ""; };
+    const btns = TALK.map(([kind, label]) => {
+      const b = el("button", { type: "button", className: "btn" }, label);
+      b.onclick = async () => {
+        const t = c.t, text = ta.value.trim();
+        err.textContent = "";
+        if (D.offline) { err.textContent = "Your PC isn't answering. Send it when it's back."; return; }
+        if (!text) { err.textContent = "Type a message first."; ta.focus(); return; }
+        sending = true;
+        btns.forEach((x) => (x.disabled = true));
+        try {
+          await D.send(`/threads/${id}/messages`, { kind, text });
+          delete drafts[id];
+          ta.value = "";
+          D.toast(sentText(t, kind), "send");
+          c.sig = "";
+          c.changed();
+          c.load();
+        } catch (e) {
+          err.textContent = `"${label}" did not go through. ${e.message}`;
+        } finally {
+          sending = false;
+          btns.forEach((x) => (x.disabled = D.offline));
+        }
+      };
+      return b;
+    });
+    const box = el("section", { className: "talk" },
+      el("label", { className: "section-title", for: "wk-msg" }, "Tell the agent something"),
+      ta, how, el("div", { className: "row" }, ...btns), waiting, err);
+    return {
+      box, ta,
+      update(t, n) {
+        box.hidden = t.state === "done";
+        how.textContent = HOW[t.state] ?? HOW_IDLE;
+        waiting.hidden = !n;
+        waiting.replaceChildren(icon("queued"), `Waiting to reach the agent: ${D.plural(n, "message")}`);
+        if (!sending) btns.forEach((x) => (x.disabled = D.offline));
+      },
+    };
+  }
+
+  function draw(c) {
+    const t = c.t, ev = c.ev, app = apps[t.app_id];
+    const kids = kidsOf(t.id), parent = t.parent_id != null ? all.find((p) => p.id === t.parent_id) : null;
+    const waiting = c.msgs ? c.msgs.filter((m) => m.delivered_at == null).length : 0;
+    const sig = JSON.stringify([t.state, t.place, cloud, t.updated_at, t.title, ev.length, D.pro, D.offline, waiting, parent?.title,
+      kids.map((k) => [k.id, k.state, k.title, k.background])]);
+    if (sig === c.sig) return;
+    c.sig = sig;
+    const focusKey = panel.contains(document.activeElement) ? document.activeElement.dataset?.key : null;
+    if (!c.parts) {
+      const p = c.parts = {
+        head: el("header"), foot: el("footer"),
+        err: el("div", { className: "notice bad", role: "alert", hidden: true }),
+        upper: el("div", { className: "part" }), lower: el("div", { className: "part" }),
+        talk: talkBox(c),
+      };
+      p.body = el("div", { className: "work-body live" }, p.err, p.upper, p.talk.box, p.lower);
+      panel.replaceChildren(p.head, p.body, p.foot);
+    }
+    const p = c.parts;
+    const close = el("button", { type: "button", className: "btn icon quiet close", "aria-label": "Close", dataset: { key: "wk-close" } }, icon("close", "l"));
+    close.onclick = () => panel.close();
+    const head = el("header", { className: "work-head" },
+      el("div", { className: "top" }, D.pill(t.state), el("span", { className: "grow" }), close),
+      el("h2", { id: "wk-title" }, t.title),
+      el("div", { className: "meta" },
+        el("span", { className: "tag" }, icon("app"), D.appName(t.app_id) || "Unknown app"),
+        app && el("span", { className: "tag dot-sep" }, icon("ai"), D.aiLabel(app)),
+        el("span", { className: "tag dot-sep" }, icon(D.PLACES[t.place]?.[0] ?? "pc"), D.PLACES[t.place]?.[1] ?? "Your PC"),
+        el("span", { className: "tag dot-sep updated" }, `Updated ${D.ago(t.updated_at)}`)));
+    p.head.replaceWith(head);
+    p.head = head;
+
     const said = D.lastWords(ev);
-    const head = D.el("header", { className: "work-head" },
-      D.el("div", { className: "top" }, D.pill(t.state), D.el("span", { className: "grow" }),
-        Object.assign(D.el("button", { type: "button", className: "btn icon quiet close", "aria-label": "Close" }, D.icon("close", "l")), { onclick: () => panel.close() })),
-      D.el("h2", { id: "wk-title" }, t.title),
-      D.el("div", { className: "meta" },
-        D.el("span", { className: "tag" }, D.icon("app"), D.appName(t.app_id) || "Unknown app"),
-        app && D.el("span", { className: "tag dot-sep" }, D.icon("ai"), D.aiLabel(app)),
-        D.el("span", { className: "tag dot-sep" }, D.icon(D.PLACES[t.place]?.[0] ?? "pc"), D.PLACES[t.place]?.[1] ?? "Your PC"),
-        D.el("span", { className: "tag dot-sep updated" }, `Updated ${D.ago(t.updated_at)}`)));
-    const body = D.el("div", { className: "work-body live" });
-    const err = D.el("div", { className: "notice bad", role: "alert", hidden: true });
-    body.append(err);
+    const upper = [];
     if (said && t.state !== "running") {
       const label = { needs_you: "The agent is asking", in_review: "The agent's summary", failed: "What went wrong", done: "The agent's summary", queued: "Last thing it said" }[t.state];
-      body.append(D.el("section", {}, D.el("div", { className: "section-title" }, label), D.el("div", { className: `callout ${t.state}` }, said)));
+      upper.push(el("section", {}, el("div", { className: "section-title" }, label), el("div", { className: `callout ${t.state}` }, said)));
     }
-    body.append(D.el("section", {},
-      D.el("details", { className: "fold", open: t.state === "queued" || !ev.length },
-        D.el("summary", { className: "section-title" }, D.icon("right"), "What you asked"),
-        D.el("p", { className: "asked" }, t.prompt))));
-    body.append(D.el("section", {}, D.el("div", { className: "section-title" }, "Activity"), timeline(ev, D.pro)));
+    p.upper.replaceChildren(...upper);
+    p.talk.update(t, waiting);
+
+    const open = (k, key) => {
+      const b = el("button", { type: "button", className: "btn sm", "aria-label": `Open ${k.title}`, dataset: { key } }, "Open");
+      b.onclick = () => D.openWork(k, c.changed);
+      return b;
+    };
+    const lower = [];
+    if (t.parent_id != null) {
+      lower.push(el("section", {}, el("div", { className: "section-title" }, "Part of"),
+        el("div", { className: "tree-row" },
+          el("span", { className: "nm" }, parent ? parent.title : "Other work", t.background ? el("span", { className: "hint" }, " · This keeps going on its own if that one stops") : null),
+          parent && open(parent, "wk-parent"))));
+    }
+    if (kids.length) {
+      lower.push(el("section", {}, el("div", { className: "section-title" }, `Smaller tasks inside this one (${kids.length})`),
+        el("ul", { className: "kids" }, ...kids.map((k) => el("li", {}, D.pill(k.state),
+          el("span", { className: "nm" }, k.title, k.background ? el("span", { className: "hint" }, " · keeps going on its own") : null),
+          open(k, `wk-kid-${k.id}`))))));
+    }
+    lower.push(el("section", {},
+      el("details", { className: "fold", open: t.state === "queued" || !ev.length },
+        el("summary", { className: "section-title" }, icon("right"), "What you asked"),
+        el("p", { className: "asked" }, t.prompt))));
+    lower.push(el("section", {}, el("div", { className: "section-title" }, "Activity"), timeline(ev, D.pro)));
     if (D.pro) {
       const last = [...ev].reverse().find((r) => r.event.kind === "finished");
-      const kv = D.el("dl", { className: "kv" });
-      const row = (k, v) => v != null && v !== "" && kv.append(D.el("dt", {}, k), D.el("dd", {}, String(v)));
+      const kv = el("dl", { className: "kv" });
+      const row = (k, v) => v != null && v !== "" && kv.append(el("dt", {}, k), el("dd", {}, String(v)));
       row("Work id", t.id);
+      row("Part of", t.parent_id != null ? `#${t.parent_id}${t.background ? " (keeps going on its own)" : ""}` : null);
       row("Branch", t.branch);
       row("Session", t.session_id);
       row("Repo", app?.repo_path);
       if (last?.event.cost_usd != null) row("Cost so far", D.money(last.event.cost_usd) + (app?.pay_per_use ? "" : " (Max account, not billed)"));
       if (last?.event.input_tokens != null) row("Tokens", `${last.event.input_tokens.toLocaleString()} in, ${(last.event.output_tokens ?? 0).toLocaleString()} out`);
       row("Last change", new Date(t.updated_at).toLocaleString());
-      body.append(D.el("section", {}, D.el("div", { className: "section-title" }, "Details"), kv));
+      lower.push(el("section", {}, el("div", { className: "section-title" }, "Details"), kv));
     }
+    p.lower.replaceChildren(...lower);
+
     const moves = D.moveButtons(t, {
-      onMoved: () => { panel.close(); onChange(); },
-      onError: (m) => { err.hidden = false; err.replaceChildren(D.icon("alert"), D.el("span", { className: "grow" }, m)); },
+      onMoved: () => { panel.close(); c.changed(); },
+      onError: (m) => { p.err.hidden = false; p.err.replaceChildren(icon("alert"), el("span", { className: "grow" }, m)); },
     });
     // Work moves between the PC and the cloud worker at any point before it is done.
     if (cloud && t.state !== "done") {
       const to = t.place === "cloud" ? "pc" : "cloud";
-      const b = D.el("button", { type: "button", className: "btn quiet" }, D.icon(to), to === "cloud" ? "Move to cloud" : "Move to PC");
+      const b = el("button", { type: "button", className: "btn quiet" }, icon(to), to === "cloud" ? "Move to cloud" : "Move to PC");
       b.onclick = async () => {
         if (D.offline) return;
         b.disabled = true;
         try {
           await D.api(`/threads/${t.id}/place`, { method: "POST", body: JSON.stringify({ place: to }) });
           D.toast(to === "cloud" ? `Moving "${t.title}" to the cloud.` : `Moving "${t.title}" to your PC.`, "done");
-          panel.close(); onChange();
+          panel.close(); c.changed();
         } catch (e) {
           b.disabled = false;
-          err.hidden = false;
-          err.replaceChildren(D.icon("alert"), D.el("span", { className: "grow" }, `The move did not go through. ${e.message}`));
+          p.err.hidden = false;
+          p.err.replaceChildren(icon("alert"), el("span", { className: "grow" }, `The move did not go through. ${e.message}`));
         }
       };
       moves.push(b);
     }
+    moves.forEach((b, i) => { b.disabled = D.offline; b.dataset.key = `wk-move-${i}`; });
     // On a computer the main button sits on the right.
-    const foot = D.el("footer", { className: "work-foot" }, ...moves.reverse());
-    if (D.offline) foot.prepend(D.el("p", { className: "hint", style: "width:100%" }, "Answer when your PC is back."));
-    moves.forEach((b) => (b.disabled = D.offline));
-    const keepScroll = panel.querySelector(".work-body")?.scrollTop ?? 0;
-    panel.replaceChildren(head, body, ...(moves.length || D.offline ? [foot] : []));
-    body.scrollTop = keepScroll;
+    const foot = el("footer", { className: "work-foot", hidden: !moves.length && !D.offline }, ...moves.reverse());
+    if (D.offline) foot.prepend(el("p", { className: "hint", style: "width:100%" }, "Answer when your PC is back."));
+    p.foot.replaceWith(foot);
+    p.foot = foot;
+
+    if (focusKey && document.activeElement?.dataset?.key !== focusKey) panel.querySelector(`[data-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
   }
 
-  D.openWork = async (t, changed) => {
+  // D.openWork(thread, changed, { talk: true }) opens the panel; talk puts the cursor in the message box.
+  D.openWork = async (t, changed, opts = {}) => {
     ensurePanel();
-    onChange = changed ?? (() => {});
-    current = { id: t.id, sig: "" };
-    let ev = [];
-    const draw = (thread) => {
-      const sig = JSON.stringify([thread.state, thread.place, thread.updated_at, ev.length, D.pro, D.offline, cloud]);
-      if (sig === current?.sig) return;
-      current.sig = sig;
-      renderWork(thread, ev);
-    };
-    panel.replaceChildren(D.el("div", { className: "work-head" }, D.pill(t.state), D.el("h2", { id: "wk-title" }, t.title)),
-      D.el("div", { className: "work-body" }, ...[0, 1, 2].map(() => D.el("div", { className: "skeleton", style: "height:64px" }))));
+    clearInterval(timer);
+    const c = cur = { id: t.id, t, ev: [], msgs: null, sig: "", parts: null, changed: changed ?? (() => {}) };
+    panel.replaceChildren(el("div", { className: "work-head" }, D.pill(t.state), el("h2", { id: "wk-title" }, t.title)),
+      el("div", { className: "work-body" }, ...[0, 1, 2].map(() => el("div", { className: "skeleton", style: "height:64px" }))));
     if (!panel.open) {
       if (!history.state?.work) history.pushState({ work: t.id }, "", `#work-${t.id}`);
       panel.showModal();
@@ -417,26 +605,28 @@
     if (cloud === null) {
       try { cloud = (await D.api("/workers")).some((w) => w.place === "cloud"); } catch (_) { cloud = false; }
     }
-    const load = async () => {
-      if (!current || current.id !== t.id) return;
+    c.load = async () => {
+      if (cur !== c) return;
       try {
-        const [thread, more] = await Promise.all([D.api(`/threads/${t.id}`), D.events(t.id, ev.length ? ev[ev.length - 1].id : 0)]);
-        ev = ev.concat(more);
-        if (current?.id === t.id) draw(thread);
-        t = thread;
+        const [thread, more, msgs] = await Promise.all([D.api(`/threads/${t.id}`), D.events(t.id, c.ev.length ? c.ev[c.ev.length - 1].id : 0),
+          D.api(`/threads/${t.id}/messages`).catch(() => null)]);
+        if (cur !== c) return;
+        c.ev = c.ev.concat(more);
+        c.t = thread;
+        if (msgs) c.msgs = msgs;
+        draw(c);
       } catch (e) {
-        if (current?.id === t.id && !current.sig) {
-          panel.querySelector(".work-body").replaceChildren(D.el("div", { className: "notice bad" }, D.icon("alert"),
-            D.el("span", { className: "grow" }, `Couldn't load this work. ${e.message}`)));
+        if (cur === c && !c.parts) {
+          panel.querySelector(".work-body").replaceChildren(el("div", { className: "notice bad" }, icon("alert"),
+            el("span", { className: "grow" }, `Couldn't load this work. ${e.message}`)));
         }
       }
     };
-    await load();
-    clearInterval(timer);
-    timer = setInterval(load, 3000);
+    await c.load();
+    if (cur !== c) return;
+    if (opts.talk && c.parts && !c.parts.talk.box.hidden) c.parts.talk.ta.focus();
+    timer = setInterval(c.load, 3000);
   };
-  D.onPro(() => { if (current) current.sig = ""; });
-  D.onOffline(() => { if (current) current.sig = ""; });
-
-  document.body.classList.toggle("pro", D.pro);
+  D.onPro(() => { if (cur?.parts) { cur.sig = ""; draw(cur); } });
+  D.onOffline(() => { if (cur?.parts) { cur.sig = ""; draw(cur); } });
 })();

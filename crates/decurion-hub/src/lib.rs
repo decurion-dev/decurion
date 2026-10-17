@@ -20,10 +20,12 @@
 pub mod checkpoints;
 pub mod devices;
 pub mod limits;
+pub mod messages;
 pub mod push;
 pub mod secrets;
 pub mod spend;
 pub mod store;
+pub mod test_keys;
 pub mod workers;
 
 use axum::body::{Body, Bytes};
@@ -35,8 +37,8 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use checkpoints::{Files, Part};
 use decurion_proto::{
-    HelloReply, JoinReply, JoinRequest, MoveRequest, NewApp, NewCheckpoint, NewThread, Place,
-    PlaceRequest, RunEvent, RunnerHello, RULES_VERSION,
+    HelloReply, JoinReply, JoinRequest, MoveRequest, NewApp, NewCheckpoint, NewMessage, NewThread,
+    Place, PlaceRequest, RunEvent, RunnerHello, RULES_VERSION,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -70,7 +72,7 @@ pub enum Caller {
 impl Caller {
     fn actor(self) -> &'static str {
         match self {
-            Caller::Owner => "owner",
+            Caller::Owner => store::OWNER,
             Caller::Runner => "runner",
         }
     }
@@ -95,6 +97,8 @@ pub struct AppState {
     /// Address phones use to reach the hub, e.g. the Tailscale https name.
     public_url: Option<Arc<str>>,
     push: Option<push::Pusher>,
+    /// Where apps' test keys are kept. Without one, the key endpoints refuse.
+    vault: Option<decurion_vault::Vault>,
     files: Option<Arc<Files>>,
     /// When each runner was last heard from, by name.
     seen: Arc<Mutex<HashMap<String, Instant>>>,
@@ -110,6 +114,7 @@ impl AppState {
             login_code: login_code.into(),
             public_url: public_url.map(|u| u.trim_end_matches('/').into()),
             push: None,
+            vault: None,
             files: None,
             seen: Arc::default(),
         }
@@ -125,6 +130,12 @@ impl AppState {
     /// Turns on phone notifications.
     pub fn with_push(mut self, p: push::Pusher) -> Self {
         self.push = Some(p);
+        self
+    }
+
+    /// Turns on test keys, kept in `v`.
+    pub fn with_vault(mut self, v: decurion_vault::Vault) -> Self {
+        self.vault = Some(v);
         self
     }
 }
@@ -156,6 +167,12 @@ pub fn router(state: AppState) -> Router {
         .route("/threads/{id}", get(get_thread))
         .route("/threads/{id}/move", post(move_thread))
         .route("/threads/{id}/events", get(list_events).post(add_event))
+        .route(
+            "/threads/{id}/messages",
+            get(list_messages).post(add_message),
+        )
+        .route("/threads/{id}/messages/delivered", post(messages_delivered))
+        .route("/threads/{id}/live", get(live))
         .route("/runner/hello", post(runner_hello))
         .route("/runner/claim", post(runner_claim))
         .route("/pairing", post(new_pairing))
@@ -167,6 +184,11 @@ pub fn router(state: AppState) -> Router {
         .route("/limits/{profile}/pay-per-use", post(overflow))
         .route("/spend/cap", post(set_cap))
         .route("/apps/{id}/pay-per-use", post(set_pay_per_use))
+        .route(
+            "/apps/{id}/test-keys",
+            get(list_test_keys).post(add_test_key),
+        )
+        .route("/apps/{id}/test-keys/{name}/remove", post(remove_test_key))
         .route("/push/subscribe", post(push_subscribe))
         .route("/threads/{id}/place", post(set_place))
         .route("/workers", get(list_workers))
@@ -328,8 +350,11 @@ fn cloud_reach(method: &axum::http::Method, path: &str) -> CloudReach {
     };
     match (method, parts.as_slice()) {
         (&Method::POST, ["runner", "hello" | "claim"]) => CloudReach::Any,
-        (&Method::GET, ["threads", id]) => thread(id, true),
-        (&Method::POST, ["threads", id, "events" | "move"]) => thread(id, false),
+        (&Method::GET, ["threads", id] | ["threads", id, "live"]) => thread(id, true),
+        (
+            &Method::POST,
+            ["threads", id, "events" | "move"] | ["threads", id, "messages", "delivered"],
+        ) => thread(id, false),
         (_, ["runner", "threads", id, _, ..]) => thread(id, false),
         _ => CloudReach::Refused,
     }
@@ -408,6 +433,20 @@ type ApiResult<T> = Result<Json<T>, ApiError>;
 
 fn forbidden(what: &str) -> Response {
     (StatusCode::FORBIDDEN, format!("{what} is owner-only")).into_response()
+}
+
+fn not_runner(what: &str) -> Response {
+    (StatusCode::FORBIDDEN, format!("{what} is runner-only")).into_response()
+}
+
+/// 201 for something new, 200 for the answer to a resent receipt.
+fn created_or_resent<T: serde::Serialize>(value: T, fresh: bool) -> Response {
+    let code = if fresh {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    (code, Json(value)).into_response()
 }
 
 fn page(html: impl Into<String>) -> Response {
@@ -657,7 +696,7 @@ async fn add_thread(
         return forbidden("adding work");
     }
     match st.store.add_thread(&t).await {
-        Ok(t) => (StatusCode::CREATED, Json(t)).into_response(),
+        Ok((t, fresh)) => created_or_resent(t, fresh),
         Err(e) => ApiError(e).into_response(),
     }
 }
@@ -675,20 +714,32 @@ async fn move_thread(
     if c == Caller::Runner && m.to == Done {
         return forbidden("marking work done");
     }
-    let runner = runner.map(|axum::Extension(r)| r);
-    let expect = (c == Caller::Runner).then_some(Running);
-    let actor = match &runner {
-        Some(r) if c == Caller::Runner => r.actor(),
+    // The owner's tap names the state it was made on, so a stale screen
+    // (Stop on work that has since finished) cannot do something else.
+    let expect = if c == Caller::Runner {
+        Some(Running)
+    } else {
+        m.expect
+    };
+    let actor = match runner {
+        Some(axum::Extension(r)) if c == Caller::Runner => r.actor(),
         _ => c.actor().to_owned(),
     };
     match st
         .store
-        .move_thread(id, expect, m.to, &actor, m.note.as_deref())
+        .request_move(
+            id,
+            expect,
+            m.to,
+            &actor,
+            m.note.as_deref(),
+            m.receipt.as_deref(),
+        )
         .await
     {
-        Ok(t) => {
+        Ok((t, fresh)) => {
             // Only what the agent did is news; the owner's own taps are not.
-            let news = (c == Caller::Runner)
+            let news = (c == Caller::Runner && fresh)
                 .then(|| push::message_for(t.state, &t.title))
                 .flatten();
             if let (Some(p), Some((title, body))) = (st.push.clone(), news) {
@@ -729,6 +780,15 @@ async fn add_event(
     let Some(axum::Extension(r)) = runner else {
         return (StatusCode::FORBIDDEN, "events come from the runner").into_response();
     };
+    // The owner's messages and cut-off steps are the hub's record; a runner
+    // writing them could put words in the owner's mouth.
+    if e.hub_only() {
+        return (
+            StatusCode::FORBIDDEN,
+            "only the hub writes this kind of event",
+        )
+            .into_response();
+    }
     match st.store.add_event(id, &r.name, &e).await {
         Ok((eid, new_outage)) => {
             if let (true, Some(p)) = (new_outage, st.push.clone()) {
@@ -747,6 +807,62 @@ async fn add_event(
             }
             (StatusCode::CREATED, Json(eid)).into_response()
         }
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn list_messages(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Vec<decurion_proto::Message>> {
+    Ok(Json(st.store.messages(id).await?))
+}
+
+async fn add_message(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+    Json(m): Json<NewMessage>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("messaging an agent");
+    }
+    match st.store.add_message(id, &m).await {
+        Ok((msg, fresh)) => created_or_resent(msg, fresh),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+async fn live(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+) -> Response {
+    if c != Caller::Runner {
+        return not_runner("checking on a run");
+    }
+    match st.store.live(id).await {
+        Ok(l) => Json(l).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct Ids {
+    ids: Vec<i64>,
+}
+
+async fn messages_delivered(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+    Json(b): Json<Ids>,
+) -> Response {
+    if c != Caller::Runner {
+        return not_runner("marking messages delivered");
+    }
+    match st.store.mark_delivered(id, &b.ids).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => ApiError(e).into_response(),
     }
 }
@@ -1295,4 +1411,146 @@ async fn overflow(
         Ok(n) => Json(serde_json::json!({ "moved": n })).into_response(),
         Err(e) => ApiError(e).into_response(),
     }
+}
+/// The board's "save a test key" form. Its value is never logged.
+#[derive(Deserialize)]
+struct NewTestKey {
+    name: String,
+    value: String,
+}
+
+impl std::fmt::Debug for NewTestKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NewTestKey")
+            .field("name", &self.name)
+            .field("value", &"<hidden>")
+            .finish()
+    }
+}
+
+fn no_vault() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "the key store is not set up on this hub",
+    )
+        .into_response()
+}
+
+async fn list_test_keys(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("seeing test keys");
+    }
+    if st.vault.is_none() {
+        return no_vault();
+    }
+    match st.store.test_keys(id).await {
+        Ok(k) => Json(k).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// Saves a test key: the value goes to the vault, and only its name and last
+/// four characters to the database. The body is parsed here rather than by
+/// an extractor, so no error message can ever repeat the value back.
+async fn add_test_key(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+    body: axum::body::Bytes,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("adding test keys");
+    }
+    let Some(vault) = st.vault.clone() else {
+        return no_vault();
+    };
+    let Ok(k) = serde_json::from_slice::<NewTestKey>(&body) else {
+        return (StatusCode::BAD_REQUEST, "send a name and a value").into_response();
+    };
+    let checked =
+        decurion_vault::check_name(&k.name).and_then(|()| decurion_vault::check_value(&k.value));
+    if let Err(e) = checked {
+        return vault_error(e, id, &k.name);
+    }
+    if let Err(e) = st.store.app(id).await {
+        return ApiError(e).into_response();
+    }
+    // The vault first: a crash before the row is written leaves at worst an
+    // unlisted value, never a listed key with nothing behind it.
+    let last_four = decurion_vault::last_four(&k.value);
+    let NewTestKey { name, value } = k;
+    let task_name = name.clone();
+    let saved = tokio::task::spawn_blocking(move || vault.put(id, &task_name, &value)).await;
+    match saved {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return vault_error(e, id, &name),
+        Err(e) => {
+            tracing::error!(error = %e, app = id, name = %name, "key store task failed");
+            return key_store_failed();
+        }
+    }
+    match st.store.save_test_key(id, &name, &last_four).await {
+        Ok(t) => (StatusCode::CREATED, Json(t)).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// Forgets a test key: the value first, then the row, so a failed removal
+/// still shows on the board and can be retried. A crash in between leaves a
+/// listed key with no value, which the runner refuses to start with.
+async fn remove_test_key(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path((id, name)): Path<(i64, String)>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("removing test keys");
+    }
+    let Some(vault) = st.vault.clone() else {
+        return no_vault();
+    };
+    // Also keeps odd names out of the vault's file and entry names.
+    if let Err(e) = decurion_vault::check_name(&name) {
+        return vault_error(e, id, &name);
+    }
+    if let Err(e) = st.store.app(id).await {
+        return ApiError(e).into_response();
+    }
+    let task_name = name.clone();
+    match tokio::task::spawn_blocking(move || vault.delete(id, &task_name)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return vault_error(e, id, &name),
+        Err(e) => {
+            tracing::error!(error = %e, app = id, name = %name, "key store task failed");
+            return key_store_failed();
+        }
+    }
+    match st.store.remove_test_key(id, &name).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// A refused name or value says why; a key store failure says only that it
+/// failed. The value is never part of either.
+fn vault_error(e: decurion_vault::VaultError, app: i64, name: &str) -> Response {
+    match e {
+        decurion_vault::VaultError::Invalid(why) => (StatusCode::BAD_REQUEST, why).into_response(),
+        decurion_vault::VaultError::Store(why) => {
+            tracing::error!(error = %why, app, name, "key store error");
+            key_store_failed()
+        }
+    }
+}
+
+fn key_store_failed() -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "could not use the key store on this PC",
+    )
+        .into_response()
 }
