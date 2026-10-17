@@ -452,7 +452,12 @@ async fn run(
     // The grant is revoked when it drops, on every way out of this function.
     let (grant, values) = match cred {
         Credential::PayPerUse => {
-            let g = gate.keeper.grant(token);
+            // The gatekeeper prices every answer and stops the run's calls
+            // once its set-aside money is used.
+            let budget = c
+                .reserved_usd
+                .map(|usd| (usd.max(0.0) * 1_000_000.0) as u64);
+            let g = gate.keeper.grant_with_budget(token, budget);
             let v = vec![g.token().to_owned(), gate.url.clone()];
             (Some(g), v)
         }
@@ -561,6 +566,12 @@ async fn run(
     }
     let status = child.wait().await?;
     // The container is gone; its token goes with it.
+    // For pay-per-use, the gatekeeper's count is the cost: it saw every call,
+    // including any the agent made itself, and runs outside the container.
+    let metered_usd = grant
+        .as_ref()
+        .map(|g| c.prior_usd + g.spent_micros() as f64 / 1_000_000.0);
+    let used_up = grant.as_ref().is_some_and(|g| g.used_up());
     drop(grant);
     let finished = match result {
         Some(RunEvent::Finished {
@@ -571,12 +582,17 @@ async fn run(
             output_tokens,
         }) => {
             let trusted = status.success() && !after_result;
+            let summary = if !ok && used_up {
+                BUDGET_STOP.to_owned()
+            } else {
+                summary
+            };
             hub.event(
                 id,
                 &RunEvent::Finished {
                     ok,
                     summary: summary.clone(),
-                    cost_usd: cost_usd.filter(|_| trusted),
+                    cost_usd: metered_usd.or(cost_usd.filter(|_| trusted)),
                     input_tokens,
                     output_tokens,
                 },
@@ -584,7 +600,23 @@ async fn run(
             .await;
             Some((ok, summary))
         }
-        _ => None,
+        _ => {
+            // No result line at all: still report what the gatekeeper saw.
+            if let Some(cost) = metered_usd {
+                hub.event(
+                    id,
+                    &RunEvent::Finished {
+                        ok: false,
+                        summary: String::new(),
+                        cost_usd: Some(cost),
+                        input_tokens: None,
+                        output_tokens: None,
+                    },
+                )
+                .await;
+            }
+            None
+        }
     };
     let max_limit = limit.filter(|_| !after_result && c.budget_usd.is_none());
     let err = stderr_task.await.unwrap_or_default();

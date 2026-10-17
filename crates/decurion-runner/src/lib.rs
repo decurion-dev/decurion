@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::path::Path;
 
 pub mod gatekeeper;
+pub mod pricing;
 
 pub const IMAGE: &str = "decurion/claude-worker:dev";
 
