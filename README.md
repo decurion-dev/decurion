@@ -3,7 +3,11 @@ One coordinator. Every agent. Your rules. Decurion is an open-source control roo
 
 > Early development. Windows first. Nothing here is ready for daily use yet.
 
-## Try the skeleton (Windows, Docker Desktop)
+## Install
+
+Download the installer for Windows, or the `.tar.gz` for Mac or Linux, from the [Releases page](https://github.com/decurion-dev/decurion/releases). The [help pages](docs/help/src/README.md) walk you through installing, signing in your Claude accounts and adding your first app.
+
+## Run from source (Windows, Docker Desktop)
 
 1. Build the agent image: `docker build -t decurion/claude-worker:dev docker/claude-worker`
 2. Save a Claude token for profile A: run `claude setup-token`, then `python spike/wincred.py set A` and paste it (hidden input). It is stored in Windows Credential Manager as `decurion/claude-profile-A`.
@@ -19,7 +23,7 @@ Each piece of work runs in its own container with its own copy of the code. The 
 
 Every piece of work runs on your PC or on a cloud worker, under the same rules: the same sealed box, the same single credential, the same board and inbox. Open a card and choose **Move to cloud** or **Move to PC**; running work saves its progress, stops, and carries on from the same spot on the other computer, with no new questions.
 
-To add a cloud worker, start the hub with `DECURION_PUBLIC_URL` set to its Tailscale https address (the same one your phone uses), then open **Add cloud worker** on the board and follow the three steps (see `docs/help/add-cloud-worker.md`). The server costs about $5 to $25 a month at a hosting company.
+To add a cloud worker, start the hub with `DECURION_PUBLIC_URL` set to its Tailscale https address (the same one your phone uses), then open **Settings**, **Add cloud worker** on the board and follow the three steps (see `docs/help/src/add-the-cloud-worker.md`). The server costs about $5 to $25 a month at a hosting company.
 
 How it works: the hub is the meeting point for code. Runners never clone your repo themselves; they get the starting commit from the hub, and at the end of every run (or when you move the work) they hand back a saved copy: the branch and the agent's session. The cloud worker gets the run's Claude credential from the hub only while that work is running on it, and never stores it. The hub refuses any runner built with different rules (`RULES_VERSION`), and the cloud worker then rebuilds itself to the hub's commit.
 
@@ -36,5 +40,9 @@ Keep Docker Desktop's "Expose daemon on tcp://localhost:2375 without TLS" settin
 - `docker/cloud` how a cloud worker sets itself up, updates itself and walls off its agents
 - `docs/help` help pages
 - `docs/spikes` what we tested and learned
+- `docs/help` the help pages, `docs/adr` design decisions, `docs/addons` how to write an add-on
+- `packaging` the Windows installer and the Mac and Linux install scripts (see [RELEASING.md](RELEASING.md))
+
+Want to help? Read [CONTRIBUTING.md](CONTRIBUTING.md). Found a security problem? See [SECURITY.md](SECURITY.md).
 
 Licensed under Apache-2.0.

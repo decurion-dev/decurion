@@ -3,61 +3,115 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e1014" media="(prefers-color-scheme: dark)">
 <title>Decurion · Cloud worker</title>
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/ui.css">
 <style>
-  :root { --bg:#f5f4f0; --card:#fff; --ink:#1d1c19; --muted:#6f6b61; --line:#e2dfd6;
-          --accent:#3b5bdb; --ok:#2b8a3e; --warn:#c77700; --bad:#c92a2a; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#151513; --card:#1f1e1b; --ink:#ecebe6; --muted:#9a968b; --line:#33312c;
-            --accent:#7b93f0; --ok:#59c26d; --warn:#f0a43a; --bad:#f06464; }
+  /* The "Add cloud worker" page: three steps, in the board's look. */
+
+  /* ---------- Top bar ---------- */
+  .appbar {
+    position: sticky; top: 0; z-index: 10;
+    background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
   }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui, "Segoe UI", sans-serif; }
-  header { display:flex; align-items:center; gap:16px; padding:14px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
-  header h1 { font-size:18px; margin:0; }
-  header a { color:var(--accent); font-size:14px; margin-left:auto; }
-  main { max-width:760px; margin:0 auto; padding:16px; }
-  a { color:var(--accent); }
-  h2 { font-size:17px; margin:0 0 6px; display:flex; align-items:center; gap:10px; }
-  .num { display:inline-grid; place-items:center; width:26px; height:26px; flex:none; border-radius:50%; background:var(--accent); color:#fff; font-size:14px; }
-  .step, .box { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:14px; }
-  .step p, .box p { margin:8px 0; }
-  ol { margin:8px 0; padding-left:22px; }
-  li { margin:3px 0; }
-  input, textarea, button { font:inherit; color:var(--ink); background:var(--card); border:1px solid var(--line); border-radius:8px; padding:7px 10px; }
-  input { width:100%; }
-  textarea { width:100%; min-height:220px; font:12px/1.4 Consolas, monospace; white-space:pre; overflow:auto; }
-  button { cursor:pointer; background:var(--accent); color:#fff; border-color:var(--accent); }
-  button:disabled { opacity:.6; cursor:default; }
-  button.quiet { background:var(--card); color:var(--bad); border-color:var(--line); }
-  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
-  .hint { color:var(--muted); font-size:13px; }
-  .safe { border-left:3px solid var(--ok); padding-left:10px; }
-  .stop { border-left:3px solid var(--warn); padding:8px 10px; background:var(--bg); border-radius:6px; }
-  .err { color:var(--bad); }
-  .done { color:var(--ok); font-weight:600; }
-  .check { display:inline-grid; place-items:center; width:22px; height:22px; border-radius:50%; background:var(--ok); color:#fff; font-size:14px; margin-right:6px; }
-  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--muted); margin-right:6px; }
-  .dot.on { background:var(--ok); }
-  .workers { list-style:none; padding:0; margin:8px 0 0; }
-  .workers li { display:flex; gap:10px; align-items:center; padding:8px 0; border-top:1px solid var(--line); }
-  .workers li span { flex:1; }
-  [hidden] { display:none !important; }
+  .bar { min-height: 56px; display: flex; align-items: center; gap: 12px; padding: 8px 16px; max-width: 760px; margin: 0 auto; }
+  .brand { display: flex; align-items: center; gap: 10px; font: 650 16px/1 var(--font-display); letter-spacing: -0.01em; color: var(--ink); text-decoration: none; }
+  .brand svg { flex: none; border-radius: 8px; }
+  .bar .grow { flex: 1; }
+  .bar .back { padding: 0 10px 0 6px; }
+
+  /* ---------- Page ---------- */
+  .page { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; display: grid; gap: 16px; }
+  .intro { display: grid; gap: 8px; padding: 0 2px 4px; }
+  .intro h1 { font-size: 24px; font-weight: 650; }
+  .intro p { color: var(--muted); max-width: 640px; }
+  .intro p.hint { font-size: 14px; color: var(--faint); }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l); padding: 20px; display: grid; gap: 12px; min-width: 0; }
+  .card h2 { font-size: 17px; display: flex; align-items: center; gap: 10px; }
+  .card > p, .card li { overflow-wrap: anywhere; }
+  .num {
+    display: inline-grid; place-items: center; width: 28px; height: 28px; flex: none; border-radius: 50%;
+    background: var(--accent-soft); color: var(--accent-ink); font: 650 14px/1 var(--font);
+  }
+  .card ol, .card ul:not(.rows) { margin: 0; padding-left: 22px; display: grid; gap: 4px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .field-error:empty { display: none; }
+  .notice p + p { margin-top: 6px; }
+  .notice.safe { font-size: 13px; color: var(--muted); }
+
+  /* The Tailscale key and the setup text. */
+  input[type="password"] {
+    font: 15px/1.4 var(--mono); color: var(--ink);
+    background: var(--surface); border: 1px solid var(--field-line); border-radius: var(--radius-s);
+    min-height: var(--control-h); padding: 7px 10px; width: 100%;
+    transition: border-color .12s var(--ease), box-shadow .12s var(--ease);
+  }
+  #setup { display: grid; gap: 12px; }
+  textarea#setup-text {
+    min-height: 220px; font: 12px/1.45 var(--mono); white-space: pre; overflow: auto;
+    background: var(--surface-2); border-color: var(--line);
+  }
+
+  /* Step 3: one status line with a dot. */
+  .status {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    border-radius: var(--radius-s); background: var(--surface-2); font-size: 14px;
+  }
+  .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
+  .status.hint { color: var(--muted); }
+  .status.hint::before { animation: breathe 2s var(--ease) infinite; }
+  .status.done { color: var(--green); background: var(--green-soft); font-weight: 600; }
+  .status.done::before, .status.err::before { display: none; }
+  .status.err { color: var(--red); background: var(--red-soft); box-shadow: inset 0 0 0 1px var(--red-line); }
+  .tick { display: inline-grid; place-items: center; width: 22px; height: 22px; flex: none; border-radius: 50%; background: var(--green); color: var(--surface); font-size: 13px; }
+  @keyframes breathe { 50% { opacity: .35; } }
+
+  /* Your cloud workers. */
+  .rows { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); }
+  .rows li { display: flex; align-items: center; gap: 12px; padding: 10px 8px 10px 14px; min-height: 52px; }
+  .rows li + li { border-top: 1px solid var(--line); }
+  .rows li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); margin-right: 10px; vertical-align: 1px; }
+  .dot.on { background: var(--green); }
+
+  @media (max-width: 640px) {
+    .page { padding-top: 16px; }
+    .intro h1 { font-size: 22px; }
+    .card { padding: 16px; }
+    .row > .btn { flex: 1 1 auto; }
+  }
+  @media (max-width: 380px) {
+    .brand span:last-child { display: none; }
+  }
 </style>
 </head>
 <body>
-<header><h1>Decurion</h1><span>Cloud worker</span><a href="/">Back to the board</a></header>
-<main>
-  <p>A cloud worker is a small server you rent. Your agents can work there while your PC is off or busy.
-     Work moves between your PC and the cloud: open a card on the board and press <b>Move to cloud</b> or <b>Move to PC</b>.</p>
-  <p class="hint">Setting it up takes three steps and about half an hour, most of it waiting.</p>
+<header class="appbar">
+  <div class="bar">
+    <a class="brand" href="/"><span id="mark"></span><span>Decurion</span></a>
+    <span class="grow"></span>
+    <a class="btn quiet back" href="/"><span data-icon="left"></span>Back to the board</a>
+  </div>
+</header>
+<main class="page">
+  <div class="intro">
+    <h1>Cloud worker</h1>
+    <p>A cloud worker is a small server you rent. Your agents can work there while your PC is off or busy.
+       Work moves between your PC and the cloud: open a card on the board and press <b>Move to cloud</b> or <b>Move to PC</b>.</p>
+    <p class="hint">Setting it up takes three steps and about half an hour, most of it waiting.</p>
+  </div>
 
-  <section class="box" id="list-box" hidden>
+  <section class="card" id="list-box" hidden>
     <h2>Your cloud workers</h2>
-    <ul class="workers" id="workers"></ul>
+    <ul class="rows" id="workers"></ul>
   </section>
 
-  <section class="step">
+  <section class="card">
     <h2><span class="num">1</span>Make a Tailscale key</h2>
     <p>Tailscale is the private network that already lets your phone reach your PC. The new server joins it the same way, with a key.</p>
     <ol>
@@ -66,10 +120,10 @@
       <li>Press <b>Generate key</b>, copy it, and paste it here.</li>
     </ol>
     <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="tskey-auth-…" aria-label="Tailscale key">
-    <p class="hint safe">The key stays on this page. Decurion never sends it anywhere: it only goes into the setup text in step 2, and it is forgotten when you close this page.</p>
+    <p class="notice safe">The key stays on this page. Decurion never sends it anywhere: it only goes into the setup text in step 2, and it is forgotten when you close this page.</p>
   </section>
 
-  <section class="step">
+  <section class="card">
     <h2><span class="num">2</span>Create a server</h2>
     <p>Rent a small server from any hosting company that offers Ubuntu and a <b>user data</b> box, for example
        <a href="https://www.hetzner.com/cloud" target="_blank" rel="noopener noreferrer">Hetzner</a> or
@@ -79,26 +133,29 @@
       <li><b>2 CPUs and 4 GB memory</b> (more is fine)</li>
     </ul>
     <p class="hint">That costs about $5 to $25 a month, depending on the company.</p>
-    <div class="row"><button type="button" id="make">Make setup text</button></div>
-    <p class="err" id="make-err"></p>
-    <div class="stop" id="no-tailscale" hidden>
-      <p><b>Phone access comes first.</b> The cloud server reaches your PC the same way your phone does, over Tailscale, and that is not set up yet on this PC.</p>
-      <p>Set up phone access over Tailscale, then come back to this page.</p>
+    <div class="row"><button type="button" class="btn primary" id="make">Make setup text</button></div>
+    <p class="field-error" id="make-err" role="alert"></p>
+    <div class="notice warn" id="no-tailscale" hidden>
+      <span data-icon="alert"></span>
+      <div class="grow">
+        <p><b>Phone access comes first.</b> The cloud server reaches your PC the same way your phone does, over Tailscale, and that is not set up yet on this PC.</p>
+        <p>Set up phone access over Tailscale, then come back to this page.</p>
+      </div>
     </div>
     <div id="setup" hidden>
       <p>Copy this setup text. While you create the server, look for the advanced options and paste it into the box called
          <b>User data</b> or <b>Cloud config</b> (Hetzner: "Cloud config"; DigitalOcean: "Advanced options", then "Add initialization scripts").</p>
       <textarea id="setup-text" readonly aria-label="Setup text" spellcheck="false"></textarea>
-      <div class="row"><button type="button" id="copy">Copy</button><span class="hint" id="copied"></span></div>
+      <div class="row"><button type="button" class="btn" id="copy">Copy</button><span class="hint" id="copied" role="status"></span></div>
       <p class="hint">This setup text works once, within <span id="valid-for">24 hours</span>. It holds your Tailscale key and a one-time Decurion code, so do not share it.</p>
     </div>
   </section>
 
-  <section class="step">
+  <section class="card">
     <h2><span class="num">3</span>Wait for it to connect</h2>
     <p>Once the server is created, it sets itself up: it joins Tailscale, builds Decurion and then connects to your PC.
        <b>The first time takes about 10 to 20 minutes.</b> You can close this page and come back.</p>
-    <p id="wait-status" class="hint">Waiting for a setup text from step 2.</p>
+    <p id="wait-status" class="status hint" role="status">Waiting for a setup text from step 2.</p>
     <p class="hint">If it has not connected after 40 minutes, delete the server at the hosting company and start again with a new setup text.</p>
   </section>
 </main>
@@ -513,6 +570,7 @@ NoNewPrivileges=yes
 WantedBy=multi-user.target docker.service
 </script>
 
+<script src="/ui.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 async function api(path, opts = {}) {
@@ -522,6 +580,10 @@ async function api(path, opts = {}) {
   return r.status === 204 ? null : r.json();
 }
 function el(tag, attrs = {}, text = "") { const e = document.createElement(tag); Object.assign(e, attrs); e.textContent = text; return e; }
+
+// The mark and icons come from the shared ui.js.
+$("mark").append(D.mark(28));
+for (const s of document.querySelectorAll("[data-icon]")) s.replaceWith(D.icon(s.dataset.icon));
 
 // The name of the worker we are waiting for (from the last setup text), and when we started.
 let waitingFor = null, waitStart = 0;
@@ -599,7 +661,7 @@ function ago(s) {
 async function loadWorkers() {
   let list;
   try { list = await api("/workers"); }
-  catch (e) { $("wait-status").textContent = e.message; $("wait-status").className = "err"; return; }
+  catch (e) { $("wait-status").textContent = e.message; $("wait-status").className = "status err"; return; }
   const cloud = list.filter(w => w.place === "cloud");
   $("list-box").hidden = cloud.length === 0;
   $("workers").replaceChildren(...cloud.map(w => {
@@ -608,11 +670,11 @@ async function loadWorkers() {
     span.append(el("span", { className: "dot" + (w.online ? " on" : "") }), `${w.name} · ${w.online ? "connected" : ago(w.seconds_ago)}`);
     li.append(span);
     if (w.id != null) {
-      const b = el("button", { type: "button", className: "quiet" }, "Remove");
+      const b = el("button", { type: "button", className: "btn quiet danger-text sm" }, "Remove");
       b.onclick = async () => {
-        if (!confirm(`Remove ${w.name}? It stops getting work, and anything running there goes back to your PC. Delete the server at the hosting company too, so you stop paying for it.`)) return;
+        if (!(await D.confirm([`Remove ${w.name}?`, "It stops getting work, and anything running there goes back to your PC. Delete the server at the hosting company too, so you stop paying for it.", "Remove", "Keep it"]))) return;
         try { await api(`/workers/${w.id}/remove`, { method: "POST" }); loadWorkers(); }
-        catch (e) { alert(e.message); }
+        catch (e) { D.toast(e.message, "alert"); }
       };
       li.append(b);
     }
@@ -623,15 +685,15 @@ async function loadWorkers() {
   const st = $("wait-status");
   const mine = waitingFor ? cloud.find(w => w.name === waitingFor) : cloud.find(w => w.online);
   if (mine && mine.online) {
-    st.className = "done"; st.replaceChildren(el("span", { className: "check" }, "✓"), `Connected: ${mine.name} is ready for work.`);
+    st.className = "status done"; st.replaceChildren(el("span", { className: "tick" }, "✓"), `Connected: ${mine.name} is ready for work.`);
   } else if (waitingFor) {
     const min = Math.floor((Date.now() - waitStart) / 60000);
-    st.className = "hint";
+    st.className = "status hint";
     st.textContent = `Waiting for ${waitingFor} to connect… (${min} ${min === 1 ? "minute" : "minutes"} so far. This page checks every few seconds.)`;
   } else if (cloud.length) {
-    st.className = "hint"; st.textContent = "Your cloud worker is not connected right now. If you just created it, give it 10 to 20 minutes.";
+    st.className = "status hint"; st.textContent = "Your cloud worker is not connected right now. If you just created it, give it 10 to 20 minutes.";
   } else {
-    st.className = "hint"; st.textContent = "Waiting for a setup text from step 2.";
+    st.className = "status hint"; st.textContent = "Waiting for a setup text from step 2.";
   }
 }
 
