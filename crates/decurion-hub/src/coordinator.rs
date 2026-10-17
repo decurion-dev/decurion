@@ -1397,19 +1397,34 @@ impl Store {
             if goal_state(&mut tx, goal_id).await?.is_closed() {
                 continue;
             }
+            let purpose: String = r.try_get("purpose")?;
             if kind == "coordinator" {
                 // The killed turn may have left its session half-written.
                 fresh_session(&mut tx, goal_id).await?;
                 let queued: bool = sqlx::query_scalar(
                     "SELECT EXISTS (SELECT 1 FROM helper_jobs WHERE goal_id = ? AND kind = 'coordinator'
-                         AND state = 'queued')",
+                         AND state = 'queued' AND purpose = ?)",
                 )
                 .bind(goal_id)
+                .bind(&purpose)
                 .fetch_one(&mut *tx)
                 .await?;
                 if queued {
-                    // The waiting turn reads the whole conversation anyway.
-                    maybe_report(&mut tx, goal_id).await?;
+                    // A waiting turn of the same kind reads the whole conversation anyway.
+                    continue;
+                }
+            }
+            if kind == "review" {
+                let t: Option<i64> = r.try_get("thread_id")?;
+                let in_review: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM threads WHERE id = ? AND state = 'in_review')",
+                )
+                .bind(t)
+                .fetch_one(&mut *tx)
+                .await?;
+                if !in_review {
+                    // The code it was checking has moved on; its next stop in
+                    // review queues a fresh check.
                     continue;
                 }
             }
@@ -1426,7 +1441,7 @@ impl Store {
             .bind(&kind)
             .bind(goal_id)
             .bind(r.try_get::<Option<i64>, _>("thread_id")?)
-            .bind(r.try_get::<String, _>("purpose")?)
+            .bind(&purpose)
             .bind(r.try_get::<i64, _>("attempt")?)
             .bind(r.try_get::<Option<String>, _>("fix_note")?)
             .bind(r.try_get::<Option<i64>, _>("message_id")?)
@@ -1484,8 +1499,9 @@ impl Store {
                             .execute(&mut *tx)
                             .await?;
                         // A good answer makes any waiting request to fix an old one moot.
-                        sqlx::query("UPDATE helper_jobs SET state = 'cancelled', finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE goal_id = ? AND kind = 'coordinator' AND state = 'queued' AND attempt > 1")
+                        sqlx::query("UPDATE helper_jobs SET state = 'cancelled', finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE goal_id = ? AND kind = 'coordinator' AND state = 'queued' AND attempt > 1 AND purpose = ?")
                             .bind(goal_id)
+                            .bind(&purpose)
                             .execute(&mut *tx)
                             .await?;
                         if purpose == "report" {
@@ -1557,15 +1573,16 @@ impl Store {
                             .execute(&mut *tx)
                             .await?;
                         let upto: Option<i64> = row.try_get("upto_message_id")?;
-                        // A turn the owner queued meanwhile becomes the retry, so it
-                        // also carries what they said since.
+                        // A turn of the same kind queued meanwhile becomes the retry, so
+                        // it also carries what the owner said since.
                         let merged = sqlx::query(
                             "UPDATE helper_jobs SET attempt = 2, fix_note = ?, message_id = ?
-                             WHERE goal_id = ? AND kind = 'coordinator' AND state = 'queued'",
+                             WHERE goal_id = ? AND kind = 'coordinator' AND state = 'queued' AND purpose = ?",
                         )
                         .bind(clip(&why, 500))
                         .bind(upto)
                         .bind(goal_id)
+                        .bind(&purpose)
                         .execute(&mut *tx)
                         .await?;
                         if merged.rows_affected() == 0 {
@@ -1789,7 +1806,10 @@ impl Store {
             ThreadState::Queued
                 if matches!(
                     review,
-                    ReviewState::Reviewing | ReviewState::Passed | ReviewState::NeedsALook
+                    ReviewState::Reviewing
+                        | ReviewState::Passed
+                        | ReviewState::NeedsALook
+                        | ReviewState::Failed
                 ) =>
             {
                 // The owner sent it back to its agent: it will be checked again.

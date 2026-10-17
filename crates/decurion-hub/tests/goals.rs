@@ -912,3 +912,136 @@ async fn a_check_missed_in_a_crash_is_queued_again() {
     helper(&r, "review", r#"{"pass": true, "summary": "Works."}"#, None).await;
     assert_eq!(view(&r, goal).await["pieces"][0]["review"], "passed");
 }
+
+/// Claims the next helper job, whatever it is, without finishing it.
+async fn claim_any(r: &axum::Router) -> Value {
+    let claim = ok(
+        r,
+        "POST",
+        "/api/runner/helper/claim",
+        RUNNER,
+        json!({"runner":"local"}),
+    )
+    .await;
+    let id = claim["job_id"].as_i64().expect("job id");
+    ok(
+        r,
+        "POST",
+        &format!("/api/runner/helper/{id}/started"),
+        RUNNER,
+        json!({}),
+    )
+    .await;
+    claim
+}
+
+async fn finish(r: &axum::Router, claim: &Value, text: &str) {
+    let id = claim["job_id"].as_i64().expect("job id");
+    ok(
+        r,
+        "POST",
+        &format!("/api/runner/helper/{id}/finish"),
+        RUNNER,
+        json!({"ok": true, "text": text, "cost_usd": 0.02}),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_failed_piece_tried_again_is_checked_again() {
+    let (r, _) = hub().await;
+    let (goal, thread) = approved_one_piece(&r).await;
+    let check = claim_any(&r).await;
+    assert_eq!(check["kind"], "review");
+    // The owner gives up on it, then tries it again.
+    ok(
+        &r,
+        "POST",
+        &format!("/api/threads/{thread}/move"),
+        OWNER,
+        json!({"to":"failed"}),
+    )
+    .await;
+    finish(&r, &check, r#"{"pass": true, "summary": "Works."}"#).await;
+    helper(
+        &r,
+        "coordinator",
+        r#"{"say": "It could not be finished."}"#,
+        None,
+    )
+    .await;
+    assert_eq!(view(&r, goal).await["pieces"][0]["review"], "failed");
+    ok(
+        &r,
+        "POST",
+        &format!("/api/threads/{thread}/move"),
+        OWNER,
+        json!({"to":"queued"}),
+    )
+    .await;
+    assert_eq!(view(&r, goal).await["pieces"][0]["review"], "building");
+}
+
+#[tokio::test]
+async fn a_talk_turn_retry_does_not_become_the_report() {
+    let (r, _) = hub().await;
+    let (goal, _) = approved_one_piece(&r).await;
+    ok(
+        &r,
+        "POST",
+        &format!("/api/goals/{goal}/say"),
+        OWNER,
+        json!({"text": "Is the menu blue?"}),
+    )
+    .await;
+    let check = claim_any(&r).await;
+    assert_eq!(check["kind"], "review");
+    let talk = claim_any(&r).await;
+    assert_eq!(talk["kind"], "coordinator");
+    finish(&r, &check, r#"{"pass": true, "summary": "Works."}"#).await;
+    finish(&r, &talk, "no json").await;
+    let report = claim_any(&r).await;
+    assert!(report["prompt"]
+        .as_str()
+        .is_some_and(|p| !p.contains("could not be used")));
+    finish(&r, &report, r#"{"say": "Here is what was done."}"#).await;
+    let retry = claim_any(&r).await;
+    assert!(
+        retry["prompt"]
+            .as_str()
+            .is_some_and(|p| p.contains("could not be used")),
+        "{retry}"
+    );
+}
+
+#[tokio::test]
+async fn a_restart_keeps_a_talk_turn_when_a_report_waits() {
+    let (r, _) = hub().await;
+    let (goal, _) = approved_one_piece(&r).await;
+    ok(
+        &r,
+        "POST",
+        &format!("/api/goals/{goal}/say"),
+        OWNER,
+        json!({"text": "Is the menu blue?"}),
+    )
+    .await;
+    let check = claim_any(&r).await;
+    let talk = claim_any(&r).await;
+    assert_eq!(talk["kind"], "coordinator");
+    finish(&r, &check, r#"{"pass": true, "summary": "Works."}"#).await;
+    ok(
+        &r,
+        "POST",
+        "/api/runner/hello",
+        RUNNER,
+        json!({"runner":"local"}),
+    )
+    .await;
+    let first = claim_any(&r).await;
+    finish(&r, &first, r#"{"say": "Here is what was done."}"#).await;
+    let second = claim_any(&r).await;
+    assert_eq!(second["kind"], "coordinator");
+    finish(&r, &second, r#"{"say": "Yes, it is blue."}"#).await;
+    no_helper(&r).await;
+}

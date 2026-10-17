@@ -843,7 +843,9 @@ async fn helper_container(
 
 /// How long a helper job's end keeps being retried while the hub is down
 /// or failing.
-const FINISH_RETRY_FOR: Duration = Duration::from_secs(60 * 60);
+/// Short enough that a hub stuck failing does not hold up every goal's
+/// helpers for long.
+const FINISH_RETRY_FOR: Duration = Duration::from_secs(10 * 60);
 
 /// Reports a helper job's end, trying again for a while if the hub is down or
 /// failing. If it never gets through, the hub hands the job out again once
