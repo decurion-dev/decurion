@@ -827,7 +827,6 @@ impl Store {
         // read-only
         let row = sqlx::query(&format!(
             "SELECT w.state, w.head, w.url, w.base_ref, w.app_id, a.repo_path, t.title, t.ai,
-                    CASE WHEN w.health_head = w.head THEN w.health END AS health,
                     {FIX_UNDER_WAY} AS fixing
              FROM pr_watches w JOIN threads t ON t.id = w.thread_id JOIN apps a ON a.id = w.app_id
              WHERE w.thread_id = ?"
@@ -845,7 +844,6 @@ impl Store {
             repo_path: row.try_get("repo_path")?,
             title: row.try_get("title")?,
             ai: row.try_get("ai")?,
-            health: row.try_get("health")?,
             fixing: row.try_get("fixing")?,
         };
         target.check()?;
@@ -926,8 +924,6 @@ struct UpdateTarget {
     repo_path: String,
     title: String,
     ai: String,
-    /// What GitHub said about `head`, if anything.
-    health: Option<String>,
 }
 
 impl UpdateTarget {
@@ -1011,7 +1007,9 @@ pub async fn start_update(
         .await
         .is_ok()
     };
-    if has_it && target.health.as_deref() != Some("dirty") {
+    // Already holding that commit, a run could only fail its merge check,
+    // whatever GitHub last said.
+    if has_it {
         return Err(StoreError::Refused(format!(
             "Already up to date with {base}. Nothing was started."
         )));

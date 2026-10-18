@@ -2451,17 +2451,22 @@ async fn bring_up_to_date_is_refused_with_nothing_started_when_it_cannot_or_need
 }
 
 /// GitHub says it conflicts, though the pull request already holds main's
-/// newest commit: the owner can still start it.
+/// newest commit: a run could only fail its merge check, so none starts.
+/// Once main moves on, it does.
 #[tokio::test]
-async fn a_conflicting_pull_request_can_be_brought_up_to_date_whatever_main_is_at() {
+async fn a_pull_request_that_already_holds_main_is_not_brought_up_to_date_again() {
     let h = hub(Tok::Fixed).await;
     let (repo, bare, thread, head, _branch) = sent_pr(&h).await;
     fetch_from(&repo, &bare);
     github_says(&h, "dirty", &head);
     decurion_hub::pr_watch::poll(&h.state).await;
-    let (s, v) = bring_up(&h, thread, "update-dirty-1").await;
-    assert!(s.is_success(), "{v}");
     assert_eq!(watched(&h).await[0]["health"], "Conflicts with main");
+    let (s, v) = bring_up(&h, thread, "update-dirty-1").await;
+    refused(s, &v, "Already up to date with main");
+    assert_eq!(thread_count(&h).await, 1);
+    main_moves(&h, &bare, "README.md", "newest\n");
+    let (s, v) = bring_up(&h, thread, "update-dirty-2").await;
+    assert!(s.is_success(), "{v}");
 }
 
 /// Like [`main_moves`], with several files.
