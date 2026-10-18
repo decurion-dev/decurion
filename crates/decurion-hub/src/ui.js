@@ -93,6 +93,21 @@
     return s;
   };
 
+  // The phone's bottom tabs, the same on the inbox and the goals page so the
+  // phone feels like one app. Inbox, Board and Settings are hash routes of
+  // /inbox (a link to another hash of the page you are on does not reload
+  // it); Goals is its own page. Each page styles .tabbar in its own look.
+  // The badges start hidden; the page fills them in.
+  D.phoneTabs = (current) => D.el("nav", { className: "tabbar", "aria-label": "Sections" },
+    D.el("div", { className: "tabs" }, [
+      ["inbox", "/inbox#inbox", "Inbox", "inbox", "badge"],
+      ["board", "/inbox#board", "Board", "board"],
+      ["goals", "/goals", "Goals", "send", "goals-badge"],
+      ["settings", "/inbox#settings", "Settings", "settings"],
+    ].map(([tab, href, label, icon, badge]) => D.el("a", { className: "tab", id: `tab-${tab}`, href, "aria-current": tab === current ? "page" : null },
+      D.el("span", { className: "ind" }, D.icon(icon), badge && D.el("span", { className: "badge", id: badge, hidden: true })),
+      D.el("span", {}, label)))));
+
   // ---------- States ----------
   // One word, one symbol and one color per state, everywhere.
   D.STATES = {

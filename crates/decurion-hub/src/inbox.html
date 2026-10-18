@@ -239,14 +239,8 @@
   </section>
 </main>
 
-<nav class="tabbar" aria-label="Sections">
-  <div class="tabs">
-    <a class="tab" id="tab-inbox" href="#inbox"><span class="ind"><span class="badge" id="badge" hidden></span></span><span>Inbox</span></a>
-    <a class="tab" id="tab-board" href="#board"><span class="ind"></span><span>Board</span></a>
-    <a class="tab" id="tab-goals" href="/goals"><span class="ind"><span class="badge" id="goals-badge" hidden></span></span><span>Goals</span></a>
-    <a class="tab" id="tab-settings" href="#settings"><span class="ind"></span><span>Settings</span></a>
-  </div>
-</nav>
+<!-- The bottom tabs, shared with the goals page: D.phoneTabs in ui.js. -->
+<nav class="tabbar" id="tabbar" aria-label="Sections"></nav>
 
 <script src="/ui.js"></script>
 <script src="/compose.js"></script>
@@ -254,6 +248,7 @@
 <script>
 "use strict";
 const { el, $ } = D;
+$("tabbar").replaceWith(D.phoneTabs("inbox"));
 
 // What each state in the inbox means, in one plain line.
 const MEANS = {
@@ -319,10 +314,22 @@ const boardTails = () => boardItems().slice(0, BOARD_LIMIT).filter((t) => wantsT
   .map((t) => loadTail(t, 5, t.state === "running"));
 
 // ---------- Loading ----------
+// The Goals tab's badge: goals waiting on you, with questions to answer or a
+// plan to approve (the project lead is not thinking). If the hub can't say,
+// the badge stays as it was.
+async function goalsBadge() {
+  let n;
+  try { n = (await D.api("/goals")).filter((g) => !g.busy && (g.state === "talking" || g.state === "plan_ready")).length; }
+  catch (_) { return; }
+  $("goals-badge").hidden = n === 0;
+  $("goals-badge").textContent = n > 99 ? "99+" : n;
+  $("tab-goals").setAttribute("aria-label", n ? `Goals, ${D.plural(n, "goal")} waiting on you` : "Goals");
+}
 let busy = false, again = false;
 async function refresh() {
   if (busy) { again = true; return; }
   busy = true;
+  goalsBadge();
   try {
     // Hubs without the limits endpoint answer 404; that just means no limits.
     const [apps, list, limits, signIns] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/limits").catch(() => []),
@@ -723,10 +730,6 @@ for (const t of TABS) {
     window.scrollTo({ top: 0, behavior: "smooth" });
   });
 }
-$("tab-inbox").querySelector(".ind").prepend(D.icon("inbox"));
-$("tab-board").querySelector(".ind").append(D.icon("board"));
-$("tab-goals").querySelector(".ind").prepend(D.icon("send"));
-$("tab-settings").querySelector(".ind").append(D.icon("settings"));
 $("mark").replaceWith(D.mark(26));
 if (location.hash.startsWith("#work-")) history.replaceState(null, "", location.pathname);
 S.tab = routeOf(location.hash) ?? "inbox";

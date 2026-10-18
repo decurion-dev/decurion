@@ -27,7 +27,8 @@ work, each with how you will know it is done.
 
 - Press **Open the visual plan** to see a page of pictures: how the app looks
   today beside how it will look after the change. For a new app, you see
-  mockups.
+  mockups. On your phone it opens inside the app; press **Back to the goal**
+  when you are done.
 - Want something different? Type it. You get a new plan.
 - Happy with it? Press **Approve plan**. That is the only approval the goal needs.
 
@@ -38,7 +39,11 @@ built, a checker agent tries it in a separate copy, takes "as built"
 pictures, and either passes it or sends it back with notes. A piece gets at
 most two checks; if it still has problems, it is marked **needs a look**.
 
-You can stop the goal at any time with **Stop goal**.
+You can stop the goal at any time with **Stop goal**, under the **•••** button.
+
+Your project lead keeps short notes about each app, such as how its tests run.
+To see them, press **•••**, then **Notes on this app**. Remove any note that is
+wrong or out of date.
 
 ## When it is ready
 
