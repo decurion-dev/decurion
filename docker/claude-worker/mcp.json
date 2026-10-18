@@ -14,7 +14,8 @@
         "--output-dir", "/tmp/playwright-mcp"
       ],
       "env": {
-        "PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright"
+        "PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright",
+        "PLAYWRIGHT_DISABLE_FORCED_CHROMIUM_PROXIED_LOOPBACK": "1"
       }
     }
   }

@@ -211,6 +211,10 @@ function mergeStates(list) {
 }
 
 async function launch() {
+  // Playwright sends even localhost through the proxy unless told not to,
+  // whatever the bypass list says; the gate then refuses it, and the app
+  // being tested (on this box's own localhost) never shows.
+  process.env.PLAYWRIGHT_DISABLE_FORCED_CHROMIUM_PROXIED_LOOPBACK = '1';
   const { chromium } = requireMcp('playwright-core');
   // Over a pipe (Playwright's default): no debugging port to reach.
   // Chromium's own sandbox cannot start in a box with no capabilities; the
