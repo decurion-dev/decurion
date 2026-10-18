@@ -7,7 +7,7 @@ A **test key** works only with a service's test or sandbox mode. It cannot charg
 ## Add a test key
 
 1. Open the board and click **Settings**.
-2. Find **Test keys**, then the app the key is for.
+2. Open the **Test keys** tab and find the app the key is for.
 3. In **Name**, type the name your app reads the key from, such as `STRIPE_SECRET_KEY`. Use capital letters, numbers and `_`.
 4. In **Key**, paste the key. Click **Show** if you want to check it.
 5. Click **Save key**.

@@ -391,9 +391,9 @@
     $("page-title").textContent = view === "settings" ? "Settings" : "Board";
     document.title = view === "settings" ? "Settings · Decurion" : "Decurion";
     if (view === "settings") {
-      const target = D.settings.show(h.split("/")[1]);
-      if (target) requestAnimationFrame(() => target.scrollIntoView({ block: "start" }));
-      else window.scrollTo(0, 0);
+      // Each settings tab opens at its top.
+      D.settings.show(h.split("/")[1]);
+      window.scrollTo(0, 0);
     } else D.settings.hide();
     renderTop();
   }
