@@ -1,6 +1,6 @@
 # ADR 0002: One-tap deploy
 
-- **Status:** Proposed
+- **Status:** Accepted. A first version was built on 2026-10-18; see **As built** below, which wins where it differs from the rest of this page.
 - **Date:** 2026-10-18
 - **Deciders:** the owner (final say), maintainers
 - **Phase:** C3, after the first real run on the owner's PC. Parts that need that run are marked **Settle after the first run**.
@@ -28,6 +28,18 @@ You tap **Deploy** once. Decurion does the whole release and tells you when it i
 - The steps for deploying an app are written down once, in the app, and you approve them once. If they change, the button waits until you look at the change.
 - The key that deploys an app can deploy only that app. It stays in this PC's password store. No agent ever sees it.
 - If something goes wrong, the live site stays as it was where the host allows it, you see why in plain words, and you can tap **Try again**. If a release is live but bad, **Go back** returns to the last good one, also with one tap.
+
+## As built (2026-10-18)
+
+The owner asked for this to be built ahead of the first real run, starting with the EMR, and decided these changes from the design below:
+
+- **Apps with patient data may deploy.** The EMR holds patient data, and the owner chose Yes to letting its Deploy button release it (2026-10-18). There is no "no patient data" mark that blocks deploys. What still holds is that Decurion never reads an app's data: it starts the app's own release and keeps what the steps print, which is the app's script's job to keep free of patient details.
+- **The steps live in the app's rules, not in the repo.** The owner saves them in Settings, on the app's own page (`can_deploy`, `deploy_steps`, `deploy_site` on `apps`, owned by the per-app rules work). They are plain commands, one per line, run without a shell (`decurion_proto::deploy::parse_steps`). There is no `.decurion/deploy.toml`.
+- **They run on the owner's PC, in a clean copy, with the PC's own sign-ins.** Each deploy runs in the hub's own copy of the repo (`<data>/saved-work/deploys/app-N`) checked out at the exact merged commit, never in the owner's folder and never in an agent box. The steps use the PC's own sign-ins (for the EMR, the AWS command line's), so there is no per-app deploy key in the vault. The hub's own keys are kept out of the steps' surroundings.
+- **Changed steps are shown, not approved separately.** Files the steps name (such as `scripts/deploy-prod.mjs`) are hashed at each release. When one changed since the last release, the card names it and the button says "Deploy new steps", which shows the steps before the one tap that runs them. The run refuses if the file changed again after the card was drawn. Agent work that touches those files is held for the owner like a protected part (`protected.rs`).
+- **Not built yet:** Go back to the last good release, provider APIs (Netlify, Vercel and the rest), and checking the site after the release (the EMR's own script checks it).
+
+Code: `crates/decurion-hub/src/deploy.rs` (cards, the run, routes), `migrations/0100_deploys.sql` (`deploys`, `deploy_audit`), the Today strip (`today.rs`), and the deploy box on the board and the phone (`ui.js`). Help: `docs/help/src/deploy-your-app.md`. Tests: `crates/decurion-hub/tests/deploy.rs`.
 
 ## Context
 

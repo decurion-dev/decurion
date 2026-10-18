@@ -21,7 +21,7 @@ const PASS: &str = r#"{"pass": true, "summary": "Looks good."}"#;
 
 struct Hub {
     r: axum::Router,
-    _store: Store,
+    store: Store,
     dir: PathBuf,
 }
 
@@ -49,7 +49,7 @@ async fn hub() -> Hub {
     );
     Hub {
         r,
-        _store: store,
+        store,
         dir,
     }
 }
@@ -570,4 +570,29 @@ async fn a_piece_that_cannot_be_checked_is_held() {
             .any(|n| n.contains("could not check its protected parts")),
         "{notes:?}"
     );
+}
+
+#[tokio::test]
+async fn a_piece_changing_a_file_the_deploy_steps_run_is_held_without_a_list() {
+    let h = hub().await;
+    let (goal, thread, branch) = claimed_piece(&h, None).await;
+    // The owner's rules for the app: Deploy from Decurion, running a script.
+    sqlx::query("UPDATE apps SET can_deploy = 1, deploy_steps = ? WHERE name = 'demo'")
+        .bind("npm ci\nnode scripts/ship.mjs\n")
+        .execute(h.store.pool())
+        .await
+        .expect("rule");
+    save_work(
+        &h,
+        thread,
+        &branch,
+        &[("scripts/ship.mjs", Some("// ship it somewhere else\n"))],
+    )
+    .await;
+    to_review(&h, thread).await;
+    helper(&h.r, "review", PASS).await;
+    let (p, _) = piece(&h, goal).await;
+    assert_eq!(p["review"], "needs_a_look", "{p}");
+    let summary = p["review_summary"].as_str().expect("summary");
+    assert!(summary.contains("(scripts/ship.mjs)"), "{summary}");
 }

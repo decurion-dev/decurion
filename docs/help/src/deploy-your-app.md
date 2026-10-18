@@ -1,0 +1,65 @@
+# Deploy your app in one tap
+
+This page shows how to put your app live after you merge, with one tap on the board or your phone.
+
+After you merge a pull request on GitHub, the new version is not live yet. With deploys turned on for an app, Decurion notices the merge and shows **Ready to deploy** on that app's line. Tap **Deploy** once, and Decurion runs the app's own release on your PC and tells you when it is live. That one tap is the only ask: there is no "are you sure".
+
+## Turn deploys on for an app
+
+You do this once per app.
+
+1. Open **Settings**, then **Apps**, then the app. Its **Rules** card is at the top.
+2. Turn **Deploy from Decurion** on. (**Full control** turns it on together with **Merge from Decurion**; **PR only** turns both off.)
+3. In **Deploy steps**, write the commands that release the app, one per line, the same ones you'd type in the app's folder. For example:
+
+   ```text
+   npm ci
+   npm ci --prefix infra
+   node scripts/deploy-prod.mjs
+   ```
+
+4. In **Live site**, put where the app opens, such as `https://app.pvmedispa.com`. The **Open site** button uses it.
+5. Save.
+
+Each line runs as one command. Decurion does not use a terminal to run them, so marks like `&&`, `|` or `>` are refused: put each command on its own line instead. At most 8 lines.
+
+New apps start with deploys off. Turning **Deploy from Decurion** off again removes the button at once.
+
+## Deploy after a merge
+
+1. Merge the pull request on GitHub, as usual.
+2. Within a couple of minutes, the app's line on the board's **Today** strip and the phone's **Today** card says **Ready to deploy**, and your phone gets a notice. **What's in it** lists the changes since the last release. To look right away, tap **Check for changes**.
+3. Tap **Deploy**.
+
+The card shows how far it has got, such as "Step 3 of 3: node scripts/deploy-prod.mjs · 2/5 Snapshot". When it finishes, it says **Live** with an **Open site** button, and your phone gets a notice.
+
+If you merge again before you tap, the same card moves to the newest version. You are never asked twice. **Not now** hides the card until the next merge.
+
+## What Decurion does when you tap
+
+- It takes the exact version the card showed. If something newer was merged in the meantime, it says so and the card updates, so you never release something you were not shown.
+- It makes a clean copy of that version on your PC, in Decurion's own folder. Your app's folder is not touched.
+- It runs your deploy steps there, in order, with this PC's own sign-ins, such as the AWS command line's. Decurion's own keys are kept out of them.
+- It stops at the first step that fails.
+
+Only you can start a deploy. Agents, the project lead, voice, and the cloud worker cannot. Decurion never deploys by itself after a merge.
+
+Decurion does not read your app's data. It keeps what the deploy steps print so you can see what happened, so make sure your deploy script never prints patient details.
+
+## When the deploy steps change
+
+Your deploy steps can run scripts from the app, such as `scripts/deploy-prod.mjs`. If one of those changed since the last release, the card says **Deploy steps changed** and names the file, and the button says **Deploy new steps**. Tapping it shows the steps first, so you can check them before they run.
+
+Work by agents that changes one of those files is also held for you at review, like a protected part. See [Choose your rules](choose-your-rules.md).
+
+## When a deploy fails
+
+The card says **Deploy failed** and which step stopped. Tap **Details** to see everything the steps printed, then **Try again** once you have fixed the cause. Common causes:
+
+- **"Decurion could not find npm on this PC."** Install the program the step names, then tap **Try again**.
+- **An AWS or other sign-in has run out.** Sign in again on this PC in a terminal, then tap **Try again**.
+- **"Decurion stopped while this deploy was running."** The PC or Decurion restarted partway through, so part of the release may be live. Open the site to check, then tap **Try again**.
+
+A deploy that runs longer than 90 minutes is stopped.
+
+One app deploys at a time. If another app is deploying, wait for it to finish, then tap **Deploy** again.
