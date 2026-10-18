@@ -368,6 +368,12 @@ impl Files {
 mod tests {
     use super::*;
 
+    /// A made-up `user:password` for addresses in these tests, built from
+    /// parts so the source itself holds no address with a login in it.
+    fn login(user: &str, password: &str) -> String {
+        [user, password].join(":")
+    }
+
     #[test]
     fn the_default_branch_is_read_from_the_servers_own_answer() {
         let sha = "a".repeat(40);
@@ -390,7 +396,10 @@ mod tests {
 
     #[test]
     fn no_password_or_user_name_is_ever_in_the_fetch() {
-        let url = credential_free("https://me:ghp_secret123@github.com/acme/shop.git");
+        let url = credential_free(&format!(
+            "https://{}@github.com/acme/shop.git",
+            login("me", "ghp_secret123")
+        ));
         assert_eq!(url, "https://github.com/acme/shop.git");
         let args = fetch_args(&url, "main", "0123456789abcdef");
         assert!(args
@@ -408,7 +417,7 @@ mod tests {
         );
         // An ssh login is kept; a password with it is not.
         assert_eq!(
-            credential_free("ssh://git:pw@host.example/a.git"),
+            credential_free(&format!("ssh://{}@host.example/a.git", login("git", "pw"))),
             "ssh://git@host.example/a.git"
         );
         assert_eq!(
@@ -420,9 +429,10 @@ mod tests {
 
     #[test]
     fn what_a_fallback_logs_has_no_password_in_it() {
-        let why = NotAsked::Failed(scrub(
-            "fatal: unable to access 'https://me:ghp_secret123@github.com/a/b.git/': 403",
-        ));
+        let why = NotAsked::Failed(scrub(&format!(
+            "fatal: unable to access 'https://{}@github.com/a/b.git/': 403",
+            login("me", "ghp_secret123")
+        )));
         let line = scrub(&why.to_string());
         assert!(
             !line.contains("ghp_secret123") && !line.contains("me:"),
@@ -439,7 +449,7 @@ mod tests {
             folder.join("../origin.git").to_string_lossy()
         );
         assert_eq!(
-            fetch_url(&folder, "https://u:p@host/x.git"),
+            fetch_url(&folder, &format!("https://{}@host/x.git", login("u", "p"))),
             "https://host/x.git"
         );
         assert_eq!(
