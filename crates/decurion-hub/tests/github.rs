@@ -43,6 +43,8 @@ struct Fake {
     heads: HashMap<i64, String>,
     /// The commit GitHub made on the base branch for each merged one.
     merge_commits: HashMap<i64, String>,
+    /// The branch each pull request merges into ("main" when left out).
+    bases: HashMap<i64, String>,
     /// Comments on lines of code, plain comments and reviews, as GitHub
     /// lists them.
     line: Vec<Value>,
@@ -130,7 +132,8 @@ async fn fake_pr(
         "user": { "login": ME },
         "head": { "sha": f.heads.get(&n) },
         "merge_commit_sha": f.merge_commits.get(&n),
-        "mergeable": state != "unknown",
+        "base": { "ref": f.bases.get(&n).cloned().unwrap_or("main".into()) },
+        "mergeable": if state == "unknown" { Value::Null } else { json!(true) },
         "mergeable_state": state,
     }))
 }
@@ -1194,6 +1197,50 @@ async fn decurion_watches_its_pull_request_until_it_is_merged() {
         v.as_str().expect("text").contains("merged or closed"),
         "{v}"
     );
+}
+
+/// The watcher reads how the pull request stands against its base branch
+/// from the pull request itself, and shows it only while GitHub said it
+/// about the commit Decurion pushed.
+#[tokio::test]
+async fn the_watcher_says_when_a_pull_request_conflicts_or_falls_behind() {
+    let h = hub(Tok::Fixed).await;
+    let (_repo, _bare, _thread, head, _branch) = sent_pr(&h).await;
+    let health = |w: &Value| w[0]["health"].clone();
+    let set = |state: &str, at: Option<&str>| {
+        let mut f = h.fake.lock().expect("fake");
+        f.merge_state.insert(1, state.into());
+        match at {
+            Some(sha) => f.heads.insert(1, sha.into()),
+            None => f.heads.remove(&1),
+        };
+    };
+    set("dirty", Some(&head));
+    decurion_hub::pr_watch::poll(&h.state).await;
+    let w = watched(&h).await;
+    assert_eq!(health(&w), "Conflicts with main", "{w}");
+    assert_eq!(w[0]["updating"], false);
+    let base: Option<String> = sqlx::query_scalar("SELECT base_ref FROM pr_watches")
+        .fetch_one(h.store.pool())
+        .await
+        .expect("base");
+    assert_eq!(base.as_deref(), Some("main"));
+
+    set("behind", Some(&head));
+    decurion_hub::pr_watch::poll(&h.state).await;
+    assert_eq!(health(&watched(&h).await), "Behind main");
+
+    // Said about some other commit than Decurion's: not shown.
+    set("dirty", Some(&"f".repeat(40)));
+    decurion_hub::pr_watch::poll(&h.state).await;
+    assert_eq!(health(&watched(&h).await), Value::Null);
+
+    // Still checking, then clean: nothing to say.
+    for s in ["unknown", "clean", "unstable"] {
+        set(s, Some(&head));
+        decurion_hub::pr_watch::poll(&h.state).await;
+        assert_eq!(health(&watched(&h).await), Value::Null, "{s}");
+    }
 }
 
 #[tokio::test]

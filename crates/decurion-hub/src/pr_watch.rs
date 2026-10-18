@@ -204,6 +204,7 @@ struct Look {
     /// GitHub says it clashes with newer changes on its base branch; `None`
     /// while GitHub is still working that out.
     clash: Option<bool>,
+    health: Health,
 }
 
 /// Whether GitHub says an open pull request clashes with its base branch:
@@ -214,6 +215,55 @@ pub(crate) fn clashes(pr: &serde_json::Value) -> Option<bool> {
         Some("dirty") => Some(true),
         Some("unknown") | None => None,
         Some(_) => Some(false),
+    }
+}
+
+/// How a pull request stands against its base branch, as GitHub said in
+/// the pull request itself. Only `mergeable` and `mergeable_state` are
+/// read: never check runs, so no extra token permission is needed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Health {
+    /// `dirty` (conflicts), `behind`, `checking` (GitHub is still working
+    /// it out), or `None` when there is nothing to say.
+    pub health: Option<&'static str>,
+    /// The head commit GitHub said this about.
+    pub head: Option<String>,
+    /// The branch the pull request merges into (`base.ref`).
+    pub base_ref: Option<String>,
+}
+
+/// Reads [`Health`] from a pull request as GitHub's API returns it.
+pub fn health_of(pr: &serde_json::Value) -> Health {
+    let health = if pr["mergeable"].is_null() {
+        Some("checking")
+    } else {
+        match pr["mergeable_state"].as_str() {
+            Some("dirty") => Some("dirty"),
+            Some("behind") => Some("behind"),
+            _ => None,
+        }
+    };
+    Health {
+        health,
+        head: pr["head"]["sha"]
+            .as_str()
+            .filter(|s| crate::checkpoints::is_commit(s))
+            .map(str::to_owned),
+        base_ref: pr["base"]["ref"]
+            .as_str()
+            .filter(|b| crate::protected::plain_branch(b) && b.len() <= 200)
+            .map(str::to_owned),
+    }
+}
+
+/// The plain line the board and inbox show for a pull request's health,
+/// or `None` for nothing to say (or GitHub still checking).
+pub fn health_words(health: Option<&str>, base_ref: Option<&str>) -> Option<String> {
+    let base = base_ref.unwrap_or("main");
+    match health? {
+        "dirty" => Some(format!("Conflicts with {base}")),
+        "behind" => Some(format!("Behind {base}")),
+        _ => None,
     }
 }
 
@@ -254,6 +304,11 @@ async fn look(s: &Sender, t: &Token, r: &Repo, n: i64) -> std::result::Result<Lo
         .filter(|c| (40..=64).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_hexdigit()))
         .filter(|_| state == PrState::Merged)
         .map(str::to_owned);
+    let health = if state == PrState::Open {
+        health_of(&pr)
+    } else {
+        Health::default()
+    };
     let mut comments = Vec::new();
     // Comments only matter while there is still something to fix.
     if state == PrState::Open {
@@ -288,6 +343,7 @@ async fn look(s: &Sender, t: &Token, r: &Repo, n: i64) -> std::result::Result<Lo
         merge_commit,
         author,
         comments,
+        health,
     })
 }
 
@@ -325,10 +381,11 @@ pub(crate) async fn sent(
     let (Some((repo, number)), Some(url), Some(head)) = (watch, url, head) else {
         return Ok(());
     };
-    let fix_of: Option<i64> = sqlx::query_scalar("SELECT fix_of FROM threads WHERE id = ?")
-        .bind(id)
-        .fetch_one(&mut **tx)
-        .await?;
+    let (fix_of, merge_from): (Option<i64>, Option<String>) =
+        sqlx::query_as("SELECT fix_of, merge_from FROM threads WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await?;
     match fix_of {
         Some(w) => {
             let fixed: i64 =
@@ -336,12 +393,15 @@ pub(crate) async fn sent(
                     .bind(id)
                     .fetch_one(&mut **tx)
                     .await?;
-            let event = match fixed {
-                1 => "Fix sent for 1 comment".to_owned(),
-                n => format!("Fix sent for {n} comments"),
+            let event = match (merge_from.is_some(), fixed) {
+                (true, _) => "Brought up to date".to_owned(),
+                (false, 1) => "Fix sent for 1 comment".to_owned(),
+                (false, n) => format!("Fix sent for {n} comments"),
             };
+            // A new head: what GitHub said about the old one no longer
+            // holds, until the next look.
             sqlx::query(
-                "UPDATE pr_watches SET head = ?, event = ?,
+                "UPDATE pr_watches SET head = ?, event = ?, health = NULL, health_head = NULL,
                      event_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                  WHERE thread_id = ?",
             )
@@ -404,6 +464,11 @@ pub struct Watched {
     /// Still open, and GitHub says it clashes with newer changes on its base
     /// branch, so it can't be merged as it is.
     pub clash: bool,
+    /// "Conflicts with main" or "Behind main", while GitHub says so about
+    /// the commit Decurion last pushed. Nothing otherwise.
+    pub health: Option<String>,
+    /// A Bring up to date run the owner started is still under way.
+    pub updating: bool,
 }
 
 /// A fix is under way while its work is unfinished, or accepted but not yet
@@ -579,7 +644,8 @@ impl Store {
                  checked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                  event = COALESCE(?, event),
                  event_at = CASE WHEN ? IS NULL THEN event_at
-                                 ELSE strftime('%Y-%m-%dT%H:%M:%fZ', 'now') END
+                                 ELSE strftime('%Y-%m-%dT%H:%M:%fZ', 'now') END,
+                 health = ?, health_head = ?, base_ref = COALESCE(?, base_ref)
              WHERE thread_id = ?",
         )
         .bind(l.state.as_str())
@@ -588,6 +654,9 @@ impl Store {
         .bind(l.clash)
         .bind(&event)
         .bind(&event)
+        .bind(l.health.health)
+        .bind(&l.health.head)
+        .bind(&l.health.base_ref)
         .bind(thread_id)
         .execute(&mut *tx)
         .await?;
@@ -606,6 +675,13 @@ impl Store {
                     a.reviewer, w.event, w.event_at, {FIX_UNDER_WAY} AS fixing,
                     (w.state = 'open' AND a.can_merge) AS can_merge,
                     (w.state = 'open' AND w.clash) AS clash,
+                    CASE WHEN w.state = 'open' AND w.health_head = w.head THEN w.health END AS health,
+                    w.base_ref,
+                    EXISTS (SELECT 1 FROM threads f WHERE f.fix_of = w.thread_id
+                        AND f.merge_from IS NOT NULL
+                        AND (f.state NOT IN ('done', 'failed')
+                             OR (f.state = 'done' AND f.gh_state IN ('waiting', 'sending'))))
+                        AS updating,
                     (SELECT json_group_array(c.author) FROM pr_comments c
                       WHERE c.thread_id = w.thread_id AND {OPEN_COMMENT}) AS authors
              FROM pr_watches w JOIN threads t ON t.id = w.thread_id JOIN apps a ON a.id = w.app_id
@@ -640,6 +716,11 @@ impl Store {
                     fixing: r.try_get("fixing")?,
                     can_merge: r.try_get("can_merge")?,
                     clash: r.try_get("clash")?,
+                    health: health_words(
+                        r.try_get::<Option<String>, _>("health")?.as_deref(),
+                        r.try_get::<Option<String>, _>("base_ref")?.as_deref(),
+                    ),
+                    updating: r.try_get("updating")?,
                     state,
                 })
             })
@@ -958,6 +1039,48 @@ mod tests {
         assert!(p.contains("\\u003c/review-comments\\u003e"));
         assert!(p.contains("\"author\": \"param\""));
         assert!(!p.contains('\u{2014}'), "no long dashes");
+    }
+
+    #[test]
+    fn health_comes_only_from_mergeable_and_mergeable_state() {
+        let head = "0123456789abcdef0123456789abcdef01234567";
+        let pr = |mergeable: serde_json::Value, state: &str| {
+            serde_json::json!({"mergeable": mergeable, "mergeable_state": state,
+                "head": {"sha": head}, "base": {"ref": "main"}})
+        };
+        let h = health_of(&pr(serde_json::json!(false), "dirty"));
+        assert_eq!(h.health, Some("dirty"));
+        assert_eq!(h.head.as_deref(), Some(head));
+        assert_eq!(h.base_ref.as_deref(), Some("main"));
+        assert_eq!(
+            health_of(&pr(serde_json::json!(true), "behind")).health,
+            Some("behind")
+        );
+        // GitHub still working it out: shown as nothing yet.
+        let checking = health_of(&pr(serde_json::Value::Null, "unknown"));
+        assert_eq!(checking.health, Some("checking"));
+        // Failing checks are not read here; clean and the rest say nothing.
+        for s in ["clean", "unstable", "blocked", "has_hooks", "draft"] {
+            assert_eq!(
+                health_of(&pr(serde_json::json!(true), s)).health,
+                None,
+                "{s}"
+            );
+        }
+        // Only a full commit id and a plain branch name are kept.
+        let odd = health_of(&serde_json::json!({"mergeable": true,
+            "head": {"sha": "HEAD"}, "base": {"ref": "-x"}}));
+        assert_eq!((odd.head, odd.base_ref), (None, None));
+        assert_eq!(
+            health_words(Some("dirty"), Some("trunk")).as_deref(),
+            Some("Conflicts with trunk")
+        );
+        assert_eq!(
+            health_words(Some("behind"), None).as_deref(),
+            Some("Behind main")
+        );
+        assert_eq!(health_words(Some("checking"), None), None);
+        assert_eq!(health_words(None, None), None);
     }
 
     #[test]
