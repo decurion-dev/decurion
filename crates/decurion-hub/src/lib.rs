@@ -1791,7 +1791,14 @@ async fn runner_base(
             )
             .await?;
         files
-            .settle_base(&st.store, id, app.id, &app.repo_path, bundled)
+            .settle_base(
+                &st.store,
+                id,
+                app.id,
+                &app.repo_path,
+                bundled,
+                merge_from.as_deref(),
+            )
             .await
     }
     .await;

@@ -282,7 +282,8 @@ impl Files {
     /// Fixes the start a request bundled, `bundled`, as the thread's start,
     /// unless another request for the same thread fixed one first. Then it
     /// answers with that one's bundle instead, so the commit the runner is
-    /// told and the bundle it gets always agree.
+    /// told and the bundle it gets always agree. `merge_from` is what the
+    /// first bundle was made with, and the answer is made with it too.
     pub async fn settle_base(
         &self,
         store: &Store,
@@ -290,12 +291,15 @@ impl Files {
         app_id: i64,
         repo_path: &str,
         bundled: (String, PathBuf),
+        merge_from: Option<&str>,
     ) -> Result<(String, PathBuf)> {
         let won = store.fix_base_commit(thread, &bundled.0).await?;
         if won == bundled.0 {
             return Ok(bundled);
         }
-        self.base_bundle(app_id, repo_path, Some(&won)).await
+        // The same kind of bundle: an update's keeps main in it.
+        self.base_bundle_with(app_id, repo_path, Some(&won), merge_from)
+            .await
     }
 
     /// Reads the branch `branch` from a saved copy's code part into the ref
