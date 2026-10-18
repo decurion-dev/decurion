@@ -336,6 +336,10 @@ pub fn router(state: AppState) -> Router {
             get(|| async { asset("text/javascript; charset=utf-8", include_str!("files.js")) }),
         )
         .route(
+            "/voice.js",
+            get(|| async { asset("text/javascript; charset=utf-8", include_str!("voice.js")) }),
+        )
+        .route(
             "/icon.svg",
             get(|| async { asset("image/svg+xml", include_str!("icon.svg")) }),
         )
