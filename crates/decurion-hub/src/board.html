@@ -132,6 +132,29 @@
   .board-empty { border: 1px dashed var(--line); border-radius: var(--radius-l); }
   .board:has(.board-empty)::after { display: none; }
 
+  /* ---------- Today: one row per app, saying what it waits on (GET /api/today) ---------- */
+  .today { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: thin; margin: 0 -28px; padding: 2px 28px 6px; }
+  .today::after { content: ""; flex: 0 0 12px; }
+  .today-row {
+    position: relative; flex: 0 0 auto; width: 232px; display: grid; gap: 4px; align-content: start;
+    padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface);
+  }
+  .today-row[data-tone="quiet"] { background: none; }
+  .today-row:has(.hit[aria-pressed="true"]) { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .today-row .hit { display: block; padding: 0; margin: 0; border: 0; background: none; font: 600 14px/1.3 var(--font); color: var(--ink); text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .today-row .hit::after { content: ""; position: absolute; inset: -1px; border-radius: var(--radius); }
+  .today-row .hit:focus-visible { outline: none; }
+  .today-row .hit:focus-visible::after { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .today-row:hover { background: var(--surface-2); }
+  .today-row .ln { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .today-row .ft { display: flex; align-items: center; gap: 8px; margin-top: 4px; min-height: 28px; }
+  .today-row .ft .btn { position: relative; z-index: 1; }
+  .today-row .first { font-size: 12px; color: var(--faint); }
+  .today .pill svg.i.spin { animation: none; }
+  .pill.t-merge { color: var(--accent-ink); background: var(--accent-soft); }
+  @media (min-width: 900px) and (max-width: 1199px) { .today { margin: 0 -22px; padding: 2px 22px 6px; } }
+  @media (max-width: 899px) { .today { margin: 0 -16px; padding: 2px 16px 6px; } }
+
   dialog:focus-visible { outline: none; }
 
   /* ---------- Signed out ---------- */
@@ -230,6 +253,7 @@
 
     <div class="content" id="view-board">
       <div class="limits live" id="limits" hidden></div>
+      <section class="today live" id="today" aria-label="Today: what each app waits on" hidden></section>
       <!-- The new-work form, drawn by compose.js (D.composer), the same as on the phone. -->
       <section class="composer live" id="composer" aria-label="New work"></section>
       <div id="board-note" class="board-note" hidden></div>
@@ -367,6 +391,7 @@
       D.setCloud(hasCloud);
       D.setThreads(th);
       await loadTails(th);
+      loadToday();
       loaded = true; loadErr = null;
     } catch (e) {
       if (e.signedOut) { busy = false; signedOut(); return; }
@@ -511,6 +536,51 @@
   // The form itself lives in compose.js; the board only tells it what changed.
   function renderComposer() {
     composer.update({ apps, threads, hasCloud, filter, loaded });
+  }
+
+  // ---------- Today: one row per app ----------
+  // The hub chooses every word (today.rs), so the board and the phone say the
+  // same thing; this only draws them. A row filters the board to its app.
+  const TONES = { needs_you: ["needs_you", "needs_you"], working: ["running", "running"], reviewer: ["in_review", "in_review"],
+    merge: ["t-merge", "branch"], done: ["done", "done"], quiet: ["queued", "queued"] };
+  let today = null;
+  async function loadToday() {
+    try { today = await D.api("/today"); } catch (_) { /* keep the last rows */ }
+    renderToday();
+  }
+  function renderToday() {
+    const box = $("today");
+    const rows = Array.isArray(today) ? today : [];
+    if (!changed("today", [rows, filter, D.offline, Math.floor(Date.now() / 30000)])) return;
+    box.hidden = !rows.length;
+    keepFocus(() => box.replaceChildren(...rows.map((r) => {
+      const id = String(r.app_id);
+      const [cls, ic] = TONES[r.tone] ?? TONES.quiet;
+      const hit = el("button", { type: "button", className: "hit", "aria-pressed": filter === id ? "true" : "false", dataset: { key: `today-${id}` },
+        title: filter === id ? "Show all apps" : `Show only ${r.name}` }, r.name);
+      hit.onclick = () => { setFilter(filter === id ? "all" : id); renderToday(); };
+      const when = r.tone === "done" && r.last_pr?.event_at ? ` · ${D.ago(r.last_pr.event_at)}` : "";
+      const fixOn = r.open_comments > 0 ? (r.fix_thread_id ?? r.last_pr?.thread_id) : null;
+      let act;
+      if (fixOn != null) {
+        act = el("button", { type: "button", className: "btn primary sm", dataset: { key: `today-fix-${id}` } }, icon("tool"), "Fix these");
+        act.disabled = D.offline;
+        act.onclick = async () => {
+          act.disabled = true;
+          try {
+            await D.send(`/threads/${fixOn}/pr/fix`, {});
+            D.toast("Started a fix for the comments.");
+          } catch (e) {
+            D.toast(e.message, "alert");
+          }
+          await refresh();
+          act.disabled = D.offline;
+        };
+      } else act = el("span", { className: `pill ${cls}` }, icon(ic), r.status);
+      return el("article", { className: "today-row", dataset: { tone: r.tone } },
+        hit, el("div", { className: "ln", title: r.line + when }, r.line + when),
+        el("div", { className: "ft" }, act, r.first_today ? el("span", { className: "first" }, "First today") : null));
+    })));
   }
 
   // ---------- Board ----------
