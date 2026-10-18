@@ -427,6 +427,8 @@ pub struct Live {
     #[serde(default)]
     pub place: Place,
     pub messages: Vec<Message>,
+    #[serde(default)]
+    pub browser: Option<crate::browser::BrowserWant>,
 }
 
 /// The step an agent was in the middle of when its run was cut off.

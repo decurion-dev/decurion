@@ -103,6 +103,7 @@ impl Store {
             state,
             place,
             messages,
+            browser: None,
         })
     }
 

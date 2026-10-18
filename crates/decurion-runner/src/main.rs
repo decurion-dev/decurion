@@ -1,4 +1,5 @@
 use anyhow::{bail, Context};
+use decurion_proto::browser::SiteState;
 use decurion_proto::goal::{HelperClaim, HelperResult, HelperSource};
 use decurion_proto::{
     App, Claim, HelloReply, JoinReply, JoinRequest, Live, MoveRequest, NewCheckpoint, Place,
@@ -12,12 +13,15 @@ use decurion_runner::handover::{
 use decurion_runner::identity::{
     hub_url, place_from_env, write_atomic, CloudRunner, PC_HUB, PC_NAME,
 };
+mod browser_box;
+
 use decurion_runner::{
-    backoff, check_home_volume, container_name, design_home_volume, goal_home_volume,
-    helper_container_name, helper_run_args, hide, hide_cut, home_volume, is_interrupted_turn,
-    is_turn_start, parse_line_hiding, parse_result, part_done, pi_run_args, prompt_for, read_page,
-    redact, retriable, run_args, sibling, valid_branch, Acks, Action, Conversation, Credential,
-    FirstResult, LeakScanner, PiRun, Sandbox, Start, Step, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
+    backoff, browser_container_name, check_home_volume, container_name, design_home_volume,
+    goal_home_volume, helper_container_name, helper_run_args, hide, hide_cut, home_volume,
+    is_interrupted_turn, is_turn_start, parse_line_hiding, parse_result, part_done, pi_run_args,
+    prompt_for, read_page, redact, retriable, run_args, sibling, valid_branch, Acks, Action,
+    Conversation, Credential, FirstResult, LeakScanner, PiRun, Sandbox, Start, Step, BUDGET_STOP,
+    DOCKER_CLI_ENV, LIMIT_STOP,
 };
 use decurion_vault::{check_name, Vault};
 use reqwest::header::{HeaderMap, CONTENT_LENGTH, CONTENT_TYPE};
@@ -987,6 +991,14 @@ const STDERR_TAIL: usize = 8 << 10;
 async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
 ) -> std::io::Result<Option<(String, bool)>> {
+    read_line_up_to(r, MAX_LINE).await
+}
+
+/// [`read_capped_line`] with a cap of its own.
+async fn read_line_up_to<R: tokio::io::AsyncBufRead + Unpin>(
+    r: &mut R,
+    max: usize,
+) -> std::io::Result<Option<(String, bool)>> {
     let mut buf = Vec::new();
     let mut seen_any = false;
     let mut cut = false;
@@ -1000,7 +1012,7 @@ async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
             Some(i) => (i + 1, true),
             None => (chunk.len(), false),
         };
-        let room = MAX_LINE.saturating_sub(buf.len());
+        let room = max.saturating_sub(buf.len());
         cut |= take > room;
         buf.extend_from_slice(&chunk[..take.min(room)]);
         r.consume(take);
@@ -1237,6 +1249,9 @@ been given yet is kept for the next run.";
 struct Guard<'a> {
     secrets: &'a [String],
     grant: Option<&'a Grant>,
+    /// The run's browser box, told whenever the hub says whether the owner
+    /// wants to see it.
+    browser: Option<&'a browser_box::Wants>,
 }
 
 /// Follows a run until the agent's output ends or the owner stops it: posts
@@ -1366,6 +1381,9 @@ async fn follow(
                 Ok(live) => {
                     hub_down = false;
                     send(conv.on_messages(&live.messages));
+                    if let Some(b) = guard.browser {
+                        browser_box::want(b, live.browser);
+                    }
                 }
                 // Keep going; the next tick tries again.
                 Err(err) => {
@@ -1515,15 +1533,22 @@ fn lost(err: &anyhow::Error) -> bool {
     )
 }
 
-/// Removes a thread's container and checks that it is really gone. Tried a
-/// few times: docker refuses to remove a container it is still taking down.
+/// Removes a thread's container, and its browser box with it, and checks
+/// that they are really gone.
 async fn remove_container(id: i64) -> bool {
-    let name = container_name(id);
+    remove_named(id, &[container_name(id), browser_container_name(id)]).await
+}
+
+/// Removes containers by name and checks that they are really gone. Tried a
+/// few times: docker refuses to remove a container it is still taking down.
+async fn remove_named(id: i64, names: &[String]) -> bool {
     for attempt in 0..3 {
         if attempt > 0 {
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
-        match docker_out(&["rm", "-f", &name]).await {
+        let mut rm = vec!["rm", "-f"];
+        rm.extend(names.iter().map(String::as_str));
+        match docker_out(&rm).await {
             // Fails when there is no such container too; the check says.
             Ok(out) if !out.status.success() => tracing::debug!(
                 id,
@@ -1533,8 +1558,13 @@ async fn remove_container(id: i64) -> bool {
             Ok(_) => {}
             Err(err) => tracing::warn!(%err, id, "could not run docker rm"),
         }
-        let filter = format!("name=^{name}$");
-        match docker_out(&["ps", "-aq", "--filter", &filter]).await {
+        // Several name filters match any of them.
+        let filters: Vec<String> = names.iter().map(|n| format!("name=^{n}$")).collect();
+        let mut ps = vec!["ps", "-aq"];
+        for f in &filters {
+            ps.extend(["--filter", f.as_str()]);
+        }
+        match docker_out(&ps).await {
             Ok(out) if out.status.success() && out.stdout.trim_ascii().is_empty() => return true,
             Ok(out) if !out.status.success() => tracing::warn!(
                 id,
@@ -1579,13 +1609,16 @@ Containers, and delete it."
 
 /// Runs one claimed thread to the end and reports the outcome. `keys` are the
 /// app's test keys: they go into the container, and their values are hidden
-/// from everything sent to the hub.
+/// from everything sent to the hub. `states` are the app's saved website
+/// sign-ins, opened on this computer: they go into the run's browser box
+/// only, never the agent's.
 async fn run(
     hub: &Hub,
     data: &Path,
     gate: &Gate,
     c: Claim,
     keys: &[(String, String)],
+    states: Vec<SiteState>,
 ) -> anyhow::Result<()> {
     let id = c.thread.id;
     let session = c
@@ -1653,6 +1686,16 @@ make sure Docker Desktop is running and delete that container there",
         &c.messages,
         c.interrupted.as_ref(),
     );
+    // A Claude Code run's test browser goes in a box of its own, up and
+    // checked before the agent's box starts and joins its network. The app's
+    // saved sign-ins go into that box only. pi runs have no browser box.
+    // Removed with the agent's box (see remove_container), and on every
+    // other way out of this function when `browser` drops.
+    let browser = if pi {
+        None
+    } else {
+        Some(browser_box::start_run(hub, id, states, &secrets).await?)
+    };
     // Tell the hub before launching: from here the run may cost money, and if
     // the hub cannot be told, the run does not start.
     hub.post(&format!("/threads/{id}/events"), &RunEvent::Started)
@@ -1706,6 +1749,7 @@ make sure Docker Desktop is running and delete that container there",
         let guard = Guard {
             secrets: &secrets,
             grant: grant.as_ref(),
+            browser: browser.as_ref().map(|b| b.wants()),
         };
         follow(hub, id, conv, to_agent, lines, wrote, guard).await
     };
@@ -1715,11 +1759,13 @@ make sure Docker Desktop is running and delete that container there",
             // is saved: the work is not this runner's to touch any more.
             tracing::info!(id, "stopped by the owner");
             kill(hub, &mut child, id).await;
+            browser_box::stop(browser).await;
             let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
             return Ok(());
         }
         Ended::Moved(to) => {
             hand_over(hub, data, id, &wt, &branch, to, &mut child).await;
+            browser_box::stop(browser).await;
             let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
             return Ok(());
         }
@@ -1731,6 +1777,8 @@ make sure Docker Desktop is running and delete that container there",
     };
     reader.await.context("stdout reader")??;
     let status = child.wait().await?;
+    // The agent is done with its browser.
+    browser_box::stop(browser).await;
     // The container is gone; its token goes with it.
     // For pay-per-use, the gatekeeper's count is the cost: it saw every call,
     // including any the agent made itself, and runs outside the container.
@@ -2881,6 +2929,10 @@ async fn main() -> anyhow::Result<()> {
             "name=^decurion-thread-",
             "--filter",
             "name=^decurion-helper-",
+            // Browser boxes: a run's (decurion-thread-{id}-browser, caught
+            // above) and a sign-in window's.
+            "--filter",
+            "name=^decurion-signin-",
         ])
         .output()
         .await
@@ -2949,7 +3001,9 @@ async fn main() -> anyhow::Result<()> {
                     }
                 };
                 let secrets: Vec<String> = keys.iter().map(|(_, v)| v.clone()).collect();
-                if let Err(err) = run(&hub, &data, &gate, claim, &keys).await {
+                // Saved website sign-ins for the run's browser: none yet.
+                let states: Vec<SiteState> = Vec::new();
+                if let Err(err) = run(&hub, &data, &gate, claim, &keys, states).await {
                     let note = hide(&err.to_string(), &secrets);
                     tracing::error!(err = %note, id, "run failed");
                     fail(&hub, id, &note).await;

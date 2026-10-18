@@ -62,6 +62,8 @@ pub enum Input {
         x: f64,
         y: f64,
     },
+    /// Scrolls at `x`, `y`. `dx` and `dy` are how far, also as fractions of
+    /// the frame; a positive `dy` scrolls down, as a mouse wheel does.
     Scroll {
         x: f64,
         y: f64,
