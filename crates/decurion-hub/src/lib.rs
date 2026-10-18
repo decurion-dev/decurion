@@ -47,6 +47,7 @@ pub mod tailscale;
 pub mod test_keys;
 pub mod today;
 pub mod tokens;
+pub(crate) mod upstream;
 pub mod usage;
 pub mod why;
 pub mod workers;
@@ -402,6 +403,8 @@ pub fn router(state: AppState) -> Router {
         .route("/apps/{id}/notes", get(goals::notes))
         .route("/apps/{id}/notes/{note}/remove", post(goals::remove_note))
         .route("/runner/helper/claim", post(goals::helper_claim))
+        // Not in cloud_reach: helpers run on the PC only.
+        .route("/runner/goals/{id}/base", get(runner_goal_base))
         .route("/runner/helper/{id}/started", post(goals::helper_started))
         // Watching and taking over the test browser: see browser.rs.
         .merge(browser::routes())
@@ -1333,7 +1336,7 @@ struct RunnerName {
 
 /// The 409 a runner on other rules gets, telling it which rules and commit
 /// to update to.
-fn other_rules(r: &RunnerId, theirs: Option<u32>) -> Response {
+pub(crate) fn other_rules(r: &RunnerId, theirs: Option<u32>) -> Response {
     tracing::warn!(runner = %r.name, ?theirs, "runner on other rules refused");
     let reply = HelloReply {
         paused: vec![],
@@ -1727,11 +1730,56 @@ async fn runner_base(
         let t = st.store.thread(id).await?;
         let app = st.store.app(t.app_id).await?;
         let base = st.store.base_commit(id).await?;
-        let (sha, path) = files
+        let bundled = files
             .base_bundle(app.id, &app.repo_path, base.as_deref())
             .await?;
-        let sha = st.store.fix_base_commit(id, &sha).await?;
-        Ok::<_, StoreError>((sha, path))
+        files
+            .settle_base(&st.store, id, app.id, &app.repo_path, bundled)
+            .await
+    }
+    .await;
+    match result {
+        Ok((sha, path)) => file_response(&path, Some(("x-decurion-base", sha))).await,
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// The bundle of a goal's start commit, for its project lead's and
+/// designer's copies. Runner-only and PC-only, like the other helper routes:
+/// not in `cloud_reach`, and refused here too if that list ever grows.
+async fn runner_goal_base(
+    State(st): State<AppState>,
+    runner: Option<axum::Extension<RunnerId>>,
+    Path(goal): Path<i64>,
+) -> Response {
+    let r = match runner_only(runner, None) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if r.place != Place::Pc {
+        return (
+            StatusCode::FORBIDDEN,
+            "cloud workers only run their own work",
+        )
+            .into_response();
+    }
+    let Some(files) = st.files.clone() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this hub has no folder for saved work",
+        )
+            .into_response();
+    };
+    let result = async {
+        let start = st
+            .store
+            .goal_start_commit(goal)
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        let app = st.store.app(st.store.goal(goal).await?.app_id).await?;
+        files
+            .base_bundle(app.id, &app.repo_path, Some(&start))
+            .await
     }
     .await;
     match result {

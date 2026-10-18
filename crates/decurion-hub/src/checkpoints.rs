@@ -71,6 +71,9 @@ pub struct Files {
     dir: PathBuf,
     /// Git work in the hub's own repo caches happens one at a time.
     pub(crate) git_lock: tokio::sync::Mutex<()>,
+    /// Asking an app's git server where new work starts happens one at a
+    /// time per app, outside `git_lock` (see [`crate::upstream`]).
+    pub(crate) upstream: crate::upstream::Locks,
 }
 
 impl Files {
@@ -78,6 +81,7 @@ impl Files {
         Self {
             dir,
             git_lock: tokio::sync::Mutex::new(()),
+            upstream: crate::upstream::Locks::default(),
         }
     }
 
@@ -119,10 +123,7 @@ impl Files {
     /// Brings the app's cache up to date with the owner's checkout, making
     /// it first if needed. The caller holds `git_lock`.
     pub(crate) async fn fetch_app(&self, cache: &Path, repo_path: &str) -> Result<()> {
-        if !cache.exists() {
-            std::fs::create_dir_all(cache).map_err(io)?;
-            git(cache, &["init", "--quiet", "--bare"]).await?;
-        }
+        self.init_cache(cache).await?;
         // The owner's repo, not an agent's: still, no hooks and nothing but
         // local files.
         git(
@@ -145,59 +146,76 @@ impl Files {
         Ok(())
     }
 
-    /// The bundle holding a thread's starting commit, made on first request
-    /// from the owner's own checkout. The bundle has one ref,
-    /// `refs/heads/decurion-base`.
+    /// The bundle holding a starting commit, `base`, or for new work the
+    /// commit the app's git server has on its default branch
+    /// ([`crate::upstream::start_commit`]). Made once per commit, from the
+    /// hub's own copy of the app, which reads the owner's folder only when
+    /// the commit is not there yet. The bundle has one ref,
+    /// `refs/heads/decurion-base`. A thread's and a goal's start are bundled
+    /// by this same code.
     pub async fn base_bundle(
         &self,
         app_id: i64,
         repo_path: &str,
         base: Option<&str>,
     ) -> Result<(String, PathBuf)> {
-        let _held = self.git_lock.lock().await;
-        let cache = self.app_cache(app_id);
-        if let Some(sha) = base {
-            let path = self.bundle_path(sha);
-            if path.exists() {
-                return Ok((sha.to_owned(), path));
-            }
-        }
-        self.fetch_app(&cache, repo_path).await?;
         let sha = match base {
             Some(s) => s.to_owned(),
-            None => git(&cache, &["rev-parse", "refs/heads/decurion-latest"]).await?,
+            None => crate::upstream::start_commit(self, app_id, repo_path).await?,
         };
         if !is_commit(&sha) {
             return Err(StoreError::Invalid(format!("not a commit id: {sha}")));
         }
-        if git(&cache, &["cat-file", "-e", &format!("{sha}^{{commit}}")])
-            .await
-            .is_err()
-        {
-            return Err(StoreError::Refused(
-                "The commit this work started from is no longer in the app's repo.".into(),
-            ));
-        }
+        let _held = self.git_lock.lock().await;
         let path = self.bundle_path(&sha);
-        if !path.exists() {
-            std::fs::create_dir_all(self.dir.join("bundles")).map_err(io)?;
-            git(&cache, &["update-ref", "refs/heads/decurion-base", &sha]).await?;
-            let tmp = path.with_extension("partial");
-            let tmp_s = tmp.to_string_lossy().into_owned();
-            git(
-                &cache,
-                &[
-                    "bundle",
-                    "create",
-                    "--quiet",
-                    &tmp_s,
-                    "refs/heads/decurion-base",
-                ],
-            )
-            .await?;
-            std::fs::rename(&tmp, &path).map_err(io)?;
+        if path.exists() {
+            return Ok((sha, path));
         }
+        let cache = self.app_cache(app_id);
+        if !has_commit(&cache, &sha).await {
+            self.fetch_app(&cache, repo_path).await?;
+            if !has_commit(&cache, &sha).await {
+                return Err(StoreError::Refused(
+                    "The commit this work started from is no longer in the app's repo.".into(),
+                ));
+            }
+        }
+        std::fs::create_dir_all(self.dir.join("bundles")).map_err(io)?;
+        git(&cache, &["update-ref", "refs/heads/decurion-base", &sha]).await?;
+        let tmp = path.with_extension("partial");
+        let tmp_s = tmp.to_string_lossy().into_owned();
+        git(
+            &cache,
+            &[
+                "bundle",
+                "create",
+                "--quiet",
+                &tmp_s,
+                "refs/heads/decurion-base",
+            ],
+        )
+        .await?;
+        std::fs::rename(&tmp, &path).map_err(io)?;
         Ok((sha, path))
+    }
+
+    /// Fixes the start a request bundled, `bundled`, as the thread's start,
+    /// unless another request for the same thread fixed one first. Then it
+    /// answers with that one's bundle instead, so the commit the runner is
+    /// told and the bundle it gets always agree.
+    pub async fn settle_base(
+        &self,
+        store: &Store,
+        thread: i64,
+        app_id: i64,
+        repo_path: &str,
+        bundled: (String, PathBuf),
+    ) -> Result<(String, PathBuf)> {
+        let won = store.fix_base_commit(thread, &bundled.0).await?;
+        if won == bundled.0 {
+            return Ok(bundled);
+        }
+        self.base_bundle(app_id, repo_path, Some(&won)).await
     }
 
     /// Reads the branch `branch` from a saved copy's code part into the ref
@@ -252,6 +270,13 @@ impl Files {
     fn bundle_path(&self, sha: &str) -> PathBuf {
         self.dir.join("bundles").join(format!("base-{sha}.bundle"))
     }
+}
+
+async fn has_commit(cache: &Path, sha: &str) -> bool {
+    cache.exists()
+        && git(cache, &["cat-file", "-e", &format!("{sha}^{{commit}}")])
+            .await
+            .is_ok()
 }
 
 pub(crate) fn io(e: std::io::Error) -> StoreError {

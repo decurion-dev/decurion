@@ -826,6 +826,16 @@ async fn goal_row(tx: &mut Transaction<'_, Sqlite>, goal_id: i64) -> Result<(i64
         .ok_or(StoreError::NotFound)
 }
 
+/// A goal's start commit, read inside the caller's transaction.
+async fn goal_start(tx: &mut Transaction<'_, Sqlite>, goal_id: i64) -> Result<Option<String>> {
+    Ok(
+        sqlx::query_scalar("SELECT start_commit FROM goals WHERE id = ?")
+            .bind(goal_id)
+            .fetch_one(&mut **tx)
+            .await?,
+    )
+}
+
 async fn save_notes(
     tx: &mut Transaction<'_, Sqlite>,
     app_id: i64,
@@ -1028,19 +1038,26 @@ async fn recover_checks(tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
 
 /// Starts a goal inside `tx`: the goal, the owner's words as its first
 /// message, the coordinator's first turn and its row on the app's master
-/// plan, all or nothing. The caller has checked the app and the words.
+/// plan, all or nothing. The caller has checked the app and the words, and
+/// chose `start_commit` before opening `tx` (it may ask the app's git
+/// server, see [`crate::upstream::for_new_goal`]): every entry point must
+/// pass what it chose, which is why it is not optional here. `None` only
+/// when no start could be had; that goal's helpers copy the folder as
+/// before.
 pub(crate) async fn start_goal(
     tx: &mut Transaction<'_, Sqlite>,
     app_id: i64,
     title: &str,
     text: &str,
+    start_commit: Option<&str>,
 ) -> Result<i64> {
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO goals (app_id, title, session_id) VALUES (?, ?, ?) RETURNING id",
+        "INSERT INTO goals (app_id, title, session_id, start_commit) VALUES (?, ?, ?, ?) RETURNING id",
     )
     .bind(app_id)
     .bind(title)
     .bind(new_session())
+    .bind(start_commit)
     .fetch_one(&mut **tx)
     .await?;
     post(
@@ -1079,13 +1096,17 @@ async fn approve_in(tx: &mut Transaction<'_, Sqlite>, id: i64, plan_message_id: 
     }
     let (app_id, goal_title) = goal_row(tx, id).await?;
     for piece in &plan.pieces {
+        // Every piece starts from the goal's one start commit, the code its
+        // project lead planned against.
         let thread_id: i64 = sqlx::query_scalar(
-            "INSERT INTO threads (app_id, title, prompt, research) VALUES (?, ?, ?, ?) RETURNING id",
+            "INSERT INTO threads (app_id, title, prompt, research, base_commit)
+             VALUES (?, ?, ?, ?, (SELECT start_commit FROM goals WHERE id = ?)) RETURNING id",
         )
         .bind(app_id)
         .bind(clip(piece.title.trim(), 80))
         .bind(piece_prompt(&goal_title, &plan, piece))
         .bind(piece.research)
+        .bind(id)
         .fetch_one(&mut **tx)
         .await?;
         sqlx::query(
@@ -1237,15 +1258,28 @@ impl Store {
         })
     }
 
-    /// Starts a goal from the owner's words; the coordinator takes it from there.
-    pub async fn add_goal(&self, g: &NewGoal) -> Result<Goal> {
+    /// The commit a goal's helpers and pieces start from, fixed when the
+    /// goal was created. `None` for a goal from before start commits.
+    pub async fn goal_start_commit(&self, goal: i64) -> Result<Option<String>> {
+        let v: Option<Option<String>> =
+            sqlx::query_scalar("SELECT start_commit FROM goals WHERE id = ?")
+                .bind(goal)
+                .fetch_optional(self.pool())
+                .await?;
+        v.ok_or(StoreError::NotFound)
+    }
+
+    /// Starts a goal from the owner's words; the coordinator takes it from
+    /// there. `start_commit` was chosen by the caller before this, outside
+    /// any transaction.
+    pub async fn add_goal(&self, g: &NewGoal, start_commit: Option<&str>) -> Result<Goal> {
         let text = g.text.trim();
         if text.is_empty() || text.chars().count() > 8000 {
             return Err(bad("say what you want in 1 to 8000 characters"));
         }
         self.app(g.app_id).await?;
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
-        let id = start_goal(&mut tx, g.app_id, &title_from(text), text).await?;
+        let id = start_goal(&mut tx, g.app_id, &title_from(text), text, start_commit).await?;
         tx.commit().await?;
         self.goal(id).await
     }
@@ -1755,7 +1789,10 @@ impl Store {
                         session,
                         ok,
                         prompt,
-                        HelperSource::App { goal_id },
+                        HelperSource::App {
+                            goal_id,
+                            start_commit: goal_start(&mut tx, goal_id).await?,
+                        },
                         COORDINATOR_DISALLOWED,
                         Some(upto),
                     )
@@ -1766,7 +1803,10 @@ impl Store {
                     false,
                     row.try_get::<Option<String>, _>("prompt")?
                         .unwrap_or_default(),
-                    HelperSource::AppCopy { goal_id },
+                    HelperSource::AppCopy {
+                        goal_id,
+                        start_commit: goal_start(&mut tx, goal_id).await?,
+                    },
                     HELPER_DISALLOWED,
                     None,
                 ),

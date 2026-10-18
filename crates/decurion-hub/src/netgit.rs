@@ -99,8 +99,7 @@ mod tests {
             env_of(&cmd, "SSH_ASKPASS_REQUIRE"),
             Some(OsStr::new("never"))
         );
-        if std::env::var_os("GIT_SSH_COMMAND").is_none() && std::env::var_os("GIT_SSH").is_none()
-        {
+        if std::env::var_os("GIT_SSH_COMMAND").is_none() && std::env::var_os("GIT_SSH").is_none() {
             assert!(env_of(&cmd, "GIT_SSH_COMMAND")
                 .is_some_and(|v| v.to_string_lossy().contains("BatchMode=yes")));
         }

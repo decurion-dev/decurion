@@ -2332,13 +2332,13 @@ impl HelperBox {
         let id = job.job_id;
         let app = &job.app.name;
         let (dir, read_only, home_volume, throwaway) = match &job.source {
-            HelperSource::App { goal_id } => (
+            HelperSource::App { goal_id, .. } => (
                 data.join("goals").join(format!("{app}-{goal_id}")),
                 true,
                 goal_home_volume(*goal_id),
                 false,
             ),
-            HelperSource::AppCopy { goal_id } => (
+            HelperSource::AppCopy { goal_id, .. } => (
                 data.join("designs")
                     .join(format!("{app}-{goal_id}-job{id}")),
                 false,
@@ -2401,6 +2401,95 @@ async fn goal_copy(app: &App, dir: &Path) -> anyhow::Result<()> {
     // Only a finished clone gets the real name, as in `workspace`.
     std::fs::rename(&tmp, dir)?;
     Ok(())
+}
+
+/// Clones the hub's bundle of a goal's start commit into the new folder
+/// `dir` and leaves it detached at exactly `want`, which the hub must have
+/// named as the bundle's commit (`sent`). A bundle is a plain file, so the
+/// copy shares no objects with anything. Any mismatch is an error, never a
+/// fall back to the owner's folder: the goal was planned against `want`.
+/// Only a finished copy gets the name `dir`.
+async fn copy_from_bundle(
+    bundle: &Path,
+    sent: Option<&str>,
+    want: &str,
+    dir: &Path,
+) -> anyhow::Result<()> {
+    if !is_sha(want) {
+        bail!("the hub sent an odd start commit {want:?}");
+    }
+    if sent != Some(want) {
+        bail!("the hub's bundle is not of the goal's start commit");
+    }
+    if !bundle.is_file() {
+        bail!("the hub's bundle of the start commit is missing");
+    }
+    std::fs::create_dir_all(dir.parent().context("helper copy parent")?)?;
+    let tmp = dir.with_extension("partial");
+    remove_all(&tmp)?;
+    let r = async {
+        let bundle_s = bundle.to_string_lossy().into_owned();
+        let tmp_s = tmp.to_string_lossy().into_owned();
+        git(
+            Path::new("."),
+            &[
+                "clone",
+                "--quiet",
+                "--no-checkout",
+                "--no-hardlinks",
+                "--",
+                &bundle_s,
+                &tmp_s,
+            ],
+        )
+        .await?;
+        git(&tmp, &["checkout", "--quiet", "--detach", want]).await?;
+        // The bundle file is about to be deleted; leave no remote pointing at it.
+        git(&tmp, &["remote", "remove", "origin"]).await?;
+        let head = git(&tmp, &["rev-parse", "HEAD"]).await?;
+        anyhow::ensure!(head == want, "the copy is at {head}, not {want}");
+        anyhow::Ok(())
+    }
+    .await;
+    if r.is_err() {
+        let _ = remove_all(&tmp);
+        return r;
+    }
+    std::fs::rename(&tmp, dir)?;
+    Ok(())
+}
+
+/// A helper's copy of the app at a goal's start commit `start`, from the
+/// hub's bundle of it (`/runner/goals/{id}/base`). Never from the owner's
+/// folder.
+async fn helper_copy_at(
+    hub: &Hub,
+    data: &Path,
+    job: &HelperClaim,
+    goal_id: i64,
+    start: &str,
+    dir: &Path,
+) -> anyhow::Result<()> {
+    let xfer = data
+        .join("transfer")
+        .join(format!("helper-base-{}", job.job_id));
+    remove_all(&xfer)?;
+    std::fs::create_dir_all(&xfer)?;
+    let r = async {
+        let bundle = xfer.join("base.bundle");
+        let headers = download_retrying(
+            hub,
+            &format!("/runner/goals/{goal_id}/base"),
+            &bundle,
+            CODE_CAP,
+        )
+        .await?;
+        let sent = headers.get("x-decurion-base").and_then(|v| v.to_str().ok());
+        copy_from_bundle(&bundle, sent, start, dir).await
+    }
+    .await;
+    let _ = remove_all(&xfer);
+    r
 }
 
 /// Brings this PC's review copy of a thread's branch up to the hub's latest
@@ -2652,8 +2741,27 @@ async fn helper_container(
     hb: &HelperBox,
 ) -> anyhow::Result<HelperResult> {
     match &job.source {
-        HelperSource::App { .. } => goal_copy(&job.app, &hb.dir).await?,
-        HelperSource::AppCopy { .. } => {
+        // Made once per goal and kept for its later turns: always at the
+        // goal's one start commit.
+        HelperSource::App {
+            goal_id,
+            start_commit: Some(start),
+        } => {
+            if !hb.dir.join(".git").is_dir() {
+                helper_copy_at(hub, data, job, *goal_id, start, &hb.dir).await?;
+            }
+        }
+        HelperSource::AppCopy {
+            goal_id,
+            start_commit: Some(start),
+        } => helper_copy_at(hub, data, job, *goal_id, start, &hb.dir).await?,
+        // Goals from before start commits copy the folder, as they did.
+        HelperSource::App {
+            start_commit: None, ..
+        } => goal_copy(&job.app, &hb.dir).await?,
+        HelperSource::AppCopy {
+            start_commit: None, ..
+        } => {
             std::fs::create_dir_all(hb.dir.parent().context("design copy parent")?)?;
             clone_into(&job.app.repo_path, &hb.dir).await?;
         }
@@ -2944,7 +3052,7 @@ async fn helper_loop(hub: Hub, data: PathBuf, gate: Gate) {
         let r = hub
             .post(
                 "/runner/helper/claim",
-                &serde_json::json!({ "runner": hub.name }),
+                &serde_json::json!({ "runner": hub.name, "rules_version": RULES_VERSION }),
             )
             .await;
         match r {
@@ -3787,6 +3895,75 @@ mod tests {
             hub.event(7, &line).await;
             assert_eq!(calls.load(Ordering::SeqCst), 1, "{other:?} is not retried");
         }
+    }
+
+    /// A goal's project lead and designer read exactly the goal's start
+    /// commit, from the hub's bundle of it, in a copy of their own.
+    #[tokio::test]
+    async fn a_helper_copy_is_built_from_the_bundle_at_exactly_the_start() -> anyhow::Result<()> {
+        let root =
+            std::env::temp_dir().join(format!("decurion-helper-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("src");
+        std::fs::create_dir_all(&src)?;
+        git(&src, &["init", "--quiet"]).await?;
+        std::fs::write(src.join("README.md"), "a")?;
+        git(&src, &["add", "."]).await?;
+        commit(&src, "t <t@example.invalid>", "a").await?;
+        let a = git(&src, &["rev-parse", "HEAD"]).await?;
+        commit(&src, "t <t@example.invalid>", "b").await?;
+        let b = git(&src, &["rev-parse", "HEAD"]).await?;
+        // The bundle the hub makes: one ref, decurion-base, at the start.
+        git(&src, &["update-ref", "refs/heads/decurion-base", &a]).await?;
+        let bundle = root.join("base.bundle");
+        let bundle_s = bundle.to_string_lossy().into_owned();
+        git(
+            &src,
+            &[
+                "bundle",
+                "create",
+                "--quiet",
+                &bundle_s,
+                "refs/heads/decurion-base",
+            ],
+        )
+        .await?;
+
+        let dir = root.join("goal").join("copy");
+        copy_from_bundle(&bundle, Some(&a), &a, &dir).await?;
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".git").join("HEAD"))?.trim(),
+            a
+        );
+        assert_eq!(std::fs::read_to_string(dir.join("README.md"))?, "a");
+        assert!(!dir
+            .join(".git")
+            .join("objects")
+            .join("info")
+            .join("alternates")
+            .exists());
+        assert_eq!(git(&dir, &["remote"]).await?, "");
+        assert!(!sibling(&dir, "partial").exists() && !dir.with_extension("partial").exists());
+
+        // Nothing is made from a start that is odd, unnamed, another one, or gone.
+        for (n, (sent, want, from)) in [
+            (Some("xyz"), "xyz", bundle.clone()),
+            (None, a.as_str(), bundle.clone()),
+            (Some(b.as_str()), a.as_str(), bundle.clone()),
+            (Some(a.as_str()), a.as_str(), root.join("missing.bundle")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let dir = root.join(format!("bad-{n}"));
+            assert!(
+                copy_from_bundle(&from, sent, want, &dir).await.is_err(),
+                "case {n}"
+            );
+            assert!(!dir.exists(), "case {n}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// An app holding a file whose full path is past Windows' old

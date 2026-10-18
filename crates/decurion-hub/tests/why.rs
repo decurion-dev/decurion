@@ -602,7 +602,8 @@ async fn the_lead_sees_the_pieces_real_change_from_the_saved_copy() {
     let change = p.find("+pub fn reset_link() {}").expect("change");
     assert!(f < log && log < change, "{p}");
 
-    // The temporary ref is gone from the hub's copy of the app.
+    // The temporary ref is gone from the hub's copy of the app. (Starts of
+    // work are pinned under refs/decurion/start/ on purpose and stay.)
     let cache = h.dir.join("saved").join("repos");
     let cache = std::fs::read_dir(&cache)
         .expect("repo caches")
@@ -611,7 +612,7 @@ async fn the_lead_sees_the_pieces_real_change_from_the_saved_copy() {
         .expect("entry")
         .path();
     assert_eq!(
-        git(&cache, &["for-each-ref", "refs/decurion/"]),
+        git(&cache, &["for-each-ref", "refs/decurion/why/"]),
         "",
         "no refs are left behind"
     );

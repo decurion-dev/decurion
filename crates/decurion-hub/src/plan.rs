@@ -844,7 +844,14 @@ impl Store {
     /// Starts one goal to do these to-do items, with the owner's note, and
     /// links each item to it, all in one transaction. Returns the goal and
     /// whether it is new rather than the answer to a resent receipt.
-    pub async fn fix_todos(&self, app_id: i64, f: &FixTodos) -> Result<(Goal, bool)> {
+    /// `start_commit` was chosen by the caller before this, outside any
+    /// transaction (see [`crate::coordinator::start_goal`]).
+    pub async fn fix_todos(
+        &self,
+        app_id: i64,
+        f: &FixTodos,
+        start_commit: Option<&str>,
+    ) -> Result<(Goal, bool)> {
         let mut ids: Vec<i64> = Vec::new();
         for id in &f.item_ids {
             if !ids.contains(id) {
@@ -920,8 +927,14 @@ impl Store {
             _ => None,
         };
         let text = fix_text(found_in.as_deref(), &items, note);
-        let goal_id =
-            crate::coordinator::start_goal(&mut tx, app_id, &fix_title(&items), &text).await?;
+        let goal_id = crate::coordinator::start_goal(
+            &mut tx,
+            app_id,
+            &fix_title(&items),
+            &text,
+            start_commit,
+        )
+        .await?;
         for id in &ids {
             sqlx::query(
                 "UPDATE plan_items SET fix_goal_id = ?,
@@ -1013,7 +1026,8 @@ pub(crate) async fn fix(
     if c != Caller::Owner {
         return forbidden("starting a goal");
     }
-    match st.store.fix_todos(app_id, &f).await {
+    let start = crate::upstream::for_new_goal(&st, app_id).await;
+    match st.store.fix_todos(app_id, &f, start.as_deref()).await {
         Ok((goal, fresh)) => created_or_resent(goal, fresh),
         Err(e) => ApiError(e).into_response(),
     }
