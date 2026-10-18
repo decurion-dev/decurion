@@ -18,6 +18,7 @@
 - [Attach files for agents](attach-files.md)
 - [Answer requests](answer-requests.md)
 - [Talk to an agent while it works](talk-to-a-running-agent.md)
+- [Talk to Decurion and hear it read aloud](talk-and-listen.md)
 - [Watch and take over the test browser](take-over-the-browser.md)
 - [Review and merge work](review-and-merge.md)
 

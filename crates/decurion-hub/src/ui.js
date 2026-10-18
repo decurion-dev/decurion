@@ -58,6 +58,7 @@
     shield: ["M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"],
     globe: ["c12,12,10", "M2 12h20", "M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20z"],
     expand: ["M15 3h6v6", "M9 21H3v-6", "M21 3l-7 7", "M3 21l7-7"],
+    mic: ["M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z", "M5 11a7 7 0 0 0 14 0", "M12 18v3"],
   };
   const SVG = "http://www.w3.org/2000/svg";
   D.icon = (name, cls = "") => {
@@ -486,7 +487,27 @@
   // more, the owner picks for each and sends once. Every button stays off
   // while an answer is on its way and after it went, and D.send carries a
   // receipt, so an answer is never sent twice.
+  //
+  // Voice (voice.js, when the page loads it and the browser can) adds a
+  // speaker that reads the questions and their choices, and "Say your
+  // answer". A spoken answer only ever picks or shows a choice: the owner
+  // still taps the choice, "Send this answer" or "Send answers". It never
+  // sends by itself, because a misheard word must not become an answer.
   const picks = new Map();
+  const ended = (s) => (/[.?!]$/.test(s.trim()) ? s.trim() : `${s.trim()}.`);
+  // The look of the voice pieces here and in the work panel. voice.js styles
+  // its own buttons; this only places them.
+  document.head.append(el("style", {}, `
+    .asks-title .voice-speak { margin-left: auto; flex: none; white-space: nowrap; }
+    .asks-heard { display: grid; gap: 8px; justify-items: start; font-size: 14px; overflow-wrap: anywhere; }
+    .asks-heard[hidden] { display: none; }
+    .asks-heard .btn { min-height: 44px; }
+    .asks .btn[aria-pressed="true"] svg.i { color: var(--red); }
+    .section-title.with-voice { display: flex; align-items: center; gap: 8px; }
+    .section-title.with-voice .voice-speak { margin-left: auto; min-height: 28px; padding-top: 2px; padding-bottom: 2px; }
+    .talk .row .talk-voice { order: 1; margin-left: auto; display: flex; }
+    .talk .row .talk-voice:empty { display: none; }
+    @media (max-width: 640px) { .talk .row .talk-voice { order: 0; flex: 1 1 100%; justify-content: flex-end; } }`));
   D.askBox = (t, qs, opts = {}) => {
     const key = `${t.id}|${t.updated_at}`;
     const mine = picks.get(key) ?? {};
@@ -494,12 +515,20 @@
     const multi = qs.length > 1 && qs.some((q) => q.choices.length);
     const all = [];
     let sending = false, sent = false;
+    // Voice is read when the box is drawn, never at load: voice.js loads after this file.
+    const V = window.Voice;
+    const canHear = !!V?.canListen?.() && qs.some((q) => q.choices.length);
+    let hearing = null, said = null; // the live listen, and the one choice a spoken answer matched
     const err = el("p", { className: "field-error", role: "alert" });
+    const spoken = () => qs.map((q, i) => (qs.length > 1 ? `Question ${i + 1}. ` : "") + ended(q.text) +
+      (q.choices.length ? ` ${canHear ? "You can say" : "The choices are"}: ${q.choices.join(", or ")}.` : "")).join(" ");
+    const speaker = V?.canSpeak?.() ? V.speaker(spoken, { label: "Read aloud" }) : null;
     const box = el("section", { className: `asks${t.state === "needs_you" ? " needs_you" : ""}`, "aria-label": "The agent asks" },
       el("div", { className: "asks-title" }, icon("question"), opts.guessed ? "The agent seems to ask"
-        : qs.length > 1 ? `The agent asks ${qs.length} things` : "The agent asks"));
+        : qs.length > 1 ? `The agent asks ${qs.length} things` : "The agent asks", speaker));
     const answer = async (text) => {
       if (sending || sent) return;
+      hearing?.stop();
       err.textContent = "";
       if (D.offline) { err.textContent = "Your PC isn't answering. Answer when it's back."; return; }
       sending = true;
@@ -550,6 +579,61 @@
       all.push(sendAll);
       foot.append(sendAll);
     }
+    const heardBox = el("div", { className: "asks-heard", role: "status", "aria-live": "polite", hidden: true });
+    const showHeard = (...kids) => { kids = kids.filter(Boolean); heardBox.replaceChildren(...kids); heardBox.hidden = !kids.length; };
+    const button = (cls, kids, onclick) => {
+      const b = el("button", { type: "button", className: `btn ${cls}` }, ...kids);
+      b.onclick = (ev) => { ev.stopPropagation(); onclick(); };
+      all.push(b);
+      return b;
+    };
+    // The own-words box, started with what was heard, for when no choice fits.
+    const talkWith = (words) => opts.onTalk(qs.length === 1 ? `${qs[0].text}\nMy answer: ${words}`
+      : `${qs.map((q, i) => `${i + 1}. ${q.text}`).join("\n")}\n\nMy answer: ${words}`);
+    // What a spoken answer does: shows what was heard and picks the choice it
+    // clearly means, or says to tap one. Nothing is sent from here.
+    const heard = (words) => {
+      const quote = `Heard: "${words}".`;
+      if (!multi) {
+        const q = qs[0], i = V.matchChoice(words, q.choices);
+        if (i >= 0) {
+          said = q.choices[i];
+          showHeard(el("p", {}, `${quote} That sounds like "${said}". Tap Send this answer, or tap another choice.`),
+            button("primary", [icon("send"), "Send this answer"], () => answer(`${q.text} — ${said}`)));
+          paint();
+          return;
+        }
+      } else {
+        const hits = qs.map((q, i) => [i, q.choices.length ? V.matchChoice(words, q.choices) : -1]).filter(([, c]) => c >= 0);
+        if (hits.length === 1) {
+          const [i, c] = hits[0];
+          mine[i] = qs[i].choices[c];
+          showHeard(el("p", {}, `${quote} Picked "${mine[i]}" for question ${i + 1}. Check your picks, then tap Send answers.`));
+          paint();
+          return;
+        }
+      }
+      showHeard(el("p", {}, opts.onTalk ? `${quote} Tap a choice, or use Answer in your own words.` : `${quote} Tap a choice.`),
+        opts.onTalk && button("", ["Answer with these words"], () => talkWith(words)));
+      paint();
+    };
+    let sayBtn = null;
+    if (canHear) {
+      sayBtn = button("quiet", [], async () => {
+        if (hearing) { hearing.stop(); return; }
+        if (sending || sent || D.offline) return;
+        said = null;
+        showHeard(el("p", {}, "Listening. Say your answer."));
+        hearing = window.Voice.listen({ continuous: false,
+          onText: (fin, interim) => showHeard(el("p", {}, `Hearing: "${[fin, interim].filter(Boolean).join(" ")}"`)) });
+        paint();
+        const words = await hearing.done;
+        hearing = null;
+        if (words && !sending && !sent) heard(words);
+        else { showHeard(); paint(); }
+      });
+      foot.append(sayBtn);
+    }
     if (opts.onTalk) {
       const own = el("button", { type: "button", className: "btn quiet" }, "Answer in your own words");
       own.onclick = (ev) => {
@@ -560,9 +644,17 @@
       foot.append(own);
     }
     if (foot.childNodes.length) box.append(foot);
-    box.append(el("p", { className: "hint" }, "Your answer goes back to the agent, and it picks up where it left off."), err);
+    box.append(heardBox, el("p", { className: "hint" }, "Your answer goes back to the agent, and it picks up where it left off."), err);
     function paint() {
-      for (const [b, i, c] of choiceBtns) if (multi) b.setAttribute("aria-pressed", mine[i] === c ? "true" : "false");
+      for (const [b, i, c] of choiceBtns) {
+        if (multi) b.setAttribute("aria-pressed", mine[i] === c ? "true" : "false");
+        else if (said != null) b.setAttribute("aria-pressed", c === said ? "true" : "false");
+        else b.removeAttribute("aria-pressed");
+      }
+      if (sayBtn) {
+        sayBtn.replaceChildren(icon("mic"), hearing ? "Stop listening" : "Say your answer");
+        sayBtn.setAttribute("aria-pressed", hearing ? "true" : "false");
+      }
       for (const b of all) b.disabled = sending || sent || D.offline;
       if (sendAll && !sending && !sent) sendAll.disabled = D.offline || !qs.some((_, i) => mine[i]);
     }
@@ -841,7 +933,7 @@
     const id = c.id;
     let sending = false;
     const ta = el("textarea", { id: "wk-msg", rows: 3, maxLength: 4000, placeholder: "Your message to the agent",
-      "aria-describedby": "wk-msg-how wk-msg-err", dataset: { key: "wk-msg" } });
+      "aria-describedby": "wk-msg-how wk-msg-err", dataset: { key: "wk-msg", voice: "", voiceLabel: "Say your message" } });
     ta.value = drafts[id] ?? "";
     const how = el("p", { className: "hint", id: "wk-msg-how" });
     const waiting = el("p", { className: "waiting", hidden: true });
@@ -874,7 +966,9 @@
       return b;
     });
     const title = el("label", { className: "section-title", for: "wk-msg" }, "Tell the agent something");
-    const box = el("section", { className: "talk" }, title, ta, how, el("div", { className: "row" }, ...btns), waiting, err);
+    // voice.js puts the mic for the box here, beside the send buttons (styled with the voice pieces by D.askBox).
+    const mic = el("span", { className: "talk-voice", dataset: { voiceSlot: "wk-msg" } });
+    const box = el("section", { className: "talk" }, title, ta, how, el("div", { className: "row" }, mic, ...btns), waiting, err);
     return {
       box, ta,
       // "Answer the agent": brings the box into view with the cursor in it,
@@ -1017,7 +1111,10 @@
     }
     if (rest.trim() && t.state !== "running") {
       const label = { needs_you: asks.length ? "What the agent said" : "The agent is asking", in_review: "The agent's summary", failed: "What went wrong", done: "The agent's summary", queued: "Last thing it said" }[t.state];
-      upper.push(el("section", {}, el("div", { className: "section-title" }, label), el("div", { className: `callout rich-box ${t.state}` }, D.richText(rest))));
+      // A small "Read aloud" in the header, so the owner can hear the report.
+      const hear = window.Voice?.canSpeak?.() ? window.Voice.speaker(rest, { label: "Read aloud" }) : null;
+      upper.push(el("section", {}, el("div", { className: `section-title${hear ? " with-voice" : ""}` }, label, hear),
+        el("div", { className: `callout rich-box ${t.state}` }, D.richText(rest))));
     }
     const next = whatNext(c, asks, rest);
     if (next) upper.push(next);
