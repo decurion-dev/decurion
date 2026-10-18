@@ -778,14 +778,19 @@ pub(crate) fn send_from(row: &SqliteRow) -> Result<Option<GitHubSend>> {
 
 /// Records, inside the accept's own transaction, that the hub is to send
 /// thread `id` to GitHub, and the branch it goes to. Work sent before is
-/// left as it is.
+/// left as it is. A research piece changed no code, so nothing of it is
+/// ever sent: accepting it only marks it done.
 pub(crate) async fn want_send(tx: &mut Transaction<'_, Sqlite>, id: i64) -> Result<()> {
-    let (app, title): (String, String) = sqlx::query_as(
-        "SELECT a.name, t.title FROM threads t JOIN apps a ON a.id = t.app_id WHERE t.id = ?",
+    let (app, title, research): (String, String, bool) = sqlx::query_as(
+        "SELECT a.name, t.title, t.research FROM threads t JOIN apps a ON a.id = t.app_id
+         WHERE t.id = ?",
     )
     .bind(id)
     .fetch_one(&mut **tx)
     .await?;
+    if research {
+        return Ok(());
+    }
     // The commit sent is the one accepted: the work's latest saved copy,
     // which cannot change once the work is in review.
     sqlx::query(
@@ -867,11 +872,12 @@ impl Store {
     }
 
     /// Takes a waiting send for this hub. False if it is not waiting (sent,
-    /// being sent, or never asked for).
+    /// being sent, or never asked for). Research is never sent, whatever
+    /// its row says.
     async fn start_send(&self, id: i64) -> Result<bool> {
         let done = sqlx::query(
             "UPDATE threads SET gh_state = 'sending'
-             WHERE id = ? AND gh_state = 'waiting' AND state = 'done'",
+             WHERE id = ? AND gh_state = 'waiting' AND state = 'done' AND research = 0",
         )
         .bind(id)
         .execute(self.pool())
