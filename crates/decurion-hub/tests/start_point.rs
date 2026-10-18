@@ -949,3 +949,33 @@ async fn a_helper_gets_the_start_it_was_claimed_with() {
         StatusCode::BAD_REQUEST
     );
 }
+
+#[tokio::test]
+async fn a_goal_with_no_start_gets_one_when_its_plan_is_approved() {
+    let h = hub().await;
+    let s = setup(&h.dir);
+    let app = add_app(&h, &s.folder).await;
+    let g = ok(
+        &h.r,
+        "POST",
+        "/api/goals",
+        OWNER,
+        json!({"app_id": app, "text": "Add a page"}),
+    )
+    .await;
+    let goal = g["id"].as_i64().expect("goal id");
+    // No start could be chosen when the goal was made.
+    sqlx::query("UPDATE goals SET start_commit = NULL WHERE id = ?")
+        .bind(goal)
+        .execute(h.store.pool())
+        .await
+        .expect("no start");
+    let b2 = s.advance("b2");
+    h.later();
+    let piece = approve_one_piece(&h, goal).await;
+    assert_eq!(
+        h.store.goal_start_commit(goal).await.expect("read"),
+        Some(b2.clone())
+    );
+    assert_eq!(h.store.base_commit(piece).await.expect("read"), Some(b2));
+}

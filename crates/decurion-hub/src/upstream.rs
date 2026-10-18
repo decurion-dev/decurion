@@ -175,11 +175,11 @@ pub(crate) async fn for_new_goal(st: &crate::AppState, app_id: i64) -> Option<St
     }
 }
 
-/// A fresh start for the new pieces of a later round of goal `goal`, when
-/// approving `plan_message_id` would add pieces to a goal that already has
-/// some. `None` otherwise: the first approval keeps the start the goal was
-/// created with, and a request that would be refused never waits on the
-/// network.
+/// A fresh start for the new pieces of goal `goal`, when approving
+/// `plan_message_id` would add pieces to a goal that already has some, or
+/// to one with no start yet. `None` otherwise: the first approval keeps the
+/// start the goal was created with, and a request that would be refused
+/// never waits on the network.
 pub(crate) async fn for_next_round(
     st: &crate::AppState,
     goal: i64,

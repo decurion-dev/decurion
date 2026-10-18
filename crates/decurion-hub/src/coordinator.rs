@@ -1095,9 +1095,11 @@ async fn cancel_queued(tx: &mut Transaction<'_, Sqlite>, goal_id: i64) -> Result
 /// Approves plan `plan_message_id` of goal `id` inside the caller's
 /// transaction: one thread and one piece per piece of exactly that plan.
 /// `next_start` is a fresh start chosen by the caller beforehand
-/// ([`crate::upstream::for_next_round`]); it becomes the goal's start only
-/// for a later round, when the goal already has pieces. The first approval
-/// keeps the start the goal was created with, which its plan was made on.
+/// ([`crate::upstream::for_next_round`]); it becomes the goal's start for a
+/// later round, when the goal already has pieces, or when the goal has no
+/// start yet (none could be chosen when it was created), so its pieces
+/// still share one. Otherwise the first approval keeps the start the goal
+/// was created with, which its plan was made on.
 async fn approve_in(
     tx: &mut Transaction<'_, Sqlite>,
     id: i64,
@@ -1115,7 +1117,7 @@ async fn approve_in(
     }
     let (app_id, goal_title) = goal_row(tx, id).await?;
     if let Some(start) = next_start {
-        if has_pieces(tx, id).await? {
+        if has_pieces(tx, id).await? || goal_start(tx, id).await?.is_none() {
             sqlx::query("UPDATE goals SET start_commit = ? WHERE id = ?")
                 .bind(start)
                 .bind(id)
@@ -1286,14 +1288,15 @@ impl Store {
         })
     }
 
-    /// The goal's app, when approving `plan_message_id` now would start a
-    /// later round: the plan is the one waiting and the goal already has
-    /// pieces. Only reads; the approval checks all of this again.
+    /// The goal's app, when approving `plan_message_id` now needs a start
+    /// chosen for its pieces: the plan is the one waiting, and either the
+    /// goal already has pieces (a later round) or it has no start yet. Only
+    /// reads; the approval checks all of this again.
     pub(crate) async fn next_round(&self, goal: i64, plan_message_id: i64) -> Result<Option<i64>> {
         let mut tx = self.pool().begin().await?; // read-only
         let later = goal_state(&mut tx, goal).await? == GoalState::PlanReady
             && latest_plan(&mut tx, goal).await?.map(|(m, _)| m) == Some(plan_message_id)
-            && has_pieces(&mut tx, goal).await?;
+            && (has_pieces(&mut tx, goal).await? || goal_start(&mut tx, goal).await?.is_none());
         let app = if later {
             Some(goal_row(&mut tx, goal).await?.0)
         } else {
