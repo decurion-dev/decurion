@@ -794,6 +794,7 @@ impl Store {
                 Place::Cloud => Vec::new(),
             };
             let context = self.thread_context(t.id).await?;
+            let addons = self.claim_addons(app.id).await?;
             return Ok(ClaimOutcome {
                 work: Some(Claim {
                     thread,
@@ -804,6 +805,7 @@ impl Store {
                     test_keys,
                     sign_ins,
                     context,
+                    addons,
                     budget_usd: account
                         .is_paid()
                         .then(|| crate::spend::claude_budget_usd(prior, reserved)),

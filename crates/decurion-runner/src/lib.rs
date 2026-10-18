@@ -10,6 +10,7 @@ use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub mod addons;
 pub mod handover;
 pub mod identity;
 
@@ -1294,6 +1295,17 @@ pub fn helper_run_args(
     Ok(a)
 }
 
+/// The names a box reaches without its gate: the gate itself, the run's
+/// add-on tool boxes (each its own container on the run's network, see
+/// `addons::tool_host`), and the box's own loopback. None of them leads
+/// out of the run's network.
+pub fn no_proxy() -> String {
+    let tools: Vec<String> = (0..decurion_proto::addon::MAX_RUN_TOOLS)
+        .map(addons::tool_host)
+        .collect();
+    format!("gate,{},localhost,127.0.0.1,::1", tools.join(","))
+}
+
 /// The sealed box every agent runs in, up to and including the image name:
 /// no extra privileges, capped memory and processes, and the credential and
 /// test keys by name only. `beside` is the browser box whose network the
@@ -1344,9 +1356,9 @@ fn box_args(
             "-e",
             &format!("http_proxy={GATE_URL}"),
             "-e",
-            "NO_PROXY=gate,localhost,127.0.0.1,::1",
+            &format!("NO_PROXY={}", no_proxy()),
             "-e",
-            "no_proxy=gate,localhost,127.0.0.1,::1",
+            &format!("no_proxy={}", no_proxy()),
             "-e",
             "NODE_USE_ENV_PROXY=1",
             // No update checks or telemetry: they would only be blocked.

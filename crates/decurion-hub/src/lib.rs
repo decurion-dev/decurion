@@ -17,6 +17,8 @@
 //! save or move work it is running itself. A cloud worker's key reaches
 //! nothing else at all: not the board, spending or other work.
 
+pub mod addon_manifest;
+pub mod addons;
 pub mod browser;
 pub mod checkpoints;
 pub mod claude_sign_in;
@@ -413,6 +415,8 @@ pub fn router(state: AppState) -> Router {
         .route("/runner/helper/{id}/started", post(goals::helper_started))
         // Watching and taking over the test browser: see browser.rs.
         .merge(browser::routes())
+        // Add-ons: owner routes, and the runner's download (addons.rs).
+        .merge(addons::routes())
         // "Run it": the owner tries an app in a live browser (preview.rs).
         .merge(preview::routes())
         .route(
@@ -482,6 +486,11 @@ pub fn router(state: AppState) -> Router {
                     include_str!("settings.js"),
                 )
             }),
+        )
+        // Settings, Add-ons (addons.rs), drawn into a settings.js tab.
+        .route(
+            "/addons.js",
+            get(|| async { asset("text/javascript; charset=utf-8", include_str!("addons.js")) }),
         )
         .route(
             "/files.js",

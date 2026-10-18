@@ -40,4 +40,5 @@
 # Going further
 
 - [Add the cloud worker](add-the-cloud-worker.md)
+- [Give agents extra tools with add-ons](add-ons.md)
 - [Improve Decurion itself](improve-decurion-itself.md)

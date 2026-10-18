@@ -110,6 +110,12 @@ impl Files {
         self.dir.join("context")
     }
 
+    /// Where approved add-ons are kept, each under its id and tree hash
+    /// (see [`crate::addons`]).
+    pub(crate) fn addons_dir(&self) -> PathBuf {
+        self.dir.join("addons")
+    }
+
     /// The hub's own bare copy of an app's repo.
     /// Where deploys keep their own copies of apps' code, and their logs.
     pub(crate) fn deploy_dir(&self) -> PathBuf {

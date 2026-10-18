@@ -46,9 +46,12 @@ ADR 0001 (`placement = "hub"`), which is not built.
 Inside a Decurion box you cannot build images (no Docker there). Say in your
 final summary that the image build was not tried.
 
-## What will replace this
+## Or ship it as an add-on
 
-ADR 0001 `[[tool]]` add-ons: an MCP server in its own image pinned by digest,
-either a sidecar in the box (no secrets) or beside the hub behind a per-run
-MCP proxy that holds the key, with every exposed function declaring an effect.
-See `write-an-add-on.md`.
+A tool the owner wants for some apps only, or that is not Decurion's own,
+can be an add-on instead (ADR 0001, v1: tools): an MCP server over HTTP in
+a sealed box of its own beside the agent's, added from its link in
+Settings, Add-ons, with no change to the image. See `write-an-add-on.md`.
+The design's next steps (an image of its own pinned by digest, and a tool
+beside the hub behind a per-run MCP proxy that holds a key agents never
+see) are not built yet.

@@ -1,9 +1,38 @@
 # ADR 0001: The add-on system
 
-- **Status:** Proposed
-- **Date:** 2026-10-17
+- **Status:** Accepted (v1: tools)
+- **Date:** 2026-10-17 (proposed), 2026-10-18 (v1 accepted)
 - **Deciders:** the owner (final say), maintainers
 - **Phase:** 5 (public release). Several integration points depend on Phase 2, 3 and 4 work and are marked **Depends on**.
+
+## What v1 ships
+
+v1 is the **tool** kind only, end to end, kept deliberately small. The rest of this ADR stays the design for what comes next.
+
+- **Package.** A git repo, or a folder in one, with `decurion-addon.toml`: `decurion_api = "1"`, `[addon]` (`id`, `name`, `version`, `description`, optional `authors`, `license`, `homepage`) and one to four `[[tool]]` tables with `name`, `summary`, `command`, `effect` (`read` or `write`), optional `[tool.permissions] network = [...]` and optional `[tool.secrets]` naming one of the app's test keys. The working example is `docs/addons/word-count/`; parsing is `crates/decurion-hub/src/addon_manifest.rs`.
+- **Install.** Settings, **Add-ons** (`addons.js`). The owner pastes a link (https, or a git folder on the PC for authors) and, if needed, a folder inside it. The hub clones it with git only (no hooks, no LFS, https or local files only, nothing of the add-on runs), pins the commit it finds, computes the tree hash itself (section 4, `decurion_proto::addon::tree_hash`) and stages the files under that hash. It shows one card: fixed sentences for each permission, what it can never do, and which apps to use it in. **Add** sends that hash back; the hub hashes the staged files again before keeping them (`crates/decurion-hub/src/addons.rs`).
+- **Per app.** A switch per app. Turning one on checks the app has the test key the add-on names and that no two add-ons give the same tool name. New apps start with every add-on off.
+- **Runs.** The claim lists the app's add-ons (`Claim.addons`). For a Claude Code work run the runner fetches each add-on's files from `GET /api/runner/threads/{id}/addons/{addon}` (the hub hashes its kept copy again first, and refuses and logs it if one byte changed), checks the hash again itself, and starts **each tool in a sealed box of its own** from the agent image: `--cap-drop ALL`, no new privileges, read-only root, the add-on's files read-only at `/addon` and nothing else, as a container of its own on the run's internal network (never `--network container:`, so it does not share the agent's or the browser box's localhost, where the browser tools with the owner's saved sign-ins, `decurion-postgres` and the agent's dev servers listen), so it goes out through the same gate. The tool serves MCP over HTTP at `http://addon-N:port/mcp` (`tool_host`, in every box's `NO_PROXY`); the agent gets it as a second value of its one `--mcp-config` (before `--strict-mcp-config`) and one sentence in its prompt. The tools' websites join the run's gate list for that run only (`decurion_runner::addons`, runner `addon_box.rs`). A tool that cannot be fetched, checked or started is left out and the owner is told on the work's activity; the work goes on.
+- **Updates.** **Check for an update** fetches the same link again. Same or fewer permissions: applied at once and logged. Anything new (a tool, a tool that now writes, a website not covered before, a key): one card listing only what is new, and the old version keeps running until the owner taps Update (`addon_manifest::new_lines`).
+- **Remove.** New runs stop getting it at once; runs in flight finish with the copy they fetched. Its files are deleted; its log stays.
+- **Audit.** A sibling append-only table `addon_log` (migration `0120_addons.sql`): `installed`, `updated`, `removed`, `enabled`, `disabled` (per app), `used` (per run, with version and hash), `key_used` (test key by name, per run), `refused` (changed files).
+- **Hard stops stay hard.** Tools with a hard-stop effect (`outbound_message`, `deploy`, `production_data`, `spend`) are refused at install, and so is any tool naming a website known for messages or deploys (`decurion_proto::addon::HARD_STOP_SITES`, a first answer to Open question 1). Nothing in v1 can merge, push, deploy, touch production data, raise the cap or send messages.
+- **Claude stays the CLI's alone.** No add-on code runs in the agent's box, so none can read the run's Claude sign-in; a tool box gets no credential, no code, no home volume and at most the one test key it named. `RULES_VERSION` is 14. One gap stays: a server the agent starts on all addresses (`0.0.0.0`, as some dev servers do by default) is reachable from a tool box over the run's network; servers on `127.0.0.1` are not. Closing it needs the gate to relay agent-to-tool calls (a TODO with hub placement).
+
+**How v1 differs from the design above, and why**
+
+- **Tools run from the agent image and the add-on's own files, not an image of their own by digest.** That keeps "nothing runs at install" and the tree hash as the one pin, with no registry pulls. Programs come from the image (`node`), by plain name; the add-on's files are their arguments.
+- **HTTP transport only.** A stdio server needs a bridge inside the tool box; not built.
+- **Placement is `box` only, and its key is a test key.** A box tool may name one of the app's test keys. Like every test key, the agent's box gets it too and Decurion hides it from what agents report, and the approval card says so. The design's "agents never see the key" needs `placement = "hub"`.
+- **Effects are per tool, not per function.** `[[tool.expose]]` effects are read (a hard stop among them refuses the add-on), but v1 cannot hide functions a server offers and the manifest leaves out; the card says so as a warning.
+- **Cloud workers** fetch add-ons through their own work's route (`cloud_reach` already covers `/runner/threads/{id}/...`); no separate bundle sync. **pi runs and helpers** (project lead, designer, checker) get no add-on tools.
+- **No `decurion addon` command line, no dev mode, no signing.** The tab is the only way in.
+
+**TODO, at clean boundaries (not started in v1)**
+
+- `placement = "hub"` and the per-run **MCP proxy**: the piece that lets a tool hold a key from the vault that agents never see, forward only listed functions, and stop each hard-stop call for the owner. It needs a vault entry kind of its own (not a test key) and a proxy on the hub, so it was left out rather than bending the vault or the gate.
+- Agent types (`[[agent]]`) and checks (`[[check]]`, wasmtime): refused today with a plain message.
+- Tool images by digest, stdio transport, `worktree` access for tools, resource settings (tool boxes get 1 GB and 256 processes).
 
 ## In plain words
 
