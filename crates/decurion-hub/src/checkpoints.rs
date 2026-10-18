@@ -11,8 +11,11 @@
 //! them to the next runner, which unpacks the session inside a sealed
 //! container and reads the code with git's own checks. The one exception is
 //! the code part of a finished piece of work: the hub reads it into its own
-//! bare copy of the app's repo, with git's checks, only to list the files it
-//! changed (see [`crate::protected`]).
+//! bare copy of the app's repo, with git's checks (always through
+//! [`Files::fetch_saved_code`]), only to list the files it changed (see
+//! [`crate::protected`]), to show the owner's project lead the change when
+//! the owner asks why (see [`crate::why`]), and to send accepted work to
+//! GitHub.
 
 use crate::store::{runner_actor, Result, Store, StoreError};
 use std::path::{Path, PathBuf};
