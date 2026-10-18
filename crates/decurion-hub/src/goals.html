@@ -1514,17 +1514,28 @@ async function turnIntoGoal(v, p, btn, err) {
   } catch (e) { btn.disabled = false; err.textContent = `No new goal yet: ${e.message}`; }
 }
 
+/** How full a piece's conversation got, and how often Claude Code summed it up to make room. */
+function contextWords(u) {
+  const k = u.peak_context >= 1e6 ? `${(u.peak_context / 1e6).toFixed(1).replace(/\.0$/, "")}M` : `${Math.round(u.peak_context / 1000)}k`;
+  const c = u.compactions === 0 ? "" : u.compactions === 1 ? ", summed up once" : `, summed up ${u.compactions} times`;
+  return `${k} tokens${c}`;
+}
+
 function renderPieces(v) {
   const pieces = v.pieces ?? [], pages = v.pages ?? [];
-  const sig = JSON.stringify([pieces, pages.filter(p => p.kind === "check"), inApp(), [...S.why.keys()]]);
+  const sig = JSON.stringify([pieces, pages.filter(p => p.kind === "check"), inApp(), [...S.why.keys()], v.usage]);
   if (sig === S.piecesSig) return;
   S.piecesSig = sig;
   // A refresh rebuilds the cards; put the cursor back in a question being typed.
   const typing = document.activeElement?.dataset?.why;
   $("pieces-count").textContent = pieces.length ? String(pieces.length) : "";
   const body = $("pieces-body");
+  // What the goal used so far (tokens.rs): the project lead and every piece.
+  const used = v.usage ? el("p", { class: "hint used" }, `This goal used ${v.usage.total.words}`,
+    pieces.length
+      ? ` (project lead ${v.usage.lead.words.split(" ·")[0]}, pieces ${v.usage.pieces.words.split(" ·")[0]})` : "", ".") : null;
   if (!pieces.length) {
-    body.replaceChildren(el("p", { class: "empty" }, "Pieces of work show up here once you approve a plan."));
+    body.replaceChildren(el("p", { class: "empty" }, "Pieces of work show up here once you approve a plan."), used ?? "");
     return;
   }
   const settled = pieces.filter(p => ["passed", "needs_a_look", "failed"].includes(p.review)).length;
@@ -1536,6 +1547,7 @@ function renderPieces(v) {
     el("p", { class: "hint", style: "margin:0" }, research === pieces.length
       ? `${passed} of ${pieces.length} research ${pieces.length === 1 ? "piece" : "pieces"} done`
       : `${passed} of ${pieces.length} passed the check`),
+    used,
   ];
   body.replaceChildren(...head, ...pieces.map(p => {
     let [label, tone] = REVIEW_STATES[p.review] ?? [p.review, "neutral"];
@@ -1552,7 +1564,9 @@ function renderPieces(v) {
       el("div", { class: "pp-done" }, el("b", null, p.research ? "Answers: " : "Done when: "), p.done_when),
       el("dl", { class: "facts" },
         el("div", null, el("dt", null, "Agent:"), el("dd", null, THREAD_STATES[p.thread_state] ?? p.thread_state)),
-        p.research ? null : el("div", null, el("dt", null, "Checked:"), el("dd", null, rounds))),
+        p.research ? null : el("div", null, el("dt", null, "Checked:"), el("dd", null, rounds)),
+        p.usage ? el("div", null, el("dt", null, "Used:"), el("dd", null, p.usage.words)) : null,
+        p.usage?.peak_context ? el("div", null, el("dt", null, "Longest conversation:"), el("dd", null, contextWords(p.usage))) : null),
       p.agent_summary ? el("details", { class: "said", open: p.research ? true : null },
         el("summary", null, p.research ? "What it found" : "What the agent said it did"),
         el("div", { class: "said-body" }, p.agent_summary)) : null,

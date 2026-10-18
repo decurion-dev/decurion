@@ -1382,3 +1382,151 @@ async fn a_goal_closes_itself_once_every_pull_request_is_merged() {
     assert!(store.piece_merged(thread).await.expect("again").is_none());
     assert!(store.piece_merged(9999).await.expect("no piece").is_none());
 }
+
+/// Finishes a claimed helper job with the tokens its runner read.
+async fn finish_with(r: &axum::Router, claim: &Value, text: &str, tokens: Value) {
+    let id = claim["job_id"].as_i64().expect("job id");
+    ok(
+        r,
+        "POST",
+        &format!("/api/runner/helper/{id}/finish"),
+        RUNNER,
+        json!({"ok": true, "text": text, "cost_usd": 0.02, "tokens": tokens}),
+    )
+    .await;
+}
+
+async fn work_turn(r: &axum::Router, thread: i64, cost: f64, tokens: Value) {
+    for e in [
+        json!({"kind":"message","text":"working"}),
+        json!({"kind":"finished","ok":true,"summary":"done","cost_usd":cost,"tokens":tokens}),
+    ] {
+        ok(
+            r,
+            "POST",
+            &format!("/api/threads/{thread}/events"),
+            RUNNER,
+            e,
+        )
+        .await;
+    }
+    ok(
+        r,
+        "POST",
+        &format!("/api/threads/{thread}/move"),
+        RUNNER,
+        json!({"to":"in_review"}),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_goal_counts_its_tokens_per_piece_and_for_today() {
+    let (r, _) = hub().await;
+    let app = app(&r, false).await;
+    let g = ok(
+        &r,
+        "POST",
+        "/api/goals",
+        OWNER,
+        json!({"app_id": app, "text": "Go"}),
+    )
+    .await;
+    let goal = g["id"].as_i64().expect("goal");
+    assert!(view(&r, goal).await.get("usage").is_none(), "nothing yet");
+    let lead = claim_any(&r).await;
+    assert_eq!(lead["kind"], "coordinator");
+    finish_with(
+        &r,
+        &lead,
+        PLAN,
+        json!({"fresh": 100, "cache_read": 900, "output": 10}),
+    )
+    .await;
+    let v = view(&r, goal).await;
+    let plan_id = last_message(&v)["id"].as_i64().expect("plan");
+    ok(
+        &r,
+        "POST",
+        &format!("/api/goals/{goal}/approve"),
+        OWNER,
+        json!({"plan_message_id": plan_id}),
+    )
+    .await;
+    helper(&r, "design", "done", Some("<h1>x</h1>")).await;
+
+    // The piece's first run, then its check sends it back.
+    let work = ok(
+        &r,
+        "POST",
+        "/api/runner/claim",
+        RUNNER,
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
+    )
+    .await;
+    let thread = work["thread"]["id"].as_i64().expect("thread");
+    work_turn(
+        &r,
+        thread,
+        0.5,
+        json!({"fresh": 1000, "cache_read": 9000, "cache_write": 500, "output": 200, "peak_context": 8000}),
+    )
+    .await;
+    let check = claim_any(&r).await;
+    assert_eq!(check["kind"], "review");
+    finish_with(
+        &r,
+        &check,
+        r#"{"pass": false, "summary": "Not yet.", "issues": ["Fix it"]}"#,
+        json!({"fresh": 50, "cache_read": 450, "output": 5}),
+    )
+    .await;
+
+    // The fix round resumes the session, and Claude Code reports the whole
+    // session so far: only the new part counts again.
+    let work = ok(
+        &r,
+        "POST",
+        "/api/runner/claim",
+        RUNNER,
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
+    )
+    .await;
+    assert_eq!(work["resume"], true);
+    work_turn(
+        &r,
+        thread,
+        0.9,
+        json!({"fresh": 1500, "cache_read": 19000, "cache_write": 700, "output": 300,
+               "peak_context": 12000, "compactions": 1}),
+    )
+    .await;
+
+    let v = view(&r, goal).await;
+    let piece = &v["pieces"][0]["usage"];
+    assert_eq!(
+        (
+            &piece["fresh"],
+            &piece["cache_read"],
+            &piece["cache_write"],
+            &piece["output"]
+        ),
+        (&json!(1550), &json!(19450), &json!(700), &json!(305)),
+        "{piece}"
+    );
+    assert_eq!(
+        (&piece["peak_context"], &piece["compactions"]),
+        (&json!(12000), &json!(1))
+    );
+    let u = &v["usage"];
+    assert_eq!(u["lead"]["cache_read"], 900);
+    assert_eq!(u["total"]["cache_read"], 20350);
+    assert_eq!(u["total"]["words"], "23k tokens · 89% cached");
+
+    let today = ok(&r, "GET", "/api/today", OWNER, json!({})).await;
+    let row = today
+        .as_array()
+        .and_then(|rows| rows.iter().find(|x| x["app_id"] == app))
+        .expect("today row");
+    assert_eq!(row["used_today"]["cache_read"], 20350, "{row}");
+}

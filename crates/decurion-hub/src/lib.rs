@@ -45,6 +45,7 @@ pub mod store;
 pub mod tailscale;
 pub mod test_keys;
 pub mod today;
+pub mod tokens;
 pub mod usage;
 pub mod why;
 pub mod workers;

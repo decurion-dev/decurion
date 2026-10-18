@@ -445,6 +445,9 @@ pub struct Piece {
     /// guessed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub review_claims: Vec<ReviewClaim>,
+    /// Tokens this piece used: its building runs and its checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::tokens::TokenLine>,
 }
 
 /// One thing the checker actually did, such as running the tests or opening
@@ -554,6 +557,20 @@ pub struct GoalView {
     /// Absent for apps that do not deploy and goals with nothing merged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<bool>,
+    /// Tokens the goal used so far: its pieces' work and checks, and the
+    /// project lead's turns. `None` until an agent reported any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<GoalUsage>,
+}
+
+/// A goal's tokens, in total and by who used them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoalUsage {
+    pub total: crate::tokens::TokenLine,
+    /// The project lead: talking, planning, drawing pages, summing up.
+    pub lead: crate::tokens::TokenLine,
+    /// Every piece's building and its checks.
+    pub pieces: crate::tokens::TokenLine,
 }
 
 /// What the reviewer returns, as the JSON object at the end of its answer.
@@ -729,6 +746,9 @@ pub struct HelperResult {
     pub input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u64>,
+    /// The same tokens split up, as in `RunEvent::Finished`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<crate::tokens::TokenUse>,
     /// `/out/page.html` from a design or review job, if the agent left one
     /// no bigger than [`MAX_PAGE_BYTES`].
     #[serde(default, skip_serializing_if = "Option::is_none")]

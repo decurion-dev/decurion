@@ -688,13 +688,17 @@ impl Store {
             .await?;
             let resume = t.session_id.is_some() && started;
             // What earlier runs cost, when the agent's own report will count it.
-            let prior = if resume && t.ai.reports_session_cost() {
+            // The agent's report will count earlier runs too.
+            let resumed = resume && t.ai.reports_session_cost();
+            let prior = if resumed {
                 crate::spend::session_cost_micros(&mut tx, t.id).await?
             } else {
                 0
             };
             let reserved =
-                match crate::spend::open_run(&mut tx, t.id, t.app_id, account, prior).await? {
+                match crate::spend::open_run(&mut tx, t.id, t.app_id, account, prior, resumed)
+                    .await?
+                {
                     Ok(r) => r,
                     Err(hit) => {
                         // The month's pay-per-use money is used up: a hard stop for the owner.
@@ -901,11 +905,19 @@ impl Store {
             cost_usd: Some(cost),
             input_tokens,
             output_tokens,
+            tokens,
             ..
         } = e
         {
-            crate::spend::record_cost(&mut tx, thread_id, *cost, *input_tokens, *output_tokens)
-                .await?;
+            crate::spend::record_cost(&mut tx, thread_id, *cost).await?;
+            crate::tokens::record_run(
+                &mut tx,
+                thread_id,
+                *input_tokens,
+                *output_tokens,
+                tokens.as_ref(),
+            )
+            .await?;
         }
         tx.commit().await?;
         Ok((id, new_outage))

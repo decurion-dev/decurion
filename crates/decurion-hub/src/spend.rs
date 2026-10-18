@@ -166,18 +166,21 @@ pub(crate) async fn open_run(
     app_id: i64,
     account: Account,
     prior_micros: i64,
+    resumed: bool,
 ) -> Result<std::result::Result<i64, CapHit>> {
     let reserve = match set_aside(tx, app_id, account).await? {
         Ok(r) => r,
         Err(hit) => return Ok(Err(hit)),
     };
     sqlx::query(
-        "INSERT INTO runs (thread_id, account, reserved_micros, prior_micros) VALUES (?, ?, ?, ?)",
+        "INSERT INTO runs (thread_id, account, reserved_micros, prior_micros, resumed)
+         VALUES (?, ?, ?, ?, ?)",
     )
     .bind(thread_id)
     .bind(account.as_str())
     .bind(reserve)
     .bind(prior_micros)
+    .bind(resumed)
     .execute(&mut **tx)
     .await?;
     Ok(Ok(reserve))
@@ -219,13 +222,11 @@ pub(crate) async fn close_open_run(tx: &mut Transaction<'_, Sqlite>, thread_id: 
 /// total for the session, so earlier runs' charges are taken off; a pi run's
 /// row has no earlier charges, because pi reports only the run. If it comes in
 /// above the amount set aside, the real figure is kept: the month's total
-/// must show what was spent.
+/// must show what was spent. Tokens are recorded by `tokens::record_run`.
 pub(crate) async fn record_cost(
     tx: &mut Transaction<'_, Sqlite>,
     thread_id: i64,
     cost_usd: f64,
-    input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
 ) -> Result<()> {
     // The report is a running total for the session; the limit applies to
     // this run's own share of it.
@@ -235,15 +236,12 @@ pub(crate) async fn record_cost(
         return Ok(());
     };
     sqlx::query(
-        "UPDATE runs SET cost_micros = MIN(MAX(?1 - prior_micros, 0), ?2),
-             input_tokens = ?3, output_tokens = ?4
-         WHERE id = (SELECT id FROM runs WHERE thread_id = ?5 AND finished_at IS NULL
+        "UPDATE runs SET cost_micros = MIN(MAX(?1 - prior_micros, 0), ?2)
+         WHERE id = (SELECT id FROM runs WHERE thread_id = ?3 AND finished_at IS NULL
                      ORDER BY id DESC LIMIT 1)",
     )
     .bind(reported)
     .bind(to_micros(MAX_REPORT_USD))
-    .bind(input_tokens.map(|n| n as i64))
-    .bind(output_tokens.map(|n| n as i64))
     .bind(thread_id)
     .execute(&mut **tx)
     .await?;

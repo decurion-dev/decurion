@@ -27,6 +27,7 @@
 - [Review and merge work](review-and-merge.md)
 - [Deploy your app in one tap](deploy-your-app.md)
 - [Dismiss finished work](dismiss-finished-work.md)
+- [See how much a goal used](see-how-much-a-goal-used.md)
 
 # When things go wrong
 

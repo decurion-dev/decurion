@@ -93,6 +93,7 @@ async fn lead_says(r: &axum::Router, store: &Store, text: &str) -> Option<push::
         cost_usd: Some(0.01),
         input_tokens: None,
         output_tokens: None,
+        tokens: None,
         page_html: None,
     };
     store

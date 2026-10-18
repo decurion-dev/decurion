@@ -175,6 +175,7 @@
   .today-row .ft .btn { position: relative; z-index: 1; }
   .today-row .ft .run-btn { margin-left: auto; }
   .today-row .first { font-size: 12px; color: var(--faint); }
+  .today-row .use { font-size: 12px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .today .pill svg.i.spin { animation: none; }
   /* An app with a deploy card: a little wider, with the deploy part under a line. */
   .today-row:has(.deploy-box) { width: 336px; max-width: calc(100vw - 32px); }
@@ -653,6 +654,8 @@
       } else act = el("span", { className: `pill ${cls}` }, icon(ic), r.status);
       return el("article", { className: "today-row", dataset: { tone: r.tone } },
         hit, el("div", { className: "ln", title: r.line + when }, r.line + when),
+        // Tokens the app's agents used today (tokens.rs), once any did.
+        r.used_today ? el("div", { className: "use" }, r.used_today.words) : null,
         el("div", { className: "ft" }, act, r.first_today ? el("span", { className: "first" }, "First today") : null,
           runButton(r.app_id, r.name, `today-run-${id}`)),
         r.deploy ? D.deployBox(r.deploy, { onChange: loadToday })
