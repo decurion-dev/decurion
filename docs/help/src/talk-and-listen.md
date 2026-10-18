@@ -34,7 +34,7 @@ Talk mode is for a back-and-forth with your project lead in Goals. It reads each
 | **Talk mode** | Reads each reply from your project lead, then listens for yours. |
 | **Send when I stop talking** | In Talk mode only, sends your answer after you stop talking. Off means you check the words and tap Send. |
 | **Voice** and **Speed** | Pick the voice that reads to you and how fast. |
-| **Keep my voice on this device** | In Chrome on a PC, downloads a speech pack so your speech turns into words on the PC itself. |
+| **Keep my voice on this device** | In Chrome on a PC, tap **Check this device**, then download the speech pack if offered, so your speech turns into words on the PC itself. |
 
 Voice choices are kept on each phone or PC, so set them on each one.
 

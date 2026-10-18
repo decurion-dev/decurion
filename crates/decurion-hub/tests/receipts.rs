@@ -274,7 +274,11 @@ async fn a_research_piece_is_reported_with_its_agents_own_words() {
         prompt.contains("- Reset link: research: report ready, no code changed."),
         "{prompt}"
     );
-    assert!(prompt.contains("The research agent wrote: «I added the reset link.»"));
+    assert!(
+        prompt.contains("The research agent's final words")
+            && prompt.contains("I added the reset link."),
+        "{prompt}"
+    );
     assert!(prompt.contains("Turn into a goal"));
     finish(&r, &report, r#"{"say": "Your report is ready."}"#).await;
     assert_eq!(view(&r, goal).await["goal"]["state"], "for_review");

@@ -142,6 +142,11 @@ pub struct CoordinatorReply {
     /// Facts about the app worth keeping for later goals.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remember: Vec<String>,
+    /// Items for the app's master plan, under this goal: what finished work
+    /// found, or follow-ups worth doing. The owner decides what happens to
+    /// them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub todo: Vec<crate::plan::LeadTodo>,
 }
 
 pub const MAX_QUESTIONS: usize = 4;
@@ -210,6 +215,7 @@ impl CoordinatorReply {
         for r in &self.remember {
             check_len("remember entry", r, 300)?;
         }
+        crate::plan::validate_todo(&self.todo)?;
         Ok(())
     }
 }
@@ -480,6 +486,9 @@ pub struct ReviewVerdict {
     /// What it claims about the work, each marked checked or guessed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub claims: Vec<ReviewClaim>,
+    /// Questions for the owner about the checker's page, answered beside it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<Question>,
 }
 
 pub const MAX_EVIDENCE: usize = 10;
@@ -510,6 +519,7 @@ impl ReviewVerdict {
         for c in &self.claims {
             check_len("claim", &c.text, 500)?;
         }
+        crate::plan::validate_page_questions(&self.questions)?;
         Ok(())
     }
 }
@@ -658,6 +668,7 @@ mod tests {
                 }],
             }),
             remember: vec![],
+            todo: vec![],
         }
     }
 
@@ -695,6 +706,7 @@ mod tests {
             issues: vec![],
             evidence: vec![],
             claims: vec![],
+            questions: vec![],
         });
         assert!(v.pass);
         assert_eq!(v.summary, "Looks good");

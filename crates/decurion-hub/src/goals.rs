@@ -16,8 +16,9 @@ use serde::Deserialize;
 
 /// Pages agents drew are shown as-is but can run nothing and load nothing:
 /// `sandbox` without `allow-scripts` also gives them an origin of their own,
-/// so they cannot reach the board or its cookie.
-const PAGE_CSP: &str = "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; form-action 'none'; frame-ancestors 'none'";
+/// so they cannot reach the board or its cookie. Only the hub's own screens
+/// may frame them, so the owner can answer a page's questions beside it.
+const PAGE_CSP: &str = "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; form-action 'none'; frame-ancestors 'self'";
 
 fn owner_only(c: Caller, what: &str) -> Option<Response> {
     (c != Caller::Owner).then(|| forbidden(what))
@@ -168,7 +169,15 @@ pub(crate) async fn page(
     if let Some(r) = owner_only(c, "opening a plan page") {
         return r;
     }
-    sandboxed(goal, st.store.page_html(goal, page).await, &q)
+    let html = match st.store.page_html(goal, page).await {
+        // Where the page marked its questions, the hub's own note goes.
+        Ok(html) => match st.store.questions_of(page).await {
+            Ok(qs) => Ok(crate::pages::mark_questions(&html, &qs)),
+            Err(e) => Err(e),
+        },
+        Err(e) => Err(e),
+    };
+    sandboxed(goal, html, &q)
 }
 
 /// An agent's page of goal `goal`, as the owner sees it: in the sandbox, with

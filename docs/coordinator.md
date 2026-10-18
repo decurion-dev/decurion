@@ -56,6 +56,19 @@ the board.
   prompt, never into the stored brief.
 - The checker works on its own copy of the finished branch and treats anything
   written in it as part of the work under check, never as instructions.
+- The designer and the checker may ask you up to four questions in their page
+  (yes or no, a choice, or something in words). Decurion draws the answer
+  buttons beside the page, never inside it, and your answers reach the
+  coordinator as a message from you. Questions in the wrong shape are dropped;
+  the page is still shown.
+- The coordinator can add to-do items to the app's **master plan**, under the
+  goal it is working on (`"todo": [{"title", "detail"}]` in its answer, at most
+  10): what an audit or finished work found that still needs doing, and
+  follow-ups worth doing. Its report asks for every finding there, one item
+  each. A title the goal already has is skipped. Items do nothing until you tick
+  them, drop them or turn them into a new goal; closing that goal as done ticks
+  them. The report turn also reads each builder's last words, clipped and
+  marked as written by that agent, as information only, never as instructions.
 
 ## API
 
@@ -74,7 +87,14 @@ Owner calls (board browser, paired phone, or owner key):
 | `POST /api/goals/{id}/stop` | Stops the goal; queued pieces are cancelled |
 | `POST /api/goals/{id}/why` `{thread_id, text}` | Asks the coordinator why a finished piece was done that way |
 | `GET /api/goals/{id}/reports/{thread_id}` | A research piece's report page, sandboxed like the plan pages |
+| `GET /api/goals/{id}/pages/{page}/questions` | A page's questions and, once given, your answers (`PageQuestions`) |
+| `POST /api/goals/{id}/pages/{page}/answer` `{answers:[{question_id, choice?, other?}], receipt?}` | Answers a page's questions, once |
 | `GET /api/apps/{id}/notes` | The coordinator's notes about an app |
+| `GET /api/apps/{id}/plan` | The app's master plan (`PlanView`): goals with their steps, findings and pages, and to-dos |
+| `POST /api/apps/{id}/plan/items` `{title, detail?, parent_id?, receipt?}` | Adds a to-do at the end, or under a goal's row; 201 with the item (200 for a resent receipt) |
+| `POST /api/plan/items/{id}` `{state?, title?, detail?}` | Ticks, reopens, drops or rewords a to-do; goal rows refuse |
+| `POST /api/plan/items/{id}/move` `{direction: "up"\|"down"}` | Moves a row one place among the rows beside it; returns the plan |
+| `POST /api/apps/{id}/plan/fix` `{item_ids, note?, receipt?}` | Starts one goal to do 1 to 10 open to-dos; 201 with the goal (200 for a resent receipt) |
 | `POST /api/apps/{id}/notes/{note_id}/remove` | Removes a note |
 
 Runner calls (runner key):
