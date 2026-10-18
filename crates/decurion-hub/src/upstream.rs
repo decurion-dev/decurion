@@ -9,24 +9,30 @@
 //!   saved `origin/HEAD` and its local branches are never trusted for it.
 //!   The owner's folder is only ever read.
 //! - **The server's answer lands in a copy of its own.** That branch is
-//!   fetched into a bare repo used for nothing else
-//!   ([`Files::upstream_cache`], `app-<id>-upstream.git`), which borrows the
-//!   objects of the hub's copy of the app ([`Files::app_cache`]) through
-//!   `objects/info/alternates`. The folder's own branches are read into the
-//!   hub's copy first, so even a first fetch only brings what is new. The
-//!   hub's copy then takes the one branch from it with a local fetch, under
-//!   `git_lock`. Nothing from the network writes the hub's copy directly.
-//! - **No secrets in arguments or logs.** The fetch goes to the origin
-//!   address with any password, or a token used as the user name, taken out
-//!   ([`credential_free`]); the user name stays, and so does the folder's own
-//!   `core.sshCommand`, so git's own sign-in still finds the owner. Every git
-//!   message is passed through [`scrub`] before it is logged.
+//!   fetched by the owner's folder, by remote name, exactly as the owner's
+//!   own `git fetch` would reach the server, but with every new object sent
+//!   to a bare repo used for nothing else ([`Files::upstream_cache`],
+//!   `app-<id>-upstream.git`) and no ref, `FETCH_HEAD` or object written in
+//!   the folder ([`fetch_command`]). That copy borrows the objects of the
+//!   hub's copy of the app ([`Files::app_cache`]) through
+//!   `objects/info/alternates`, and copies in, locally, whatever the fetch
+//!   found already in the folder. The hub's copy then takes the one branch
+//!   from it with a local fetch, under `git_lock`. Nothing from the network
+//!   writes the hub's copy directly.
+//! - **No secrets in arguments or logs.** Both network steps name the
+//!   remote, `origin`, never its address, so a token in the folder's
+//!   address, its credential helper, extra headers, proxy and address
+//!   rewrites all apply as the folder has them and none is ever on a
+//!   command line. Every git message is passed through [`scrub`] before it
+//!   is logged.
 //! - **Never waits on a question, never for long.** Both network steps run
 //!   through [`netgit`], each with a time limit of [`NET_SECS`].
 //! - **Network work holds no lock other work needs.** It runs outside
 //!   `git_lock`, under a lock of the app's own ([`Locks`]), so two requests
 //!   for one app do not ask the server twice. Reading the folder, importing
 //!   the one branch, choosing and pinning hold `git_lock`, and are local.
+//!   A server that answered but whose answer could not be taken in counts
+//!   as one that did not answer.
 //! - **A start never disappears.** The chosen commit is pinned at
 //!   `refs/decurion/start/<sha>` in the hub's copy before anything uses it.
 //! - **Falls back in order, and says so once.** With no `origin`, or a
@@ -34,8 +40,8 @@
 //!   it gave last time for this same folder and address
 //!   (`refs/upstream-default/<id>`, keyed by [`identity`], so a changed
 //!   folder never inherits the old one's); else the folder's own `main` or
-//!   `master`; else whatever the folder has out, which is how Decurion chose
-//!   before. A fallback is logged once per folder and address, scrubbed,
+//!   `master`, as the hub's copy read it after the wait; else whatever the
+//!   folder has out, which is how Decurion chose before. A fallback is logged once per folder and address, scrubbed,
 //!   until the server answers again.
 
 use crate::checkpoints::{git, io, is_commit, Files};
@@ -46,8 +52,10 @@ use crate::store::{Result, StoreError};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::io::AsyncWriteExt;
 
 /// The longest each network step (asking, then fetching) may take. A first
 /// fetch of a large app can take a while even though it only brings what
@@ -162,8 +170,8 @@ impl std::fmt::Display for NotAsked {
 async fn resolve(files: &Files, app_id: i64, repo_path: &str) -> Result<String> {
     let folder = Path::new(repo_path);
     let cache = files.app_cache(app_id);
-    // The folder's own branches first, locally, so the server only has to
-    // send what is new.
+    // The folder's own branches first, locally, so the fallbacks below have
+    // something to choose from even if this is the app's first work.
     let read_folder = {
         let _held = files.git_lock.lock().await;
         files.fetch_app(&cache, repo_path).await
@@ -171,53 +179,36 @@ async fn resolve(files: &Files, app_id: i64, repo_path: &str) -> Result<String> 
     let url = git(folder, &["remote", "get-url", "origin"])
         .await
         .ok()
-        .filter(|u| !u.is_empty())
-        .map(|u| fetch_url(folder, &u));
-    let id = identity(repo_path, url.as_deref().unwrap_or(""));
+        .filter(|u| !u.is_empty());
+    let id = identity(
+        repo_path,
+        &url.as_deref().map(credential_free).unwrap_or_default(),
+    );
     let asked = match (&url, &read_folder) {
         (None, _) => Err(NotAsked::NoOrigin),
-        (Some(_), Err(e)) => Err(NotAsked::Failed(scrub(&e.to_string()))),
-        (Some(u), Ok(())) => ask_server(files, app_id, folder, u, &id).await,
+        (Some(_), Err(e)) => Err(failed(e)),
+        (Some(_), Ok(())) => ask_server(files, app_id, folder, &id).await,
     };
     let _held = files.git_lock.lock().await;
-    let sha = match asked {
-        Ok(branch) => {
-            let from = files.upstream_cache(app_id).to_string_lossy().into_owned();
-            let name = format!("refs/upstream/{id}/{branch}");
-            git(
-                &cache,
-                &[
-                    "-c",
-                    "protocol.allow=never",
-                    "-c",
-                    "protocol.file.allow=always",
-                    "fetch",
-                    "--quiet",
-                    "--no-tags",
-                    "--no-write-fetch-head",
-                    "--",
-                    &from,
-                    &format!("+{name}:{name}"),
-                ],
-            )
-            .await?;
-            let sha = git(
-                &cache,
-                &["rev-parse", "--verify", &format!("{name}^{{commit}}")],
-            )
-            .await?;
-            git(
-                &cache,
-                &["update-ref", &format!("refs/upstream-default/{id}"), &sha],
-            )
-            .await?;
+    // A server that answered but whose answer could not be taken in is
+    // treated like one that did not answer: the fallbacks still give work a
+    // start.
+    let from_server = match asked {
+        Ok(branch) => take_default(files, app_id, &cache, &id, &branch)
+            .await
+            .map_err(|e| failed(&e)),
+        Err(why) => Err(why),
+    };
+    let sha = match from_server {
+        Ok(sha) => {
             files.upstream.answered(&id);
             sha
         }
         Err(why) => {
-            if read_folder.is_err() {
-                files.fetch_app(&cache, repo_path).await?;
-            }
+            // The folder again, now: it may have moved during the minutes
+            // the server took, and only what the hub's copy holds can be
+            // pinned.
+            files.fetch_app(&cache, repo_path).await?;
             let (sha, used) = fall_back(&cache, folder, &id).await?;
             if files.upstream.first_fallback(&id) {
                 tracing::warn!(
@@ -241,31 +232,91 @@ async fn resolve(files: &Files, app_id: i64, repo_path: &str) -> Result<String> 
     Ok(sha)
 }
 
-/// Asks the server its default branch and fetches that branch into the
-/// app's server copy. Returns the branch name. The caller holds the app's
-/// own lock, which is all the server copy needs.
+/// A failed local step, as a reason to fall back, scrubbed.
+fn failed(e: &StoreError) -> NotAsked {
+    NotAsked::Failed(scrub(&e.to_string()))
+}
+
+/// Takes the server's default branch, already in the app's server copy as
+/// `refs/upstream/<id>/<branch>`, into the hub's copy with a local fetch,
+/// and saves it as this folder's last known default. Returns its commit.
+/// The caller holds `git_lock`.
+async fn take_default(
+    files: &Files,
+    app_id: i64,
+    cache: &Path,
+    id: &str,
+    branch: &str,
+) -> Result<String> {
+    let from = files.upstream_cache(app_id).to_string_lossy().into_owned();
+    let name = format!("refs/upstream/{id}/{branch}");
+    git(
+        cache,
+        &[
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.file.allow=always",
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--",
+            &from,
+            &format!("+{name}:{name}"),
+        ],
+    )
+    .await?;
+    let sha = git(
+        cache,
+        &["rev-parse", "--verify", &format!("{name}^{{commit}}")],
+    )
+    .await?;
+    git(
+        cache,
+        &["update-ref", &format!("refs/upstream-default/{id}"), &sha],
+    )
+    .await?;
+    Ok(sha)
+}
+
+/// Asks the server its default branch and brings that branch's commit into
+/// the app's server copy, as `refs/upstream/<id>/<branch>`. Returns the
+/// branch name. The caller holds the app's own lock, which is all the
+/// server copy needs.
 async fn ask_server(
     files: &Files,
     app_id: i64,
     folder: &Path,
-    url: &str,
     id: &str,
 ) -> std::result::Result<String, NotAsked> {
     let limit = Duration::from_secs(NET_SECS);
-    let mut cmd = netgit::command(folder).await;
-    cmd.args(["ls-remote", "--symref", "origin", "HEAD"]);
-    let out = run(cmd, limit).await?;
-    let branch =
+    let out = run(ls_remote_command(folder).await, limit).await?;
+    let (branch, sha) =
         advertised_default(&String::from_utf8_lossy(&out.stdout)).ok_or(NotAsked::NoDefault)?;
     let up = files.upstream_cache(app_id);
+    let cache = files.app_cache(app_id);
     files
-        .init_upstream_cache(&up, &files.app_cache(app_id))
+        .init_upstream_cache(&up, &cache)
         .await
-        .map_err(|e| NotAsked::Failed(scrub(&e.to_string())))?;
-    let ssh = owner_ssh_command(folder).await;
-    let mut cmd = netgit::command_with(&up, ssh.as_deref()).await;
-    cmd.args(fetch_args(url, &branch, id));
+        .map_err(|e| failed(&e))?;
+    let own = folder_objects(folder).await.map_err(|e| failed(&e))?;
+    let cmd = fetch_command(folder, &up, &own, &branch)
+        .await
+        .map_err(|e| failed(&e))?;
     run(cmd, limit).await?;
+    keep_what_it_needs(&up, &cache, &own, &sha)
+        .await
+        .map_err(|e| failed(&e))?;
+    git(&up, &["cat-file", "-e", &format!("{sha}^{{commit}}")])
+        .await
+        .map_err(|_| NotAsked::Failed("the server did not send the commit it named".into()))?;
+    git(
+        &up,
+        &["update-ref", &format!("refs/upstream/{id}/{branch}"), &sha],
+    )
+    .await
+    .map_err(|e| failed(&e))?;
     Ok(branch)
 }
 
@@ -283,18 +334,94 @@ async fn run(
     }
 }
 
-/// The owner's folder's own `core.sshCommand`, set in that repo, if any:
-/// the fetch runs elsewhere, so it would not see it otherwise.
-async fn owner_ssh_command(folder: &Path) -> Option<String> {
-    git(folder, &["config", "--local", "--get", "core.sshCommand"])
-        .await
-        .ok()
-        .filter(|c| !c.is_empty())
+/// Asks the folder's `origin`, by name, which branch is its default and
+/// where it is. Read-only.
+async fn ls_remote_command(folder: &Path) -> tokio::process::Command {
+    let mut cmd = netgit::command(folder).await;
+    cmd.args(["ls-remote", "--symref", "origin", "HEAD"]);
+    cmd
+}
+
+/// The fetch of the server's default branch, run in the owner's folder so
+/// it reaches the server exactly as the owner's own `git fetch` does: the
+/// remote by name, with the folder's own address, sign-in, proxy, extra
+/// headers and address rewrites, none of them ever on the command line.
+/// It writes nothing in the folder: no ref (one exact source, no
+/// destination, no mappings, no pruning, no tags), no `FETCH_HEAD`, and its
+/// new objects go to the server copy `up` ([`fetch_args`]), with the
+/// folder's objects `own` only borrowed for the fetch.
+pub(crate) async fn fetch_command(
+    folder: &Path,
+    up: &Path,
+    own: &Path,
+    branch: &str,
+) -> Result<tokio::process::Command> {
+    let into = std::path::absolute(up.join("objects")).map_err(io)?;
+    let mut cmd = netgit::command(folder).await;
+    cmd.env("GIT_OBJECT_DIRECTORY", into)
+        .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", own)
+        .args(fetch_args(branch));
+    Ok(cmd)
+}
+
+/// The owner's folder's own object store.
+async fn folder_objects(folder: &Path) -> Result<PathBuf> {
+    Ok(PathBuf::from(
+        git(
+            folder,
+            &[
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-path",
+                "objects",
+            ],
+        )
+        .await?,
+    ))
+}
+
+/// Packs into the server copy `up` whatever commit `sha` needs that neither
+/// it nor the hub's copy `cache` holds. The fetch borrowed the owner's
+/// folder: git does not ask the server for what the folder already has
+/// (often everything, when the folder fetched lately), and the folder is
+/// only ever read, so those objects are copied here from it, locally.
+async fn keep_what_it_needs(up: &Path, cache: &Path, own: &Path, sha: &str) -> Result<()> {
+    let have = git(cache, &["for-each-ref", "--format=%(objectname)"]).await?;
+    let revs = format!("{sha}\n--not\n{have}\n");
+    let pack = std::path::absolute(up.join("objects").join("pack").join("pack")).map_err(io)?;
+    let mut child = tokio::process::Command::new("git")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", own)
+        .arg("-C")
+        .arg(up)
+        .args(["pack-objects", "--revs", "--quiet"])
+        .arg(pack)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(io)?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| StoreError::Invalid("git pack-objects: no input".into()))?;
+    stdin.write_all(revs.as_bytes()).await.map_err(io)?;
+    drop(stdin);
+    let out = child.wait_with_output().await.map_err(io)?;
+    if !out.status.success() {
+        return Err(StoreError::Invalid(format!(
+            "git pack-objects: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
 }
 
 /// The start when the server's default cannot be had, and which fallback
-/// gave it. The caller holds `git_lock` and has read the folder into the
-/// hub's copy.
+/// gave it. The caller holds `git_lock` and has just read the folder into
+/// the hub's copy, so every commit this returns is there to pin.
 async fn fall_back(cache: &Path, folder: &Path, id: &str) -> Result<(String, &'static str)> {
     if let Ok(sha) = git(
         cache,
@@ -309,19 +436,34 @@ async fn fall_back(cache: &Path, folder: &Path, id: &str) -> Result<(String, &'s
     {
         return Ok((sha, "the default the server gave last time"));
     }
-    // Read from the folder itself: the hub's copy may still hold branches
-    // of a folder the app used before.
+    // The hub's copy of the folder's branch, and only for a branch the
+    // folder has: the copy may still hold branches of a folder the app
+    // used before.
     for (b, used) in [
         ("main", "the folder's main branch"),
         ("master", "the folder's master branch"),
     ] {
-        if let Ok(sha) = git(
+        let has = git(
             folder,
             &[
                 "rev-parse",
                 "--verify",
                 "--quiet",
-                &format!("refs/heads/{b}^{{commit}}"),
+                &format!("refs/heads/{b}"),
+            ],
+        )
+        .await
+        .is_ok();
+        if !has {
+            continue;
+        }
+        if let Ok(sha) = git(
+            cache,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/remotes/app/{b}^{{commit}}"),
             ],
         )
         .await
@@ -335,48 +477,69 @@ async fn fall_back(cache: &Path, folder: &Path, id: &str) -> Result<(String, &'s
     ))
 }
 
-/// The default branch in `git ls-remote --symref <remote> HEAD`'s answer,
-/// if it names a plain branch.
-pub(crate) fn advertised_default(ls_remote: &str) -> Option<String> {
-    ls_remote.lines().find_map(|line| {
-        let (target, name) = line.split_once('\t')?;
+/// The default branch and its commit in `git ls-remote --symref <remote>
+/// HEAD`'s answer, if it names a plain branch and a full commit id.
+pub(crate) fn advertised_default(ls_remote: &str) -> Option<(String, String)> {
+    let mut branch = None;
+    let mut sha = None;
+    for line in ls_remote.lines() {
+        let Some((target, name)) = line.split_once('\t') else {
+            continue;
+        };
         if name.trim() != "HEAD" {
-            return None;
+            continue;
         }
-        let branch = target.strip_prefix("ref: refs/heads/")?;
-        plain_branch(branch).then(|| branch.to_owned())
-    })
+        match target.strip_prefix("ref: ") {
+            Some(r) => {
+                let b = r.strip_prefix("refs/heads/")?;
+                if !plain_branch(b) {
+                    return None;
+                }
+                branch = Some(b.to_owned());
+            }
+            None if is_commit(target) => sha = Some(target.to_owned()),
+            None => {}
+        }
+    }
+    Some((branch?, sha?))
 }
 
-/// git's arguments for fetching the server's default branch into the app's
-/// server copy, after what [`netgit::command_with`] puts first. Exactly one
-/// source and one destination, none of the remote's own mappings, no tags,
-/// no submodules. Pure, so a test can check no secret is ever among them.
-pub(crate) fn fetch_args(url: &str, branch: &str, id: &str) -> Vec<String> {
+/// git's arguments for fetching the server's default branch, after what
+/// [`netgit::command`] puts first. The remote by name, never an address;
+/// exactly one source and no destination, none of the remote's own
+/// mappings, no pruning (which could also take tags), no tags, no
+/// submodules, and no upkeep that would write in the owner's folder. Pure,
+/// so a test can check no secret is ever among them.
+pub(crate) fn fetch_args(branch: &str) -> Vec<String> {
     [
         "-c",
         "gc.auto=0",
         "-c",
         "maintenance.auto=false",
+        "-c",
+        "fetch.writeCommitGraph=false",
+        "-c",
+        "core.fsmonitor=false",
         "fetch",
         "--quiet",
         "--no-tags",
         "--no-recurse-submodules",
         "--no-write-fetch-head",
+        "--no-prune",
         "--refmap=",
         "--",
-        url,
-        &format!("+refs/heads/{branch}:refs/upstream/{id}/{branch}"),
+        "origin",
+        &format!("refs/heads/{branch}"),
     ]
     .iter()
     .map(|s| s.to_string())
     .collect()
 }
 
-/// `url` with any password taken out. The user name stays: it is not a
-/// secret, and git's own sign-in (Git Credential Manager, SSH) looks the
-/// owner up by it. A user name that is itself a token (GitHub or GitLab
-/// token marks, or a long opaque string) goes too.
+/// `url` with any password taken out, for [`identity`]. The user name
+/// stays; a user name that is itself a token (GitHub or GitLab token marks,
+/// or a long opaque string) goes too, so a new token does not make the
+/// same server look like another one.
 pub(crate) fn credential_free(url: &str) -> String {
     let Some(i) = url.find("://") else {
         return url.to_owned();
@@ -406,21 +569,6 @@ fn looks_like_token(name: &str) -> bool {
         "glpat-",
     ];
     MARKS.iter().any(|m| name.starts_with(m)) || name.len() >= 40
-}
-
-/// The address to fetch from the server copy: credential-free, and a
-/// relative folder path made relative to the owner's folder, where git
-/// would read it.
-fn fetch_url(folder: &Path, url: &str) -> String {
-    let url = credential_free(url);
-    let scp_like = url
-        .find(':')
-        .is_some_and(|i| i > 1 && !url[..i].contains(['/', '\\']));
-    if url.contains("://") || scp_like || Path::new(&url).is_absolute() {
-        url
-    } else {
-        folder.join(&url).to_string_lossy().into_owned()
-    }
 }
 
 /// A short name for one folder and one server address together, so the
@@ -471,43 +619,184 @@ mod tests {
         [user, password].join(":")
     }
 
+    /// git for the tests' own repos, with a fixed author. Returns its output.
+    fn sh(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=trunk",
+            ])
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    /// A server ("origin", default branch `trunk`) fed from `seed`, and the
+    /// owner's folder cloned from it.
+    struct Repos {
+        root: PathBuf,
+        seed: PathBuf,
+        origin: PathBuf,
+        folder: PathBuf,
+    }
+
+    impl Repos {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!("decurion-up-{}", uuid::Uuid::new_v4()));
+            let seed = root.join("seed");
+            std::fs::create_dir_all(&seed).expect("seed dir");
+            sh(&seed, &["init", "--quiet"]);
+            let r = Self {
+                origin: root.join("origin.git"),
+                folder: root.join("app"),
+                seed,
+                root,
+            };
+            r.commit("a");
+            let (seed, origin) = (r.seed.to_string_lossy(), r.origin.to_string_lossy());
+            sh(&r.root, &["clone", "--quiet", "--bare", &seed, &origin]);
+            sh(
+                &r.root,
+                &["clone", "--quiet", &origin, &r.folder.to_string_lossy()],
+            );
+            r
+        }
+
+        fn commit(&self, text: &str) -> String {
+            std::fs::write(self.seed.join("README.md"), text).expect("write");
+            sh(&self.seed, &["add", "."]);
+            sh(&self.seed, &["commit", "--quiet", "-m", text]);
+            sh(&self.seed, &["rev-parse", "HEAD"])
+        }
+
+        /// A new commit on the server's default branch.
+        fn advance(&self, text: &str) -> String {
+            let sha = self.commit(text);
+            let seed = self.seed.to_string_lossy();
+            sh(&self.origin, &["fetch", "--quiet", &seed, "+trunk:trunk"]);
+            sha
+        }
+
+        fn files(&self) -> Files {
+            Files::new(self.root.join("saved"))
+        }
+
+        fn path(&self) -> String {
+            self.folder.to_string_lossy().into_owned()
+        }
+    }
+
+    impl Drop for Repos {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
     #[test]
     fn the_default_branch_is_read_from_the_servers_own_answer() {
         let sha = "a".repeat(40);
         assert_eq!(
             advertised_default(&format!("ref: refs/heads/trunk\tHEAD\n{sha}\tHEAD\n")),
-            Some("trunk".to_owned())
+            Some(("trunk".to_owned(), sha.clone()))
         );
         assert_eq!(
-            advertised_default("ref: refs/heads/release/2.0\tHEAD\n"),
-            Some("release/2.0".to_owned())
+            advertised_default(&format!("ref: refs/heads/release/2.0\tHEAD\n{sha}\tHEAD\n")),
+            Some(("release/2.0".to_owned(), sha.clone()))
         );
-        // Only HEAD's target, only a branch, only a plain name.
+        // Only HEAD's target, only a branch, only a plain name, and only
+        // with the commit it is at.
         assert_eq!(advertised_default(&format!("{sha}\tHEAD\n")), None);
-        assert_eq!(advertised_default("ref: refs/tags/v1\tHEAD\n"), None);
-        assert_eq!(advertised_default("ref: refs/heads/main\tmain\n"), None);
-        assert_eq!(advertised_default("ref: refs/heads/-x\tHEAD\n"), None);
-        assert_eq!(advertised_default("ref: refs/heads/a..b\tHEAD\n"), None);
+        assert_eq!(advertised_default("ref: refs/heads/trunk\tHEAD\n"), None);
+        assert_eq!(
+            advertised_default(&format!("ref: refs/tags/v1\tHEAD\n{sha}\tHEAD\n")),
+            None
+        );
+        assert_eq!(
+            advertised_default(&format!("ref: refs/heads/main\tmain\n{sha}\tmain\n")),
+            None
+        );
+        assert_eq!(
+            advertised_default(&format!("ref: refs/heads/-x\tHEAD\n{sha}\tHEAD\n")),
+            None
+        );
+        assert_eq!(
+            advertised_default(&format!("ref: refs/heads/a..b\tHEAD\n{sha}\tHEAD\n")),
+            None
+        );
+        assert_eq!(
+            advertised_default("ref: refs/heads/trunk\tHEAD\nHEAD\tHEAD\n"),
+            None
+        );
         assert_eq!(advertised_default(""), None);
     }
 
-    #[test]
-    fn no_password_or_token_is_ever_in_the_fetch() {
-        // The user name stays: git's own sign-in looks the owner up by it.
-        let url = credential_free(&format!(
-            "https://{}@github.com/acme/shop.git",
-            login("me", "ghp_secret123")
-        ));
-        assert_eq!(url, "https://me@github.com/acme/shop.git");
-        let args = fetch_args(&url, "main", "0123456789abcdef");
-        assert!(args.iter().all(|a| !a.contains("ghp_secret123")));
-        assert!(args.contains(&"--no-tags".to_owned()));
-        assert!(args.contains(&"--refmap=".to_owned()));
-        assert_eq!(
-            args.last().map(String::as_str),
-            Some("+refs/heads/main:refs/upstream/0123456789abcdef/main")
+    #[tokio::test]
+    async fn no_login_in_the_folders_address_is_ever_in_an_argument() {
+        let r = Repos::new();
+        let secret = "ghp_secret123";
+        sh(
+            &r.folder,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                &format!("https://{}@github.com/acme/shop.git", login("me", secret)),
+            ],
         );
-        // A token used as the user name is still a token.
+        let up = r.root.join("up.git");
+        let own = folder_objects(&r.folder).await.expect("objects");
+        for cmd in [
+            ls_remote_command(&r.folder).await,
+            fetch_command(&r.folder, &up, &own, "main")
+                .await
+                .expect("fetch"),
+        ] {
+            let args: Vec<String> = cmd
+                .as_std()
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                args.iter()
+                    .all(|a| !a.contains(secret) && !a.contains("me:") && !a.contains("://")),
+                "{args:?}"
+            );
+            assert!(args.contains(&"origin".to_owned()), "{args:?}");
+        }
+        let args = fetch_args("main");
+        for want in [
+            "--no-tags",
+            "--refmap=",
+            "--no-prune",
+            "--no-write-fetch-head",
+        ] {
+            assert!(args.contains(&want.to_owned()), "{want} in {args:?}");
+        }
+        // One exact source and no destination: nothing is written in the
+        // owner's folder.
+        assert_eq!(args.last().map(String::as_str), Some("refs/heads/main"));
+        // The saved default stays the same server's when a token changes.
+        assert_eq!(
+            credential_free(&format!(
+                "https://{}@github.com/acme/shop.git",
+                login("me", secret)
+            )),
+            "https://me@github.com/acme/shop.git"
+        );
         assert_eq!(
             credential_free("https://ghp_token@github.com/a/b"),
             "https://github.com/a/b"
@@ -517,14 +806,6 @@ mod tests {
             "https://gitlab.com/a/b"
         );
         assert_eq!(
-            credential_free(&format!(
-                "https://{}@github.com/a/b",
-                login("x-access-token", "ghs_abc")
-            )),
-            "https://x-access-token@github.com/a/b"
-        );
-        // An ssh login is kept; a password with it is not.
-        assert_eq!(
             credential_free(&format!("ssh://{}@host.example/a.git", login("git", "pw"))),
             "ssh://git@host.example/a.git"
         );
@@ -532,7 +813,6 @@ mod tests {
             credential_free("git@github.com:acme/shop.git"),
             "git@github.com:acme/shop.git"
         );
-        assert_eq!(credential_free("/srv/git/shop.git"), "/srv/git/shop.git");
     }
 
     #[test]
@@ -549,20 +829,24 @@ mod tests {
         assert!(line.contains("https://github.com/a/b.git/"), "{line}");
     }
 
-    #[test]
-    fn a_relative_server_path_is_read_from_the_owners_folder() {
-        let folder = Path::new("repos").join("shop");
+    /// The server answered, but its answer could not be taken into the
+    /// hub's copy (here a stale lock on the ref that saves it): new work
+    /// still gets a start, from the fallbacks, instead of an error.
+    #[tokio::test]
+    async fn an_answer_that_cannot_be_taken_in_falls_back() {
+        let r = Repos::new();
+        let files = r.files();
+        let cache = files.app_cache(1);
+        files.init_cache(&cache).await.expect("cache");
+        let origin = sh(&r.folder, &["remote", "get-url", "origin"]);
+        let id = identity(&r.path(), &credential_free(&origin));
+        let refs = cache.join("refs").join("upstream-default");
+        std::fs::create_dir_all(&refs).expect("refs dir");
+        std::fs::write(refs.join(format!("{id}.lock")), "").expect("lock");
+        let head = sh(&r.folder, &["rev-parse", "HEAD"]);
         assert_eq!(
-            fetch_url(&folder, "../origin.git"),
-            folder.join("../origin.git").to_string_lossy()
-        );
-        assert_eq!(
-            fetch_url(&folder, &format!("https://{}@host/x.git", login("u", "p"))),
-            "https://u@host/x.git"
-        );
-        assert_eq!(
-            fetch_url(&folder, "git@github.com:a/b.git"),
-            "git@github.com:a/b.git"
+            start_commit(&files, 1, &r.path()).await.expect("a start"),
+            head
         );
     }
 
@@ -574,22 +858,6 @@ mod tests {
         assert!(locks.first_fallback("bbbb"));
         locks.answered("aaaa");
         assert!(locks.first_fallback("aaaa"));
-    }
-
-    #[tokio::test]
-    async fn the_folders_own_ssh_command_is_read_from_its_own_settings() {
-        let dir = std::env::temp_dir().join(format!("decurion-ssh-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        git(&dir, &["init", "--quiet"]).await.expect("init");
-        assert_eq!(owner_ssh_command(&dir).await, None);
-        git(&dir, &["config", "core.sshCommand", "ssh -i ~/.ssh/shop"])
-            .await
-            .expect("config");
-        assert_eq!(
-            owner_ssh_command(&dir).await.as_deref(),
-            Some("ssh -i ~/.ssh/shop")
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

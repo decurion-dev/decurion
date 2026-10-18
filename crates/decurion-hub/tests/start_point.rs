@@ -800,3 +800,87 @@ async fn helper_jobs_go_only_to_runners_on_the_hubs_rules() {
     .await;
     assert_eq!(claim["kind"], "coordinator");
 }
+
+/// Forward slashes: git reads them on every system, and a shell does too.
+fn slashed(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
+#[tokio::test]
+async fn the_server_is_reached_the_way_the_owners_own_folder_reaches_it() {
+    let h = hub().await;
+    let s = setup(&h.dir);
+    // The folder's address only works through its own settings for that
+    // remote (as with a company mirror): here, how the server is started.
+    let name = h.dir.join("mirror.git");
+    git(&s.folder, &["remote", "set-url", "origin", &slashed(&name)]);
+    git(
+        &s.folder,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            &format!("git-upload-pack '{}' #", slashed(&s.origin)),
+        ],
+    );
+    let app = add_app(&h, &s.folder).await;
+    assert_eq!(
+        start_of(&h, new_work(&h, app).await).await,
+        s.b,
+        "c = {}",
+        s.c
+    );
+    let b2 = s.advance("b2");
+    assert_eq!(start_of(&h, new_work(&h, app).await).await, b2);
+}
+
+#[tokio::test]
+async fn asking_the_server_leaves_the_owners_folder_as_it_was() {
+    let h = hub().await;
+    let s = setup(&h.dir);
+    // Settings that would have a plain fetch prune, take tags and update
+    // the folder's branches.
+    git(&s.folder, &["config", "fetch.prune", "true"]);
+    git(&s.folder, &["config", "fetch.pruneTags", "true"]);
+    git(&s.folder, &["tag", "mine"]);
+    let app = add_app(&h, &s.folder).await;
+    let refs = || {
+        git(
+            &s.folder,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname) %(symref)",
+            ],
+        )
+    };
+    let objects = || git(&s.folder, &["count-objects", "-v"]);
+    let (refs_before, objects_before) = (refs(), objects());
+
+    // The server has commits the folder has never seen, and ones it has.
+    let b2 = s.advance("b2");
+    assert_eq!(start_of(&h, new_work(&h, app).await).await, b2);
+    assert_eq!(refs(), refs_before);
+    assert_eq!(objects(), objects_before);
+    assert!(!s.folder.join(".git").join("FETCH_HEAD").exists());
+}
+
+#[tokio::test]
+async fn a_fallback_only_ever_pins_a_commit_the_hub_holds() {
+    let h = hub().await;
+    let s = setup(&h.dir);
+    let app = add_app(&h, &s.folder).await;
+    // A commit in the folder that no branch holds yet...
+    let x = git(&s.folder, &["commit-tree", "HEAD^{tree}", "-m", "x"]);
+    // ...becomes its main while the hub waits on a server that then fails.
+    git(
+        &s.folder,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            &format!(
+                "git --git-dir='{}' update-ref refs/heads/main {x}; false",
+                slashed(&s.folder.join(".git"))
+            ),
+        ],
+    );
+    assert_eq!(start_of(&h, new_work(&h, app).await).await, x);
+}
