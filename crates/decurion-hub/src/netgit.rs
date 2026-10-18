@@ -32,6 +32,14 @@ pub(crate) enum Failed {
 /// git, run in `dir`, set up to reach a git server without ever asking
 /// anything. The caller adds the subcommand and its arguments.
 pub(crate) async fn command(dir: &Path) -> Command {
+    command_with(dir, None).await
+}
+
+/// Like [`command`], for git run outside the owner's folder on its behalf:
+/// `owner_ssh` is the folder's own `core.sshCommand`, if it has one, kept
+/// so the owner's SSH key setup still applies. It is a command line, not a
+/// secret; no password or token is ever passed here.
+pub(crate) async fn command_with(dir: &Path, owner_ssh: Option<&str>) -> Command {
     let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
     let mut cmd = Command::new("git");
     cmd.arg("-C")
@@ -41,6 +49,23 @@ pub(crate) async fn command(dir: &Path) -> Command {
             &format!("core.hooksPath={null}"),
             "-c",
             "core.fsmonitor=false",
+            // Only the transports an app's server really uses.
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.https.allow=always",
+            "-c",
+            "protocol.ssh.allow=always",
+            "-c",
+            "protocol.git.allow=always",
+            "-c",
+            "protocol.file.allow=always",
+            // A download that stalls below a byte a second for half a
+            // minute is given up on, well before the overall time limit.
+            "-c",
+            "http.lowSpeedLimit=1",
+            "-c",
+            "http.lowSpeedTime=30",
         ])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_NO_LAZY_FETCH", "1")
@@ -52,9 +77,13 @@ pub(crate) async fn command(dir: &Path) -> Command {
         .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .kill_on_drop(true);
+    if let Some(ssh) = owner_ssh {
+        cmd.args(["-c", &format!("core.sshCommand={ssh}")]);
+    }
     // The owner's own SSH command is theirs to keep; only plain ssh is told
-    // never to ask.
-    let own_ssh = std::env::var_os("GIT_SSH_COMMAND").is_some()
+    // never to ask. (An environment setting would win over theirs.)
+    let own_ssh = owner_ssh.is_some()
+        || std::env::var_os("GIT_SSH_COMMAND").is_some()
         || std::env::var_os("GIT_SSH").is_some()
         || git(dir, &["config", "--get", "core.sshCommand"])
             .await
@@ -110,6 +139,32 @@ mod tests {
             .collect();
         assert!(args.iter().any(|a| a.starts_with("core.hooksPath=")));
         assert!(args.contains(&"core.fsmonitor=false".to_owned()));
+        // Only the usual transports, and a stalled download is given up on.
+        for want in [
+            "protocol.allow=never",
+            "protocol.https.allow=always",
+            "protocol.ssh.allow=always",
+            "protocol.git.allow=always",
+            "protocol.file.allow=always",
+            "http.lowSpeedLimit=1",
+            "http.lowSpeedTime=30",
+        ] {
+            assert!(args.contains(&want.to_owned()), "{want} in {args:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_owners_own_ssh_command_is_kept() {
+        let dir = std::env::temp_dir();
+        let cmd = command_with(&dir, Some("ssh -i ~/.ssh/shop_key")).await;
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.contains(&"core.sshCommand=ssh -i ~/.ssh/shop_key".to_owned()));
+        // Set in the environment, ours would win over theirs.
+        assert_eq!(env_of(&cmd, "GIT_SSH_COMMAND"), None);
     }
 
     #[tokio::test]

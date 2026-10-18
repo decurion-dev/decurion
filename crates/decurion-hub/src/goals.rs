@@ -54,6 +54,11 @@ pub(crate) async fn add(
     if let Some(r) = owner_only(c, "starting a goal") {
         return r;
     }
+    // A goal that would be refused is refused before anything waits on the
+    // app's git server.
+    if let Err(e) = st.store.check_new_goal(&g).await {
+        return ApiError(e).into_response();
+    }
     let start = crate::upstream::for_new_goal(&st, g.app_id).await;
     match st.store.add_goal(&g, start.as_deref()).await {
         Ok(g) => (StatusCode::CREATED, Json(g)).into_response(),
@@ -74,7 +79,19 @@ pub(crate) async fn say(
     if let Some(r) = owner_only(c, "talking to the coordinator") {
         return r;
     }
-    reply(st.store.goal_say(id, &b.text, b.plan_message_id).await)
+    // A plain yes to the plan on screen approves it: a later round's start
+    // is chosen first, outside the approval's transaction.
+    let next = match b.plan_message_id {
+        Some(plan) if decurion_proto::goal::is_plain_yes(b.text.trim()) => {
+            crate::upstream::for_next_round(&st, id, plan).await
+        }
+        _ => None,
+    };
+    reply(
+        st.store
+            .goal_say(id, &b.text, b.plan_message_id, next.as_deref())
+            .await,
+    )
 }
 
 pub(crate) async fn answer(
@@ -98,7 +115,12 @@ pub(crate) async fn approve(
     if let Some(r) = owner_only(c, "approving a plan") {
         return r;
     }
-    reply(st.store.approve_plan(id, b.plan_message_id).await)
+    let next = crate::upstream::for_next_round(&st, id, b.plan_message_id).await;
+    reply(
+        st.store
+            .approve_plan(id, b.plan_message_id, next.as_deref())
+            .await,
+    )
 }
 
 pub(crate) async fn retry(

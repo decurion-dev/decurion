@@ -281,6 +281,31 @@ async fn new_work_starts_from_the_default_branch_on_the_apps_git_server() {
     let first = start_of(&h, new_work(&h, app).await).await;
     assert_eq!(first, s.b, "a = {}, c = {}", s.a, s.c);
 
+    // The server's answer lands in a copy of its own, which borrows what the
+    // hub's copy of the app already holds; the hub's copy only takes the
+    // one branch from it, locally.
+    let repos = h.dir.join("saved").join("repos");
+    let alternates = std::fs::read_to_string(
+        repos
+            .join(format!("app-{app}-upstream.git"))
+            .join("objects")
+            .join("info")
+            .join("alternates"),
+    )
+    .expect("the server's copy borrows the hub's objects");
+    assert!(
+        alternates
+            .trim()
+            .replace('\\', "/")
+            .ends_with(&format!("app-{app}.git/objects")),
+        "{alternates}"
+    );
+    assert!(git(
+        &repos.join(format!("app-{app}.git")),
+        &["for-each-ref", "--format=%(objectname)", "refs/upstream/"]
+    )
+    .contains(&s.b));
+
     // The server moves on: so does the next new piece.
     let b2 = s.advance("b2");
     assert_eq!(start_of(&h, new_work(&h, app).await).await, b2);
@@ -476,6 +501,106 @@ async fn a_goal_and_all_its_pieces_start_from_one_commit() {
     );
 }
 
+/// Claims the next helper job, checks its kind, and finishes it with `text`.
+async fn finish_next(h: &Hub, kind: &str, text: &str) -> Value {
+    let claim = ok(
+        &h.r,
+        "POST",
+        "/api/runner/helper/claim",
+        RUNNER,
+        json!({"runner": "local", "rules_version": decurion_proto::RULES_VERSION}),
+    )
+    .await;
+    assert_eq!(claim["kind"], kind, "{claim}");
+    let id = claim["job_id"].as_i64().expect("job id");
+    ok(
+        &h.r,
+        "POST",
+        &format!("/api/runner/helper/{id}/started"),
+        RUNNER,
+        json!({}),
+    )
+    .await;
+    let resp = send(
+        &h.r,
+        "POST",
+        &format!("/api/runner/helper/{id}/finish"),
+        RUNNER,
+        json!({"ok": true, "text": text, "cost_usd": 0.01, "page_html": "<h1>plan</h1>"}),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::NO_CONTENT, "{}", resp.json());
+    claim
+}
+
+#[tokio::test]
+async fn a_later_round_of_a_goal_starts_from_the_default_branch_as_it_is_then() {
+    let h = hub().await;
+    let s = setup(&h.dir);
+    let app = add_app(&h, &s.folder).await;
+    let g = ok(
+        &h.r,
+        "POST",
+        "/api/goals",
+        OWNER,
+        json!({"app_id": app, "text": "Add a page"}),
+    )
+    .await;
+    let goal = g["id"].as_i64().expect("goal id");
+    let first = approve_one_piece(&h, goal).await;
+    finish_next(&h, "design", "drawn").await;
+    // Every piece is finished and the owner looks at it.
+    sqlx::query("UPDATE goals SET state = 'for_review' WHERE id = ?")
+        .bind(goal)
+        .execute(h.store.pool())
+        .await
+        .expect("finish the round");
+
+    // The owner wants more; meanwhile the app's main branch moved on.
+    let b2 = s.advance("b2");
+    ok(
+        &h.r,
+        "POST",
+        &format!("/api/goals/{goal}/say"),
+        OWNER,
+        json!({"text": "Now add a footer too"}),
+    )
+    .await;
+    let plan = r#"{"say": "Next.", "plan": {"summary": "A footer.", "pieces": [{"title": "Footer", "brief": "Add it.", "done_when": "It shows."}]}}"#;
+    finish_next(&h, "coordinator", plan).await;
+    let v = ok(&h.r, "GET", &format!("/api/goals/{goal}"), OWNER, json!({})).await;
+    let plan_id = v["messages"]
+        .as_array()
+        .and_then(|m| m.last())
+        .and_then(|m| m["id"].as_i64())
+        .expect("plan message");
+    let v = ok(
+        &h.r,
+        "POST",
+        &format!("/api/goals/{goal}/approve"),
+        OWNER,
+        json!({"plan_message_id": plan_id}),
+    )
+    .await;
+    assert_eq!(v["state"], "working", "{v}");
+    let v = ok(&h.r, "GET", &format!("/api/goals/{goal}"), OWNER, json!({})).await;
+    let second = v["pieces"]
+        .as_array()
+        .and_then(|p| p.iter().find(|p| p["thread_id"] != json!(first)))
+        .and_then(|p| p["thread_id"].as_i64())
+        .expect("the new piece");
+
+    // The new piece and the goal's helpers move on; the earlier piece keeps
+    // the start it was built on.
+    assert_eq!(start_of(&h, second).await, b2);
+    assert_eq!(start_of(&h, first).await, s.b);
+    assert_eq!(
+        h.store.goal_start_commit(goal).await.expect("read"),
+        Some(b2.clone())
+    );
+    assert_eq!(goal_start(&h, goal).await, b2);
+}
+
 #[tokio::test]
 async fn a_goal_started_from_to_dos_starts_from_the_default_branch_too() {
     let h = hub().await;
@@ -514,6 +639,90 @@ async fn a_goal_started_from_to_dos_starts_from_the_default_branch_too() {
         claim["source"],
         json!({"kind": "app", "goal_id": goal, "start_commit": s.b})
     );
+}
+
+#[tokio::test]
+async fn a_refused_or_resent_goal_request_never_waits_on_the_server() {
+    let h = hub().await;
+    let s = setup(&h.dir);
+    let app = add_app(&h, &s.folder).await;
+    let item = ok(
+        &h.r,
+        "POST",
+        &format!("/api/apps/{app}/plan/items"),
+        OWNER,
+        json!({"title": "Tidy the menu"}),
+    )
+    .await;
+    let fix = json!({"item_ids": [item["id"]], "receipt": "fix-00001"});
+    let first = ok(
+        &h.r,
+        "POST",
+        &format!("/api/apps/{app}/plan/fix"),
+        OWNER,
+        fix.clone(),
+    )
+    .await;
+
+    // From now on the server takes half a minute to answer.
+    git(
+        &s.folder,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            "sleep 30; git-upload-pack",
+        ],
+    );
+    let quick = |what: &str, started: std::time::Instant| {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "{what} waited on the server"
+        );
+    };
+    let t = std::time::Instant::now();
+    let again = send(
+        &h.r,
+        "POST",
+        &format!("/api/apps/{app}/plan/fix"),
+        OWNER,
+        fix,
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::OK);
+    assert_eq!(again.json()["id"], first["id"]);
+    quick("a resent fix", t);
+
+    for (body, want) in [
+        (json!({"item_ids": []}), StatusCode::BAD_REQUEST),
+        (json!({"item_ids": [item["id"]]}), StatusCode::CONFLICT),
+        (
+            json!({"item_ids": [item["id"]], "receipt": "x"}),
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let t = std::time::Instant::now();
+        let resp = send(
+            &h.r,
+            "POST",
+            &format!("/api/apps/{app}/plan/fix"),
+            OWNER,
+            body.clone(),
+        )
+        .await;
+        assert_eq!(resp.status, want, "{body}: {}", resp.json());
+        quick("a refused fix", t);
+    }
+    let t = std::time::Instant::now();
+    let resp = send(
+        &h.r,
+        "POST",
+        "/api/goals",
+        OWNER,
+        json!({"app_id": app, "text": "   "}),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::BAD_REQUEST);
+    quick("an empty goal", t);
 }
 
 #[tokio::test]

@@ -843,7 +843,7 @@ fn push_failure(stderr: &str, branch: &str, place: &str) -> String {
 
 /// A branch name safe to put in a refspec (the work's own branch, as the
 /// runner saved it).
-pub(crate) fn plain_branch(b: &str) -> bool {
+fn plain_branch(b: &str) -> bool {
     !b.is_empty()
         && !b.starts_with(['-', '/'])
         && !b.ends_with(['/', '.'])
