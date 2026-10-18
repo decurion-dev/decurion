@@ -267,7 +267,7 @@ pub fn health_words(health: Option<&str>, base_ref: Option<&str>) -> Option<Stri
     }
 }
 
-async fn get_json(
+pub(crate) async fn get_json(
     s: &Sender,
     t: &Token,
     path: &str,
@@ -815,7 +815,7 @@ impl Store {
     /// The thread a receipt already started a Bring up to date for, if any.
     /// Read before anything is fetched, so a resent tap answers at once.
     async fn update_receipt(&self, receipt: Option<&str>) -> Result<Option<i64>> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin().await?; // read-only
         let done = receipt_result(&mut tx, receipt, "pr_update").await?;
         tx.commit().await?;
         Ok(done)

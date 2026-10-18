@@ -434,6 +434,7 @@ mod tests {
             fix_of: None,
             research: false,
             dismissed_at: None,
+            hold: None,
         };
         Claim {
             thread,

@@ -1103,6 +1103,18 @@ async fn move_thread(
         Some(axum::Extension(r)) if c == Caller::Runner => r.actor(),
         _ => c.actor().to_owned(),
     };
+    // A Bring up to date run has no checker: its protected-parts hold is
+    // decided here, from its saved copy, before it shows in review, so the
+    // owner never sees it there without the reason.
+    if c == Caller::Runner && m.to == InReview {
+        if let (Some(files), Ok(Some(_))) = (st.files.as_deref(), st.store.merge_from(id).await) {
+            let hold = protected::update_hold(&st.store, files, id).await;
+            if let Err(e) = st.store.set_thread_hold(id, &hold).await {
+                tracing::error!(error = %e, thread = id, "could not save the update's hold");
+                return ApiError(e).into_response();
+            }
+        }
+    }
     match st
         .store
         .request_move(

@@ -437,6 +437,11 @@ pub struct Thread {
     /// in the Dismissed view; nothing about the work itself changes.
     #[serde(default)]
     pub dismissed_at: Option<String>,
+    /// Why this work, which has no goal piece, waits for the owner to look
+    /// at it before Accept (it changes protected parts of the app). Set by
+    /// the hub when a Bring up to date run reaches review.
+    #[serde(default)]
+    pub hold: Option<String>,
 }
 
 /// Where sending accepted work to GitHub has got to. Only the hub sends,

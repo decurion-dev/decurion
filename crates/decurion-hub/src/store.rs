@@ -94,7 +94,7 @@ where
 
 pub(crate) const THREAD_COLS: &str =
     "id, app_id, title, prompt, state, ai, session_id, branch, place, updated_at, parent_id, background,
-     gh_state, gh_branch, gh_url, gh_pr, gh_error, fix_of, research, dismissed_at,
+     gh_state, gh_branch, gh_url, gh_pr, gh_error, fix_of, research, dismissed_at, hold,
      (SELECT w.state = 'open' AND w.clash FROM pr_watches w WHERE w.thread_id = threads.id) AS gh_clash";
 
 /// The actor recorded for the owner's own moves.
@@ -132,6 +132,7 @@ pub(crate) fn thread_from(row: &SqliteRow) -> Result<Thread> {
         fix_of: row.try_get("fix_of")?,
         research: row.try_get("research")?,
         dismissed_at: row.try_get("dismissed_at")?,
+        hold: row.try_get("hold")?,
     })
 }
 
@@ -643,7 +644,7 @@ impl Store {
             let Some(row) = sqlx::query(&format!(
                 "SELECT t.id, t.app_id, t.title, t.prompt, t.state, t.ai, t.session_id, t.branch,
                         t.place, t.updated_at, t.parent_id, t.background, t.pay_per_use AS thread_ppu,
-                        t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, t.fix_of, t.research, t.dismissed_at,
+                        t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, t.fix_of, t.research, t.dismissed_at, t.hold,
                         EXISTS (SELECT 1 FROM profile_limits l WHERE l.profile = a.profile
                             AND {ppu}) AS plan_ppu
                  FROM threads t JOIN apps a ON a.id = t.app_id
