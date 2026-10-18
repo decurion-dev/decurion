@@ -80,7 +80,7 @@ impl Store {
 
     /// Every message of a thread, oldest first.
     pub async fn messages(&self, thread_id: i64) -> Result<Vec<Message>> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         state_in(&mut tx, thread_id).await?;
         let all = list(&mut tx, thread_id, false).await?;
         tx.commit().await?;
@@ -90,7 +90,7 @@ impl Store {
     /// What the runner checks during a run, read together so a message is
     /// never seen against a state it was not sent in.
     pub async fn live(&self, thread_id: i64) -> Result<Live> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         let state = state_in(&mut tx, thread_id).await?;
         let place: String = sqlx::query_scalar("SELECT place FROM threads WHERE id = ?")
             .bind(thread_id)

@@ -182,9 +182,23 @@ impl Hub {
         self.send(path, req).await
     }
 
+    /// Posts one line of the work's activity. A server error means the hub
+    /// saved nothing, so it is tried again a few times rather than lost. Other
+    /// failures are not: if the hub may have saved it, a second copy could
+    /// count a run's cost twice.
     async fn event(&self, thread: i64, e: &RunEvent) {
-        if let Err(err) = self.post(&format!("/threads/{thread}/events"), e).await {
-            tracing::warn!(%err, thread, "could not post event");
+        let path = format!("/threads/{thread}/events");
+        for wait in [250, 1000, 2000, 0] {
+            match self.post(&path, e).await {
+                Ok(_) => return,
+                Err(HubError::Refused(_, s, _)) if s.is_server_error() && wait > 0 => {
+                    tokio::time::sleep(Duration::from_millis(wait)).await;
+                }
+                Err(err) => {
+                    tracing::warn!(%err, thread, "could not post event");
+                    return;
+                }
+            }
         }
     }
 
@@ -3552,6 +3566,56 @@ mod tests {
             ],
         )
         .await
+    }
+
+    /// A fake hub whose events route answers with `answers` in turn (the
+    /// last one repeats), and how many times it was called.
+    async fn fake_hub(answers: Vec<u16>) -> (Hub, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let app = axum::Router::new().route(
+            "/api/threads/{id}/events",
+            axum::routing::post(move || {
+                let n = seen.fetch_add(1, Ordering::SeqCst);
+                let code = answers[n.min(answers.len() - 1)];
+                async move { StatusCode::from_u16(code).expect("status") }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let hub = Hub {
+            base: format!("http://{addr}"),
+            key: "k".into(),
+            http: reqwest::Client::new(),
+            name: "local".into(),
+            place: Place::Pc,
+        };
+        (hub, calls)
+    }
+
+    /// A line the hub could not save (a server error) is sent again rather
+    /// than lost; one the hub refused for a reason is not.
+    #[tokio::test]
+    async fn an_activity_line_is_sent_again_after_a_server_error() {
+        use std::sync::atomic::Ordering;
+        let line = RunEvent::Message {
+            text: "still here".into(),
+        };
+        let (hub, calls) = fake_hub(vec![500, 500, 201]).await;
+        hub.event(7, &line).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+        let (hub, calls) = fake_hub(vec![500]).await;
+        hub.event(7, &line).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 4, "gives up after 4 tries");
+
+        let (hub, calls) = fake_hub(vec![409]).await;
+        hub.event(7, &line).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a refusal is not retried");
     }
 
     /// An app holding a file whose full path is past Windows' old

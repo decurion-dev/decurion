@@ -199,7 +199,7 @@ async fn end_in(tx: &mut Transaction<'_, Sqlite>, s: &BrowserSession, state: &st
 
 impl Store {
     pub async fn browser_session(&self, id: i64) -> Result<BrowserSession> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         let s = session_in(&mut tx, id).await?;
         tx.commit().await?;
         Ok(s)
