@@ -46,6 +46,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/apps/{id}/sign-ins", get(list).post(add))
         .route("/sign-ins/{id}/sign-in", post(start))
         .route("/sign-ins/{id}/remove", post(remove))
+        .route("/browser/{sid}/save", post(save_window))
         .route("/runner/browser/claim", post(runner_claim))
         .route("/runner/sign-ins/{id}/saved", post(runner_saved))
         .route("/runner/sign-ins/{id}/expired", post(runner_expired))
@@ -396,7 +397,7 @@ impl Store {
         let done = sqlx::query(
             "UPDATE browser_sessions SET state = 'live', runner = ? WHERE id = ? AND state = 'pending'",
         )
-        .bind(runner.actor())
+        .bind(&runner.name)
         .bind(session_id)
         .execute(&mut *tx)
         .await?;
@@ -435,7 +436,7 @@ impl Store {
                 w.try_get::<String, _>("kind")? == "sign_in"
                     && w.try_get::<Option<i64>, _>("sign_in_id")? == Some(id)
                     && w.try_get::<Option<String>, _>("runner")?.as_deref()
-                        == Some(runner.actor().as_str())
+                        == Some(runner.name.as_str())
                     && w.try_get::<String, _>("state")? == "live"
             }
             None => false,
@@ -665,6 +666,35 @@ async fn start(
             crate::created_or_resent(serde_json::json!({ "session_id": session_id }), fresh)
         }
         Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// The owner's "I'm signed in, save" in a sign-in window: the runner holding
+/// the window captures what the owner signed in to and reports it saved.
+async fn save_window(
+    State(st): State<AppState>,
+    Extension(c): Extension<Caller>,
+    Path(sid): Path<i64>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("saving a website sign-in");
+    }
+    match st.store.browser_session(sid).await {
+        Ok(s) if s.kind == "sign_in" && s.is_open() => {}
+        Ok(_) => return (StatusCode::CONFLICT, "that sign-in window is not open").into_response(),
+        Err(e) => return ApiError(e).into_response(),
+    }
+    if st
+        .browser
+        .send_to_runner(sid, &decurion_proto::browser::RelayDown::Capture)
+    {
+        StatusCode::ACCEPTED.into_response()
+    } else {
+        (
+            StatusCode::CONFLICT,
+            "the sign-in window is not connected to your PC yet; try again in a moment",
+        )
+            .into_response()
     }
 }
 

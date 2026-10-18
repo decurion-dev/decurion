@@ -965,4 +965,43 @@
     setTimeout(connect, 0);
     return view;
   };
+
+  // D.openBrowserViewer(sessionId, { saveButton }) opens a sign-in window in
+  // a panel of its own: the owner drives a fresh browser on the PC, signs in,
+  // and taps "I'm signed in, save". Resolves once the panel closes.
+  D.openBrowserViewer = (sid, opts = {}) => new Promise((resolve) => {
+    let saved = false;
+    const close = el("button", { type: "button", className: "btn icon quiet close", "aria-label": "Close" }, icon("close", "l"));
+    const d = el("dialog", { className: "panel", "aria-labelledby": "si-title" });
+    const note = el("p", { className: "hint", role: "status", "aria-live": "polite" });
+    const view = D.browserView(sid, {
+      takeOver: false,
+      hint: "Tap to click, drag to scroll, and type in the box above the keys. Use a test account. Decurion saves the sign-in, never your password.",
+      extra: opts.saveButton === false ? null : {
+        label: "I'm signed in, save",
+        onClick: async () => {
+          note.textContent = "Saving…";
+          try {
+            await D.api(`/browser/${sid}/save`, { method: "POST" });
+          } catch (e) {
+            note.textContent = `Not saved yet. ${e.message}`;
+          }
+        },
+      },
+      onEnded: (why) => {
+        saved = /saved/i.test(why ?? "");
+        note.textContent = saved ? "Saved. Agents working on this app will be signed in from their next run." : (why ?? "");
+        if (saved) { D.toast("Sign-in saved"); setTimeout(() => d.open && d.close(), 1200); }
+      },
+    });
+    d.append(
+      el("header", { className: "work-head" },
+        el("div", { className: "top" }, el("span", { className: "grow" }), close),
+        el("h2", { id: "si-title" }, "Sign in")),
+      el("div", { className: "si-body" }, view.el, note));
+    close.onclick = () => d.close();
+    d.addEventListener("close", () => { view.close(); d.remove(); resolve(saved); });
+    document.body.append(d);
+    d.showModal();
+  });
 })();

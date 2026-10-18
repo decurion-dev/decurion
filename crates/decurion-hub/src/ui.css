@@ -359,3 +359,6 @@ details.fold[open] > summary svg.i { transform: rotate(90deg); }
   .bv-keys .btn { flex: 1 1 0; padding: 0 8px; }
   .bv-bar .btn.sm { min-height: var(--control-h); }
 }
+
+/* The sign-in window (D.openBrowserViewer). */
+.si-body { padding: 16px 20px calc(16px + env(safe-area-inset-bottom)); overflow-y: auto; display: grid; gap: 12px; }
