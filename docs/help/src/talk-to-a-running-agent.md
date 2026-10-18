@@ -17,7 +17,7 @@ This page shows how to change an agent's direction, give it more to do, or tell 
 
 Your message shows in the activity log as soon as Decurion has it. Until the agent reads it, the card shows **Waiting to reach the agent**.
 
-You can also send a message to work that is waiting for you, in review, or stopped. **Change course now** and **Do this next** send that work back to the agent with your message. You cannot send messages to work that is done.
+You can also send a message to work that needs you, is in review, or stopped. **Change course now** and **Do this next** send that work back to the agent with your message. You cannot send messages to work that is done.
 
 ## Split work into smaller tasks
 

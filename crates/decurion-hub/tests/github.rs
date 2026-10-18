@@ -1280,7 +1280,7 @@ async fn fix_these_starts_one_fix_with_the_comments_as_data() {
     assert_eq!(n, 2);
 }
 
-/// Taps Fix these, builds the fix the way a runner does, puts it in review
+/// Taps Answer the comments, builds the fix the way a runner does, puts it in review
 /// and accepts it. Returns the fix and its commit.
 async fn fixed(h: &Hub, thread: i64, before_claim: Option<&str>) -> (i64, String) {
     param_comments(h);
@@ -1610,10 +1610,31 @@ async fn with_the_rule_off_a_passed_piece_waits_for_the_owners_accept() {
     )
     .await;
     assert!(v.to_string().contains("waits for your Accept"), "{v}");
+    // Its work panel knows the app's rule, so it asks for Accept.
+    let goal_of = |h: &Hub| {
+        let r = h.r.clone();
+        async move {
+            ok(
+                &r,
+                OWNER,
+                "GET",
+                &format!("/api/threads/{thread}/goal"),
+                Value::Null,
+            )
+            .await
+        }
+    };
+    let of = goal_of(&h).await;
+    assert_eq!(of["sends_checked"], false, "{of}");
+    assert_eq!(of["review"], "passed", "{of}");
+    assert_eq!(of["by_plan"], false, "{of}");
     // The owner's Accept sends it, as for any work.
     accept(&h, thread, "accept-after-check").await;
     let t = settled(&h, thread).await;
     assert_eq!(t["github"]["state"], "sent", "{t}");
+    // The owner accepted it, not the plan: the panel must not say otherwise.
+    let of = goal_of(&h).await;
+    assert_eq!(of["by_plan"], false, "{of}");
 }
 
 /// A sent pull request whose app may be merged from Decurion, with GitHub

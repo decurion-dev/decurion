@@ -44,7 +44,7 @@ Everything you can do on the board. The phone has four tabs at the bottom:
 2. In the inbox, tap **Turn on notifications**.
 3. When your phone asks, tap **Allow**.
 
-Your phone now alerts you when a plan is ready, your project lead has a question, work is ready for review, waiting on you, or stopped, and when work is ready to merge on GitHub. It also alerts you when the pay-per-use spending cap is reached. Each notice starts with the app's name, like "Refill tracker: ready for review". Notifications show only a short line, never the agent's work.
+Your phone now alerts you when a plan is ready, your project lead has a question, work is ready for review, needs you, or stopped, and when work is ready to merge on GitHub. It also alerts you when the pay-per-use spending cap is reached. Each notice starts with the app's name, like "Refill tracker: ready for review". Notifications show only a short line, never the agent's work.
 
 ### Act right from the notice
 

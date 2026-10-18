@@ -236,6 +236,20 @@ pub(crate) async fn save_report(
     }
 }
 
+/// Which goal a piece of work belongs to, so its panel can say why it did
+/// or did not wait for the owner's Accept. `null` for work added straight
+/// to the board.
+pub(crate) async fn piece_of(
+    State(st): State<AppState>,
+    Extension(c): Extension<Caller>,
+    Path(id): Path<i64>,
+) -> Response {
+    if let Some(r) = owner_only(c, "seeing which goal work belongs to") {
+        return r;
+    }
+    reply(st.store.piece_of(id).await)
+}
+
 pub(crate) async fn notes(State(st): State<AppState>, Path(id): Path<i64>) -> Response {
     reply(st.store.app_notes(id).await)
 }

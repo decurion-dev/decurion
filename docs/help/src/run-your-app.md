@@ -11,7 +11,7 @@ Use this to try what an agent made before you accept it.
 1. On the board, click the card for the work. On the phone, find it on the **Board** tab.
 2. Under **Try it**, tap **Run it**.
 
-This runs the work's last saved version: what the agent had made at the end of its last run. **Try it** shows for work that isn't running. While an agent is still working, the app keeps changing, so watch its test browser instead (see below).
+This runs the work's last saved version: what the agent had made at the end of its last run. Above the picture, **Try it** says so: "This piece of work, as the agent last saved it." **Try it** shows for work that isn't running. While an agent is still working, the app keeps changing, so watch its test browser instead (see below).
 
 Research has no **Try it**: it changes no code, so there is nothing new to run.
 
@@ -22,7 +22,7 @@ Use this to try your app as it is now, before any new work.
 - On the board, each app in the **Today** strip has a **Run it** button. When the board shows only one app, the button is also next to the title.
 - On the phone, each app in the **Today** card at the top of the inbox has the same button. On a small phone it shows only a play sign.
 
-This runs the app as it is in its folder on your PC: the main version, without work that hasn't been merged yet.
+This runs the app as it is in its folder on your PC: the main version, without work that hasn't been merged yet. Under the app's name, the panel says **Your PC's copy**, so you know which version you are looking at. Work you merged on GitHub is in it only once that folder has been brought up to date. To try a newer piece of work, open that work and tap **Run it** under **Try it**.
 
 While an app is running, its button says **Open**. Tap it to see the app again.
 

@@ -1,6 +1,6 @@
 # Answer requests
 
-This page helps you deal with work that is waiting for you, on your phone or on the board.
+This page helps you deal with work that needs you, on your phone or on the board.
 
 Your **inbox** shows only the work that needs you. Open it on your paired phone (see [Connect your phone](connect-your-phone.md)), or click a card on the board.
 
@@ -14,7 +14,7 @@ Each row says what that app is waiting on, in a few words, with a label:
 
 | The label says | What it means |
 | --- | --- |
-| Needs you | Something only you can do: a plan to approve, a question to answer, or work to check. |
+| Needs you | Something only you can do. The words next to it say what, such as "Approve the plan", "Answer your project lead" or "2 pieces are ready to check". |
 | Working | Agents are building. The row says how far they got, such as "2 of 4 pieces built". |
 | With reviewer | A pull request is open on GitHub and the app's reviewer has it. |
 | Your merge | A pull request is open and the app has no reviewer. Merge it on GitHub when you are happy with it. |
@@ -25,7 +25,7 @@ Apps that need you come first, then apps with work running, then the rest by nam
 
 Click a row on the board to show only that app's work. Click it again to see every app. On your phone, tap a row to open that app on the Board tab.
 
-When someone left comments on a pull request, the row says so, for example "PR #88 · param left 3 comments", and shows **Fix these**. Tap it and an agent starts new work to answer those comments. It goes to the same pull request, so you review it there as before.
+When someone left comments on a pull request, the row says so, for example "PR #88 · param left 3 comments", and shows **Answer the comments**. Tap it and an agent starts new work to answer those comments. It goes to the same pull request, so you review it there as before.
 
 ## Answer a request
 
@@ -35,9 +35,9 @@ When someone left comments on a pull request, the row says so, for example "PR #
 
 | The card says | What it means | Your buttons |
 | --- | --- | --- |
-| Ready for review | The agent finished and saved its changes. | **Accept**, **Send back**, **Reject** |
-| Waiting on you | The work stopped until you decide. | **Continue**, **Stop** |
-| Stopped | The work could not finish. | **Retry** |
+| In review | The agent finished and saved its changes. | **Accept**, **Send back**, **Reject** |
+| Needs you | The work stopped until you decide. | **Continue**, **Stop** |
+| Failed | The work could not finish. | **Retry** |
 
 What each button does:
 

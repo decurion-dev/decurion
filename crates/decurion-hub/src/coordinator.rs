@@ -62,6 +62,9 @@ pub type News = crate::push::Notice;
 /// Who moves a piece to Done when the checker passes it: the hub, acting on
 /// the owner's approval of the plan the piece came from.
 const PLAN_ACTOR: &str = "hub";
+/// The audit note on a piece the plan's approval accepted, so the work panel
+/// can tell it from one the owner accepted with their own tap ([`Store::piece_of`]).
+const PLAN_SEND_NOTE: &str = "passed the check; sent because the owner approved the plan";
 
 /// What the hub does next after a helper job finishes.
 #[derive(Debug, Default)]
@@ -79,6 +82,25 @@ pub struct AppNote {
     pub id: i64,
     pub text: String,
     pub created_at: String,
+}
+
+/// The goal a piece of work belongs to, for its work panel: why it went to
+/// GitHub without the owner's Accept, or why it waits for one.
+#[derive(Debug, Clone, Serialize)]
+pub struct PieceOf {
+    pub goal_id: i64,
+    pub goal_title: String,
+    pub review: ReviewState,
+    /// Accepted by the owner's approval of the plan: the checker passed it,
+    /// so the hub moved it to Done and sends it to GitHub (`finish_helper`).
+    /// False when the owner accepted it with their own tap.
+    pub by_plan: bool,
+    /// The checker passed it, but it changes protected parts of the app, so
+    /// the plan's approval does not cover it ([`crate::protected`]).
+    pub held: bool,
+    /// The app's rule today: whether a piece that passes its check is sent
+    /// by itself (`AppRules::send_checked`), or waits for the owner's Accept.
+    pub sends_checked: bool,
 }
 
 /// What the runner gets when it asks for helper work.
@@ -2342,7 +2364,7 @@ impl Store {
                                         Some(ThreadState::InReview),
                                         ThreadState::Done,
                                         PLAN_ACTOR,
-                                        Some("passed the check; sent because the owner approved the plan"),
+                                        Some(PLAN_SEND_NOTE),
                                     )
                                     .await?;
                                     crate::github::want_send(&mut tx, t).await?;
@@ -2468,6 +2490,50 @@ impl Store {
         }
         tx.commit().await?;
         Ok(news)
+    }
+
+    /// The goal a thread is a piece of, or `None` for work added straight to
+    /// the board. A piece the checker passed and the hub moved to Done went
+    /// by the plan's approval; one moved to Done any other way was the
+    /// owner's own Accept (the same rule as the report turn's summary).
+    pub async fn piece_of(&self, thread_id: i64) -> Result<Option<PieceOf>> {
+        let t = self.thread(thread_id).await?;
+        let row = sqlx::query(
+            "SELECT p.goal_id, g.title, p.review, p.review_summary
+             FROM goal_pieces p JOIN goals g ON g.id = p.goal_id WHERE p.thread_id = ?",
+        )
+        .bind(thread_id)
+        .fetch_optional(self.pool())
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let review: String = row.try_get("review")?;
+        let summary: Option<String> = row.try_get("review_summary")?;
+        let held = crate::protected::is_held(Some(&review), summary.as_deref());
+        let review =
+            ReviewState::from_str(&review).map_err(|e| StoreError::Invalid(e.to_string()))?;
+        // Read from the audit row the plan's send wrote, not guessed from the
+        // state: an app whose rules make passed pieces wait has the owner's
+        // own Accept move it to Done instead.
+        let (sent_by_plan, sends_checked): (bool, bool) = sqlx::query_as(
+            "SELECT EXISTS(SELECT 1 FROM audit WHERE thread_id = ? AND actor = ? AND to_state = 'done' AND note = ?),
+                    (SELECT send_checked FROM apps WHERE id = ?)",
+        )
+        .bind(thread_id)
+        .bind(PLAN_ACTOR)
+        .bind(PLAN_SEND_NOTE)
+        .bind(t.app_id)
+        .fetch_one(self.pool())
+        .await?;
+        Ok(Some(PieceOf {
+            goal_id: row.try_get("goal_id")?,
+            goal_title: row.try_get("title")?,
+            review,
+            by_plan: !t.research && t.state == ThreadState::Done && sent_by_plan,
+            held,
+            sends_checked,
+        }))
     }
 
     /// Called after any move of a thread. Starts a check when a piece's agent

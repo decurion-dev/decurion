@@ -7,25 +7,27 @@
 <link rel="icon" href="/icon.svg">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="stylesheet" href="/ui.css">
+<link rel="stylesheet" href="/menu.css">
 <style>
   /* The master plan: every goal of an app with its steps, pages and what it
      found, the owner's own to-dos, and the library of pages agents drew.
      Colours follow ui.css: blue for what you press and the chosen tab,
      amber only for what waits for you, green done, red failed. */
   body { min-height: 100dvh; }
+  /* On a PC the shared rail down the left (D.pcNav, menu.css) is the menu, the same as on the
+     Board and Goals. On a phone the rail hides, the bottom tabs take over and this slim header
+     shows the logo. */
   .top {
     position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 18px;
     min-height: 56px; padding: 8px 24px; padding-top: max(8px, env(safe-area-inset-top));
     background: color-mix(in srgb, var(--bg) 86%, transparent); backdrop-filter: blur(10px);
     border-bottom: 1px solid var(--line);
   }
+  /* After .top, so it wins on a PC. */
+  @media (min-width: 641px) { .top { display: none; } }
   .brand { display: flex; align-items: center; gap: 10px; font: 650 16px/1 var(--font-display); letter-spacing: -0.01em; color: var(--ink); text-decoration: none; }
   .brand svg { flex: none; border-radius: 8px; }
-  .top nav { display: flex; gap: 2px; }
-  .top nav a { display: inline-flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 10px; border-radius: var(--radius-s); color: var(--muted); font: 500 14px/1 var(--font); text-decoration: none; }
-  .top nav a:hover { background: var(--surface-2); color: var(--ink); }
-  .top nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent-ink); }
-  .banner { position: sticky; top: 56px; z-index: 9; }
+  .banner { position: sticky; top: 0; z-index: 9; }
 
   .wrap { max-width: 1000px; margin: 0 auto; padding: 28px 24px calc(64px + env(safe-area-inset-bottom)); }
   .head { display: flex; align-items: flex-end; gap: 16px 24px; flex-wrap: wrap; }
@@ -243,12 +245,11 @@
 
   @media (max-width: 640px) {
     .tabbar { display: block; }
-    .top nav { display: none; }
+    .pcnav { display: none; }
+    body.has-rail { padding-left: 0; }
+    .banner { top: 56px; }
     .top { padding-left: 16px; padding-right: 16px; gap: 10px; }
     .brand .nm { display: none; }
-    .top nav { margin-left: auto; }
-    .top nav a { padding: 0 9px; font-size: 14px; min-height: 40px; }
-    .top nav a svg.i { display: none; }
     .wrap { padding: 20px 16px calc(64px + 40px + env(safe-area-inset-bottom)); }
     .head h1 { font-size: 26px; }
     .app-pick { width: 100%; }
@@ -275,14 +276,10 @@
   }
 </style>
 </head>
-<body>
+<body class="has-rail">
+<div id="pcnav"></div>
 <header class="top">
   <a class="brand" href="/" id="brand"><span class="nm">Decurion</span></a>
-  <nav aria-label="Pages">
-    <a href="/" id="nav-board">Board</a>
-    <a href="/goals" id="nav-goals">Goals</a>
-    <a href="/plan" id="nav-plan" aria-current="page">Master plan</a>
-  </nav>
 </header>
 <div class="banner" id="banner" role="alert" hidden></div>
 
@@ -321,7 +318,7 @@
   <section id="panel-pages" role="tabpanel" aria-labelledby="pt-pages" hidden>
     <div class="pg-tools" id="pg-tools" hidden>
       <p class="hint">Pages agents drew for this app: plans before the work, and pictures of it as built.</p>
-      <button class="fchip" type="button" id="only-waiting" aria-pressed="false"><span class="dot" aria-hidden="true"></span><span id="only-waiting-t">Waiting for you</span></button>
+      <button class="fchip" type="button" id="only-waiting" aria-pressed="false"><span class="dot" aria-hidden="true"></span><span id="only-waiting-t">Needs you</span></button>
     </div>
     <div id="pages-body"></div>
   </section>
@@ -369,18 +366,18 @@
   // One word, one symbol and one colour for each goal state.
   const GOAL = {
     talking: ["Talking it through", "talking", "talk"],
-    plan_ready: ["Plan ready for you", "you", "bang"],
+    plan_ready: ["Needs you · approve the plan", "you", "bang"],
     working: ["Working", "working", "half"],
-    for_review: ["Ready for your review", "you", "bang"],
+    for_review: ["Needs you · review the work", "you", "bang"],
     done: ["Done", "done", "check"],
     stopped: ["Stopped", "stopped", "cross"],
   };
   const STEP = {
     done: ["check", "", "done"],
     now: ["half", "Now", "an agent is on it now"],
-    you: ["bang", "Waiting for you", "waiting for you"],
+    you: ["bang", "Needs you", "needs you"],
     later: ["ring", "", "not started yet"],
-    problem: ["bang", "Needs a look", "needs a look"],
+    problem: ["bang", "Failed", "failed"],
     skipped: ["dash", "", "skipped"],
   };
   const KIND = { plan: ["Visual plan", "layout"], check: ["As built", "picture"] };
@@ -404,11 +401,9 @@
     loading: false,
   };
 
-  // ---------- Header ----------
+  // ---------- Menus: the PC rail, the phone's header and bottom tabs ----------
+  $("pcnav").replaceWith(D.pcNav("plan", { rail: true }));
   $("brand").prepend(D.mark(28));
-  $("nav-board").prepend(icon("board"));
-  $("nav-goals").prepend(icon("send"));
-  $("nav-plan").prepend(icon("plan"));
   $("tabbar").replaceWith(D.phoneTabs("plan"));
 
   // ---------- Routing: #app=3&tab=pages ----------
@@ -589,7 +584,7 @@
         el("div", { className: "mark" }, icon("board", "l")),
         el("h3", {}, "Nothing on the plan yet"),
         el("p", {}, "Goals show up here as soon as they start, with each step and anything they find along the way. You can also add your own to-dos below."),
-        el("a", { className: "btn primary", href: "/goals" }, icon("plus"), "Start a goal")));
+        el("a", { className: "btn primary", href: "/goals#new" }, icon("plus"), "New work")));
     } else if (kind === "hidden") {
       $("plan-empty").replaceChildren(el("div", { className: "empty-state" },
         el("div", { className: "mark" }, icon("done", "l")),
@@ -642,7 +637,7 @@
       return el("a", { className: `chip${p.waiting ? " waiting" : ""}`, href: `/pages/${p.goal_id}/${p.id}`, title: `${kind}: ${p.title}` },
         el("span", { className: "pic" }, shape(sym)),
         el("span", { className: "nm" }, p.title),
-        p.waiting ? el("span", { className: "wait" }, "Question waiting") : null);
+        p.waiting ? el("span", { className: "wait" }, "Needs you · a question") : null);
     }));
   }
 
@@ -860,7 +855,7 @@
     ct.textContent = lib?.length ? String(waiting || lib.length) : "";
     ct.className = waiting ? "ct wait" : "ct";
     ct.title = waiting ? `${D.plural(waiting, "page")} with questions for you` : "";
-    $("pt-pages").setAttribute("aria-label", waiting ? `Pages, ${waiting} waiting for you` : "Pages");
+    $("pt-pages").setAttribute("aria-label", waiting ? `Pages, ${waiting} ${waiting === 1 ? "needs" : "need"} you` : "Pages");
     if (S.tab !== "pages") return;
     const body = $("pages-body");
     if (!lib) {
@@ -869,7 +864,7 @@
       return;
     }
     $("pg-tools").hidden = !lib.length;
-    $("only-waiting-t").textContent = `Waiting for you${waiting ? ` (${waiting})` : ""}`;
+    $("only-waiting-t").textContent = `Needs you${waiting ? ` (${waiting})` : ""}`;
     // Group by goal, newest goal first, keeping the library's newest-first order.
     const groups = [];
     const byGoal = new Map();
@@ -894,7 +889,7 @@
         el("div", { className: "pg-grid" }, ...g.pages.map((p) => card(p)))))));
         body.append(el("div", { className: "empty-state", id: "pg-none", hidden: true },
           el("div", { className: "mark" }, icon("done", "l")),
-          el("h3", {}, "Nothing is waiting for you"),
+          el("h3", {}, "Nothing needs you"),
           el("p", {}, "Every question on these pages has an answer.")));
       }
     }
@@ -935,7 +930,7 @@
       el("span", { className: "kind" }, shape(sym), kind),
       el("span", { className: "pc-title" }, p.title),
       el("span", { className: "pc-meta" }, [p.piece_title && !p.title.includes(p.piece_title) ? p.piece_title : null, ago(p.created_at)].filter(Boolean).join(" · ")),
-      p.waiting ? el("span", { className: "badge" }, p.questions > 1 ? "Questions waiting for you" : "A question waiting for you") : null);
+      p.waiting ? el("span", { className: "badge" }, p.questions > 1 ? `Needs you · answer ${p.questions} questions` : "Needs you · answer a question") : null);
   }
 
   // ---------- Start ----------

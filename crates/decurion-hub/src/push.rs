@@ -331,7 +331,7 @@ pub fn for_move(t: &decurion_proto::Thread, app: &str) -> Option<Notice> {
     use decurion_proto::ThreadState::*;
     let head = match t.state {
         InReview => "ready for review",
-        NeedsYou => "waiting on you",
+        NeedsYou => "needs you",
         Failed => "stopped",
         _ => return None,
     };

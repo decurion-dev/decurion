@@ -1022,10 +1022,7 @@ impl Store {
             .and_then(|j| serde_json::from_str(&j).ok())
             .unwrap_or_default();
         let review_summary: Option<String> = row.try_get("review_summary")?;
-        let held = review.as_deref() == Some("needs_a_look")
-            && review_summary
-                .as_deref()
-                .is_some_and(|s| s.starts_with("Held for you:"));
+        let held = crate::protected::is_held(review.as_deref(), review_summary.as_deref());
         Ok(Job {
             app_id: row.try_get("app_id")?,
             repo_path: row.try_get("repo_path")?,

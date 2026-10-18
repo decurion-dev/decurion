@@ -1,0 +1,51 @@
+/* The PC menu (D.pcNav in ui.js): the logo and the four places, the same on
+   the Board, Goals and the Master plan. It is its own file because goals.html
+   has its own look and does not load ui.css, so it uses only the colour names
+   both looks define (--bg, --ink, --muted, --line, --accent-soft,
+   --accent-ink) and falls back for the rest. Blue marks the page you are on,
+   as everywhere. Each page hides the menu at its own phone width, where
+   D.phoneTabs takes over. */
+:root { --pcnav-rail: 84px; }
+
+.pcnav { display: flex; flex-direction: column; gap: 22px; }
+.pcnav-brand {
+  display: flex; align-items: center; gap: 10px; padding: 4px 8px;
+  font: 650 16px/1 var(--font-display, inherit); letter-spacing: -0.01em; color: var(--ink); text-decoration: none;
+}
+.pcnav-brand svg { flex: none; border-radius: 8px; }
+.pcnav-items { display: grid; gap: 2px; }
+.pcnav-item {
+  display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 0 10px;
+  border-radius: var(--radius-s, 8px); color: var(--muted);
+  font: 500 14px/1.2 var(--font, inherit); text-decoration: none;
+  transition: background-color .12s ease, color .12s ease;
+}
+.pcnav-item:hover { background: var(--surface-2, var(--neutral-soft)); color: var(--ink); }
+.pcnav-item[aria-current="page"] { background: var(--accent-soft); color: var(--accent-ink); }
+.pcnav-item svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.pcnav-item .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The rail: a narrow column down the left edge, each label under its icon.
+   The page gives its body the has-rail class so its own content starts
+   beside the rail, not under it. */
+body.has-rail { padding-left: var(--pcnav-rail); }
+.pcnav.rail {
+  position: fixed; z-index: 20; top: 0; bottom: 0; left: 0; width: var(--pcnav-rail);
+  gap: 18px; padding: 14px 8px; padding-top: max(14px, env(safe-area-inset-top));
+  background: var(--bg); border-right: 1px solid var(--line); overflow-y: auto;
+}
+.pcnav.rail .pcnav-brand { justify-content: center; padding: 2px 0; }
+/* The name stays for screen readers; the logo says it on screen. */
+.pcnav.rail .pcnav-brand .nm { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.pcnav.rail .pcnav-items { gap: 4px; }
+.pcnav.rail .pcnav-item {
+  flex-direction: column; justify-content: center; gap: 5px; min-height: 56px; padding: 8px 4px;
+  border-radius: var(--radius, 12px); font-size: 12px; font-weight: 600; text-align: center;
+}
+.pcnav.rail .pcnav-item svg.i { width: 20px; height: 20px; }
+.pcnav.rail .pcnav-item .nm { white-space: normal; }
+.pcnav-foot { margin-top: auto; display: flex; justify-content: center; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pcnav-item { transition: none; }
+}

@@ -10,7 +10,8 @@ you talk to, turns it into finished, checked work.
 There is one box for asking for anything: **What do you want?**
 
 1. Open the board at <http://decurion.localhost:7420>. The box is at the top.
-   On your phone, open the inbox, tap **Board**, then **New work**.
+   On your phone, open the inbox, tap **Board**, then **New work**. On the
+   **Goals** page, press **New work** to open the same box above your goals.
 2. Choose the app.
 3. Type what you want, such as "Add a password reset page to the portal." Say
    what you want, not how to code it.
@@ -60,7 +61,7 @@ work, each with how you will know it is done.
 Each piece of work runs on its own and shows on the board. When a piece is
 built, a checker agent tries it in a separate copy, takes "as built"
 pictures, and either passes it or sends it back with notes. A piece gets at
-most two checks; if it still has problems, it is marked **needs a look**. The
+most two checks; if it still has problems, it is marked **Needs you · take a look**. The
 checker lists what it ran and marks each thing it says as **Checked** or
 **Guessed**.
 
@@ -71,7 +72,11 @@ To find something out without changing the app, or to ask why a piece was
 done a certain way, see [Research, Ask why, and the checker's proof](research-and-ask-why.md).
 
 A piece that passes goes to GitHub as a pull request by itself. You approved
-the plan, so you are not asked again.
+the plan, so you are not asked again. Open the piece on the board and its
+**Overview** says so: "Sent to GitHub by itself because you approved the plan",
+with a link back to the goal. While the checker is still looking, it says the
+piece goes by itself if it passes. A piece that changes a protected part says
+**Held for you** and waits for you to tap **Accept**.
 
 You can stop the goal at any time with **Stop goal**, under the **•••** button.
 

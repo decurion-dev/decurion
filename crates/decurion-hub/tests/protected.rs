@@ -390,6 +390,17 @@ async fn a_piece_touching_protected_parts_is_held_even_when_the_checker_passes_i
     // for the owner's own tap, and nothing goes to GitHub.
     assert_eq!(p["thread_state"], "in_review", "{p}");
     assert!(p.get("github").is_none(), "{p}");
+    // Its work panel says so.
+    let of = ok(
+        &h.r,
+        "GET",
+        &format!("/api/threads/{thread}/goal"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(of["goal_id"], goal, "{of}");
+    assert_eq!(of["held"], true, "{of}");
+    assert_eq!(of["by_plan"], false, "{of}");
 }
 
 #[tokio::test]
@@ -457,6 +468,66 @@ async fn a_piece_touching_only_unprotected_files_passes() {
     // goes to GitHub without another tap.
     assert_eq!(p["thread_state"], "done", "{p}");
     assert_eq!(p["github"]["state"], "waiting", "{p}");
+    // Its work panel says why it did not wait for Accept, naming the goal.
+    let of = ok(
+        &h.r,
+        "GET",
+        &format!("/api/threads/{thread}/goal"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(of["goal_id"], goal, "{of}");
+    assert_eq!(of["goal_title"], "Go", "{of}");
+    assert_eq!(of["review"], "passed", "{of}");
+    assert_eq!(of["by_plan"], true, "{of}");
+    assert_eq!(of["held"], false, "{of}");
+    assert_eq!(of["sends_checked"], true, "{of}");
+}
+
+#[tokio::test]
+async fn work_added_straight_to_the_board_is_part_of_no_goal() {
+    let h = hub().await;
+    let (_, piece_thread, _) = claimed_piece(&h, None).await;
+    let app = ok(
+        &h.r,
+        "GET",
+        &format!("/api/threads/{piece_thread}"),
+        Value::Null,
+    )
+    .await["app_id"]
+        .clone();
+    let t = ok(
+        &h.r,
+        "POST",
+        "/api/threads",
+        json!({"app_id": app, "title": "Just do it", "prompt": "Change the app."}),
+    )
+    .await["id"]
+        .as_i64()
+        .expect("thread id");
+    let of = ok(&h.r, "GET", &format!("/api/threads/{t}/goal"), Value::Null).await;
+    assert!(of.is_null(), "{of}");
+    // A piece not yet checked went nowhere by the plan yet.
+    let of = ok(
+        &h.r,
+        "GET",
+        &format!("/api/threads/{piece_thread}/goal"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(of["review"], "building", "{of}");
+    assert_eq!(of["by_plan"], false, "{of}");
+
+    // Only the owner's screens ask; a runner key is turned away.
+    let req = Request::builder()
+        .uri(format!("/api/threads/{piece_thread}/goal"))
+        .header(header::AUTHORIZATION, format!("Bearer {RUNNER}"))
+        .body(Body::empty())
+        .expect("request");
+    let resp = h.r.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let (s, _, _) = send(&h.r, "GET", "/api/threads/999999/goal", Body::empty()).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

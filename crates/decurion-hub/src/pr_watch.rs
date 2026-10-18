@@ -513,7 +513,7 @@ impl Store {
             .collect()
     }
 
-    /// The owner's "Fix these" on a watched pull request (`thread_id` is the
+    /// The owner's "Answer the comments" on a watched pull request (`thread_id` is the
     /// work that opened it): new work, on the pull request's branch and
     /// starting from the last commit Decurion pushed there, that gets the
     /// waiting comments as data. With a receipt already used for this,
@@ -543,7 +543,7 @@ impl Store {
         }
         if row.try_get::<bool, _>("fixing")? {
             return Err(StoreError::Refused(
-                "A fix for this pull request is already under way. Wait for it to finish, then fix any new comments."
+                "A fix for this pull request is already under way. Wait for it to finish, then answer any new comments."
                     .into(),
             ));
         }
@@ -557,7 +557,7 @@ impl Store {
         .await?;
         if comments.is_empty() {
             return Err(StoreError::Refused(
-                "There are no new comments on this pull request to fix.".into(),
+                "There are no new comments on this pull request to answer.".into(),
             ));
         }
         let mut ids = Vec::new();
@@ -660,7 +660,7 @@ pub async fn poll(state: &AppState) -> usize {
             merged(&s, w.thread_id).await;
         }
         // "Refill tracker: merged on GitHub". Comments open the inbox, where
-        // Fix these is; an end opens the pull request.
+        // Answer the comments is; an end opens the pull request.
         let notice = match changed.ended {
             Some(PrState::Merged) => Some(
                 Notice::work(&w.app, w.thread_id, "merged on GitHub", &w.title).open_pr(&w.url),
@@ -727,7 +727,7 @@ pub(crate) struct Fix {
     receipt: Option<String>,
 }
 
-/// The owner's "Fix these".
+/// The owner's "Answer the comments".
 pub(crate) async fn fix(
     State(st): State<AppState>,
     axum::Extension(c): axum::Extension<Caller>,

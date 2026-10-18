@@ -1931,6 +1931,7 @@ async fn pages_load_their_shared_look_without_signing_in() {
     let (r, _) = hub().await;
     for (path, kind) in [
         ("/ui.css", "text/css"),
+        ("/menu.css", "text/css"),
         ("/ui.js", "text/javascript"),
         ("/compose.js", "text/javascript"),
         ("/settings.js", "text/javascript"),
@@ -1951,6 +1952,28 @@ async fn pages_load_their_shared_look_without_signing_in() {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default();
         assert!(ct.starts_with(kind), "{path}: {ct}");
+    }
+}
+
+/// The Board, Goals and the Master plan show one menu and one logo on a PC,
+/// so moving between them never feels like changing apps.
+#[tokio::test]
+async fn the_board_goals_and_master_plan_share_one_pc_menu() {
+    let (r, _) = hub().await;
+    for (path, call) in [
+        ("/", "D.pcNav(\"board\")"),
+        ("/goals", "D.pcNav(\"goals\", { rail: true"),
+        ("/plan", "D.pcNav(\"plan\", { rail: true"),
+    ] {
+        let resp = get(&r, path, None).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{path}");
+        let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+        let html = String::from_utf8_lossy(&bytes);
+        assert!(
+            html.contains("href=\"/menu.css\""),
+            "{path} loads the menu's look"
+        );
+        assert!(html.contains(call), "{path} builds the shared menu");
     }
 }
 

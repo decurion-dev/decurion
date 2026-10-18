@@ -1,5 +1,5 @@
-// The new-work form, shared by the board and the phone inbox: the one place
-// the owner asks for something. One box says what they want; by default it
+// The new-work form, shared by the board, the phone inbox and the Goals page:
+// the one place the owner asks for something. One box says what they want; by default it
 // goes to the project lead as a goal, which asks, plans and waits for the
 // owner's approval before anything starts. "Just do it" is the owner's own
 // explicit choice to skip the plan for a small change: one agent, one piece,
@@ -298,7 +298,7 @@
       showClaudeChoice();
     }
 
-    // Fills the box in for the owner, such as "Fix these" on finished work.
+    // Fills the box in for the owner, such as "Fix what it found" on finished work.
     // The owner still reads it and presses the button; nothing is sent here.
     function fill({ app_id, text, mode: m } = {}) {
       if (app_id != null) { wantApp = String(app_id); setApp(app_id); }

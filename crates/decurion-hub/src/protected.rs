@@ -109,6 +109,14 @@ pub fn protected_changes(patterns: &Patterns, changed: &[String]) -> Vec<String>
         .collect()
 }
 
+/// Whether a piece is held for the owner by this hold, from what the hub
+/// stored when the checker passed it: still "needs a look", with a summary
+/// that starts the way every [`Hold::reason`] does. A piece the checker
+/// itself was not happy with has a summary of its own words, never this.
+pub(crate) fn is_held(review: Option<&str>, summary: Option<&str>) -> bool {
+    review == Some("needs_a_look") && summary.is_some_and(|s| s.starts_with("Held for you:"))
+}
+
 /// Whether a piece the checker passed must wait for the owner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Hold {
@@ -123,7 +131,8 @@ pub enum Hold {
 
 impl Hold {
     /// The plain-words reason put in front of the checker's summary, for an
-    /// owner who is not a programmer.
+    /// owner who is not a programmer. It always starts "Held for you:",
+    /// which [`is_held`] reads back.
     pub fn reason(&self) -> Option<String> {
         match self {
             Self::Clear => None,
