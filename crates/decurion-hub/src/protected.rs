@@ -27,7 +27,7 @@
 //! - There is no `!` to make exceptions: such a line is an ordinary pattern,
 //!   so nothing in the list can unprotect a file.
 
-use crate::checkpoints::{git, is_commit, Files, Part};
+use crate::checkpoints::{git, is_commit, Files};
 use crate::store::{Result, Store, StoreError};
 use decurion_proto::goal::{last_json_object, HelperResult, ReviewVerdict};
 use sqlx::Row;
@@ -203,7 +203,7 @@ impl Store {
 }
 
 /// A branch name safe to put in a refspec.
-fn plain_branch(b: &str) -> bool {
+pub(crate) fn plain_branch(b: &str) -> bool {
     !b.is_empty()
         && !b.starts_with(['-', '/'])
         && !b.ends_with(['/', '.'])
@@ -266,42 +266,30 @@ impl Files {
         }
         let _held = self.git_lock.lock().await;
         let cache = self.app_cache(app_id);
-        let bundle = self.saved(thread, checkpoint, Part::Code);
-        let bundle = bundle.to_string_lossy().into_owned();
         let check_ref = format!("refs/decurion/check/{thread}");
-        // Written by an agent: git checks every object it takes in.
-        git(
-            &cache,
-            &[
-                "-c",
-                "protocol.allow=never",
-                "-c",
-                "protocol.file.allow=always",
-                "-c",
-                "transfer.fsckObjects=true",
-                "fetch",
-                "--quiet",
-                "--no-tags",
-                "--",
-                &bundle,
-                &format!("+refs/heads/{branch}:{check_ref}"),
-            ],
-        )
-        .await?;
-        let out = git(
-            &cache,
-            &[
-                "diff",
-                "--name-only",
-                "--no-renames",
-                "--no-ext-diff",
-                "-z",
-                base,
-                &check_ref,
-                "--",
-            ],
-        )
-        .await;
+        // Written by an agent: the shared fetch has git check every object.
+        let out = match self
+            .fetch_saved_code(&cache, thread, checkpoint, branch, &check_ref)
+            .await
+        {
+            Ok(_) => {
+                git(
+                    &cache,
+                    &[
+                        "diff",
+                        "--name-only",
+                        "--no-renames",
+                        "--no-ext-diff",
+                        "-z",
+                        base,
+                        &check_ref,
+                        "--",
+                    ],
+                )
+                .await
+            }
+            Err(e) => Err(e),
+        };
         let _ = git(&cache, &["update-ref", "-d", &check_ref]).await;
         Ok(out?
             .split('\0')

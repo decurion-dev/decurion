@@ -587,6 +587,8 @@ mod tests {
             pass: true,
             summary: "Works".into(),
             issues: vec![],
+            evidence: vec![],
+            claims: vec![],
             questions: vec![q("q1", "Keep it?", &["Only"])],
         };
         let kept = checked_verdict(v.clone()).expect("the check stands");
