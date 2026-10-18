@@ -532,10 +532,14 @@
     const box = $("limits");
     box.hidden = !limits.length;
     keepFocus(() => box.replaceChildren(...limits.map((l) => {
-      const text = `Claude Max plan ${l.profile} is out of usage until about ${untilText(l.until)}. ` +
-        (l.waiting > 0 ? `${l.waiting} waiting; they restart on their own then.` : "New work for it waits until then.");
+      // After the owner's tap, the plan's work runs on pay-per-use until the
+      // reset: nothing waits and there is nothing to ask.
+      const text = l.pay_per_use_until
+        ? `Claude Max plan ${l.profile} is out of usage. Its work is running on pay-per-use until ${untilText(l.pay_per_use_until)}, within this month's cap. Then it goes back to the Max plan.`
+        : `Claude Max plan ${l.profile} is out of usage until about ${untilText(l.until)}. ` +
+          (l.waiting > 0 ? `${l.waiting} waiting; they restart on their own then.` : "New work for it waits until then.");
       let btn = null;
-      if (l.waiting > 0) {
+      if (l.waiting > 0 && !l.pay_per_use_until) {
         btn = el("button", { type: "button", className: "btn sm", dataset: { key: `limit-${l.profile}` } }, icon("money"), "Continue on pay-per-use");
         btn.disabled = D.offline;
         btn.onclick = async () => {
@@ -543,7 +547,7 @@
           delete limitErr[l.profile];
           try {
             await D.api(`/limits/${encodeURIComponent(l.profile)}/pay-per-use`, { method: "POST" });
-            D.toast(`Moved ${D.plural(l.waiting, "piece")} of work to pay-per-use.`);
+            D.toast(`Plan ${l.profile} work now runs on pay-per-use until ${untilText(l.until)}.`);
           } catch (e) {
             limitErr[l.profile] = `Couldn't move it to pay-per-use. ${e.message}`;
           }
@@ -552,7 +556,8 @@
           renderLimits();
         };
       }
-      return el("div", { className: "notice warn", role: "status" }, icon("alert"),
+      return el("div", { className: l.pay_per_use_until ? "notice" : "notice warn", role: "status" },
+        icon(l.pay_per_use_until ? "money" : "alert"),
         el("div", { className: "grow" }, text, limitErr[l.profile] ? el("div", { className: "field-error" }, limitErr[l.profile]) : null),
         btn);
     })));

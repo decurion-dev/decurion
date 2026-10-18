@@ -45,7 +45,7 @@ Open a card to talk to its agent while it works. *Change course now* stops its c
 
 Every piece of work runs on your PC or on a cloud worker, under the same rules: the same sealed box, the same single credential, the same board and inbox. Open a card and choose **Move to cloud** or **Move to PC**; running work saves its progress, stops, and carries on from the same spot on the other computer, with no new questions.
 
-To add a cloud worker, start the hub with `DECURION_PUBLIC_URL` set to its Tailscale https address (the same one your phone uses), then open **Settings**, **Add cloud worker** on the board and follow the three steps (see `docs/help/src/add-the-cloud-worker.md`). The server costs about $5 to $25 a month at a hosting company.
+To add a cloud worker, first give the hub its Tailscale https address (the same one your phone uses: **Settings**, **Phones**, **Connect your phone**, or set `DECURION_PUBLIC_URL`), then open **Settings**, **Add cloud worker** on the board and follow the three steps (see `docs/help/src/add-the-cloud-worker.md`). The server costs about $5 to $25 a month at a hosting company.
 
 How it works: the hub is the meeting point for code. Runners never clone your repo themselves; they get the starting commit from the hub, and at the end of every run (or when you move the work) they hand back a saved copy: the branch and the agent's session. The cloud worker gets the run's Claude credential from the hub only while that work is running on it, and never stores it. The hub refuses any runner built with different rules (`RULES_VERSION`), and the cloud worker then rebuilds itself to the hub's commit.
 

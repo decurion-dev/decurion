@@ -65,7 +65,12 @@ async fn main() -> anyhow::Result<()> {
         decurion_hub::github::Tokens::Owner(Some(vault.clone())),
     )
     .context("set up sending work to GitHub")?;
+    // DECURION_PUBLIC_URL wins; otherwise the address "Connect your phone"
+    // saved last time.
     let state = AppState::new(store, keys, code, public_url)
+        .use_saved_public_url()
+        .await?
+        .with_port(port)
         .with_push(pusher)
         .with_vault(vault)
         .with_files(dir.join("saved-work"))
@@ -73,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
         .with_folders(decurion_hub::folders::Places::for_this_pc(&dir))
         .with_github(github);
     decurion_hub::sign_ins::watch_dates(state.clone());
+    decurion_hub::sign_in_lights::watch(state.clone());
     // The pull requests Decurion opened, until each is merged or closed.
     decurion_hub::pr_watch::watch(state.clone());
     // Anything accepted but not yet sent when the hub last stopped.

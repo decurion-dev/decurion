@@ -21,6 +21,7 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 http-body-util = "0.1"
 quick-xml = { version = "0.42", default-features = false }
+portable-pty = "0.9"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 serde.workspace = true
 serde_json.workspace = true

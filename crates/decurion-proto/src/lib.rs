@@ -702,7 +702,14 @@ pub struct Limit {
     /// When the account is expected back (UTC). Waiting work starts again on
     /// its own after this; if the account is still out, the time moves on.
     pub until: String,
+    /// Work waiting for the reset. Work that runs on pay-per-use meanwhile
+    /// does not count.
     pub waiting: i64,
+    /// Set after the owner's "Continue on pay-per-use" tap: until this time
+    /// (UTC, the reset time) the account's Claude work runs on pay-per-use,
+    /// within the monthly cap, instead of waiting. Then it goes back to Max.
+    #[serde(default)]
+    pub pay_per_use_until: Option<String>,
 }
 
 /// This month's spending, for the board.

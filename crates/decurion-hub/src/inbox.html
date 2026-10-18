@@ -633,7 +633,7 @@ function errorState(what) {
 }
 
 function renderShell() {
-  const n = inboxEntries().length + S.limits.length + S.signIns.length + S.prs.length;
+  const n = inboxEntries().length + S.limits.filter((l) => !l.pay_per_use_until).length + S.signIns.length + S.prs.length;
   document.body.classList.toggle("signed-out", S.signedOut);
   $("title").textContent = S.signedOut ? "Decurion" : TITLES[S.tab];
   $("count").hidden = !(S.tab === "inbox" && n > 0 && !S.signedOut);
@@ -721,7 +721,8 @@ function inboxCard(t, anim) {
   return card;
 }
 // An account that ran out of usage: its work waits until the limit lifts,
-// or the owner moves it to pay-per-use now.
+// or the owner moves it to pay-per-use until then. After that tap the card
+// only says so: nothing to decide, so it is not counted as an item.
 const untilText = (iso) => {
   const d = new Date(iso);
   return d.toDateString() === new Date().toDateString() ? D.clock(iso)
@@ -729,9 +730,14 @@ const untilText = (iso) => {
 };
 function limitCard(l, anim) {
   const key = `limit-${l.profile}`;
+  if (l.pay_per_use_until) {
+    return el("article", { className: "icard limit" + (anim === "still" ? " still" : ""), dataset: { state: "running", key, anim } },
+      el("div", { className: "meta" }, el("span", { className: "pill running" }, D.icon("money"), "On pay-per-use")),
+      el("p", { className: "lim" }, `Claude Max ${l.profile} is out of usage. Its work is running on pay-per-use until ${untilText(l.pay_per_use_until)}, within this month's cap. Then it goes back to the Max plan.`));
+  }
   const card = el("article", { className: "icard limit" + (anim === "still" ? " still" : ""), dataset: { state: "needs_you", key, anim } },
     el("div", { className: "meta" }, el("span", { className: "pill needs_you" }, D.icon("money"), "Account out of usage")),
-    el("p", { className: "lim" }, `Claude Max ${l.profile} is out until about ${untilText(l.until)}. ${l.waiting} waiting; they restart on their own then. Or continue them now on pay-per-use, within this month's cap.`),
+    el("p", { className: "lim" }, `Claude Max ${l.profile} is out until about ${untilText(l.until)}. ${l.waiting} waiting; they restart on their own then. Or continue on pay-per-use until then, within this month's cap.`),
     el("div", { className: "err-slot", role: "alert" }));
   const label = "Continue on pay-per-use";
   const b = el("button", { type: "button", className: "btn primary", disabled: D.offline }, label);
@@ -740,7 +746,7 @@ function limitCard(l, anim) {
     b.disabled = true;
     try {
       await D.api(`/limits/${encodeURIComponent(l.profile)}/pay-per-use`, { method: "POST" });
-      D.toast(`Moved to pay-per-use. ${D.plural(l.waiting, "piece")} of work will continue now.`);
+      D.toast(`On pay-per-use until ${untilText(l.until)}. The work continues now.`);
       card.classList.add("leaving");
       setTimeout(refresh, 180);
     } catch (e) {
@@ -910,7 +916,7 @@ function renderInbox() {
   } else {
     reconcile(box, [...S.limits.map((l) => ({
       key: `limit-${l.profile}`,
-      sig: JSON.stringify([l.profile, l.until, l.waiting, D.offline]),
+      sig: JSON.stringify([l.profile, l.until, l.waiting, l.pay_per_use_until, D.offline]),
       build: (anim) => limitCard(l, anim),
     })), ...S.signIns.map((x) => ({
       key: `signin-${x.id}`,

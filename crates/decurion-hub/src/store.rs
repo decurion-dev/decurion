@@ -533,21 +533,25 @@ impl Store {
         let mut capped = Vec::new();
         loop {
             // Work on a Max account that is out of usage waits for the reset,
-            // unless it (or its app) runs on pay-per-use or another AI does it.
+            // unless it (or its app) runs on pay-per-use, the owner chose
+            // pay-per-use until the reset (limits.rs), or another AI does it.
             // A runner only gets work placed on its own kind of computer.
-            let Some(row) = sqlx::query(
+            let Some(row) = sqlx::query(&format!(
                 "SELECT t.id, t.app_id, t.title, t.prompt, t.state, t.ai, t.session_id, t.branch,
                         t.place, t.updated_at, t.parent_id, t.background, t.pay_per_use AS thread_ppu,
-                        t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, t.fix_of, t.research
+                        t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, t.fix_of, t.research,
+                        EXISTS (SELECT 1 FROM profile_limits l WHERE l.profile = a.profile
+                            AND {ppu}) AS plan_ppu
                  FROM threads t JOIN apps a ON a.id = t.app_id
                  WHERE t.state = 'queued' AND t.place = ?
                    AND (t.ai <> 'claude' OR t.pay_per_use = 1 OR a.pay_per_use = 1 OR NOT EXISTS (
                         SELECT 1 FROM profile_limits l WHERE l.profile = a.profile
-                            AND l.until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))
+                            AND l.until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AND NOT {ppu}))
                  ORDER BY COALESCE(a.first_on = date('now', 'localtime'), 0) DESC,
                           a.last_claim_at IS NOT NULL, a.last_claim_at, t.id
                  LIMIT 1",
-            )
+                ppu = crate::limits::PAY_PER_USE_NOW
+            ))
             .bind(place.as_str())
             .fetch_optional(&mut *tx)
             .await?
@@ -557,10 +561,17 @@ impl Store {
             };
             let t = thread_from(&row)?;
             let app = self.app_in(&mut tx, t.app_id).await?;
-            // The owner moved this one piece of Claude work to pay-per-use
-            // while its Max account was out.
+            // The owner chose pay-per-use while its Max account is out: for
+            // the account until its reset, or (hubs before migration 0077)
+            // for this one piece's next run. It is set aside and capped below
+            // like any paid run; it never moves to the other Max account.
             let account = match Account::for_work(t.ai, &app) {
-                Account::A | Account::B if row.try_get::<bool, _>("thread_ppu")? => Account::Api,
+                Account::A | Account::B
+                    if row.try_get::<bool, _>("plan_ppu")?
+                        || row.try_get::<bool, _>("thread_ppu")? =>
+                {
+                    Account::Api
+                }
                 other => other,
             };
             let started: bool = sqlx::query_scalar(
