@@ -40,7 +40,7 @@
 //! owner's folder and their own remote settings apply.
 
 use crate::checkpoints::{git, Files};
-use crate::push::Pusher;
+use crate::push::{Notice, Pusher};
 use crate::store::{audit, check_receipt, receipt_result, save_receipt, Result, Store, StoreError};
 use crate::{forbidden, ApiError, AppState, Caller};
 use axum::extract::{Path as UrlPath, State};
@@ -1046,12 +1046,13 @@ impl Sender {
                 return;
             }
         }
-        let title = self
-            .store
-            .thread(id)
-            .await
-            .map(|t| t.title)
-            .unwrap_or_default();
+        let (title, app) = match self.store.thread(id).await {
+            Ok(t) => {
+                let app = self.store.app(t.app_id).await.map(|a| a.name);
+                (t.title, app.unwrap_or_default())
+            }
+            Err(_) => Default::default(),
+        };
         let (ended, head, url) = match self.attempt(id).await {
             Ok(sent) => {
                 let note = match (&sent.url, sent.pull_request) {
@@ -1070,9 +1071,9 @@ impl Sender {
                     )
                     .await;
                 let head = if sent.url.is_some() {
-                    "Ready to merge on GitHub"
+                    "ready to merge on GitHub"
                 } else {
-                    "Sent as a branch"
+                    "sent as a branch"
                 };
                 (ended, head, sent.url.unwrap_or_else(|| "/inbox".into()))
             }
@@ -1082,7 +1083,7 @@ impl Sender {
                     .store
                     .end_send(id, SendState::Failed, None, Some(&why), &note)
                     .await;
-                (ended, "Could not send to GitHub", "/inbox".to_owned())
+                (ended, "could not send to GitHub", "/inbox".to_owned())
             }
         };
         if let Err(e) = ended {
@@ -1090,8 +1091,8 @@ impl Sender {
             return;
         }
         if let Some(p) = &self.push {
-            let body: String = title.chars().take(80).collect();
-            p.notify_to(&self.store, head, &body, &url).await;
+            let n = Notice::work(&app, id, head, &title).open_pr(&url);
+            p.send(&self.store, &n).await;
         }
     }
 

@@ -28,9 +28,9 @@ fn runner_only(c: Caller) -> Option<Response> {
 }
 
 fn tell(st: &AppState, news: Option<News>) {
-    if let (Some(p), Some((title, body))) = (st.push.clone(), news) {
+    if let (Some(p), Some(n)) = (st.push.clone(), news) {
         let store = st.store.clone();
-        tokio::spawn(async move { p.notify(&store, &title, &body).await });
+        tokio::spawn(async move { p.send(&store, &n).await });
     }
 }
 
