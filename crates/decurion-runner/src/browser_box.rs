@@ -53,44 +53,21 @@ pub(crate) fn want(w: &Wants, now: Option<BrowserWant>) {
     });
 }
 
-/// Which copy of each saved sign-in each running piece of work was given,
-/// by (thread, sign-in). With several pieces running at once, a report must
-/// name the copy its own piece holds, and the browser box only knows the
-/// sign-in. Set when a run starts, cleared when it ends.
-static GIVEN: std::sync::Mutex<std::collections::BTreeMap<(i64, i64), i64>> =
-    std::sync::Mutex::new(std::collections::BTreeMap::new());
-
-fn given() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<(i64, i64), i64>> {
-    // Only plain inserts and lookups happen under the lock; a poisoned one
-    // still holds a usable map.
-    GIVEN.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Records the copies a run of `thread` was given.
-pub(crate) fn remember_given(thread: i64, refs: &[decurion_proto::SignInRef]) {
-    let mut g = given();
-    g.retain(|(t, _), _| *t != thread);
-    for r in refs {
-        g.insert((thread, r.id), r.version);
-    }
-}
-
-/// Forgets what a run of `thread` was given, once it has ended.
-pub(crate) fn forget_given(thread: i64) {
-    given().retain(|(t, _), _| *t != thread);
-}
-
-fn given_version(thread: i64, sign_in_id: i64) -> Option<i64> {
-    given().get(&(thread, sign_in_id)).copied()
-}
-
 /// A saved sign-in stopped working: the browser box found it signed out in
 /// a fresh browser loaded from the saved copy, not the agent's. This is
 /// where the hub is to be told, so the owner gets a card asking them to
 /// sign in again; until saved sign-ins reach runs it only notes it.
-pub(crate) async fn report_signed_out(hub: &Hub, thread: i64, sign_in_id: i64) {
+/// `given` is the copy of each sign-in this browser attempt was handed, fixed
+/// when it started, so a late message from an old attempt can only speak for
+/// the copy that attempt held.
+pub(crate) async fn report_signed_out(
+    hub: &Hub,
+    thread: i64,
+    sign_in_id: i64,
+    given: &std::collections::BTreeMap<i64, i64>,
+) {
     tracing::info!(thread, sign_in_id, "a saved sign-in no longer works");
-    let Some(version) = given_version(thread, sign_in_id) else {
+    let Some(version) = given.get(&sign_in_id).copied() else {
         // Not one this run was given: nothing it may say about it.
         tracing::warn!(
             thread,
@@ -157,7 +134,9 @@ impl Drop for Remover {
             // Kept, not let go: the run's piece of work stays busy until this
             // removal is done ([`settle`]), so it can never remove the box of
             // a later attempt that has the same name.
-            removals().push((key, task));
+            let mut all = removals();
+            all.retain(|(_, t)| !t.is_finished());
+            all.push((key, task));
         }
     }
 }
@@ -290,6 +269,7 @@ pub(crate) async fn start_run(
     hub: &Hub,
     thread: i64,
     states: Vec<SiteState>,
+    given: std::collections::BTreeMap<i64, i64>,
     secrets: &[String],
 ) -> anyhow::Result<RunBrowser> {
     let remover = Remover {
@@ -315,7 +295,7 @@ pub(crate) async fn start_run(
         match msg {
             Some(FromBrowser::Ready { .. }) => break,
             Some(FromBrowser::SignedOut { sign_in_id }) => {
-                report_signed_out(hub, thread, sign_in_id).await
+                report_signed_out(hub, thread, sign_in_id, &given).await
             }
             Some(FromBrowser::Failed { why }) => {
                 bail!("The test browser could not start, so the run did not start: {why}")
@@ -338,7 +318,8 @@ Make sure Docker is running and the worker image is up to date."
     let (wants, wanted) = watch::channel(None);
     let hub = hub.clone();
     let task = tokio::spawn(async move {
-        let (end, relay) = relay_loop(&hub, Some(thread), BrowserMode::Run, io, wanted).await;
+        let (end, relay) =
+            relay_loop(&hub, Some((thread, given)), BrowserMode::Run, io, wanted).await;
         finish(relay, &ended_why(&end)).await;
     });
     Ok(RunBrowser {
@@ -547,9 +528,11 @@ fn unwatched(io: &BoxIo, mode: BrowserMode) {
 /// signed out, and while the hub wants the browser shown (`wanted`), keeps
 /// a relay open and passes the screen up and the owner's input down.
 /// Returns the relay still open, for the caller to [`finish`].
+/// `run` is the work run's thread and the sign-in copies it was given; a
+/// sign-in window has none.
 async fn relay_loop(
     hub: &Hub,
-    thread: Option<i64>,
+    run: Option<(i64, std::collections::BTreeMap<i64, i64>)>,
     mode: BrowserMode,
     mut io: BoxIo,
     mut wanted: watch::Receiver<Option<BrowserWant>>,
@@ -569,8 +552,8 @@ async fn relay_loop(
                     }
                 }
                 Some(FromBrowser::SignedOut { sign_in_id }) => {
-                    if let Some(t) = thread {
-                        report_signed_out(hub, t, sign_in_id).await;
+                    if let Some((t, given)) = &run {
+                        report_signed_out(hub, *t, sign_in_id, given).await;
                     }
                 }
                 Some(f @ FromBrowser::Frame { .. }) => {
@@ -647,11 +630,10 @@ async fn relay_loop(
 mod tests {
     use super::*;
 
-    /// A browser box removal started by a run ending early is waited for
-    /// before the piece of work counts as done, so it can never remove the
-    /// box of the next attempt, which has the same name.
+    /// A browser box removal started by a run ending early is recorded, not
+    /// let go, so the run can wait for it.
     #[tokio::test]
-    async fn a_dropped_browser_removal_is_waited_for() {
+    async fn a_dropped_browser_removal_is_recorded() {
         let thread = 987_654_321;
         let name = browser_container_name(thread);
         drop(Remover {
@@ -659,33 +641,39 @@ mod tests {
             name: name.clone(),
             armed: true,
         });
-        assert!(
-            removals().iter().any(|(n, _)| *n == name),
-            "the removal is kept, not let go"
-        );
-        settle(thread).await;
-        assert!(!removals().iter().any(|(n, _)| *n == name));
+        // Taken back before it ever runs: this test starts no Docker command.
+        let mine: Vec<_> = {
+            let mut all = removals();
+            let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *all)
+                .into_iter()
+                .partition(|(n, _)| *n == name);
+            *all = rest;
+            mine
+        };
+        assert_eq!(mine.len(), 1, "the removal is kept, not let go");
+        for (_, t) in mine {
+            t.abort();
+        }
     }
 
-    /// With several pieces running, each report names the copy its own
-    /// piece was given, and nothing is said once the piece has ended.
-    #[test]
-    fn each_piece_remembers_the_sign_in_copy_it_was_given() {
-        let r = |id, version| decurion_proto::SignInRef {
-            id,
-            label: "Staging admin".into(),
-            check_url: None,
-            login_url: None,
-            version,
-        };
-        remember_given(11, &[r(5, 1)]);
-        remember_given(12, &[r(5, 2)]);
-        assert_eq!(given_version(11, 5), Some(1));
-        assert_eq!(given_version(12, 5), Some(2));
-        forget_given(11);
-        assert_eq!(given_version(11, 5), None);
-        assert_eq!(given_version(12, 5), Some(2));
-        forget_given(12);
+    /// The piece of work counts as done only once that removal has finished,
+    /// so it can never remove the box of the next attempt, which has the same
+    /// name.
+    #[tokio::test]
+    async fn settle_waits_for_the_removal_to_finish() {
+        let thread = 987_654_322;
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _ = done_rx.await;
+        });
+        removals().push((browser_container_name(thread), task));
+        let waiting = tokio::spawn(settle(thread));
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!waiting.is_finished(), "still waiting for the removal");
+        done_tx.send(()).expect("removal waits");
+        waiting.await.expect("settled");
     }
 
     #[test]
@@ -789,7 +777,8 @@ mod tests {
         let (io, mut lines, prints) = fake_box();
         let (wants, wanted) = watch::channel(Some(BrowserWant { session_id: 7 }));
         let looping = tokio::spawn(async move {
-            let (end, relay) = relay_loop(&hub, Some(3), BrowserMode::Run, io, wanted).await;
+            let run = Some((3, std::collections::BTreeMap::new()));
+            let (end, relay) = relay_loop(&hub, run, BrowserMode::Run, io, wanted).await;
             finish(relay, &ended_why(&end)).await;
             end
         });

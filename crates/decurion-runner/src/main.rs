@@ -1770,6 +1770,9 @@ async fn run_in_box(
     site_secrets: Vec<String>,
 ) -> anyhow::Result<()> {
     let id = c.thread.id;
+    // The copy of each saved sign-in this attempt holds, for its reports.
+    let given: std::collections::BTreeMap<i64, i64> =
+        c.sign_ins.iter().map(|r| (r.id, r.version)).collect();
     let session = c
         .thread
         .session_id
@@ -1881,7 +1884,7 @@ make sure Docker Desktop is running and delete that container there",
     let browser = if pi {
         None
     } else {
-        Some(browser_box::start_run(hub, id, states, &secrets).await?)
+        Some(browser_box::start_run(hub, id, states, given, &secrets).await?)
     };
     // Tell the hub before launching: from here the run may cost money, and if
     // the hub cannot be told, the run does not start.
@@ -2838,6 +2841,9 @@ async fn finish_helper(hub: &Hub, id: i64, mut r: HelperResult) {
 async fn sign_in_loop(hub: Hub, data: PathBuf) {
     let mut hub_down = false;
     loop {
+        let Some(_job) = SideJob::start() else {
+            return;
+        };
         let r = hub
             .post("/runner/browser/claim", &serde_json::json!({}))
             .await;
@@ -2897,6 +2903,9 @@ async fn sign_in_loop(hub: Hub, data: PathBuf) {
 
 async fn helper_loop(hub: Hub, data: PathBuf, gate: Gate) {
     loop {
+        let Some(_job) = SideJob::start() else {
+            return;
+        };
         let r = hub
             .post(
                 "/runner/helper/claim",
@@ -3456,6 +3465,10 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     clean_helper_leftovers(&data).await;
+    // Checked before saying hello: hello puts this runner's running work
+    // back in the queue, so a bad setting must stop it first.
+    let wanted = dispatch::max_runs(place, std::env::var("DECURION_MAX_RUNS").ok().as_deref())
+        .map_err(anyhow::Error::msg)?;
     let reply = hello(&hub, &data).await?;
     if !reply.paused.is_empty() {
         tracing::info!(
@@ -3463,8 +3476,6 @@ async fn main() -> anyhow::Result<()> {
             "requeued work this runner had in flight; it will resume"
         );
     }
-    let wanted = dispatch::max_runs(place, std::env::var("DECURION_MAX_RUNS").ok().as_deref())
-        .map_err(anyhow::Error::msg)?;
     // An older hub ignores the busy list, so two attempts at one piece could
     // overlap here; with it, run one at a time until the hub is updated.
     let max = if reply.concurrent { wanted } else { 1 };
@@ -3495,7 +3506,41 @@ async fn main() -> anyhow::Result<()> {
     let reply = drained
         .take()
         .context("stopped taking work for no reason")?;
+    // Let a helper job or sign-in window already under way finish too.
+    while SIDE_JOBS.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
     match rules_differ(&data, &reply)? {}
+}
+
+/// Set once the hub has moved to other rules: no new helper jobs or sign-in
+/// windows are taken either, only what is in hand is finished.
+static WINDING_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Helper jobs and sign-in windows being asked for or worked on now. Counted
+/// from before the ask, so none can slip in while the runner checks it.
+static SIDE_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Counts one side job for as long as it lives.
+struct SideJob;
+
+impl SideJob {
+    /// None once winding down: take nothing new.
+    fn start() -> Option<Self> {
+        use std::sync::atomic::Ordering;
+        SIDE_JOBS.fetch_add(1, Ordering::SeqCst);
+        if WINDING_DOWN.load(Ordering::SeqCst) {
+            SIDE_JOBS.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        Some(SideJob)
+    }
+}
+
+impl Drop for SideJob {
+    fn drop(&mut self) {
+        SIDE_JOBS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Asks the hub for one more piece of work, listing the ones still busy
@@ -3537,6 +3582,7 @@ async fn claim_next(
                         "the hub follows other rules now; finishing the work in hand first"
                     );
                     *drained.borrow_mut() = Some(reply);
+                    WINDING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
                     return dispatch::Next::Drain;
                 }
                 Err(_) => {
@@ -3559,13 +3605,19 @@ async fn claim_next(
 /// busy (the hub will not hand it back here) until this returns.
 async fn run_one(hub: &Hub, data: &Path, gate: &Gate, claim: Claim) {
     let id = claim.thread.id;
-    browser_box::remember_given(id, &claim.sign_ins);
     run_claimed(hub, data, gate, claim).await;
     browser_box::settle(id).await;
-    let leftovers = [container_name(id), browser_container_name(id)];
-    remove_named(id, &leftovers).await;
+    if !remove_container(id).await {
+        let name = container_name(id);
+        tracing::error!(id, container = %name, "could not remove the agent's container after its run");
+        let text = format!(
+            "Decurion could not remove this agent's box (the Docker container named {name}) \
+after it finished, so it may still be working. Stop it yourself: open Docker Desktop, find \
+{name} under Containers, and delete it."
+        );
+        hub.event(id, &RunEvent::Message { text }).await;
+    }
     clear_gate(&BoxNet::work(id)).await;
-    browser_box::forget_given(id);
 }
 
 async fn run_claimed(hub: &Hub, data: &Path, gate: &Gate, claim: Claim) {
