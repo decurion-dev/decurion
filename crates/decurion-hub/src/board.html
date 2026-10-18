@@ -431,6 +431,11 @@
           <div id="key-apps"><p class="hint">Loading…</p></div>
         </section>
 
+        <section class="scard wide live" id="set-github" aria-labelledby="h-github">
+          <header><span class="ic" data-icon="branch"></span><div><h2 id="h-github">GitHub</h2><p>When you accept work, Decurion sends it to the app's GitHub page as a new branch, using this PC's own GitHub sign-in. With a GitHub token saved here, it also opens the pull request for you. Without one, you get a button that opens it in one tap. Decurion never merges: you do that on GitHub.</p></div></header>
+          <div id="github-token"><p class="hint">Loading…</p></div>
+        </section>
+
         <section class="scard wide live" id="set-sign-ins" aria-labelledby="h-sign-ins">
           <header><span class="ic" data-icon="key"></span><div><h2 id="h-sign-ins">Website sign-ins</h2><p>Let this app's agents check pages that need a sign-in. You sign in once, in a browser window from your PC; the sign-in is kept on your PC and your password is never saved. Use test accounts only: an agent may be able to read part of what a website keeps.</p></div></header>
           <div id="sign-in-apps"><p class="hint">Loading…</p></div>
@@ -567,6 +572,7 @@
       renderSettings();
       loadDevices();
       loadKeys();
+      loadGitHub();
       loadSignIns();
       const part = h.split("/")[1];
       const target = part && $(`set-${part === "spending" ? "accounts" : part}`); // Spending became Accounts
@@ -933,6 +939,7 @@
       line && el("p", { className: "says" }, line),
       D.treeLine(t) && el("p", { className: "tree" }, D.treeLine(t)),
       D.pro && el("div", { className: "pro" }, icon("branch"), `${t.branch || "no branch yet"} · #${t.id}`),
+      t.state === "done" && D.github(t, refresh, { small: true }),
       (acts.length || t.state === "running") && el("div", { className: "foot" },
         acts.length ? el("span", { className: "acts" }, ...acts) : null,
         t.state === "running" ? el("span", { className: "working" }, icon("running"), "Working") : null),
@@ -957,7 +964,7 @@
 
     const shown = shownThreads();
     const sig = ["board", filter, D.pro, D.offline, hasCloud, folds, Math.floor(Date.now() / 30000), apps.map((a) => [a.id, a.name, a.pay_per_use, a.profile]),
-      shown.map((t) => [t.id, t.state, t.ai, t.place, t.updated_at, t.title, t.branch, lineOf(t), D.treeLine(t)])];
+      shown.map((t) => [t.id, t.state, t.ai, t.place, t.updated_at, t.title, t.branch, t.github, lineOf(t), D.treeLine(t)])];
     if (!changed("board", sig)) return;
 
     keepFocus(() => {
@@ -1390,6 +1397,50 @@
       } catch (x) { err.textContent = x.message; }
     };
     return el("div", {}, el("h3", { style: "margin:8px 0" }, a.name), rows, form);
+  }
+
+  // The owner's GitHub token, for opening pull requests. Like test keys, it
+  // goes to the hub once and only its last four characters come back.
+  async function loadGitHub() {
+    let s;
+    try { s = await D.api("/github"); } catch (e) {
+      $("github-token").replaceChildren(el("p", { className: "field-error" }, `Couldn't load the GitHub settings. ${e.message}`));
+      return;
+    }
+    const rows = el("ul", { className: "rows" });
+    if (s.token) {
+      const b = el("button", { type: "button", className: "btn quiet danger-text sm" }, icon("trash"), "Remove");
+      b.onclick = async () => {
+        const ok = await D.confirm(["Remove the GitHub token?", "Accepted work still goes to GitHub, and you open each pull request with one tap.", "Remove token", "Keep it"]);
+        if (!ok) return;
+        try { await D.api("/github/token/remove", { method: "POST" }); D.toast("Removed the GitHub token."); await loadGitHub(); }
+        catch (x) { D.toast(`Couldn't remove the GitHub token. ${x.message}`, "alert"); }
+      };
+      rows.append(el("li", {}, el("span", { className: "ic" }, icon("key")),
+        el("div", { className: "who" }, el("b", {}, "GitHub token"), el("span", { className: "hint" }, `••••${s.token.last_four} · Decurion opens pull requests for you`)), b));
+    } else {
+      rows.append(el("li", { className: "empty" }, "No token saved. You open each pull request yourself, with one tap."));
+    }
+    const value = el("input", { id: "gh-token", type: "password", placeholder: "github_pat_…", autocomplete: "off", spellcheck: false, "aria-describedby": "gh-token-hint gh-token-err" });
+    const err = el("span", { className: "field-error", id: "gh-token-err", role: "alert" });
+    const show = el("button", { type: "button", className: "btn quiet sm" }, "Show");
+    show.onclick = () => { const hidden = value.type === "password"; value.type = hidden ? "text" : "password"; show.textContent = hidden ? "Hide" : "Show"; };
+    const form = el("form", { className: "form-grid", noValidate: true },
+      el("div", { className: "field" }, el("label", { htmlFor: "gh-token" }, s.token ? "Replace the token" : "GitHub token"), value, show),
+      el("p", { className: "hint", id: "gh-token-hint", style: "align-self:center" }, "Make a fine-grained token on GitHub with Pull requests: Read and write for your apps' repos. See Help, Review and merge work."),
+      el("div", { className: "full actions" }, el("button", { className: "btn primary", type: "submit" }, "Save token"), err));
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      err.textContent = "";
+      if (!value.value.trim()) { err.textContent = "Paste the token first."; value.focus(); return; }
+      try {
+        await D.api("/github/token", { method: "POST", body: JSON.stringify({ value: value.value.trim() }) });
+        value.value = "";
+        D.toast("Saved the GitHub token. Decurion opens pull requests for you from now on.");
+        await loadGitHub();
+      } catch (x) { err.textContent = x.message.replace(/^a GitHub/, "A GitHub").replace(/^this does/, "This does"); }
+    };
+    $("github-token").replaceChildren(rows, form);
   }
 
   // ---------- Website sign-ins ----------

@@ -93,14 +93,19 @@ impl Pusher {
     /// notifications on. Subscriptions the push service no longer knows are
     /// dropped. Never fails the caller.
     pub async fn notify(&self, store: &Store, title: &str, body: &str) {
+        self.notify_to(store, title, body, "/inbox").await;
+    }
+
+    /// [`Pusher::notify`], opening `url` when tapped: a page of the hub, or
+    /// a pull request on GitHub for accepted work. Any other address is
+    /// replaced by the inbox, so a notification can never send the owner
+    /// anywhere else.
+    pub async fn notify_to(&self, store: &Store, title: &str, body: &str, url: &str) {
+        let url = if tap_url_ok(url) { url } else { "/inbox" };
         let Ok(targets) = store.push_targets().await else {
             return;
         };
-        let Ok(payload) = serde_json::to_vec(&Note {
-            title,
-            body,
-            url: "/inbox",
-        }) else {
+        let Ok(payload) = serde_json::to_vec(&Note { title, body, url }) else {
             return;
         };
         let mut sends = tokio::task::JoinSet::new();
@@ -124,6 +129,14 @@ impl Pusher {
     }
 }
 
+/// Where a notification may take the owner: one of the hub's own pages, or
+/// GitHub.
+fn tap_url_ok(url: &str) -> bool {
+    let local = url.starts_with('/') && !url.starts_with("//") && !url.contains('\\');
+    let github = url.starts_with("https://github.com/");
+    (local || github) && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
 enum SendError {
     Gone,
     Other(String),
@@ -140,4 +153,26 @@ pub fn message_for(state: decurion_proto::ThreadState, title: &str) -> Option<(S
     };
     let title: String = title.chars().take(80).collect();
     Some((head.to_owned(), title))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tap_opens_only_the_hub_or_github() {
+        assert!(tap_url_ok("/inbox"));
+        assert!(tap_url_ok("https://github.com/acme/shop/pull/7"));
+        for bad in [
+            "//evil.example/x",
+            "https://evil.example/x",
+            "https://github.com.evil.example/x",
+            "http://github.com/acme/shop",
+            "javascript:alert(1)",
+            "/in box",
+            "/\\evil.example",
+        ] {
+            assert!(!tap_url_ok(bad), "{bad}");
+        }
+    }
 }

@@ -21,6 +21,7 @@ pub mod browser;
 pub mod checkpoints;
 pub mod coordinator;
 pub mod devices;
+pub mod github;
 pub mod limits;
 pub mod messages;
 pub mod protected;
@@ -107,6 +108,8 @@ pub struct AppState {
     /// Where apps' test keys are kept. Without one, the key endpoints refuse.
     vault: Option<decurion_vault::Vault>,
     files: Option<Arc<Files>>,
+    /// Sends accepted work to GitHub. Without it, accepted work waits.
+    github: Option<Arc<github::GitHub>>,
     /// When each runner was last heard from, by name.
     seen: Arc<Mutex<HashMap<String, Instant>>>,
     /// Live views of test browsers going on now.
@@ -125,6 +128,7 @@ impl AppState {
             push: None,
             vault: None,
             files: None,
+            github: None,
             seen: Arc::default(),
             browser: browser::Relays::default(),
         }
@@ -147,6 +151,23 @@ impl AppState {
     pub fn with_vault(mut self, v: decurion_vault::Vault) -> Self {
         self.vault = Some(v);
         self
+    }
+
+    /// Turns on sending accepted work to GitHub. Needs [`AppState::with_files`]
+    /// too, since the work is sent from the hub's saved copy.
+    pub fn with_github(mut self, g: github::GitHub) -> Self {
+        self.github = Some(Arc::new(g));
+        self
+    }
+
+    /// What sending to GitHub needs, if this hub is set up for it.
+    pub(crate) fn sender(&self) -> Option<github::Sender> {
+        Some(github::Sender {
+            store: self.store.clone(),
+            files: self.files.clone()?,
+            gh: self.github.clone()?,
+            push: self.push.clone(),
+        })
     }
 }
 
@@ -205,6 +226,10 @@ pub fn router(state: AppState) -> Router {
         .route("/apps/{id}/test-keys/{name}/remove", post(remove_test_key))
         .route("/push/subscribe", post(push_subscribe))
         .route("/threads/{id}/place", post(set_place))
+        .route("/threads/{id}/github", post(github::retry))
+        .route("/github", get(github::settings))
+        .route("/github/token", post(github::save_token))
+        .route("/github/token/remove", post(github::remove_token))
         .route("/workers", get(list_workers))
         .route("/workers/join-code", post(new_join_code))
         .route("/workers/{id}/remove", post(remove_worker))
@@ -804,6 +829,14 @@ async fn move_thread(
             if let (Some(p), Some((title, body))) = (st.push.clone(), news) {
                 let store = st.store.clone();
                 tokio::spawn(async move { p.notify(&store, &title, &body).await });
+            }
+            // The owner accepted it: the hub sends it to GitHub now. The wish
+            // was saved with the accept, so a crash here still sends it at
+            // the next start.
+            if fresh && c == Caller::Owner && t.state == Done {
+                if let Some(s) = st.sender() {
+                    s.spawn(t.id);
+                }
             }
             Json(t).into_response()
         }

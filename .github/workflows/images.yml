@@ -1,0 +1,45 @@
+name: images
+
+# Builds the agent boxes and the gate whenever their Dockerfiles change, so a
+# broken image shows up here instead of on the owner's PC the next time it
+# rebuilds. The Claude worker box is also checked for the tools agents use to
+# build and test Rust apps.
+on:
+  pull_request:
+    paths:
+      - "docker/**"
+      - ".github/workflows/images.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docker/**"
+      - ".github/workflows/images.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  claude-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t decurion/claude-worker:ci docker/claude-worker
+      # As the agent user, the way the runner starts the box.
+      - run: >
+          docker run --rm --cap-drop ALL --security-opt no-new-privileges
+          --entrypoint sh decurion/claude-worker:ci -c
+          'claude --version && rustc --version && cargo --version
+          && cargo clippy --version && cargo fmt --version && cc --version
+          && ! touch /usr/local/cargo/bin/probe 2>/dev/null'
+
+  pi-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t decurion/pi-worker:ci docker/pi-worker
+
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t decurion/gate:ci -f docker/gate/Dockerfile .

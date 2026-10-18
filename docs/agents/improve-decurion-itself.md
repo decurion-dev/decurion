@@ -13,9 +13,9 @@ way. Owner-facing version: `docs/help/src/improve-decurion-itself.md`.
 ## How the work goes
 
 1. The owner gives a goal. The coordinator reads the code read-only and proposes a plan; the owner approves it once (`approve_plan`).
-2. Each piece is built by its own agent in its own sealed box, on its own branch (`decurion/thread-<n>`), in a copy under the runner's `workspaces/` folder. The owner's clone is never touched.
+2. Each piece is built by its own agent in its own sealed box, on its own branch (`decurion/thread-<n>`), in a copy under the runner's `workspaces/` folder. The owner's clone is never touched: no branch or commit is written into it (the push to GitHub only borrows objects from the hub's own copy).
 3. When the agent finishes with commits, the checker reviews a separate copy taken from the runner-owned review repo (`branch_copy`), and passes it, sends it back with notes (at most 2 rounds), or marks it **needs a look**.
-4. The owner reviews and merges, by pulling the branch from `<data>/review/<app>-<n>.git` into their clone (`docs/help/src/review-and-merge.md`). Decurion never merges or pushes. If the change goes to GitHub as a pull request, CI (`.github/workflows/`) runs the checks there.
+4. The owner reviews it and taps Accept. The hub (never a box) pushes the accepted commit from the owner's clone to a new `decurion/...` branch on its `origin` and opens a pull request (`crates/decurion-hub/src/github.rs`), so CI (`.github/workflows/`) runs the checks there. The owner merges on GitHub; Decurion never merges and never pushes to the default branch. If the clone has no GitHub `origin`, the owner can still pull the branch from `<data>/review/<app>-<n>.git` (`docs/help/src/review-and-merge.md`).
 
 **The running hub never changes itself.** The hub and runner keep running the
 programs they were started from. A merged change runs only after the owner
@@ -33,7 +33,8 @@ the owner's clone does not reach the cloud worker; if it also changed
 ## What you can and cannot do in the box
 
 - Your box is the same as for any app: the walls in `AGENTS.md` apply to you. You cannot reach the owner's PC, the hub, Docker or GitHub, and you hold one credential.
-- **Tooling gap.** The Claude worker image (`docker/claude-worker/Dockerfile`, `node:22-bookworm-slim` plus git, ca-certificates and ripgrep) installs no Rust toolchain, and Docker is not available in the box. `static.rust-lang.org` is not on `sites::BUILT_IN`. Run `cargo --version` first. If the checks cannot run, do not try to get around the box: keep the change small, write the tests anyway, and say plainly in your final summary which checks you could not run, so the owner (or CI) runs them.
+- **Tools in the box.** The Claude worker image (`docker/claude-worker/Dockerfile`, `node:22-bookworm-slim` plus git, ca-certificates and ripgrep) has a pinned Rust toolchain (`RUST_VERSION`, with rustfmt and clippy) and a C compiler and linker (gcc, libc6-dev, pkg-config). Crates download from crates.io through the gate and are kept in `CARGO_HOME=/home/agent/.cargo` between runs of the same piece. **Before you finish, run** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`, and fix what they find. The first build of the workspace takes several minutes.
+- **What the box cannot run.** Docker is not available, so no image builds and no `docker` commands. `cargo deny` and `mdbook` are not installed, `docker/cloud/check-template.sh` needs Python, which the box does not have, and `static.rust-lang.org` is not on `sites::BUILT_IN`, so no other Rust version or target can be downloaded (a `rust-toolchain.toml` asking for one fails). Do not try to get around the box: say plainly in your final summary which checks you could not run, so the owner (or CI) runs them.
 - Write the change as you would for any contributor (`CONTRIBUTING.md`): one change, a Conventional Commit message, tests, `CHANGELOG.md` and help pages when the owner will notice.
 
 ## Protected parts

@@ -418,6 +418,7 @@ mod tests {
             updated_at: String::new(),
             parent_id: None,
             background: false,
+            github: None,
         };
         Claim {
             thread,

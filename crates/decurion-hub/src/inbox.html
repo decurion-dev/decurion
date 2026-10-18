@@ -254,6 +254,8 @@ const MEANS = {
   needs_you: "The agent stopped to ask for something only you can decide.",
   in_review: "The agent finished and saved its work. Accept it, or send it back with the agent picking up where it left off.",
   failed: "This piece of work could not finish. You can retry it.",
+  // Only when it could not be sent to GitHub.
+  done: "You accepted this, but it could not be sent to GitHub. It is still accepted.",
 };
 const CHIPS = ["running", "in_review", "needs_you", "queued", "done", "failed"];
 const BOARD_EMPTY = {
@@ -291,8 +293,10 @@ function sinceLines(ev) {
 
 const byNewest = (a, b) => b.updated_at.localeCompare(a.updated_at);
 // What is waiting on a decision comes first, then failures, then reviews.
-const URGENCY = { needs_you: 0, failed: 1, in_review: 2 };
-const inboxItems = () => (S.threads ?? []).filter((t) => t.state in MEANS).sort((a, b) => URGENCY[a.state] - URGENCY[b.state] || byNewest(a, b));
+const URGENCY = { needs_you: 0, failed: 1, done: 1, in_review: 2 };
+// Accepted work is done, unless it could not be sent to GitHub.
+const needsYou = (t) => t.state === "done" ? t.github?.state === "failed" : t.state in MEANS;
+const inboxItems = () => (S.threads ?? []).filter(needsYou).sort((a, b) => URGENCY[a.state] - URGENCY[b.state] || byNewest(a, b));
 const counts = () => {
   const c = Object.fromEntries(CHIPS.map((s) => [s, 0]));
   for (const t of S.threads ?? []) if (t.state in c) c[t.state]++;
@@ -441,6 +445,8 @@ function inboxCard(t, anim) {
   }
   const since = sinceLines(tailNow(t, 20) ?? []);
   if (since.length) card.append(el("div", { className: "said" }, el("div", { className: "lbl" }, said ? "Since then" : "Recently"), el("p", { className: "since" }, since.join("\n"))));
+  const gh = t.github && D.github(t, refresh);
+  if (gh) card.append(gh);
   card.append(el("div", { className: "err-slot", role: "alert" }));
   const moves = D.moveButtons(t, {
     onMoved: () => { card.classList.add("leaving"); setTimeout(refresh, 180); },
@@ -451,9 +457,11 @@ function inboxCard(t, anim) {
     const [main, ...rest] = moves;
     card.append(el("div", { className: "iacts" }, main, rest.length > 0 && el("div", { className: "sub" }, ...rest)));
   }
-  const tell = el("button", { type: "button", className: "btn quiet" }, D.icon("question"), "Tell the agent something");
-  tell.onclick = () => D.openWork(t, refresh, { talk: true });
-  card.append(el("div", { className: "iacts" }, tell));
+  if (t.state !== "done") {
+    const tell = el("button", { type: "button", className: "btn quiet" }, D.icon("question"), "Tell the agent something");
+    tell.onclick = () => D.openWork(t, refresh, { talk: true });
+    card.append(el("div", { className: "iacts" }, tell));
+  }
   card.addEventListener("click", (e) => { if (!e.target.closest("button, a")) open(); });
   return card;
 }
@@ -561,7 +569,7 @@ function renderInbox() {
       build: (anim) => signInCard(x, anim),
     })), ...items.map((t) => ({
       key: t.id,
-      sig: JSON.stringify([t.state, t.updated_at, t.title, D.appName(t.app_id), D.lastWords(tailNow(t, 20) ?? []), sinceLines(tailNow(t, 20) ?? []), D.offline]),
+      sig: JSON.stringify([t.state, t.updated_at, t.title, t.github, D.appName(t.app_id), D.lastWords(tailNow(t, 20) ?? []), sinceLines(tailNow(t, 20) ?? []), D.offline]),
       build: (anim) => inboxCard(t, anim),
     }))]);
   }
@@ -630,6 +638,7 @@ function boardCard(t, anim) {
       app && el("span", { className: "tag dot-sep" }, D.aiLabel(app, t))),
     el("div", { className: "t" }, t.title),
     line && el("div", { className: "says" }, line),
+    t.state === "done" && t.github && el("div", { className: "says" }, D.githubText(t.github)),
     el("div", { className: "foot" },
       t.state === "running" && el("span", { className: "live-dot", "aria-hidden": "true" }),
       el("span", { dataset: { at: t.updated_at } }, D.ago(t.updated_at)),
@@ -660,7 +669,7 @@ function renderBoard() {
     const app = S.apps[t.app_id];
     return {
       key: t.id,
-      sig: JSON.stringify([t.state, t.updated_at, t.title, D.appName(t.app_id), D.aiLabel(app, t), D.cardLine(t, tailNow(t, 5))]),
+      sig: JSON.stringify([t.state, t.updated_at, t.title, t.github, D.appName(t.app_id), D.aiLabel(app, t), D.cardLine(t, tailNow(t, 5))]),
       build: (anim) => boardCard(t, anim),
     };
   }));

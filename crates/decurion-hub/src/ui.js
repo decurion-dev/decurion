@@ -110,7 +110,7 @@
   // stop work, which always ask first.
   D.MOVES = {
     in_review: [
-      { to: "done", label: "Accept", kind: "primary", done: "Accepted. Marked as done." },
+      { to: "done", label: "Accept", kind: "primary", done: "Accepted. Decurion is sending it to GitHub for you to merge there." },
       { to: "queued", label: "Send back", kind: "", done: "Sent back. The agent will pick up where it left off." },
       { to: "failed", label: "Reject", kind: "danger", done: "Rejected.",
         confirm: (t) => [`Reject "${t.title}"?`, "Its changes stay on its branch, but the work is closed.", "Reject work", "Keep it"] },
@@ -352,6 +352,62 @@
     }
   };
 
+  // ---------- Sent to GitHub ----------
+  // Accepted work goes to GitHub as a branch, with a pull request or a link
+  // that opens one. Only GitHub links are ever drawn as links.
+  const ghLink = (u) => typeof u === "string" && u.startsWith("https://github.com/");
+  // One short line, for cards that are buttons themselves.
+  D.githubText = (g) => {
+    if (!g) return "";
+    if (g.state === "waiting" || g.state === "sending") return "Sending to GitHub…";
+    if (g.state === "failed") return "Not sent to GitHub. Open it to see why and try again.";
+    if (g.pull_request) return "Pull request ready on GitHub";
+    return ghLink(g.url) ? "On GitHub as a branch. Open it to make the pull request." : `Sent as the branch ${g.branch}`;
+  };
+  // What happened, with the link or Try again. `small` is for board cards.
+  D.github = (t, onChanged, { small = false } = {}) => {
+    const g = t.github;
+    if (!g) return null;
+    const sz = small ? "btn sm quiet" : "btn sm";
+    if (g.state === "waiting" || g.state === "sending") {
+      return el("p", { className: "gh hint" }, icon("running"), " Sending to GitHub…");
+    }
+    if (g.state === "sent") {
+      const link = ghLink(g.url) && el("a", { className: sz, href: g.url, target: "_blank", rel: "noopener noreferrer" },
+        icon("branch"), g.pull_request ? "Open pull request" : "Open pull request on GitHub");
+      if (link) link.onclick = (ev) => ev.stopPropagation();
+      if (small) return el("p", { className: "gh" }, link || `Sent as the branch ${g.branch}`);
+      const words = g.pull_request ? "Sent to GitHub. The pull request is ready for you to look over and merge there."
+        : link ? "Sent to GitHub as a branch. Open the pull request in one tap, then merge it there."
+        : `Sent to the app's git server as the branch ${g.branch}.`;
+      return el("div", { className: "gh notice" }, icon("done"),
+        el("div", { className: "grow" }, words, g.error ? el("div", { className: "hint" }, g.error) : null), link || null);
+    }
+    const again = el("button", { type: "button", className: sz }, icon("retry"), "Try again");
+    again.disabled = D.offline;
+    again.onclick = async (ev) => {
+      ev.stopPropagation();
+      if (D.offline) return;
+      again.disabled = true;
+      try {
+        await D.send(`/threads/${t.id}/github`, {});
+        D.toast(`Sending "${t.title}" to GitHub again.`, "send");
+        if (onChanged) onChanged();
+      } catch (e) {
+        D.toast(`"Try again" did not go through. ${e.message}`, "alert");
+        again.disabled = false;
+      }
+    };
+    if (small) {
+      return el("div", { className: "gh-small" },
+        el("p", { className: "gh warn" }, icon("alert"), el("b", {}, "Not sent to GitHub")),
+        g.error ? el("p", { className: "says", title: g.error }, g.error) : null, again);
+    }
+    return el("div", { className: "gh notice warn" }, icon("alert"),
+      el("div", { className: "grow" }, el("b", {}, "Not sent to GitHub. "), g.error || "",
+        el("div", { className: "hint" }, "The work is still accepted. Nothing was lost.")), again);
+  };
+
   // ---------- Log lines ----------
   // Owner and cut-off lines are written by the hub only. Agent messages are
   // always labelled, so an agent can't pass its words off as yours.
@@ -518,7 +574,7 @@
     const t = c.t, ev = c.ev, app = apps[t.app_id];
     const kids = kidsOf(t.id), parent = t.parent_id != null ? all.find((p) => p.id === t.parent_id) : null;
     const waiting = c.msgs ? c.msgs.filter((m) => m.delivered_at == null).length : 0;
-    const sig = JSON.stringify([t.state, t.place, cloud, t.updated_at, t.title, ev.length, D.pro, D.offline, waiting, parent?.title,
+    const sig = JSON.stringify([t.state, t.place, cloud, t.updated_at, t.title, t.github, ev.length, D.pro, D.offline, waiting, parent?.title,
       kids.map((k) => [k.id, k.state, k.title, k.background])]);
     if (sig === c.sig) return;
     c.sig = sig;
@@ -554,6 +610,10 @@
     if (said && t.state !== "running") {
       const label = { needs_you: "The agent is asking", in_review: "The agent's summary", failed: "What went wrong", done: "The agent's summary", queued: "Last thing it said" }[t.state];
       upper.push(el("section", {}, el("div", { className: "section-title" }, label), el("div", { className: `callout ${t.state}` }, said)));
+    }
+    if (t.github) {
+      upper.unshift(el("section", {}, el("div", { className: "section-title" }, "GitHub"),
+        D.github(t, () => { c.sig = ""; c.changed(); c.load(); })));
     }
     p.upper.replaceChildren(...upper);
     browserPart(c);

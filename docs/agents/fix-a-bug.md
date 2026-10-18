@@ -2,7 +2,7 @@
 
 1. **Reproduce it with a failing test first.** Write the test, run it, see it fail for the reason in the report. Only then change code.
 2. Make the smallest change that makes it pass. Keep the walls in `AGENTS.md` as they are; a fix never loosens one.
-3. Run the full checks from `AGENTS.md`.
+3. Run the full checks from `AGENTS.md`. Your box has the Rust toolchain and C compiler they need; say in your summary any you could not run (`check-template.sh`, `cargo deny`, `mdbook`).
 4. In your final summary: what was wrong, the test that shows it, and what you changed. Add a `### Fixed` line under `[Unreleased]` in `CHANGELOG.md` if the owner could notice.
 
 ## Where tests live

@@ -222,6 +222,18 @@ input[aria-invalid="true"] { border-color: var(--red); }
 .wcard .foot { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--faint); }
 .wcard .foot .acts { margin-left: auto; display: flex; gap: 4px; }
 .wcard .pro { font: 11px/1.4 var(--mono); color: var(--faint); margin-top: 6px; overflow-wrap: anywhere; }
+/* Accepted work sent to GitHub: the link, or why not and Try again. */
+.gh { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; overflow-wrap: anywhere; }
+.gh svg.i { width: 14px; height: 14px; }
+.wcard .gh { margin-top: 8px; }
+.wcard .gh .btn.quiet { padding: 0 6px; margin-left: -6px; }
+.gh.warn svg.i { color: var(--amber); }
+.wcard .gh-small { margin-top: 8px; display: grid; gap: 2px; justify-items: start; }
+.wcard .gh-small .gh { margin-top: 0; }
+.wcard .gh-small .btn.quiet { padding: 0 6px; margin-left: -6px; }
+.gh.notice { flex-wrap: wrap; align-items: center; }
+.gh.notice .grow { flex: 1 1 220px; }
+.gh.notice .btn { margin-top: 0; margin-bottom: 0; margin-left: auto; }
 @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
 .skeleton { border-radius: var(--radius); background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2)); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; }

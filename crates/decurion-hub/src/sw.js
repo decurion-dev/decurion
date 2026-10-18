@@ -15,7 +15,14 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = new URL(event.notification.data?.url ?? "/inbox", self.location.origin).href;
+  let url = new URL(event.notification.data?.url ?? "/inbox", self.location.origin).href;
+  // Accepted work sent to GitHub opens its pull request there, in its own
+  // window. Nothing else outside the hub is ever opened.
+  if (url.startsWith("https://github.com/")) {
+    event.waitUntil(clients.openWindow(url));
+    return;
+  }
+  if (!url.startsWith(self.location.origin + "/")) url = new URL("/inbox", self.location.origin).href;
   event.waitUntil((async () => {
     const open = await clients.matchAll({ type: "window", includeUncontrolled: true });
     const tab = open.find((c) => c.url.startsWith(self.location.origin));

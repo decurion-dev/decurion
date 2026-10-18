@@ -56,11 +56,29 @@ async fn main() -> anyhow::Result<()> {
     println!("Open the board: http://decurion.localhost:{port}/login?code={code}");
     let public_url = std::env::var("DECURION_PUBLIC_URL").ok();
     let pusher = decurion_hub::push::Pusher::load_or_create(&dir)?;
+    let vault = decurion_vault::Vault::system(&dir);
+    // Accepted work goes to GitHub with the owner's own git sign-in; the
+    // token in Settings (or the GitHub CLI's sign-in) only opens the pull
+    // request.
+    let github = decurion_hub::github::GitHub::new(
+        decurion_hub::github::GITHUB_API,
+        decurion_hub::github::Tokens::Owner(Some(vault.clone())),
+    )
+    .context("set up sending work to GitHub")?;
     let state = AppState::new(store, keys, code, public_url)
         .with_push(pusher)
-        .with_vault(decurion_vault::Vault::system(&dir))
-        .with_files(dir.join("saved-work"));
+        .with_vault(vault)
+        .with_files(dir.join("saved-work"))
+        .with_github(github);
     decurion_hub::sign_ins::watch_dates(state.clone());
+    // Anything accepted but not yet sent when the hub last stopped.
+    let resume = state.clone();
+    tokio::spawn(async move {
+        let n = decurion_hub::github::resume(&resume).await;
+        if n > 0 {
+            tracing::info!(n, "tried again to send work that was waiting for GitHub");
+        }
+    });
     axum::serve(listener, router(state))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;

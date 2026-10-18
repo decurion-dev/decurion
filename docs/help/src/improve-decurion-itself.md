@@ -34,7 +34,7 @@ Each piece of work runs in its own sealed workspace, with its own copy of the co
 ## What it can never do
 
 - **Change the Decurion you are running.** Agents work on a copy. Your Decurion keeps running as it is.
-- **Merge its own work.** You always decide what goes in.
+- **Merge its own work.** It can open a pull request, but you always decide what goes in.
 - **Weaken Decurion's safety rules to finish a task.** If a task would need that, the agent stops and tells you in its summary.
 - **Reach your PC, your other apps or your passwords.** The same walls apply as for every app.
 
@@ -51,8 +51,9 @@ You can protect parts of your own apps the same way. Add a file named `protected
 ## You stay in charge
 
 1. Review the work as usual. See [Review and merge work](review-and-merge.md).
-2. If you are happy with it, merge it into your Decurion code folder.
-3. The new version runs only after you update Decurion. Install the new version when it comes out. If Decurion runs from your code folder, restart it from there.
+2. If you are happy with it, tap **Accept**. Decurion sends it to GitHub as a new branch with a pull request, and Decurion's checks run there. It never merges and never changes the main branch.
+3. Merge the pull request on GitHub when the checks pass, then get the new code into your Decurion code folder. In GitHub Desktop, click **Fetch origin**, then **Pull origin**.
+4. The new version runs only after you update Decurion. Install the new version when it comes out. If Decurion runs from your code folder, restart it from there.
 
 A cloud worker updates itself to match your PC, using the code on Decurion's GitHub page. A change that is only in your own folder does not reach it.
 
@@ -60,6 +61,6 @@ A cloud worker updates itself to match your PC, using the code on Decurion's Git
 
 - **Work fails right away with a "git clone" message.** The path is not the folder you cloned. Check the path under **Settings**, **Apps**.
 - **A piece of work says needs a look.** It changed a protected part, or the checker still found problems. Read its notes, then accept it, send it back, or reject it.
-- **The agent says it could not run the checks.** Decurion's workspace does not have every tool needed to build Decurion yet. Ask someone who knows code to run Decurion's checks before you merge.
+- **The agent says it could not run the checks.** The agent's workspace can build and test Decurion, but a few checks (the license check, the help book and a check of the cloud worker page) need tools it does not have. Those run on GitHub when the change goes there as a pull request. If the agent says the build or tests themselves could not run, or the work is not going to GitHub, ask someone who knows code to run Decurion's checks before you merge.
 
 Next: [Review and merge work](review-and-merge.md).
