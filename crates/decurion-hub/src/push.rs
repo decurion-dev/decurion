@@ -219,9 +219,11 @@ impl Pusher {
         match resp.status().as_u16() {
             200..=299 => Ok(()),
             404 | 410 => Err(SendError::Gone),
-            // The push service will never take this subscription from us,
-            // most often because the phone made it with an older hub key.
-            // Retrying cannot help; the phone must subscribe again.
+            // Most often the phone made this subscription with an older hub
+            // key; the inbox replaces it the next time it is opened. It can
+            // also be the hub's own fault (a wrong clock spoils the signature),
+            // so the subscription is kept: dropping it would cut off every
+            // phone at once. The push service's answer goes in the log.
             code @ (401 | 403) => Err(SendError::Refused {
                 code,
                 said: first_bytes(&mut resp, REFUSAL_SHOWN).await,
@@ -273,9 +275,8 @@ impl Pusher {
                         device,
                         status = code,
                         said = %said,
-                        "push service refused this phone's subscription; dropped it"
+                        "push service refused this phone's subscription"
                     );
-                    let _ = store.drop_push(device, &endpoint).await;
                 }
                 Err(SendError::Other(e)) => tracing::warn!(device, error = %e, "push failed"),
             }
@@ -293,8 +294,8 @@ fn tap_url_ok(url: &str) -> bool {
 
 enum SendError {
     Gone,
-    /// 401 or 403: the subscription will never work again. `said` is the
-    /// start of the push service's answer, for the log.
+    /// 401 or 403: the push service refused it. `said` is the start of the
+    /// push service's answer, for the log.
     Refused {
         code: u16,
         said: String,

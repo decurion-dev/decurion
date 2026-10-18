@@ -1016,11 +1016,12 @@ async fn notifications_are_encrypted_for_the_phone_and_dead_ones_dropped() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// A phone that subscribed with an older hub key gets 401 or 403 from its push
-/// service on every send. Its subscription is dropped so the board shows
-/// notifications as off and the phone subscribes again with the current key.
+/// A push service's 401 or 403 is logged, not acted on: it can come from the
+/// hub's own side (a wrong clock spoils every signature), and dropping on it
+/// would cut off every phone at once. A phone with an old-key subscription is
+/// fixed by the inbox instead.
 #[tokio::test]
-async fn a_subscription_the_push_service_refuses_is_dropped() {
+async fn a_refused_subscription_is_kept_so_a_hub_fault_cannot_cut_off_every_phone() {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
     use web_push_native::p256;
@@ -1080,8 +1081,9 @@ async fn a_subscription_the_push_service_refuses_is_dropped() {
         .await;
 
     let left = store.push_targets().await.expect("targets");
-    let ids: Vec<i64> = left.iter().map(|(id, _)| *id).collect();
-    assert_eq!(ids, vec![phone.id]);
+    let mut ids: Vec<i64> = left.iter().map(|(id, _)| *id).collect();
+    ids.sort();
+    assert_eq!(ids, vec![phone.id, firefox.id, tablet.id]);
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -1094,8 +1096,10 @@ async fn the_inbox_replaces_a_subscription_made_with_another_key() {
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = resp.into_body().collect().await.expect("body").to_bytes();
     let page = String::from_utf8_lossy(&bytes);
-    assert!(page.contains("existing.options.applicationServerKey"));
+    assert!(page.contains("existing?.options?.applicationServerKey"));
     assert!(page.contains("existing.unsubscribe()"));
+    // and checks again when the phone app comes back from the background.
+    assert!(page.contains("Notification.permission === \"granted\") subscribe()"));
 }
 
 #[tokio::test]
