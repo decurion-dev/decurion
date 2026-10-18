@@ -35,7 +35,17 @@
 
   .vmain { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 380px; }
   .frame { position: relative; min-width: 0; min-height: 0; background: var(--surface-3); }
-  .frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+  .frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; transition: opacity .25s var(--ease); }
+  /* While the project lead works on your answers the page dims, and the new
+     plan takes its place by itself when it's drawn. */
+  .frame.updating iframe { opacity: .45; }
+  .frame-note {
+    position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 2;
+    display: flex; align-items: center; gap: 8px; max-width: calc(100% - 28px); padding: 8px 16px;
+    border-radius: 99px; background: var(--surface); color: var(--ink); box-shadow: var(--shadow-pop);
+    font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .frame-note svg.i { flex: none; color: var(--accent-ink); }
 
   .side { min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--surface); }
   .sheet-head { display: none; }
@@ -44,6 +54,9 @@
   .side-body h2 { font: 650 15px/1.3 var(--font-display); margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
   .nothing { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: var(--radius); background: var(--surface-2); color: var(--muted); font-size: 14px; }
   .nothing svg.i { color: var(--faint); }
+  .fresh { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; border-radius: var(--radius); background: var(--green-soft); color: var(--green); font-size: 14px; font-weight: 600; }
+  .fresh svg.i { flex: none; stroke-width: 2.6; }
+  .fresh a { margin-left: auto; font-weight: 500; color: var(--accent-ink); }
 
   /* The agent asks: the same pieces the board will use. */
   .page-asks h2 .n { font: 600 12px/20px var(--font); padding: 0 8px; border-radius: 99px; color: var(--amber); background: var(--amber-soft); box-shadow: inset 0 0 0 1px var(--amber-line); }
@@ -180,7 +193,9 @@
   const { el, icon, $ } = D;
   const POLL_MS = 5000;
   const m = /^\/pages\/(\d+)\/(\d+)\/?$/.exec(location.pathname);
-  const G = m ? Number(m[1]) : NaN, P = m ? Number(m[2]) : NaN;
+  const G = m ? Number(m[1]) : NaN;
+  // The page shown. It changes in place when a newer plan replaces this one.
+  let P = m ? Number(m[2]) : NaN;
   const fromGoal = new URLSearchParams(location.search).get("from") === "goal";
   const CLOSED = new Set(["done", "stopped"]);
   const KIND = { plan: "Visual plan", check: "As built" };
@@ -202,6 +217,8 @@
     changes: { open: false, text: "" },
     say: "",
     sig: "", loading: false,
+    follow: null,                 // move to a newer plan by itself; decided on the first load
+    prev: null,                   // the plan page this one replaced, while it is shown
   };
 
   // ---------- Top bar and frame ----------
@@ -210,21 +227,30 @@
   $("back").append(el("span", { className: "lbl" }, "Back"));
   $("raw").append(icon("expand"));
   $("sheet-close").append(icon("close", "l"));
-  const raw = `/api/goals/${G}/pages/${P}`;
-  $("raw").href = raw;
+  const pageSrc = (id) => `/api/goals/${G}/pages/${id}`;
   // Back goes where you came from, or to the plan this page belongs to.
   $("back").onclick = (e) => {
     if (history.length > 1) { e.preventDefault(); history.back(); }
   };
-  if (Number.isFinite(G)) {
+  function showFrame(id) {
+    $("raw").href = pageSrc(id);
     // No permissions at all: no scripts, no forms, no pop-ups, no reaching the hub.
     const f = document.createElement("iframe");
     f.setAttribute("sandbox", "");
     f.setAttribute("referrerpolicy", "no-referrer");
     f.title = "The agent's page";
-    f.src = raw;
+    const old = [...$("frame").querySelectorAll("iframe")];
+    if (old.length) {
+      // The old page stays in view until the new one has loaded, so the swap doesn't flash.
+      f.style.opacity = "0";
+      const swap = () => { f.style.opacity = ""; old.forEach((o) => o.remove()); };
+      f.addEventListener("load", swap, { once: true });
+      setTimeout(swap, 4000);
+    }
+    f.src = pageSrc(id);
     $("frame").append(f);
   }
+  if (Number.isFinite(G)) showFrame(P);
 
   // ---------- Bottom sheet (phone) ----------
   function setSheet(open) {
@@ -346,11 +372,14 @@
   async function load() {
     if (S.loading || !Number.isFinite(G)) return;
     S.loading = true;
+    // The page this load is for; a switch to a newer plan while it runs means load again.
+    const at = P;
     try {
       const [view, pq] = await Promise.all([
         D.api(`/goals/${G}`),
         D.api(`/goals/${G}/pages/${P}/questions`).catch((e) => { if (e.signedOut) throw e; return null; }),
       ]);
+      if (at !== P) return;
       S.view = view;
       if (pq) { S.pq = pq; S.page = pq.page; }
       if (!S.page) {
@@ -367,8 +396,30 @@
       showBanner(S.err);
     } finally {
       S.loading = false;
-      render();
+      if (at !== P) load();
+      else { render(); followNewest(); }
     }
+  }
+
+  // A newer plan that's drawn takes this one's place, unless you opened an
+  // older plan on purpose (it was already replaced when the viewer opened).
+  function followNewest() {
+    const c = context();
+    if (!c) return;
+    if (S.follow === null) S.follow = c.plan !== "replaced";
+    if (c.plan === "replaced" && S.follow) switchTo(c.newest.id, true);
+  }
+
+  function switchTo(id, auto) {
+    if (id === P) return;
+    S.prev = P;
+    P = id;
+    S.follow = true;
+    history.replaceState(history.state, "", `/pages/${G}/${id}${location.search}`);
+    S.pq = null; S.page = null; S.drafts.page.clear(); delete S.errs.page;
+    showFrame(id);
+    if (auto) D.toast("Your project lead updated the plan. Here's the new one.");
+    load();
   }
 
   // ---------- What the panel shows ----------
@@ -390,9 +441,11 @@
     // Same rule as the goal page: the newest questions, not yet answered, on an open goal.
     const leadQ = latestQ && !answered.has(latestQ.id) && !closed ? latestQ : null;
     const kind = info?.kind ?? S.page?.kind ?? "plan";
+    const newest = latestPlan ? (v.pages ?? []).filter((p) => p.kind === "plan" && p.message_id === latestPlan.id).pop() ?? null : null;
     let plan = null;
     if (kind === "plan" && info?.message_id != null) {
-      if (!latestPlan || info.message_id !== latestPlan.id) plan = "replaced";
+      // A newer plan is drawn already, is being drawn, or could not be drawn.
+      if (!latestPlan || info.message_id !== latestPlan.id) plan = newest ? "replaced" : v.drawing ? "drawing" : "gone";
       else if (g.busy && (g.state === "talking" || g.state === "plan_ready")) plan = "waiting";
       // Questions asked after the plan come first: the plan may change with the answers.
       else if (leadQ && leadQ.id > latestPlan.id) plan = "asking";
@@ -404,14 +457,15 @@
     const piece = kind === "check" ? (v.pieces ?? []).find((p) => p.thread_id === threadId) ?? null : null;
     const pq = S.pq;
     const pageWaiting = !!(pq?.questions?.length && !pq.answers && !closed);
-    return { v, g, info, kind, closed, leadQ, plan, piece, threadId, pq, pageWaiting };
+    return { v, g, info, kind, closed, leadQ, plan, newest, piece, threadId, pq, pageWaiting };
   }
 
   function render() {
     const c = context();
     renderHead(c);
-    const sig = JSON.stringify([c && [c.g, c.plan, c.leadQ?.id, c.piece, c.pq, c.kind], S.missing, S.err && !S.view,
-      [...S.sending], S.errs, S.changes.open, D.offline]);
+    renderFrame(c);
+    const sig = JSON.stringify([c && [c.g, c.plan, c.newest?.id, c.leadQ?.id, c.piece, c.pq, c.kind], S.missing, S.err && !S.view,
+      [...S.sending], S.errs, S.changes.open, D.offline, P, S.prev]);
     if (sig === S.sig) return;
     S.sig = sig;
     const focus = rememberFocus();
@@ -430,10 +484,14 @@
       return;
     }
     const parts = [];
+    if (S.prev != null && c.kind === "plan" && c.plan !== "replaced") {
+      parts.push(el("p", { className: "fresh", role: "status" }, icon("done"), el("span", {}, "This is the updated plan."),
+        el("a", { href: `/pages/${G}/${S.prev}${location.search}` }, "See the earlier one")));
+    }
     const pageQs = c.pq?.questions ?? [];
     const leadN = c.leadQ ? c.leadQ.body.questions.length : 0;
     const pageN = c.pageWaiting ? pageQs.length : 0;
-    if (!pageN && !leadN && c.plan !== "approvable") {
+    if (!pageQs.length && !leadN && c.plan !== "approvable" && !updating(c)) {
       parts.push(el("p", { className: "nothing" }, icon("done", "l"), "Nothing to answer on this page."));
     }
     if (pageQs.length) {
@@ -458,7 +516,7 @@
     if (c.kind === "check") parts.push(checkBlock(c));
     parts.push(sayBlock(c));
     panel.replaceChildren(...parts);
-    bar(pageN + leadN, c.plan === "approvable", c.closed);
+    bar(pageN + leadN, c.plan === "approvable", c.closed, updating(c));
     restoreFocus(focus);
     panel.scrollTop = top;
   }
@@ -481,14 +539,28 @@
     $("mark").href = app != null ? `/plan#app=${app}` : "/plan";
   }
 
-  function bar(n, approve, closed) {
+  // Words over the page while a new plan is on its way, or "".
+  const updating = (c) => c?.plan === "waiting" ? "Your project lead is working on it…"
+    : c?.plan === "drawing" ? "Drawing the new plan…" : "";
+
+  function renderFrame(c) {
+    const words = updating(c), frame = $("frame");
+    frame.classList.toggle("updating", !!words);
+    let note = frame.querySelector(".frame-note");
+    if (!words) { note?.remove(); return; }
+    if (!note) { note = el("div", { className: "frame-note", role: "status" }); frame.append(note); }
+    if (note.dataset.words !== words) { note.dataset.words = words; note.replaceChildren(icon("running", "spin"), el("span", {}, words)); }
+  }
+
+  function bar(n, approve, closed, busy) {
     const waiting = n > 0 || approve;
     $("answer-bar").classList.toggle("waiting", waiting);
     const words = n && approve ? `${D.plural(n, "question")} and a plan for you`
       : n ? `${D.plural(n, "question")} for you`
       : approve ? "A plan is ready for you"
+      : busy ? "Updating the plan…"
       : closed ? "This goal is closed" : "Nothing to answer here";
-    $("bar-t").replaceChildren(icon(waiting ? "needs_you" : "question"), el("span", {}, words));
+    $("bar-t").replaceChildren(icon(waiting ? "needs_you" : busy ? "running" : "question", busy && !waiting ? "spin" : ""), el("span", {}, words));
     $("bar-open").textContent = n ? "Answer" : approve ? "Open" : "Talk";
     $("side-h").textContent = n ? "Questions for you" : approve ? "Ready to start?" : "Talk to your project lead";
   }
@@ -519,11 +591,17 @@
     }
     const line = (cls, ic, words, more) => el("section", { "aria-labelledby": "plan-h" },
       el("h2", { id: "plan-h" }, "The plan"),
-      el("div", { className: "state-line" }, el("span", { className: `mk2 ${cls}` }, icon(ic)), el("span", {}, words)),
+      el("div", { className: "state-line" }, el("span", { className: `mk2 ${cls}` }, icon(ic, ic === "running" ? "spin" : "")), el("span", {}, words)),
       more ?? null);
     if (c.plan === "asking") return line("you", "question", "Your project lead has a few questions first. Your answers may change this plan.");
-    if (c.plan === "waiting") return line("work", "running", "Your project lead is still thinking. You can approve once it has finished.");
-    if (c.plan === "replaced") return line("calm", "retry", "A newer plan replaced this one.",
+    if (c.plan === "waiting") return line("work", "running", "Your project lead is still thinking. If the plan changes, the new one shows here by itself.");
+    if (c.plan === "drawing") return line("work", "running", "Your project lead made a new plan and is drawing it now. It shows here by itself.");
+    if (c.plan === "replaced") {
+      const go = el("button", { type: "button", className: "btn sm", dataset: { key: "newest" } }, icon("right"), "Show the latest plan");
+      go.onclick = () => switchTo(c.newest.id, false);
+      return line("calm", "retry", "A newer plan replaced this one.", el("p", { className: "links", style: "margin-top:10px" }, go));
+    }
+    if (c.plan === "gone") return line("calm", "retry", "A newer plan replaced this one, but it couldn't be drawn.",
       el("p", { className: "hint", style: "margin-top:8px" }, el("a", { href: `/goals#goal-${G}` }, "See the latest plan on the goal")));
     if (c.plan === "stopped") return line("calm", "close", "This goal was stopped before the work started.");
     return line("done", "done", c.g.state === "done" ? "You approved this plan, and the goal is done." : "You approved this plan. The work is under way.");
@@ -583,12 +661,12 @@
       if (pq) { S.pq = pq; S.page = pq.page ?? S.page; }
       S.drafts.page.clear();
     });
-    if (ok) { D.toast("Sent to your project lead.", "send"); load(); }
+    if (ok) { D.toast("Sent. If the plan changes, the new one shows here.", "send"); load(); }
   }
 
   async function sendLead(to, answers) {
     const ok = await act("lead", () => D.api(`/goals/${G}/answer`, { method: "POST", body: JSON.stringify({ to, answers }) }));
-    if (ok) { S.drafts.lead.clear(); D.toast("Sent to your project lead.", "send"); load(); }
+    if (ok) { S.drafts.lead.clear(); D.toast("Sent. If the plan changes, the new one shows here.", "send"); load(); }
   }
 
   // D.confirm draws its yes button red, for stopping work. Approving starts
@@ -616,7 +694,7 @@
     const text = S.changes.text.trim();
     if (!text) { S.errs.approve = "Say what should change first."; S.sig = ""; render(); $("changes")?.focus(); return; }
     const ok = await act("changes", () => D.api(`/goals/${G}/say`, { method: "POST", body: JSON.stringify({ text }) }));
-    if (ok) { S.changes = { open: false, text: "" }; delete S.errs.approve; D.toast("Sent. Your project lead will come back with a new plan.", "send"); load(); }
+    if (ok) { S.changes = { open: false, text: "" }; delete S.errs.approve; D.toast("Sent. The new plan shows here when it's ready.", "send"); load(); }
     else { S.errs.approve = S.errs.changes; S.sig = ""; render(); }
   }
 

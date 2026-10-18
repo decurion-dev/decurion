@@ -82,6 +82,12 @@ around it are Decurion's own.
   what it noticed.
 - **Tell your project lead something**: a message about the page, at any time.
 
+When your answers or changes lead to a new plan, you don't need to go
+anywhere. The page dims while your project lead works, says **Drawing the new
+plan…** while the new picture is made, and then the new plan takes its place
+by itself. **See the earlier one** opens the plan it replaced. If you open an
+older plan on purpose, it stays put and offers **Show the latest plan**.
+
 On a PC the answers sit on the right. On a phone, a bar at the bottom says how
 many questions wait for you. Tap **Answer** to open them over the lower part of
 the page, and **✕** to close them. **Back** takes you to where you came from;
