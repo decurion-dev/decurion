@@ -52,8 +52,9 @@ const NOTHING_SAVED: &str =
     "Nothing has been saved for this work yet. Run it once the agent has finished a run.";
 const NO_BRANCH: &str =
     "This work has no branch of its own yet. Run it once the agent has finished a run.";
-/// The most of a runner's reason the owner's screen is shown.
-const MAX_WHY: usize = 300;
+/// The most of a runner's reason the owner's screen is shown: a sentence or
+/// two and the last lines the app printed.
+const MAX_WHY: usize = 4000;
 
 /// The routes, merged into the `/api` router behind the same keys.
 pub(crate) fn routes() -> Router<AppState> {
@@ -319,13 +320,13 @@ impl Store {
         Ok(done.rows_affected() == 1)
     }
 
-    /// The runner holding a preview ends it. One already ended is left as
-    /// it is.
+    /// The runner holding a preview ends it, saying why. One already ended
+    /// is left as it is.
     pub async fn end_preview_by_runner(
         &self,
         sid: i64,
         runner: &RunnerId,
-        failed: bool,
+        end: &PreviewEnded,
     ) -> Result<BrowserSession> {
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         let s = session_in(&mut tx, sid).await?;
@@ -338,7 +339,14 @@ impl Store {
             ));
         }
         if s.is_open() {
-            end_in(&mut tx, &s, if failed { "failed" } else { "closed" }).await?;
+            end_in(&mut tx, &s, if end.failed { "failed" } else { "closed" }).await?;
+            let why: String = end.why.chars().take(MAX_WHY).collect();
+            sqlx::query("UPDATE browser_sessions SET why = ?, fixable = ? WHERE id = ?")
+                .bind(why)
+                .bind(end.failed && end.fixable)
+                .bind(sid)
+                .execute(&mut *tx)
+                .await?;
         }
         let s = session_in(&mut tx, sid).await?;
         tx.commit().await?;
@@ -531,10 +539,13 @@ async fn runner_end(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    match st.store.end_preview_by_runner(sid, &r, e.failed).await {
+    match st.store.end_preview_by_runner(sid, &r, &e).await {
         Ok(s) => {
-            let why: String = e.why.chars().take(MAX_WHY).collect();
-            st.browser.end(sid, &why);
+            // What was kept: the first reason, if the owner or the hub
+            // ended it before the runner did.
+            let why = s.why.clone().unwrap_or_else(|| STOPPED.to_owned());
+            st.browser
+                .end_with(sid, &why, s.state == "failed", s.fixable);
             Json(s).into_response()
         }
         Err(e) => ApiError(e).into_response(),

@@ -52,6 +52,7 @@
     retry: ["M3 12a9 9 0 1 0 3-6.7L3 8", "M3 3v5h5"],
     branch: ["M6 3v12", "c18,6,3", "c6,18,3", "M18 9a9 9 0 0 1-9 9"],
     send: ["M12 19V5", "m5 12 7-7 7 7"],
+    keyboard: ["M4 6h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z", "M6 10h.01", "M10 10h.01", "M14 10h.01", "M18 10h.01", "M8 14h8"],
     archive: ["M3 4h18v4H3z", "M5 8v11a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8", "M10 12h4"],
     trash: ["M3 6h18", "M8 6V4h8v2", "M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"],
     menu: ["M4 6h16", "M4 12h16", "M4 18h16"],
@@ -1444,8 +1445,10 @@
         c.runBtn = null;
         const back = (why) => { if (cur !== c) return; c.runView = null; runButton(c, why); };
         c.runView = D.previewView(s.id, {
+          appId: c.t.app_id,
           onEnded: back,
           onStopped: () => back("Stopped. Tap Run it to start it again."),
+          again: () => { back(); c.runBtn?.click(); },
         });
         box.replaceChildren(el("section", {}, el("div", { className: "section-title" }, "Try it"), c.runView.el));
       } catch (e) {
@@ -1513,26 +1516,65 @@
 // sign-in window, which adds its own button. Only the picture, the page's
 // real address and who is driving come down; taps, drags and typing go up,
 // and only while you have the browser.
+//
+// The picture is where you type: a see-through text box lies over it and
+// takes your keys (and, on a phone, raises the keyboard), but no taps, so
+// clicks and drags still reach the picture. What you type goes to the page
+// as text; editing keys go as named keys, and only the ones the hub lets
+// through (KEYS in crates/decurion-proto/src/browser.rs). Any other
+// shortcut is left to your own browser.
 (() => {
   const { el, icon } = D;
   // The most one piece of input may weigh (MAX_INPUT_BYTES in the hub).
   const MAX_INPUT = 4096;
-  const KEYS = [["Enter", "Enter", "Press Enter"], ["Tab", "Tab", "Press Tab"], ["Backspace", "Backspace", "Delete the letter before the cursor"]];
+  // The named keys the hub lets through, as the hub names them: "Control+"
+  // before "Shift+", then the key. Keep in step with KEYS in
+  // crates/decurion-proto/src/browser.rs; anything else is refused there.
+  const KEYS = new Set([
+    "Enter", "Tab", "Shift+Tab", "Backspace", "Delete", "Escape",
+    "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+    "Shift+ArrowUp", "Shift+ArrowDown", "Shift+ArrowLeft", "Shift+ArrowRight",
+    "Home", "End", "Shift+Home", "Shift+End", "PageUp", "PageDown",
+    "Control+a", "Control+z", "Control+y", "Control+Shift+z",
+    "Control+Backspace", "Control+Delete", "Control+ArrowLeft", "Control+ArrowRight",
+  ]);
+  // The keys under the picture on a phone, whose keyboard may have no Tab.
+  const TOUCH_KEYS = [["Enter", "Enter", "Press Enter"], ["Tab", "Tab", "Press Tab"], ["Backspace", "⌫", "Delete the letter before the cursor"]];
+  // On a Mac, Cmd is what Ctrl is elsewhere.
+  const MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "");
+  // A finger, not a mouse: typing waits for the Keyboard button, so a tap
+  // does not raise the phone's keyboard every time.
+  const touch = () => matchMedia("(pointer: coarse)").matches;
   const bytes = (s) => new TextEncoder().encode(s).length;
+  const oneChar = (s) => Array.from(s).length === 1;
+
+  // The name the hub knows a key press by, or "" for one it never takes.
+  function keyName(e) {
+    // AltGr (Ctrl and Alt together on Windows) types a letter, such as @ or €.
+    const altGr = e.getModifierState?.("AltGraph") || (!MAC && e.ctrlKey && e.altKey && !e.metaKey);
+    const ctl = !altGr && (MAC ? e.metaKey : e.ctrlKey);
+    // Ctrl on a Mac, or the Windows key: the owner's own shortcuts.
+    if (!altGr && (MAC ? e.ctrlKey : e.metaKey)) return "";
+    // Alt with a named key is the owner's own (Alt+Left is Back); on a Mac,
+    // Option with a letter types a letter, such as é.
+    if (e.altKey && !altGr && !(MAC && !ctl && oneChar(e.key))) return "";
+    const key = ctl && oneChar(e.key) ? e.key.toLowerCase() : e.key;
+    return (ctl ? "Control+" : "") + (e.shiftKey ? "Shift+" : "") + key;
+  }
 
   // D.browserView(sessionId, opts) → { el, close() }. Put `el` on the page
   // straight away; it connects once it is there.
   //   opts.takeOver  false for a window you drive from the start (no Take over / Hand back)
   //   opts.extra     { label, kind, onClick(view) }: one more button, e.g. "I'm signed in, save"
-  //   opts.hint      the line under the picture, in place of the usual one
+  //   opts.hint      what the line under the picture says after how to click and type
   //   opts.label     what a screen reader calls the picture, e.g. "Live picture of your app"
   //   opts.status    the line above the picture while you drive (takeOver false only)
   //   opts.waitingText  what the picture says if nothing has come after 20 seconds
-  //   opts.onEnded   called with the reason once the view is over for good
+  //   opts.onEnded   called with the reason, and { failed, fixable }, once the view is over for good
   D.browserView = (sid, opts = {}) => {
     const takeOver = opts.takeOver !== false;
     let ws = null, who = takeOver ? "agent" : "owner", over = false, ended = null, closing = false;
-    let frameW = 0, frameH = 0, gotFrame = false, slow = null, handing = false;
+    let frameW = 0, frameH = 0, gotFrame = false, slow = null, handing = false, endInfo = {};
 
     const dot = el("span", { className: "dot", "aria-hidden": "true" });
     const status = el("span", { className: "grow" });
@@ -1540,37 +1582,48 @@
     const backBtn = el("button", { type: "button", className: "btn primary sm" }, "Hand back");
     const bigBtn = el("button", { type: "button", className: "btn quiet sm bv-bigger", "aria-pressed": "false" }, icon("expand"), "Bigger");
     const url = el("span", { className: "addr" }, "Opening…");
-    const canvas = el("canvas", { tabIndex: 0, "aria-label": opts.label ?? "Live picture of the test browser" });
+    const canvas = el("canvas", { role: "img", "aria-label": opts.label ?? "Live picture of the test browser" });
     const ctx = canvas.getContext("2d");
+    // The see-through text box over the picture that takes your typing.
+    // It never keeps what you type: each piece goes to the page and is
+    // cleared. Pointer events pass through it to the picture (ui.css).
+    const keys = el("textarea", { className: "bv-keyin", rows: 1, autocomplete: "off", autocapitalize: "off",
+      "aria-label": "Type into the page", enterKeyHint: "enter" });
+    keys.setAttribute("autocorrect", "off");
+    keys.setAttribute("spellcheck", "false");
     const overText = el("p", {}, "Connecting to your PC…");
     const again = el("button", { type: "button", className: "btn sm", hidden: true }, "Try again");
     const veil = el("div", { className: "bv-over" }, overText, again);
-    const stage = el("div", { className: "bv-stage" }, canvas, veil);
-    const typed = el("input", { type: "text", autocomplete: "off", autocapitalize: "off",
-      enterKeyHint: "send", placeholder: "Type here, then Send", "aria-label": "Text to type into the page" });
-    typed.setAttribute("autocorrect", "off");
-    typed.setAttribute("spellcheck", "false");
-    const sendBtn = el("button", { type: "button", className: "btn sm" }, icon("send"), "Send");
-    const keyBtns = KEYS.map(([key, label, aria]) => {
+    const stage = el("div", { className: "bv-stage" }, canvas, keys, veil);
+    const onTouch = touch();
+    const backTop = el("button", { type: "button", className: "btn sm", "aria-label": "Go back a page" }, icon("left"), "Back");
+    const backLow = el("button", { type: "button", className: "btn sm", "aria-label": "Go back a page" }, icon("left"), "Back");
+    backTop.onclick = backLow.onclick = () => input({ kind: "back" });
+    // A phone's keys: Keyboard raises the phone's own keyboard on the picture.
+    const kbBtn = el("button", { type: "button", className: "btn sm" }, icon("keyboard"), "Keyboard");
+    kbBtn.onclick = () => { if (who === "owner") keys.focus({ preventScroll: true }); else say("Tap Take over first to use the browser yourself."); };
+    const keyBtns = TOUCH_KEYS.map(([key, label, aria]) => {
       const b = el("button", { type: "button", className: "btn sm", "aria-label": aria }, label);
       b.onclick = () => input({ kind: "key", key });
       return b;
     });
-    const back = el("button", { type: "button", className: "btn sm", "aria-label": "Go back a page" }, icon("left"), "Back");
-    back.onclick = () => input({ kind: "back" });
-    const drive = el("div", { className: "bv-drive" },
-      el("div", { className: "bv-type" }, typed, sendBtn),
-      el("div", { className: "bv-keys" }, ...keyBtns, back));
-    const hint = el("p", { className: "hint" }, opts.hint ?? (takeOver
-      ? "Tap to click, drag to scroll. Don't type real passwords here: use a sign-in window for that."
-      : "Tap to click, drag to scroll. Use the box above the keys to type."));
+    // Buttons that keep the phone's keyboard up: pressing one must not take
+    // the focus off the picture.
+    for (const b of keyBtns) b.addEventListener("mousedown", (e) => e.preventDefault());
+    const drive = onTouch ? el("div", { className: "bv-keys" }, kbBtn, ...keyBtns, backLow) : null;
+    const how = onTouch ? "Tap to click, drag to scroll. Tap Keyboard to type." : "Click and type straight into the page.";
+    const hint = el("p", { className: "hint" }, `${how} ${opts.hint ?? (takeOver
+      ? "Don't type real passwords here: use a sign-in window for that."
+      : "")}`.trim());
     const nudge = el("p", { className: "hint bv-nudge", role: "status", "aria-live": "polite" });
     const extra = opts.extra
       ? el("button", { type: "button", className: `btn ${opts.extra.kind ?? "primary"}` }, opts.extra.label)
       : null;
     const root = el("div", { className: "bv", dataset: { who } },
       el("div", { className: "bv-bar" }, dot, status, takeOver && takeBtn, takeOver && backBtn, bigBtn),
-      el("div", { className: "bv-url", title: "The page the browser is on" }, icon("globe"), url),
+      el("div", { className: "bv-nav" },
+        el("div", { className: "bv-url", title: "The page the browser is on" }, icon("globe"), url),
+        !onTouch && backTop),
       stage, drive, hint, nudge, extra && el("div", { className: "bv-extra" }, extra));
 
     function paint() {
@@ -1583,9 +1636,13 @@
       takeBtn.hidden = over || mine;
       backBtn.hidden = over || !mine;
       takeBtn.disabled = backBtn.disabled = handing || D.offline;
-      drive.hidden = over || !mine;
+      if (drive) drive.hidden = over || !mine;
+      backTop.hidden = over || !mine;
       if (mine) nudge.textContent = "";
-      for (const b of [sendBtn, back, ...keyBtns]) b.disabled = over;
+      if ((over || !mine) && document.activeElement === keys) keys.blur();
+      // Reachable with Tab only while you drive.
+      keys.tabIndex = mine && !over ? 0 : -1;
+      for (const b of [backTop, backLow, kbBtn, ...keyBtns]) b.disabled = over;
       if (extra) extra.disabled = over;
     }
 
@@ -1622,13 +1679,53 @@
       }
       return true;
     }
-    const sendTyped = () => {
-      if (!typed.value) { typed.focus(); return; }
-      if (sendText(typed.value)) typed.value = "";
-    };
-    sendBtn.onclick = sendTyped;
-    typed.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); sendTyped(); }
+
+    // Typing on the picture. Keys a computer's keyboard names go in
+    // keydown; a phone's keyboard and finished accented or Asian-language
+    // input (composition) arrive as text in the box instead, which is sent
+    // and cleared, so nothing goes twice.
+    let composing = false;
+    const nudgeTake = () => { if (takeOver && !over) say("Tap Take over first to use the browser yourself."); };
+    function flushTyped() {
+      const v = keys.value;
+      keys.value = "";
+      if (v) sendText(v);
+    }
+    keys.addEventListener("keydown", (e) => {
+      // A phone's keyboard, or a letter being composed: the input event has it.
+      if (e.isComposing || composing || e.key === "Process" || e.key === "Unidentified" || e.keyCode === 229) return;
+      const name = keyName(e);
+      if (!name) return;
+      const printable = oneChar(e.key) && !name.startsWith("Control+");
+      // Shift with a key that has no Shift form here (Shift+Enter) is the key.
+      const named = KEYS.has(name) ? name : !printable && KEYS.has(name.replace("Shift+", "")) ? name.replace("Shift+", "") : "";
+      if (who !== "owner" || over) {
+        // Tab still moves on, and Escape still makes the view smaller,
+        // while you are only watching.
+        if ((named || printable) && !named.endsWith("Tab") && named !== "Escape") { e.preventDefault(); nudgeTake(); }
+        return;
+      }
+      if (named) { e.preventDefault(); input({ kind: "key", key: named }); return; }
+      // Paste (Ctrl or Cmd+V) comes as a paste event; other shortcuts are your own browser's.
+      if (printable) { e.preventDefault(); sendText(e.key); }
+    });
+    keys.addEventListener("compositionstart", () => { composing = true; });
+    keys.addEventListener("compositionend", () => { composing = false; flushTyped(); });
+    keys.addEventListener("input", (e) => { if (!composing && !e.isComposing) flushTyped(); });
+    // A phone's keyboard may send Enter and Backspace as edits of the box
+    // rather than as keys; with the box empty, those are the page's.
+    keys.addEventListener("beforeinput", (e) => {
+      if (composing || e.isComposing) return;
+      const key = e.inputType === "insertLineBreak" || e.inputType === "insertParagraph" ? "Enter"
+        : e.inputType === "deleteContentBackward" && !keys.value ? "Backspace" : "";
+      if (!key) return;
+      e.preventDefault();
+      input({ kind: "key", key });
+    });
+    keys.addEventListener("paste", (e) => {
+      e.preventDefault();
+      const text = e.clipboardData?.getData("text/plain") ?? "";
+      if (text) sendText(text);
     });
 
     // Where on the picture, as fractions of it.
@@ -1676,7 +1773,14 @@
       if (!press) return;
       if (!press.drag) input({ kind: "click", ...spot(e.clientX, e.clientY) });
       press = null;
+      // With a mouse, what you type next goes where you clicked. On a
+      // phone the Keyboard button does this, so a tap does not raise the
+      // keyboard every time.
+      if (e.pointerType !== "touch" && !touch()) keys.focus({ preventScroll: true });
     });
+    // Clicking the picture must not take the focus off the typing box (on
+    // a phone that would put the keyboard away while you tap a field).
+    canvas.addEventListener("mousedown", (e) => { if (who === "owner") e.preventDefault(); });
     canvas.addEventListener("pointercancel", () => { press = null; });
     canvas.addEventListener("wheel", (e) => {
       if (who !== "owner" || over) return;
@@ -1684,15 +1788,6 @@
       const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
       scroll(e.clientX, e.clientY, e.deltaX * k, e.deltaY * k);
     }, { passive: false });
-    // On a computer, typing with the picture selected goes to the page.
-    canvas.addEventListener("keydown", (e) => {
-      if (who !== "owner" || e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.key.length === 1) { e.preventDefault(); sendText(e.key); }
-      else if (["Enter", "Tab", "Backspace", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
-        e.preventDefault();
-        input({ kind: "key", key: e.key });
-      }
-    });
 
     async function show(m) {
       const img = new Image();
@@ -1735,7 +1830,7 @@
           who = m.who === "owner" ? "owner" : "agent";
           if (takeOver && was === "owner" && who === "agent" && !handing) say("The browser went back to the agent.");
           paint();
-        } else if (m.type === "ended") { ended = m.why; cover(m.why); }
+        } else if (m.type === "ended") { ended = m.why; endInfo = { failed: !!m.failed, fixable: !!m.fixable }; cover(m.why); }
       };
       ws.onclose = () => {
         ws = null;
@@ -1756,7 +1851,7 @@
       root.classList.remove("big");
       cover(why || "The live view has ended.");
       paint();
-      opts.onEnded?.(why);
+      opts.onEnded?.(why, endInfo);
     }
 
     async function hand(path, to) {
@@ -1765,7 +1860,7 @@
       try {
         const s = await D.api(`/browser/${encodeURIComponent(sid)}/${path}`, { method: "POST" });
         who = s.controller === "owner" ? "owner" : "agent";
-        if (to === "owner") canvas.focus({ preventScroll: true });
+        if (to === "owner" && who === "owner" && !touch()) keys.focus({ preventScroll: true });
       } catch (e) {
         say(`That didn't go through. ${e.message}`);
       } finally {
@@ -1780,7 +1875,14 @@
       bigBtn.setAttribute("aria-pressed", big ? "true" : "false");
       bigBtn.lastChild.textContent = big ? "Smaller" : "Bigger";
     };
-    root.addEventListener("keydown", (e) => { if (e.key === "Escape" && root.classList.contains("big") && document.activeElement !== canvas) bigBtn.click(); });
+    // Escape makes the view smaller, except while you type into the page:
+    // there it is the page's Escape. Only smaller: the panel stays open.
+    root.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.classList.contains("big") && (document.activeElement !== keys || who !== "owner")) {
+        e.preventDefault();
+        bigBtn.click();
+      }
+    });
     const view = {
       el: root,
       sid,
@@ -1808,7 +1910,7 @@
     const note = el("p", { className: "hint", role: "status", "aria-live": "polite" });
     const view = D.browserView(sid, {
       takeOver: false,
-      hint: "Tap to click, drag to scroll, and type in the box above the keys. Use a test account. Decurion saves the sign-in, never your password.",
+      hint: "Use a test account. Decurion saves the sign-in, never your password.",
       extra: opts.saveButton === false ? null : {
         label: "I'm signed in, save",
         onClick: async () => {
@@ -1850,16 +1952,19 @@
 (() => {
   const { el, icon } = D;
 
-  // D.previewView(sessionId, { onEnded, onStopped }) → the live view of a
-  // running app, with a Stop button under it. onStopped runs once Stop went
-  // through (the view is closed by then); onEnded when the hub ends it.
+  // D.previewView(sessionId, { appId, onEnded, onStopped, again }) → the
+  // live view of a Run it preview, with Stop. If the app could not start, the
+  // view becomes a notice saying why, with "Run it again" (opts.again) and,
+  // when the app itself is why, "Ask an agent to fix it". onEnded(why) is
+  // called when it simply ended (stopped, replaced, nobody looking).
   D.previewView = (sid, opts = {}) => {
     const note = el("p", { className: "hint", role: "status", "aria-live": "polite" });
+    const wrap = el("div", { className: "pv" });
     const view = D.browserView(sid, {
       takeOver: false,
       label: "Live picture of your app",
-      status: "Your app is running on your PC.",
-      hint: "Tap to click, drag to scroll, and type in the box above the keys. Nothing you do here changes the code.",
+      status: "Your app, live from your PC.",
+      hint: "Nothing you do here changes the code.",
       waitingText: "Starting your app on your PC. The first time can take a few minutes while it installs what it needs.",
       extra: {
         label: [icon("stop"), "Stop"],
@@ -1880,10 +1985,59 @@
           }
         },
       },
-      onEnded: opts.onEnded,
+      onEnded: (why, info = {}) => {
+        if (!info.failed) { opts.onEnded?.(why); return; }
+        wrap.replaceChildren(D.previewFailed(why, { appId: opts.appId, fixable: info.fixable, again: opts.again }));
+      },
     });
-    view.el.append(note);
-    return view;
+    wrap.append(view.el, note);
+    return { el: wrap, sid, close: () => view.close() };
+  };
+
+  // What an agent is asked to do when Run it can't start an app.
+  const FIX_PROMPT = (why) => `Make the Run it button work for this app. When the owner tapped Run it, Decurion said:
+
+${why}
+
+Add or fix .decurion/run.json so the app starts in a fresh box: one install command, one start command (each on one line), the port it listens on and the page to open. If the app has several parts (for example a web app and an API), start every part it needs in the one start command, the others in the background, and set "port" to the web app's port. If it needs PostgreSQL, start a private one with decurion-postgres at the beginning of the start command. Then start the app exactly as the recipe says, open it in your test browser and make sure the main page works.`;
+
+  // D.previewFailed(why, { appId, fixable, again }) → why Run it couldn't
+  // run the app, what it printed (folded away), and what to do next.
+  D.previewFailed = (why, opts = {}) => {
+    const cut = why.indexOf("\n\n");
+    const words = cut < 0 ? why : why.slice(0, cut);
+    const printed = cut < 0 ? "" : why.slice(cut + 2);
+    const status = el("p", { className: "hint", role: "status", "aria-live": "polite" });
+    const buttons = el("div", { className: "pv-buttons" });
+    if (opts.fixable && opts.appId != null) {
+      const ask = el("button", { type: "button", className: "btn primary", dataset: { key: "pv-fix" } }, icon("tool"), "Ask an agent to fix it");
+      ask.onclick = async () => {
+        if (D.offline) { status.textContent = "Your PC isn't answering. Try again when it's back."; return; }
+        ask.disabled = true;
+        status.textContent = "Asking an agent…";
+        try {
+          const t = await D.send("/threads", { app_id: opts.appId, title: "Make Run it work", prompt: FIX_PROMPT(why) });
+          const open = el("button", { type: "button", className: "btn" }, "Open that work");
+          open.onclick = () => D.openWork?.(t);
+          status.textContent = "An agent is on it. When it's done, tap Run it in that work to try it.";
+          ask.replaceWith(open);
+        } catch (e) {
+          ask.disabled = false;
+          status.textContent = `Couldn't ask an agent. ${e.message}`;
+        }
+      };
+      buttons.append(ask);
+    }
+    if (opts.again) {
+      const again = el("button", { type: "button", className: "btn", dataset: { key: "pv-again" } }, icon("start"), "Run it again");
+      again.onclick = () => opts.again();
+      buttons.append(again);
+    }
+    return el("div", { className: "pv-failed" },
+      el("div", { className: "notice bad", role: "alert" }, icon("alert"),
+        el("div", { className: "grow" }, el("strong", {}, "Your app isn't running"), el("p", {}, words))),
+      printed && el("details", {}, el("summary", {}, "What it printed"), el("pre", { className: "pv-log" }, printed)),
+      buttons, status);
   };
 
   // D.runApp(app, { sid }) runs a whole app as it is in its folder on the PC
@@ -1905,6 +2059,8 @@
 
     const show = (sid) => {
       view = D.previewView(sid, {
+        appId: app.id,
+        again: start,
         // The picture stays, saying why it ended, with a way to start again.
         onEnded: () => { view = null; if (!body.contains(again)) body.append(el("div", { className: "bv-start" }, again)); },
         onStopped: () => { view = null; D.toast(`${app.name} stopped.`); if (d.open) d.close(); },

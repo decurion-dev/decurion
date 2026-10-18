@@ -340,8 +340,10 @@ macro_rules! run_it {
 The owner can start the app too, with a Run it button, which reads .decurion/run.json: a JSON object with \
 \"start\" (the command that starts the dev server and keeps running), and optionally \"install\" (the command \
 that installs what it needs), \"port\" (where it listens) and \"path\" (the page to open, like \"/\"). \
-Without that file, Run it can only start a package.json \"dev\", \"start\" or \"serve\" script or a plain \
-index.html, so if the app starts any other way, or you change how it starts, write or update that file and commit it. "
+Without that file, Run it can only start a package.json \"dev\", \"start\" or \"serve\" script (at the top, \
+or in the one workspace that has one) or a plain index.html, so if the app starts any other way, has several parts \
+that each start (a web app and an API, say), needs a database, or you change how it starts, write or update that \
+file and commit it; start every part it needs in its one start command. "
     };
 }
 

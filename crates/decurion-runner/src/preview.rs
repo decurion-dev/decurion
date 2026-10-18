@@ -5,8 +5,10 @@
 //!
 //! An app says how it starts in `.decurion/run.json` (agents are told to keep
 //! it up to date). Without one, a few common shapes are recognised: a
-//! `package.json` with a `dev`, `start` or `serve` script, or a plain
-//! `index.html`. The commands only ever run inside the preview's sealed box,
+//! `package.json` with a `dev`, `start` or `serve` script, the one workspace
+//! of a monorepo that has one, or a plain `index.html`. An app with several
+//! parts that each start (a web app and an API, say) is not guessed at:
+//! starting only one would look broken, so it needs a recipe. The commands only ever run inside the preview's sealed box,
 //! exactly as an agent would run them, and go in on its stdin, never on a
 //! command line on the PC. The files are written by agents, so they are
 //! read capped, never through a link, and anything odd in them is refused.
@@ -46,8 +48,8 @@ pub struct Recipe {
 }
 
 /// What the owner is told when nothing says how to start the app.
-pub const NO_RECIPE: &str = "Decurion couldn't tell how to start this app. Ask an agent: \
-\"Add a Run it recipe so Decurion can start this app\", then tap Run it again.";
+pub const NO_RECIPE: &str =
+    "Decurion couldn't tell how to start this app. It needs a Run it recipe, which an agent can add.";
 
 /// Works out how to start the app in `dir`. The error is for the owner.
 pub fn recipe(dir: &Path) -> Result<Recipe, String> {
@@ -157,29 +159,189 @@ fn page_path(p: &str) -> bool {
             .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
 }
 
-/// A Node app with a script that starts a server.
-fn from_package(pkg: &Value, dir: &Path) -> Option<Recipe> {
+/// The scripts that start a server, best first.
+const START_SCRIPTS: [&str; 3] = ["dev", "start", "serve"];
+/// The most workspace folders looked at.
+const MAX_WORKSPACES: usize = 100;
+
+/// Which package manager an app uses, from its lock file. Corepack runs pnpm
+/// and yarn without installing them (it fetches them from the npm registry,
+/// which every box may reach).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Manager {
+    Npm,
+    Pnpm,
+    Yarn,
+}
+
+impl Manager {
+    fn of(dir: &Path) -> Self {
+        if is_plain_file(&dir.join("pnpm-lock.yaml")) {
+            Manager::Pnpm
+        } else if is_plain_file(&dir.join("yarn.lock")) {
+            Manager::Yarn
+        } else {
+            Manager::Npm
+        }
+    }
+
+    fn install(self) -> &'static str {
+        match self {
+            Manager::Npm => "npm install --no-audit --no-fund",
+            Manager::Pnpm => "corepack pnpm install",
+            Manager::Yarn => "corepack yarn install",
+        }
+    }
+
+    fn run(self) -> &'static str {
+        match self {
+            Manager::Npm => "npm run",
+            Manager::Pnpm => "corepack pnpm run",
+            Manager::Yarn => "corepack yarn run",
+        }
+    }
+}
+
+/// The first script of `pkg` that starts a server.
+fn start_script(pkg: &Value) -> Option<&'static str> {
     let scripts = pkg.get("scripts")?.as_object()?;
-    let script = ["dev", "start", "serve"]
+    START_SCRIPTS
         .into_iter()
-        .find(|s| scripts.get(*s).and_then(Value::as_str).is_some())?;
-    // The lock file says which package manager the app uses. Corepack runs
-    // pnpm and yarn without installing them (it fetches them from the npm
-    // registry, which every box may reach).
-    let (install, run) = if is_plain_file(&dir.join("pnpm-lock.yaml")) {
-        ("corepack pnpm install", "corepack pnpm run")
-    } else if is_plain_file(&dir.join("yarn.lock")) {
-        ("corepack yarn install", "corepack yarn run")
-    } else {
-        ("npm install --no-audit --no-fund", "npm run")
+        .find(|s| scripts.get(*s).and_then(Value::as_str).is_some())
+}
+
+/// A Node app with a script that starts a server, at its top or in the one
+/// workspace that has one.
+fn from_package(pkg: &Value, dir: &Path) -> Option<Recipe> {
+    let pm = Manager::of(dir);
+    let start = match start_script(pkg) {
+        Some(script) => format!("{} {script}", pm.run()),
+        None => from_workspaces(pkg, dir, pm)?,
     };
     Some(Recipe {
-        install: Some(install.to_owned()),
-        start: format!("{run} {script}"),
+        install: Some(pm.install().to_owned()),
+        start,
         port: None,
         path: "/".to_owned(),
         from_file: false,
     })
+}
+
+/// The start command of a monorepo's one workspace with a start script.
+/// None when no workspace has one, or more than one does: which of them the
+/// owner wants to see, and what else each needs running, is for a recipe.
+fn from_workspaces(pkg: &Value, dir: &Path, pm: Manager) -> Option<String> {
+    let mut found = Vec::new();
+    for rel in workspace_dirs(pkg, dir) {
+        let Ok(Some(text)) = read_small(&dir.join(&rel).join("package.json")) else {
+            continue;
+        };
+        let Ok(ws) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        if let Some(script) = start_script(&ws) {
+            let name = ws.get("name").and_then(Value::as_str).map(str::to_owned);
+            found.push((rel, name, script));
+        }
+    }
+    let [(rel, name, script)] = <[_; 1]>::try_from(found).ok()?;
+    // These go into a shell script, so only plain names are used.
+    match pm {
+        Manager::Npm => Some(format!("npm run {script} --workspace {rel}")),
+        Manager::Pnpm => Some(format!("corepack pnpm --filter ./{rel} run {script}")),
+        Manager::Yarn => {
+            let name = name.filter(|n| plain_name(n, true))?;
+            Some(format!("corepack yarn workspace {name} run {script}"))
+        }
+    }
+}
+
+/// The workspace folders `pkg` (or `pnpm-workspace.yaml`) lists, relative
+/// to `dir`. Only plain folders and `folder/*` are followed; anything else
+/// (links, `..`, deeper patterns) is skipped.
+fn workspace_dirs(pkg: &Value, dir: &Path) -> Vec<String> {
+    let mut patterns: Vec<String> = match pkg.get("workspaces") {
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        Some(Value::Object(o)) => o
+            .get("packages")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    if let Ok(Some(yaml)) = read_small(&dir.join("pnpm-workspace.yaml")) {
+        patterns.extend(pnpm_packages(&yaml));
+    }
+    let mut dirs = Vec::new();
+    for p in patterns {
+        let p = p.trim().trim_end_matches('/');
+        if let Some(parent) = p.strip_suffix("/*") {
+            if !plain_name(parent, false) {
+                continue;
+            }
+            let Ok(entries) = std::fs::read_dir(dir.join(parent)) else {
+                continue;
+            };
+            let mut kids: Vec<String> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| plain_name(n, false))
+                .map(|n| format!("{parent}/{n}"))
+                .collect();
+            kids.sort();
+            dirs.extend(kids);
+        } else if plain_name(p, false)
+            && std::fs::symlink_metadata(dir.join(p)).is_ok_and(|m| m.is_dir())
+        {
+            dirs.push(p.to_owned());
+        }
+        if dirs.len() >= MAX_WORKSPACES {
+            dirs.truncate(MAX_WORKSPACES);
+            break;
+        }
+    }
+    dirs.dedup();
+    dirs
+}
+
+/// The `packages:` list of a `pnpm-workspace.yaml`, read plainly: one
+/// `- 'pattern'` per line.
+fn pnpm_packages(yaml: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    for line in yaml.lines() {
+        let t = line.trim();
+        if !line.starts_with([' ', '\t', '-']) {
+            inside = t == "packages:";
+            continue;
+        }
+        if let (true, Some(item)) = (inside, t.strip_prefix('-')) {
+            out.push(item.trim().trim_matches(['\'', '"']).to_owned());
+        }
+    }
+    out
+}
+
+/// A folder (or, with `package`, a package) name safe to put in a script:
+/// letters, digits and `._-/`, and for a package an `@` scope; never `..`
+/// or a leading `/` or `-`.
+fn plain_name(s: &str, package: bool) -> bool {
+    !s.is_empty()
+        && s.len() <= 200
+        && !s.starts_with(['/', '-', '.'])
+        && !s.split('/').any(|part| part.is_empty() || part == "..")
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c) || (package && c == '@'))
 }
 
 /// Lines the start script prints so the runner can tell the owner where it
@@ -284,7 +446,6 @@ fn leading_port(s: &str) -> Option<u16> {
 
 /// What the owner is told while the app gets ready, on the preview's waiting
 /// page.
-pub const GETTING_CODE: &str = "Getting the code.";
 pub const INSTALLING: &str =
     "Installing what the app needs. The first time can take a few minutes.";
 pub const STARTING: &str = "Starting the app.";
@@ -394,6 +555,99 @@ mod tests {
             recipe(d.path()).expect("yarn").start,
             "corepack yarn run serve"
         );
+    }
+
+    #[test]
+    fn the_one_workspace_that_starts_is_run_and_several_ask_for_a_recipe() {
+        // One web app among libraries: npm, pnpm and yarn each run it.
+        let one = |lock: Option<(&'static str, &'static str)>| {
+            let mut files = vec![
+                (
+                    "package.json",
+                    r#"{"workspaces": ["apps/*", "packages/ui"], "scripts": {"test": "x"}}"#,
+                ),
+                (
+                    "apps/web/package.json",
+                    r#"{"name": "@emr/web", "scripts": {"dev": "vite"}}"#,
+                ),
+                (
+                    "packages/ui/package.json",
+                    r#"{"scripts": {"build": "tsc"}}"#,
+                ),
+            ];
+            files.extend(lock);
+            dir(&files)
+        };
+        let d = one(None);
+        let r = recipe(d.path()).expect("npm workspace");
+        assert_eq!(r.start, "npm run dev --workspace apps/web");
+        assert_eq!(
+            r.install.as_deref(),
+            Some("npm install --no-audit --no-fund")
+        );
+        let d = one(Some(("pnpm-lock.yaml", "")));
+        assert_eq!(
+            recipe(d.path()).expect("pnpm").start,
+            "corepack pnpm --filter ./apps/web run dev"
+        );
+        let d = one(Some(("yarn.lock", "")));
+        assert_eq!(
+            recipe(d.path()).expect("yarn").start,
+            "corepack yarn workspace @emr/web run dev"
+        );
+
+        // pnpm lists its workspaces in a file of its own.
+        let d = dir(&[
+            ("package.json", r#"{"name": "root"}"#),
+            ("pnpm-lock.yaml", ""),
+            (
+                "pnpm-workspace.yaml",
+                "packages:\n  - 'site'\n  - \"libs/*\"\n",
+            ),
+            (
+                "site/package.json",
+                r#"{"scripts": {"start": "astro dev"}}"#,
+            ),
+        ]);
+        assert_eq!(
+            recipe(d.path()).expect("pnpm-workspace.yaml").start,
+            "corepack pnpm --filter ./site run start"
+        );
+
+        // A web app and an API: which to open, and what the API needs, is
+        // for a recipe, not a guess.
+        let d = dir(&[
+            (
+                "package.json",
+                r#"{"workspaces": ["apps/*"], "scripts": {"db:up": "docker compose up"}}"#,
+            ),
+            ("apps/web/package.json", r#"{"scripts": {"dev": "vite"}}"#),
+            (
+                "apps/api/package.json",
+                r#"{"scripts": {"dev": "tsx watch src"}}"#,
+            ),
+        ]);
+        assert_eq!(recipe(d.path()), Err(NO_RECIPE.to_owned()));
+
+        // Odd folder names never reach the script.
+        let d = dir(&[(
+            "package.json",
+            r#"{"workspaces": ["../outside", "a b/*", "/abs"]}"#,
+        )]);
+        assert_eq!(recipe(d.path()), Err(NO_RECIPE.to_owned()));
+    }
+
+    #[test]
+    fn names_put_into_scripts_are_plain() {
+        assert!(plain_name("apps/web", false));
+        assert!(plain_name("@emr/web", true));
+        for bad in [
+            "", "../x", "a/../b", "/abs", "-flag", "a b", "a;b", "$(x)", ".hidden", "@emr/web",
+        ] {
+            let package = false;
+            assert!(!plain_name(bad, package), "{bad}");
+        }
+        assert!(!plain_name("a`b`", true));
     }
 
     #[test]

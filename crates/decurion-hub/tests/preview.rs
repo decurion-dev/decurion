@@ -601,15 +601,47 @@ async fn screens_are_told_why_a_preview_ended() {
         "POST",
         &format!("/api/runner/preview/{third}/end"),
         RUNNER,
-        json!({"why": "x".repeat(1000), "failed": true}),
+        json!({"why": "x".repeat(5000), "failed": true}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         next(&mut viewer).await,
-        json!({"type": "ended", "why": "x".repeat(300)})
+        json!({"type": "ended", "why": "x".repeat(4000), "failed": true})
     );
     assert!(closed(&mut viewer).await);
+
+    // Failed before any screen was open: one that opens later is still
+    // told why, and that an agent could fix it.
+    let fourth = run_app(&r, a).await["id"].as_i64().expect("id");
+    claim(&r).await;
+    let (s, v) = call(
+        &r,
+        "POST",
+        &format!("/api/runner/preview/{fourth}/end"),
+        RUNNER,
+        json!({"why": "No recipe.", "failed": true, "fixable": true}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        (&v["why"], &v["fixable"]),
+        (&json!("No recipe."), &json!(true))
+    );
+    let mut late = connect(addr, &format!("/api/browser/{fourth}/ws"), OWNER).await;
+    assert_eq!(
+        next(&mut late).await,
+        json!({"type": "ended", "why": "No recipe.", "failed": true, "fixable": true})
+    );
+    assert!(closed(&mut late).await);
+
+    // One stopped with no reason kept is told it has ended.
+    let mut late = connect(addr, &format!("/api/browser/{second}/ws"), OWNER).await;
+    assert_eq!(
+        next(&mut late).await,
+        json!({"type": "ended", "why": "This live view has ended."})
+    );
+    assert!(closed(&mut late).await);
 }
 
 #[tokio::test]

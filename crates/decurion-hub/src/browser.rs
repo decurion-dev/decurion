@@ -34,7 +34,7 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use decurion_proto::browser::{
     BrowserWant, Controller, Input, RelayDown, RelayUp, ViewerDown, ViewerUp, IDLE_HAND_BACK_SECS,
-    MAX_FRAME_BYTES, MAX_INPUT_BYTES,
+    KEYS, MAX_FRAME_BYTES, MAX_INPUT_BYTES,
 };
 use decurion_proto::preview::PREVIEW_IDLE_SECS;
 use decurion_proto::{MessageKind, NewMessage, ThreadState};
@@ -70,18 +70,6 @@ const RUNNER_QUEUE: usize = 64;
 const PING_EVERY: Duration = Duration::from_secs(20);
 /// How wide frames may be asked for, in pixels.
 const WIDTHS: (u32, u32, u32) = (320, 1280, 1920);
-/// The named keys the owner's screen may press.
-const KEYS: &[&str] = &[
-    "Enter",
-    "Tab",
-    "Backspace",
-    "Escape",
-    "ArrowUp",
-    "ArrowDown",
-    "ArrowLeft",
-    "ArrowRight",
-];
-
 /// The browser routes, merged into the `/api` router behind the same keys.
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -109,6 +97,12 @@ pub struct BrowserSession {
     pub controller: Controller,
     /// `pending`, `live`, `saved`, `closed` or `failed`.
     pub state: String,
+    /// Why a preview ended, as its runner told the owner, kept so a screen
+    /// that opens it afterwards is told too.
+    pub why: Option<String>,
+    /// That reason is the app's own (no start recipe, or it stopped), which
+    /// an agent can fix.
+    pub fixable: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -136,7 +130,7 @@ pub struct Watch {
 }
 
 pub(crate) const COLS: &str =
-    "id, kind, thread_id, sign_in_id, app_id, runner, controller, state, created_at, updated_at";
+    "id, kind, thread_id, sign_in_id, app_id, runner, controller, state, why, fixable, created_at, updated_at";
 pub(crate) const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 
 pub(crate) fn session_from(row: &SqliteRow) -> Result<BrowserSession> {
@@ -154,6 +148,8 @@ pub(crate) fn session_from(row: &SqliteRow) -> Result<BrowserSession> {
             Controller::Agent
         },
         state: row.try_get("state")?,
+        why: row.try_get("why")?,
+        fixable: row.try_get("fixable")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
     })
@@ -602,6 +598,8 @@ impl Relays {
             if let Some(old) = r.viewer.take() {
                 old.send(line(&ViewerDown::Ended {
                     why: "This live view was opened on another screen.".into(),
+                    failed: false,
+                    fixable: false,
                 }));
             }
             r.drop_frames();
@@ -613,7 +611,11 @@ impl Relays {
             }
             if r.runner.is_none() {
                 let why = if r.preview { PREVIEW_WAITING } else { WAITING };
-                p.send(line(&ViewerDown::Ended { why: why.into() }));
+                p.send(line(&ViewerDown::Ended {
+                    why: why.into(),
+                    failed: false,
+                    fixable: false,
+                }));
             }
             r.viewer = Some(p);
             r.to_runner(&RelayDown::Watch {
@@ -772,8 +774,18 @@ impl Relays {
 
     /// The view is over: the screen is told why, and both ends are closed.
     pub(crate) fn end(&self, sid: i64, why: &str) {
+        self.end_with(sid, why, false, false);
+    }
+
+    /// [`Self::end`], saying whether it failed and whether an agent could
+    /// fix why.
+    pub(crate) fn end_with(&self, sid: i64, why: &str, failed: bool, fixable: bool) {
         if let Some(r) = self.lock().remove(&sid) {
-            r.to_viewer(&ViewerDown::Ended { why: why.into() });
+            r.to_viewer(&ViewerDown::Ended {
+                why: why.into(),
+                failed,
+                fixable,
+            });
         }
     }
 }
@@ -996,18 +1008,41 @@ async fn viewer_socket(
         return (StatusCode::FORBIDDEN, "cross-site request refused").into_response();
     }
     let s = match st.store.browser_session(sid).await {
-        Ok(s) if s.is_open() => s,
-        Ok(_) => return (StatusCode::CONFLICT, ENDED).into_response(),
+        Ok(s) => s,
         Err(e) => return ApiError(e).into_response(),
     };
     let ws = match ws {
         Ok(ws) => ws,
+        Err(_) if !s.is_open() => return (StatusCode::CONFLICT, ENDED).into_response(),
         Err(e) => return e.into_response(),
     };
+    // One already over is told why, so a screen that comes late (a preview
+    // that failed in its first seconds) still says what happened.
+    if !s.is_open() {
+        let why = s.why.clone().unwrap_or_else(|| ENDED.to_owned());
+        let (failed, fixable) = (s.state == "failed", s.fixable);
+        return ws.on_upgrade(move |socket| tell_ended(socket, why, failed, fixable));
+    }
     let width = q.max_width.unwrap_or(WIDTHS.1).clamp(WIDTHS.0, WIDTHS.2);
     // Anything bigger than one piece of input is not from the owner's screen.
     ws.max_message_size(MAX_INPUT_BYTES + ENVELOPE)
         .on_upgrade(move |socket| relay_viewer(st, s, width, socket))
+}
+
+/// Says why the view is over, then closes.
+async fn tell_ended(mut socket: WebSocket, why: String, failed: bool, fixable: bool) {
+    let msg = line(&ViewerDown::Ended {
+        why,
+        failed,
+        fixable,
+    });
+    if socket
+        .send(WsMessage::Text(Utf8Bytes::from(msg)))
+        .await
+        .is_ok()
+    {
+        let _ = socket.send(WsMessage::Close(None)).await;
+    }
 }
 
 async fn relay_viewer(st: AppState, s: BrowserSession, width: u32, socket: WebSocket) {
@@ -1109,7 +1144,11 @@ async fn relay_runner(st: AppState, s: BrowserSession, socket: WebSocket) {
         end(&st, s.id, &why).await;
     } else if current {
         st.browser.with(s.id, |r| {
-            r.to_viewer(&ViewerDown::Ended { why: AWAY.into() });
+            r.to_viewer(&ViewerDown::Ended {
+                why: AWAY.into(),
+                failed: false,
+                fixable: false,
+            });
         });
         if let Err(e) = st.store.browser_connected(s.id, false).await {
             tracing::warn!(error = %e, session = s.id, "could not mark a browser view pending");
@@ -1129,10 +1168,21 @@ mod tests {
             y: 0.1
         }));
         assert!(!input_ok(&Input::Click { x: 1.5, y: 0.1 }));
-        assert!(!input_ok(&Input::Key { key: "F12".into() }));
         assert!(input_ok(&Input::Key {
             key: "Backspace".into()
         }));
+        // Editing shortcuts pass; keys the browser itself acts on do not.
+        for ok in ["Control+a", "Shift+Tab", "Control+Shift+z"] {
+            assert!(input_ok(&Input::Key { key: ok.into() }), "{ok}");
+        }
+        for refused in ["Control+w", "Control+t", "Alt+F4", "F12", "control+a"] {
+            assert!(
+                !input_ok(&Input::Key {
+                    key: refused.into()
+                }),
+                "{refused}"
+            );
+        }
         assert!(!input_ok(&Input::Go {
             url: "file:///etc/passwd".into()
         }));
