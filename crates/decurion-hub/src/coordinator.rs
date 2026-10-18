@@ -186,6 +186,26 @@ async fn queue_turn(tx: &mut Transaction<'_, Sqlite>, goal_id: i64, purpose: &st
     Ok(())
 }
 
+/// Between two "why" contexts riding on the same turn.
+const WHY_SEP: &str = "\n\n----------\n\n";
+/// Most "why" context one waiting turn carries: a few questions' worth.
+const MAX_WHY_QUEUED: usize = 3 * crate::why::MAX_CONTEXT;
+
+/// Adds what was gathered for one more "why" question to what a waiting
+/// turn already carries. When too much piles up the newest is kept, since
+/// the questions themselves are all in the conversation.
+fn merge_why(before: Option<&str>, more: &str) -> String {
+    match before.filter(|b| !b.trim().is_empty()) {
+        None => more.to_owned(),
+        Some(b) if b.len() + WHY_SEP.len() + more.len() <= MAX_WHY_QUEUED => {
+            format!("{b}{WHY_SEP}{more}")
+        }
+        Some(_) => format!(
+            "(What was gathered for an earlier question is left out to keep this short.){WHY_SEP}{more}"
+        ),
+    }
+}
+
 /// After a turn fails, the next one starts a fresh session with the whole
 /// conversation, so a half-written session is never resumed.
 async fn fresh_session(tx: &mut Transaction<'_, Sqlite>, goal_id: i64) -> Result<()> {
@@ -1185,6 +1205,79 @@ impl Store {
         .await
     }
 
+    /// The owner asks the project lead about a finished piece: why it was
+    /// done the way it was. The question goes into the conversation like
+    /// anything the owner says. `context` is what really happened, the
+    /// piece's change and its agent's log, gathered beforehand by
+    /// [`crate::why`] because that runs git; it rides on the next turn only
+    /// (`helper_jobs.why_context`), never in the conversation, and that turn
+    /// keeps no notes (see `finish_helper`).
+    pub async fn goal_ask_why(
+        &self,
+        goal_id: i64,
+        thread_id: i64,
+        text: &str,
+        context: &str,
+    ) -> Result<Goal> {
+        let text = crate::why::question(text)?;
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if goal_state(&mut tx, goal_id).await?.is_closed() {
+            return Err(StoreError::Conflict);
+        }
+        let title: String =
+            sqlx::query_scalar("SELECT title FROM goal_pieces WHERE goal_id = ? AND thread_id = ?")
+                .bind(goal_id)
+                .bind(thread_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or(StoreError::NotFound)?;
+        post(
+            &mut tx,
+            goal_id,
+            &GoalMessageBody::Owner {
+                text: format!("About \"{title}\": {text}"),
+            },
+        )
+        .await?;
+        sqlx::query("UPDATE goals SET stuck = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
+            .bind(goal_id)
+            .execute(&mut *tx)
+            .await?;
+        // The waiting turn that will read the question also gets what was
+        // gathered for it, as `queue_turn` would have it read the question.
+        let waiting: Option<(i64, Option<String>)> = sqlx::query_as(
+            "SELECT id, why_context FROM helper_jobs WHERE goal_id = ? AND kind = 'coordinator'
+                 AND state = 'queued' ORDER BY id LIMIT 1",
+        )
+        .bind(goal_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        match waiting {
+            Some((job, before)) => {
+                sqlx::query("UPDATE helper_jobs SET why_context = ? WHERE id = ?")
+                    .bind(merge_why(before.as_deref(), context))
+                    .bind(job)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            None => {
+                sqlx::query(
+                    "INSERT INTO helper_jobs (kind, goal_id, purpose, why_context)
+                     VALUES ('coordinator', ?, 'talk', ?)",
+                )
+                .bind(goal_id)
+                .bind(context)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+        // As for anything the owner says: a failed write-up must not leave
+        // the goal waiting on it forever.
+        maybe_report(&mut tx, goal_id).await?;
+        tx.commit().await?;
+        self.goal(goal_id).await
+    }
+
     /// The owner's one approval: starts a piece of work for each piece of
     /// exactly the plan they saw.
     pub async fn approve_plan(&self, id: i64, plan_message_id: i64) -> Result<Goal> {
@@ -1360,7 +1453,7 @@ impl Store {
         recover_checks(&mut tx).await?;
         let rows = sqlx::query(
             "SELECT j.id, j.kind, j.goal_id, j.thread_id, j.purpose, j.attempt, j.fix_note, j.prompt,
-                    j.message_id
+                    j.message_id, j.why_context
              FROM helper_jobs j JOIN goals g ON g.id = j.goal_id
              WHERE j.state = 'queued' AND g.state NOT IN ('done', 'stopped')
                AND NOT (j.kind = 'coordinator' AND EXISTS (SELECT 1 FROM helper_jobs r
@@ -1485,6 +1578,13 @@ impl Store {
                         let new: Vec<GoalMessage> =
                             messages.into_iter().filter(|m| m.id > seen).collect();
                         prompt.push_str(&transcript(&new));
+                    }
+                    // The owner asked about finished work: what really happened
+                    // goes after the conversation, framed as data.
+                    let why: Option<String> = row.try_get("why_context")?;
+                    if let Some(why) = why.filter(|w| !w.trim().is_empty()) {
+                        prompt.push_str("\n\n");
+                        prompt.push_str(&crate::why::framed(&why));
                     }
                     if purpose == "report" {
                         let outcomes = self.piece_outcomes(&mut tx, goal_id).await?;
@@ -1655,7 +1755,8 @@ impl Store {
         let actor = crate::store::runner_actor(runner)?;
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         let rows = sqlx::query(
-            "SELECT id, kind, goal_id, thread_id, purpose, attempt, fix_note, message_id, prompt
+            "SELECT id, kind, goal_id, thread_id, purpose, attempt, fix_note, message_id, prompt,
+                    why_context
              FROM helper_jobs WHERE state = 'running' AND runner = ?",
         )
         .bind(&actor)
@@ -1672,19 +1773,28 @@ impl Store {
                 continue;
             }
             let purpose: String = r.try_get("purpose")?;
+            let why: Option<String> = r.try_get("why_context")?;
             if kind == "coordinator" {
                 // The killed turn may have left its session half-written.
                 fresh_session(&mut tx, goal_id).await?;
-                let queued: bool = sqlx::query_scalar(
-                    "SELECT EXISTS (SELECT 1 FROM helper_jobs WHERE goal_id = ? AND kind = 'coordinator'
-                         AND state = 'queued' AND purpose = ?)",
+                let queued: Option<(i64, Option<String>)> = sqlx::query_as(
+                    "SELECT id, why_context FROM helper_jobs WHERE goal_id = ? AND kind = 'coordinator'
+                         AND state = 'queued' AND purpose = ? ORDER BY id LIMIT 1",
                 )
                 .bind(goal_id)
                 .bind(&purpose)
-                .fetch_one(&mut *tx)
+                .fetch_optional(&mut *tx)
                 .await?;
-                if queued {
-                    // A waiting turn of the same kind reads the whole conversation anyway.
+                if let Some((waiting, before)) = queued {
+                    // A waiting turn of the same kind reads the whole conversation
+                    // anyway; what was gathered for a "why" question goes with it.
+                    if let Some(why) = why.as_deref() {
+                        sqlx::query("UPDATE helper_jobs SET why_context = ? WHERE id = ?")
+                            .bind(merge_why(before.as_deref(), why))
+                            .bind(waiting)
+                            .execute(&mut *tx)
+                            .await?;
+                    }
                     continue;
                 }
             }
@@ -1709,8 +1819,9 @@ impl Store {
                 r.try_get("prompt")?
             };
             sqlx::query(
-                "INSERT INTO helper_jobs (kind, goal_id, thread_id, purpose, attempt, fix_note, message_id, prompt)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO helper_jobs (kind, goal_id, thread_id, purpose, attempt, fix_note, message_id, prompt,
+                     why_context)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&kind)
             .bind(goal_id)
@@ -1720,6 +1831,7 @@ impl Store {
             .bind(r.try_get::<Option<String>, _>("fix_note")?)
             .bind(r.try_get::<Option<i64>, _>("message_id")?)
             .bind(keep_prompt)
+            .bind(why)
             .execute(&mut *tx)
             .await?;
         }
@@ -1741,7 +1853,8 @@ impl Store {
     ) -> Result<Option<News>> {
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         let row = sqlx::query(
-            "SELECT kind, goal_id, thread_id, purpose, attempt, upto_message_id, message_id
+            "SELECT kind, goal_id, thread_id, purpose, attempt, upto_message_id, message_id,
+                    why_context
              FROM helper_jobs WHERE id = ? AND state = 'running'",
         )
         .bind(job_id)
@@ -1806,8 +1919,11 @@ impl Store {
                             ));
                         } else {
                             // Only from talking with the owner: a report turn reads
-                            // checker summaries, which the building agent can sway.
-                            save_notes(&mut tx, app_id, goal_id, &reply.remember).await?;
+                            // checker summaries, which the building agent can sway,
+                            // and a "why" turn read the building agent's own words.
+                            if row.try_get::<Option<String>, _>("why_context")?.is_none() {
+                                save_notes(&mut tx, app_id, goal_id, &reply.remember).await?;
+                            }
                             let working = state == GoalState::Working;
                             let has_plan = reply.plan.is_some() && !working;
                             let has_questions = !reply.questions.is_empty();

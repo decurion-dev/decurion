@@ -35,6 +35,7 @@ pub mod spend;
 pub mod store;
 pub mod test_keys;
 pub mod usage;
+pub mod why;
 pub mod workers;
 
 mod goals;
@@ -273,6 +274,7 @@ pub fn router(state: AppState) -> Router {
         .route("/goals/{id}/retry", post(goals::retry))
         .route("/goals/{id}/close", post(goals::close))
         .route("/goals/{id}/stop", post(goals::stop))
+        .route("/goals/{id}/why", post(why::ask))
         .route("/goals/{id}/pages/{page}", get(goals::page))
         .route("/goals/{id}/reports/{thread}", get(goals::report))
         .route("/apps/{id}/notes", get(goals::notes))
