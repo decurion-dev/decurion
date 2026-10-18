@@ -26,11 +26,28 @@ A single run can also reach its own limit. The agent then says "Stopped at this 
 
 ## When a Claude Max account runs out
 
-> **Coming soon.** This part of Decurion is still being built. This page shows how it will work.
->
-> Decurion will show how much of each account's week you have used. When an account runs out, its work will pause, and an inbox card will ask what you want to do, such as continue on pay-per-use or wait until the weekly reset. Decurion never switches accounts on its own.
+Each Max plan (Claude A and Claude B) has its own weekly and five-hour allowance. When an agent says its plan has run out:
 
-What you can do today:
+1. That piece of work stops and goes back in line. It picks up where it left off later.
+2. Decurion notes when the plan is back. It uses the reset time Claude gave, or one hour if Claude gave none.
+3. Other work on that plan waits in line too. So do planning and checking for goals on that plan.
+4. The board shows an amber note: "Claude Max plan A is out of usage until about 3:00 PM." Your phone inbox shows a card, and your phone gets one "Claude Max A is out of usage" alert.
+5. Work on the other Max plan, on ChatGPT, on Grok, and on apps that use pay-per-use keeps going.
 
-- **Wait** for your Claude plan to reset, then click **Retry** on the failed work.
-- **Move the app to pay-per-use.** On the board, click **Add an app**, then **Switch to pay-per-use** next to the app. Then click **Retry** on the failed work. See [Connect your Claude accounts](connect-claude-accounts.md) to set up the key first.
+You can wait. After the reset time, the waiting work starts again on its own. If the plan is still out, the agent says so again and Decurion waits a little longer.
+
+Or you can keep going now:
+
+1. Make sure your pay-per-use key is set up. See [Connect your Claude accounts](connect-claude-accounts.md).
+2. On the board's note, or on the inbox card, tap **Continue on pay-per-use**.
+3. All Claude work on that plan now runs on pay-per-use until the plan resets. This includes work that was waiting, new work you add, and planning and checking.
+4. The note now says "Its work is running on pay-per-use until 3:00 PM." There is nothing more to tap.
+5. At the reset time, work goes back to the Max plan by itself.
+
+Pay-per-use work counts toward this month's cap, like any other pay-per-use work. If the cap is reached, it stops and asks you, as described above.
+
+One tap covers one outage. If the plan runs out again another time, its work waits until you tap again.
+
+Decurion never moves work to your other Max plan.
+
+To put an app on pay-per-use for good, open **Settings**, then **Apps**, and click **Switch to pay-per-use** next to the app.

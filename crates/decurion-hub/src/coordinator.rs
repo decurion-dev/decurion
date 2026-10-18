@@ -1147,22 +1147,19 @@ impl Store {
                 .fetch_one(&mut *tx)
                 .await?,
             )?;
+            // A Max account that ran out waits for its reset, like work runs
+            // do, unless the owner chose pay-per-use until then. Pay-per-use
+            // is set aside and capped below; never the other Max account.
             let account = if app.pay_per_use {
                 "api".to_owned()
             } else {
-                app.profile.as_str().to_owned()
+                match crate::limits::max_plan(&mut tx, app.profile.as_str()).await? {
+                    crate::limits::MaxPlan::Ready => app.profile.as_str().to_owned(),
+                    crate::limits::MaxPlan::PayPerUse => "api".to_owned(),
+                    crate::limits::MaxPlan::Out => continue,
+                }
             };
-            // A Max account that ran out waits for its reset, like work runs do.
-            let out_of_usage: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM profile_limits WHERE profile = ?
-                     AND until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-            )
-            .bind(&account)
-            .fetch_one(&mut *tx)
-            .await?;
-            if out_of_usage {
-                continue;
-            }
+            let paid = account == "api";
             let reserved = match reserve(&mut tx, app_id, &account).await? {
                 Ok(r) => r,
                 Err(hit) => {
@@ -1343,8 +1340,9 @@ impl Store {
                     resume,
                     prompt,
                     disallowed_tools: disallowed.iter().map(|s| (*s).to_owned()).collect(),
-                    budget_usd: app.pay_per_use.then(|| claude_budget_usd(prior, reserved)),
-                    reserved_micros: app.pay_per_use.then_some(reserved),
+                    // The runner picks the pay-per-use credential by this.
+                    budget_usd: paid.then(|| claude_budget_usd(prior, reserved)),
+                    reserved_micros: paid.then_some(reserved),
                     prior_micros: prior,
                     context,
                 }),

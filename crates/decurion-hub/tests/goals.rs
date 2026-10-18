@@ -739,6 +739,46 @@ async fn helpers_wait_while_their_max_account_is_out() {
     helper(&r, "coordinator", r#"{"say": "Back."}"#, None).await;
 }
 
+#[tokio::test]
+async fn helpers_run_on_pay_per_use_while_the_owner_chose_it_for_an_outage() {
+    let (r, store) = hub().await;
+    let app = app(&r, false).await;
+    ok(
+        &r,
+        "POST",
+        "/api/goals",
+        OWNER,
+        json!({"app_id": app, "text": "Go"}),
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO profile_limits (profile, until) VALUES ('A', strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+1 hour'))",
+    )
+    .execute(store.pool())
+    .await
+    .expect("limit");
+    no_helper(&r).await;
+    let (s, _) = call(&r, "POST", "/api/limits/A/pay-per-use", RUNNER, json!({})).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    ok(&r, "POST", "/api/limits/A/pay-per-use", OWNER, json!({})).await;
+    let (s, claim) = call(
+        &r,
+        "POST",
+        "/api/runner/helper/claim",
+        RUNNER,
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{claim}");
+    // A budget is what makes the runner use the pay-per-use key.
+    assert!(claim["budget_usd"].as_f64().is_some_and(|b| b > 0.0));
+    let account: String = sqlx::query_scalar("SELECT account FROM helper_jobs")
+        .fetch_one(store.pool())
+        .await
+        .expect("job");
+    assert_eq!(account, "api");
+}
+
 /// One approved piece whose agent finished, so its check is waiting.
 async fn approved_one_piece(r: &axum::Router) -> (i64, i64) {
     let app = app(r, false).await;
