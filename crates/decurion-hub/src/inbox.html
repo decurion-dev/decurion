@@ -138,6 +138,9 @@
   .today-card .pill svg.i.spin { animation: none; }
   .today-card .pill.t-merge { color: var(--accent-ink); background: var(--accent-soft); }
   .today-card .more-apps { justify-self: start; margin: 2px 0 6px -6px; }
+  .today-card .run-btn { padding: 0 12px; }
+  /* A narrow phone keeps the app's name readable: Run it shows its icon only (its label stays for screen readers). */
+  @media (max-width: 399px) { .today-card .run-btn .lbl { display: none; } .today-card .run-btn { width: 40px; padding: 0; } }
 
   /* Notifications prompt */
   .ask { padding: 12px 12px 12px 14px; border-radius: var(--radius-l); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
@@ -514,14 +517,30 @@ const TODAY_ROWS = 5;
 const TONES = { needs_you: ["needs_you", "needs_you"], working: ["running", "running"], reviewer: ["in_review", "in_review"],
   merge: ["t-merge", "branch"], done: ["done", "done"], quiet: ["queued", "queued"] };
 let today = null, todayAll = false, todaySig = "";
+// Open Run it sessions of whole apps (GET /api/previews), read with the
+// Today rows on the inbox's own refresh. An app already running shows Open,
+// which shows that run instead of starting it again. A run of one piece of
+// work is opened from its panel, so it does not count here.
+let previews = [];
 async function loadToday() {
-  try { today = await D.api("/today"); } catch (_) { /* keep the last rows */ }
+  // Older hubs have no /previews: then nothing shows as running.
+  const [t, pv] = await Promise.all([D.api("/today").catch(() => null), D.api("/previews").catch(() => null)]);
+  if (t) today = t; // else keep the last rows
+  if (Array.isArray(pv)) previews = pv.filter((s) => s.thread_id == null && (s.state == null || s.state === "pending" || s.state === "live"));
   renderToday();
+}
+function runButton(r) {
+  const s = previews.find((p) => p.app_id === r.app_id);
+  const b = el("button", { type: "button", className: "btn run-btn", disabled: D.offline,
+    "aria-label": s ? `Open ${r.name}, running on your PC` : `Run it: ${r.name}` },
+    D.icon("start"), el("span", { className: "lbl" }, s ? "Open" : "Run it"));
+  b.onclick = () => D.runApp({ id: r.app_id, name: r.name }, { sid: s?.id }).then(loadToday);
+  return b;
 }
 function renderToday() {
   const box = $("today");
   const rows = Array.isArray(today) ? today : [];
-  const sig = JSON.stringify([rows, todayAll, D.offline]);
+  const sig = JSON.stringify([rows, todayAll, D.offline, previews.map((s) => [s.id, s.app_id])]);
   if (sig === todaySig) return;
   todaySig = sig;
   box.hidden = !rows.length;
@@ -551,7 +570,7 @@ function renderToday() {
       const [cls, ic] = TONES[r.tone] ?? TONES.quiet;
       act = el("span", { className: `pill ${cls}` }, D.icon(ic), r.status);
     }
-    return el("div", { className: "tr", dataset: { tone: r.tone } }, go, act);
+    return el("div", { className: "tr", dataset: { tone: r.tone } }, go, act, runButton(r));
   }), ...(more > 0 ? [Object.assign(el("button", { type: "button", className: "btn quiet sm more-apps" }, `and ${D.plural(more, "more app")}`),
     { onclick: () => { todayAll = true; renderToday(); } })] : []));
 }

@@ -20,6 +20,7 @@ use decurion_runner::identity::{
 };
 use decurion_runner::sign_ins::{self, HubAccess};
 mod browser_box;
+mod preview_box;
 
 use decurion_runner::{
     backoff, browser_container_name, check_home_volume, clear_report, container_name,
@@ -338,22 +339,33 @@ fn secret(cred: Credential) -> anyhow::Result<String> {
 /// The app's test keys as (name, value), from this PC's key store. The hub
 /// sends only their names.
 fn test_keys(hub: &Hub, data: &Path, c: &Claim) -> anyhow::Result<Vec<(String, String)>> {
+    vault_keys(hub, data, c.app.id, &c.test_keys)
+}
+
+/// Test keys `names` of app `app_id` as (name, value), from this PC's key
+/// store.
+fn vault_keys(
+    hub: &Hub,
+    data: &Path,
+    app_id: i64,
+    names: &[String],
+) -> anyhow::Result<Vec<(String, String)>> {
     // Test keys live only in the PC's key store, which never leaves it.
-    if hub.place == Place::Cloud && !c.test_keys.is_empty() {
+    if hub.place == Place::Cloud && !names.is_empty() {
         bail!(
             "this app uses test keys, which stay on the PC, so its work cannot run on the \
 cloud worker yet. Move it to the PC and try again."
         );
     }
     let vault = Vault::system(data);
-    c.test_keys
+    names
         .iter()
         .map(|name| {
             // The hub checked the name when it was saved; check it again here,
             // where it becomes an environment variable.
             check_name(name).map_err(|e| anyhow::anyhow!("test key {name:?}: {e}"))?;
             let value = vault
-                .get(c.app.id, name)
+                .get(app_id, name)
                 .map_err(|e| anyhow::anyhow!("test key {name}: {e}"))?
                 .with_context(|| {
                     format!(
@@ -2393,6 +2405,7 @@ async fn sync_review_copy(
     thread_id: i64,
     branch: &str,
     checkpoint: i64,
+    xfer: &Path,
 ) -> anyhow::Result<()> {
     let ws = data
         .join("workspaces")
@@ -2408,10 +2421,10 @@ async fn sync_review_copy(
         checkpoint,
         "bringing in work saved on another computer for its check"
     );
-    // Its own folder: the work itself may be running here meanwhile.
-    let xfer = data.join("transfer").join(format!("check-{thread_id}"));
-    remove_all(&xfer)?;
-    std::fs::create_dir_all(&xfer)?;
+    // Its own folder (the caller's): the work itself may be running here
+    // meanwhile, and a check and a preview of it may both be bringing it in.
+    remove_all(xfer)?;
+    std::fs::create_dir_all(xfer)?;
     let r = async {
         let base_bundle = xfer.join("base.bundle");
         let headers = download_retrying(
@@ -2465,7 +2478,7 @@ async fn sync_review_copy(
         anyhow::Ok(())
     }
     .await;
-    let _ = remove_all(&xfer);
+    let _ = remove_all(xfer);
     r
 }
 
@@ -2641,7 +2654,8 @@ async fn helper_container(
                 bail!("refusing odd branch name {branch:?}");
             }
             if let Some(cp) = checkpoint {
-                sync_review_copy(hub, data, &job.app, *thread_id, branch, *cp).await?;
+                let xfer = data.join("transfer").join(format!("check-{thread_id}"));
+                sync_review_copy(hub, data, &job.app, *thread_id, branch, *cp, &xfer).await?;
             }
             branch_copy(data, &job.app, *thread_id, branch, &hb.dir).await?
         }
@@ -2948,14 +2962,16 @@ async fn helper_loop(hub: Hub, data: PathBuf, gate: Gate) {
 /// Throwaway helper copies, homes and pages left by a runner that died.
 /// Their jobs come back from the hub and start fresh.
 async fn clean_helper_leftovers(data: &Path) {
-    for d in ["checks", "designs", "out"] {
+    for d in ["checks", "designs", "out", "previews"] {
         remove_dir(&data.join(d));
     }
     if let Ok(out) = docker_out(&["volume", "ls", "-q"]).await {
         let vols: Vec<String> = String::from_utf8_lossy(&out.stdout)
             .split_whitespace()
             .filter(|v| {
-                v.starts_with("decurion-check-home-") || v.starts_with("decurion-design-home-")
+                v.starts_with("decurion-check-home-")
+                    || v.starts_with("decurion-design-home-")
+                    || v.starts_with("decurion-preview-home-")
             })
             .map(str::to_owned)
             .collect();
@@ -3432,6 +3448,9 @@ async fn main() -> anyhow::Result<()> {
             // above) and a sign-in window's.
             "--filter",
             "name=^decurion-signin-",
+            // A preview's boxes: the app's and its browser.
+            "--filter",
+            "name=^decurion-preview-",
             "--filter",
             "name=^decurion-gate-",
         ])
@@ -3492,6 +3511,8 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(helper_loop(hub.clone(), data.clone(), gate.clone()));
         // Sign-in windows save into this PC's vault, so only the PC opens them.
         tokio::spawn(sign_in_loop(hub.clone(), data.clone()));
+        // Previews run on the PC, with its test keys and the app's own folder.
+        tokio::spawn(preview_box::preview_loop(hub.clone(), data.clone()));
     }
     let drained: std::cell::RefCell<Option<HelloReply>> = std::cell::RefCell::new(None);
     let (h, d, g, dr) = (&hub, data.as_path(), &gate, &drained);

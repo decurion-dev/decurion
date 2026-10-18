@@ -15,6 +15,11 @@
 //   typing); while they have it, the agent's browser calls wait.
 // - sign_in: a fresh browser the owner signs in with. No agent, no tools.
 //   "Capture" hands back what the browser holds so the runner can save it.
+// - preview: the owner trying their app ("Run it"). No agent, no tools, no
+//   saved sign-ins. The app's dev server runs in a box that shares this
+//   box's network, so it is on localhost here. A waiting page shows the
+//   runner's progress lines ("note") until "open" names the app's address,
+//   which is opened once it answers.
 //
 // stdout carries protocol lines only. Everything else goes to stderr.
 
@@ -143,7 +148,7 @@ async function fail(why) {
 
 // ---- State of the box ----------------------------------------------------
 
-let mode = null; // 'run' | 'sign_in', once started
+let mode = null; // 'run' | 'sign_in' | 'preview', once started
 let browser = null;
 let context = null; // the one the agent (or the owner signing in) uses
 let mcpServer = null;
@@ -206,6 +211,10 @@ function mergeStates(list) {
 }
 
 async function launch() {
+  // Playwright sends even localhost through the proxy unless told not to,
+  // whatever the bypass list says; the gate then refuses it, and the app
+  // being tested (on this box's own localhost) never shows.
+  process.env.PLAYWRIGHT_DISABLE_FORCED_CHROMIUM_PROXIED_LOOPBACK = '1';
   const { chromium } = requireMcp('playwright-core');
   // Over a pipe (Playwright's default): no debugging port to reach.
   // Chromium's own sandbox cannot start in a box with no capabilities; the
@@ -267,6 +276,122 @@ async function startSignIn(startUrl) {
   watchContext();
   const page = await context.newPage();
   page.goto(startUrl, { waitUntil: 'commit', timeout: PROBE_MS }).catch((e) => log('open failed:', e.message));
+}
+
+// ---- Preview mode: the owner's app ----------------------------------------
+
+// How long the app may take to answer once the runner says where it is.
+const OPEN_WAIT_MS = 5 * 60 * 1000;
+// The longest progress line shown (the last lines an app printed, at most).
+const MAX_NOTE = 8 << 10;
+
+// The waiting page: plain text in a fixed page, set with textContent, never
+// as HTML. Nothing in it comes from the app except the note's text.
+const WAITING_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>Starting your app</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #f6f5f2; color: #1d1c1a;
+    font: 18px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { box-sizing: border-box; min-height: 100%; display: flex; flex-direction: column; justify-content: center;
+    gap: 18px; padding: 48px; max-width: 880px; margin: 0 auto; }
+  .ring { width: 44px; height: 44px; border-radius: 50%; border: 4px solid #d9d5cc;
+    border-top-color: #3b5bdb; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  h1 { margin: 0; font-size: 28px; font-weight: 650; }
+  #note { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #4a4741; }
+  #log { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.45 ui-monospace, Menlo, Consolas, monospace;
+    background: #fff; border: 1px solid #e3dfd6; border-radius: 10px; padding: 14px 16px; max-height: 55vh; overflow: auto; }
+  #log:empty { display: none; }
+  body.stopped .ring { display: none; }
+</style></head>
+<body><main><div class="ring" aria-hidden="true"></div><h1 id="head">Starting your app</h1><p id="note"></p><pre id="log"></pre></main></body></html>`;
+
+let notePage = false; // the waiting page is what is shown
+let opening = 0; // counts "open" lines, so an older wait stands down
+
+async function startPreview() {
+  controller = 'owner';
+  await launch();
+  context = await browser.newContext({ viewport: VIEWPORT });
+  watchContext();
+  const page = await context.newPage();
+  await showNote(page, 'Getting ready.', false);
+}
+
+async function showNote(page, text, stopped) {
+  // The app's page may be showing: put the waiting page back first, at an
+  // address that is not the app's.
+  if (!notePage || page.url() !== 'about:blank') {
+    if (page.url() !== 'about:blank') await page.goto('about:blank', { timeout: PROBE_MS });
+    await page.setContent(WAITING_PAGE, { waitUntil: 'domcontentloaded', timeout: PROBE_MS });
+    notePage = true;
+  }
+  // What the app printed, after the first blank line, goes in a box of its own.
+  const cut = text.indexOf('\n\n');
+  const [words, printed] = cut < 0 ? [text, ''] : [text.slice(0, cut), text.slice(cut + 2)];
+  await page.evaluate(
+    ([t, p, s]) => {
+      document.getElementById('note').textContent = t;
+      document.getElementById('log').textContent = p;
+      document.getElementById('head').textContent = s ? 'Your app is not running' : 'Starting your app';
+      document.body.classList.toggle('stopped', s);
+    },
+    [words, printed, stopped],
+  );
+}
+
+// A progress line, or (once the app has stopped) why. Shown on the waiting
+// page, which comes back if the app's own page was showing.
+async function onNote(text, stopped) {
+  if (mode !== 'preview' || typeof text !== 'string') return;
+  opening += 1;
+  const page = active && !active.isClosed() ? active : await context.newPage();
+  try {
+    await showNote(page, text.slice(0, MAX_NOTE), stopped === true);
+  } catch (e) {
+    log('note failed:', e?.message?.split('\n')[0]);
+  }
+}
+
+function answers(url) {
+  return new Promise((resolve) => {
+    const req = http.get(url, { timeout: 5_000 }, (res) => {
+      res.resume();
+      resolve(true);
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve(false));
+  });
+}
+
+// Opens the app once its server answers. Only the box's own localhost: the
+// runner builds the address, and this checks it again.
+async function onOpen(url) {
+  if (mode !== 'preview' || !webAddress(url)) return;
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return;
+  }
+  if (u.protocol !== 'http:' || u.hostname !== 'localhost' || u.username || u.password) {
+    return log('open refused: not this box');
+  }
+  const mine = ++opening;
+  const until = Date.now() + OPEN_WAIT_MS;
+  while (!(await answers(url))) {
+    if (mine !== opening) return;
+    if (Date.now() > until) {
+      return onNote(
+        `The app did not answer at ${url} within five minutes. Stop it and try again, or ask an agent to check how the app starts.`,
+        true,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 1_500));
+  }
+  if (mine !== opening) return;
+  const page = active && !active.isClosed() ? active : await context.newPage();
+  notePage = false;
+  page.goto(url, { waitUntil: 'commit', timeout: PROBE_MS }).catch((e) => log('open failed:', e.message.split('\n')[0]));
 }
 
 // ---- Saved sign-ins: are they still good? --------------------------------
@@ -804,9 +929,10 @@ async function onLine(line) {
   }
   if (msg?.type === 'start') {
     if (mode) return log('second start; ignored');
-    mode = msg.mode === 'sign_in' ? 'sign_in' : msg.mode === 'run' ? 'run' : null;
+    mode = ['run', 'sign_in', 'preview'].includes(msg.mode) ? msg.mode : null;
     if (!mode) return fail('Unknown browser mode.');
     try {
+      if (mode === 'preview') return await startPreview();
       return await (mode === 'run' ? startRun(msg.states) : startSignIn(msg.start_url));
     } catch (e) {
       log('start failed:', e?.stack ?? e);
@@ -832,6 +958,13 @@ async function onLine(line) {
       return setController(msg.who);
     case 'capture':
       return capture();
+    case 'note':
+      return onNote(msg.text, msg.stopped);
+    case 'open':
+      // Not waited for: the wait for the app can be minutes, and lines are
+      // handled one at a time (screencast, input, acknowledgements).
+      void onOpen(msg.url).catch((e) => log('open failed:', e?.message));
+      return;
     default:
       return log(`unknown line type ${JSON.stringify(String(msg?.type)).slice(0, 40)}; ignored`);
   }

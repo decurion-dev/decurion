@@ -28,6 +28,9 @@ pub enum BrowserMode {
     Run,
     /// A fresh browser the owner signs in with, to save that sign-in.
     SignIn,
+    /// The owner trying an app: a browser behind the app's gate, beside a box
+    /// running the app's dev server, which it opens once the app answers.
+    Preview,
 }
 
 /// Who is driving the browser.
@@ -116,6 +119,19 @@ pub enum ToBrowser {
     },
     /// Sign-in mode: save what the owner signed in to.
     Capture,
+    /// Preview mode: a line of progress for the waiting page ("Installing
+    /// what the app needs"), or, with `stopped`, why the app is not running
+    /// (it stopped, or never answered). Shown as text, never as HTML.
+    Note {
+        text: String,
+        #[serde(default)]
+        stopped: bool,
+    },
+    /// Preview mode: open this address (on the box's own localhost) once it
+    /// answers.
+    Open {
+        url: String,
+    },
 }
 
 /// Browser box to runner, one per line on its stdout.

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Run it: try your app yourself.** Tap **Run it** in a piece of work's panel (under **Try it**) or on an app's **Today** row, and the app starts on your PC and shows live on the board or your phone, to click, scroll and type in. It uses the app's test keys, nothing you do is saved into the code, and one app runs at a time. It stops when you tap **Stop**, or after 15 minutes with nobody looking. The first start of an app can take a few minutes.
 - **Dismiss finished work.** Done and failed work, and finished goals, no longer stay on screen forever. **Dismiss** on a card (or **Dismiss all** for a column or the Finished goals) hides them into a **Dismissed** list you can open any time, with **Bring back** and an **Undo** right after. Nothing is deleted. Works on the board, the phone's inbox and Board tab, and the goal list.
 - **Decurion watches its pull requests.** Name who reviews an app, and each pull request asks them and says they review next. Decurion then checks the pull request about every five minutes until it is merged or closed: you hear when it is merged, and when the reviewer leaves comments you get "param left 3 comments · Fix these". One tap starts a fix that goes onto the same pull request when you accept it, never rewriting it and never merging. Needs a saved GitHub token.
 - **Plans update in place.** Answer a plan page's questions or ask for changes beside it, and the page dims while your project lead works, then shows the new plan by itself when it's drawn. No more going back to the goal and opening the picture again.
@@ -55,6 +56,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Agents can open the app they are building.** An agent's or checker's test browser could not open an app running in its own box ("localhost is not on the list"); it can now, so agents really try their work before saying it is done.
 - **Sign in on this PC works with Claude Code installed by npm on Windows.** Decurion now starts Claude Code's own program instead of npm's script, which could hang with Claude's page never answering. If Claude doesn't start its sign-in within 45 seconds, Decurion says so with Claude's last words instead of waiting 10 minutes, and the sign-in's Cancel button now sits at the top of Sign-ins, where you can see it.
 - **Finished research points to its fixes.** A research card no longer offers Accept, which sounded like sending code to GitHub. It offers **Fix what it found**, which opens that app's master plan, plus Mark done and Reject. A goal made only of research says to read the report and turn the findings into changes. A link to one app's master plan now opens that app, not the last one you picked.
 - **Apps with very long file names.** On Windows, a goal or piece of work on an app with a file whose full path passed 260 characters stopped with "Filename too long" before it started. Decurion now copies those apps whatever the PC's own Git settings say.

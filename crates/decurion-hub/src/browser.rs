@@ -14,6 +14,11 @@
 //! to leave it alone; "Hand back" returns it with another note. It goes back
 //! on its own when the owner closes the view or stops touching it for
 //! [`IDLE_HAND_BACK_SECS`].
+//!
+//! A preview (`kind = 'preview'`, see `preview.rs`) is the owner trying
+//! their app: the owner drives it from the start, nothing is handed back,
+//! and the relay only notes when the owner's screen last left, so the hub
+//! can stop a preview nobody has open.
 
 use crate::messages::add_message_in;
 use crate::store::{state_in, Result, Store, StoreError, OWNER};
@@ -31,6 +36,7 @@ use decurion_proto::browser::{
     BrowserWant, Controller, Input, RelayDown, RelayUp, ViewerDown, ViewerUp, IDLE_HAND_BACK_SECS,
     MAX_FRAME_BYTES, MAX_INPUT_BYTES,
 };
+use decurion_proto::preview::PREVIEW_IDLE_SECS;
 use decurion_proto::{MessageKind, NewMessage, ThreadState};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqliteRow;
@@ -50,6 +56,9 @@ pub const HANDED_BACK_NOTE: &str =
 
 const ENDED: &str = "This live view has ended.";
 const WAITING: &str = "Waiting for the test browser. It can take a few seconds to start.";
+/// What a preview's screen shows until the runner connects.
+pub const PREVIEW_WAITING: &str =
+    "Starting your app on your PC. The first time can take a few minutes while it installs what it needs.";
 const AWAY: &str = "The test browser stopped sending for now. Waiting for it to come back.";
 
 /// Room for the JSON around a frame's picture.
@@ -89,10 +98,12 @@ pub(crate) fn routes() -> Router<AppState> {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct BrowserSession {
     pub id: i64,
-    /// `take_over` or `sign_in`.
+    /// `take_over`, `sign_in` or `preview`.
     pub kind: String,
     pub thread_id: Option<i64>,
     pub sign_in_id: Option<i64>,
+    /// The app a preview runs.
+    pub app_id: Option<i64>,
     /// The runner holding the browser, by name.
     pub runner: Option<String>,
     pub controller: Controller,
@@ -110,6 +121,10 @@ impl BrowserSession {
     fn take_over(&self) -> bool {
         self.kind == "take_over"
     }
+
+    pub fn preview(&self) -> bool {
+        self.kind == "preview"
+    }
 }
 
 /// What the owner's "Watch the browser" got: the session, and the one it
@@ -120,17 +135,18 @@ pub struct Watch {
     pub replaced: Option<i64>,
 }
 
-const COLS: &str =
-    "id, kind, thread_id, sign_in_id, runner, controller, state, created_at, updated_at";
-const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+pub(crate) const COLS: &str =
+    "id, kind, thread_id, sign_in_id, app_id, runner, controller, state, created_at, updated_at";
+pub(crate) const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 
-fn session_from(row: &SqliteRow) -> Result<BrowserSession> {
+pub(crate) fn session_from(row: &SqliteRow) -> Result<BrowserSession> {
     let controller: String = row.try_get("controller")?;
     Ok(BrowserSession {
         id: row.try_get("id")?,
         kind: row.try_get("kind")?,
         thread_id: row.try_get("thread_id")?,
         sign_in_id: row.try_get("sign_in_id")?,
+        app_id: row.try_get("app_id")?,
         runner: row.try_get("runner")?,
         controller: if controller == "owner" {
             Controller::Owner
@@ -150,7 +166,10 @@ fn who(c: Controller) -> &'static str {
     }
 }
 
-async fn session_in(tx: &mut Transaction<'_, Sqlite>, id: i64) -> Result<BrowserSession> {
+pub(crate) async fn session_in(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: i64,
+) -> Result<BrowserSession> {
     let row = sqlx::query(&format!("SELECT {COLS} FROM browser_sessions WHERE id = ?"))
         .bind(id)
         .fetch_optional(&mut **tx)
@@ -181,7 +200,11 @@ async fn note_in(tx: &mut Transaction<'_, Sqlite>, s: &BrowserSession, text: &st
 
 /// Ends an open session, giving the browser back to the agent first if the
 /// owner had it.
-async fn end_in(tx: &mut Transaction<'_, Sqlite>, s: &BrowserSession, state: &str) -> Result<()> {
+pub(crate) async fn end_in(
+    tx: &mut Transaction<'_, Sqlite>,
+    s: &BrowserSession,
+    state: &str,
+) -> Result<()> {
     if s.controller == Controller::Owner {
         note_in(tx, s, HANDED_BACK_NOTE).await?;
     }
@@ -393,6 +416,9 @@ impl Peer {
 struct Relay {
     thread_id: Option<i64>,
     take_over: bool,
+    /// A preview: the owner drives it from the start and nothing is handed
+    /// back.
+    preview: bool,
     controller: Controller,
     viewer: Option<Peer>,
     runner: Option<Peer>,
@@ -407,6 +433,9 @@ struct Relay {
     last_input: Instant,
     /// Counts each change of who drives, so an old idle timer stands down.
     generation: u64,
+    /// When the owner's screen last left (or this relay began), for
+    /// stopping a preview nobody has open.
+    viewer_left: Instant,
 }
 
 impl Relay {
@@ -414,6 +443,7 @@ impl Relay {
         Self {
             thread_id: s.thread_id,
             take_over: s.take_over(),
+            preview: s.preview(),
             controller: s.controller,
             viewer: None,
             runner: None,
@@ -423,6 +453,7 @@ impl Relay {
             page: None,
             last_input: Instant::now(),
             generation: 0,
+            viewer_left: Instant::now(),
         }
     }
 
@@ -466,6 +497,8 @@ pub struct Relays {
     conns: Arc<AtomicU64>,
     /// See [`IDLE_HAND_BACK_SECS`]; tests shorten it.
     hand_back_after: Duration,
+    /// See [`PREVIEW_IDLE_SECS`]; tests shorten it.
+    pub(crate) preview_idle: Duration,
 }
 
 impl Default for Relays {
@@ -474,6 +507,7 @@ impl Default for Relays {
             map: Arc::default(),
             conns: Arc::default(),
             hand_back_after: Duration::from_secs(IDLE_HAND_BACK_SECS),
+            preview_idle: Duration::from_secs(PREVIEW_IDLE_SECS),
         }
     }
 }
@@ -504,7 +538,9 @@ impl Relays {
     }
 
     /// Forgets a view nobody is connected to, unless the owner still has
-    /// the browser (the idle timer needs it then).
+    /// the browser (the idle timer needs it then). The owner always has a
+    /// preview's browser, so an open preview is only forgotten when it ends
+    /// and its clock of how long nobody had it open keeps running.
     fn tidy(&self, sid: i64) {
         let mut map = self.lock();
         let idle = map.get(&sid).is_some_and(|r| {
@@ -533,7 +569,23 @@ impl Relays {
     /// Sends the runner a message, if it is connected. For the sign-in
     /// window's "I'm signed in, save" ([`RelayDown::Capture`]).
     pub fn send_to_runner(&self, sid: i64, m: &RelayDown) -> bool {
-        self.with(sid, |r| r.to_runner(m)).unwrap_or(false)
+        self.with(sid, |r| {
+            // Nothing is ever saved from a preview.
+            !(r.preview && matches!(m, RelayDown::Capture)) && r.to_runner(m)
+        })
+        .unwrap_or(false)
+    }
+
+    /// How long nobody has had this view open: zero while the owner's
+    /// screen is on it. After a hub restart the clock starts again.
+    pub(crate) fn idle_for(&self, s: &BrowserSession) -> Duration {
+        self.entry(s, |r| {
+            if r.viewer.is_some() {
+                Duration::ZERO
+            } else {
+                r.viewer_left.elapsed()
+            }
+        })
     }
 
     /// Connects the owner's screen, replacing any other screen on the same
@@ -560,9 +612,8 @@ impl Relays {
                 p.send(page.clone());
             }
             if r.runner.is_none() {
-                p.send(line(&ViewerDown::Ended {
-                    why: WAITING.into(),
-                }));
+                let why = if r.preview { PREVIEW_WAITING } else { WAITING };
+                p.send(line(&ViewerDown::Ended { why: why.into() }));
             }
             r.viewer = Some(p);
             r.to_runner(&RelayDown::Watch {
@@ -583,6 +634,7 @@ impl Relays {
                     return false;
                 }
                 r.viewer = None;
+                r.viewer_left = Instant::now();
                 r.drop_frames();
                 r.to_runner(&RelayDown::Watch {
                     on: false,
@@ -719,7 +771,7 @@ impl Relays {
     }
 
     /// The view is over: the screen is told why, and both ends are closed.
-    fn end(&self, sid: i64, why: &str) {
+    pub(crate) fn end(&self, sid: i64, why: &str) {
         if let Some(r) = self.lock().remove(&sid) {
             r.to_viewer(&ViewerDown::Ended { why: why.into() });
         }

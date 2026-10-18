@@ -413,6 +413,8 @@ details.fold[open] > summary svg.i { transform: rotate(90deg); }
 .bv-nudge:empty { display: none; }
 .bv-extra { display: flex; }
 .bv-extra .btn { flex: 1 1 auto; }
+/* Run it's Stop: a quiet button under the picture, not a wide one. */
+.bv-extra .btn.quiet { flex: none; }
 /* Bigger: the view fills the window, the picture as big as fits. */
 .bv.big { position: fixed; inset: 0; z-index: 50; padding: 16px 20px; background: var(--surface); overflow: auto; align-content: start; }
 .bv.big .bv-stage { width: min(100%, calc((100dvh - 250px) * var(--arn, 1.6))); justify-self: center; }

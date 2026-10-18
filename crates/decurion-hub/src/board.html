@@ -55,6 +55,7 @@
   .topbar.scrolled { border-bottom-color: var(--line); }
   .topbar h1 { font-size: 19px; font-weight: 650; }
   .topbar .sub { color: var(--faint); font-size: 13px; }
+  #run-slot:empty { display: none; }
   .topbar .grow { flex: 1; }
   .topbar .right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
   .needs-btn {
@@ -170,8 +171,9 @@
   .today-row .hit:focus-visible::after { outline: 2px solid var(--focus); outline-offset: 2px; }
   .today-row:hover { background: var(--surface-2); }
   .today-row .ln { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .today-row .ft { display: flex; align-items: center; gap: 8px; margin-top: 4px; min-height: 28px; }
+  .today-row .ft { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-top: 4px; min-height: 28px; }
   .today-row .ft .btn { position: relative; z-index: 1; }
+  .today-row .ft .run-btn { margin-left: auto; }
   .today-row .first { font-size: 12px; color: var(--faint); }
   .today .pill svg.i.spin { animation: none; }
   .pill.t-merge { color: var(--accent-ink); background: var(--accent-soft); }
@@ -270,6 +272,7 @@
     <header class="topbar" id="topbar">
       <div><h1 id="page-title">Board</h1></div>
       <span class="sub" id="sub"></span>
+      <span id="run-slot"></span>
       <span class="grow"></span>
       <div class="right">
         <button type="button" class="needs-btn" id="needs" hidden></button>
@@ -313,6 +316,7 @@
   // Settings (settings.js) keeps its own copy of spend, accounts and workers.
   let apps = [], threads = [], limits = [];
   let hasCloud = false;
+  let previews = [];            // open Run it sessions (GET /api/previews)
   const limitErr = {};          // profile -> message from a failed "Continue on pay-per-use"
   let loaded = false, loadErr = null, busy = false, timer = 0;
   const tails = new Map();      // thread id -> { key, ev }
@@ -507,6 +511,11 @@
     const shown = shownThreads();
     const where = filter === "all" ? "All apps" : D.appName(+filter);
     $("sub").textContent = view === "board" && loaded ? `${where} · ${D.plural(shown.length, "piece")} of work` : "";
+    // Run it beside the title, when the board shows one app.
+    const one = view === "board" && loaded && filter !== "all" ? appById(+filter) : null;
+    if (changed("run-top", [one?.id, one?.name, runningFor(one?.id)?.id, D.offline])) {
+      keepFocus(() => $("run-slot").replaceChildren(...(one ? [runButton(one.id, one.name, "top-run")] : [])));
+    }
   }
   $("needs").onclick = () => {
     const mine = threads.filter((t) => t.state === "needs_you");
@@ -594,13 +603,17 @@
     merge: ["t-merge", "branch"], done: ["done", "done"], quiet: ["queued", "queued"] };
   let today = null;
   async function loadToday() {
-    try { today = await D.api("/today"); } catch (_) { /* keep the last rows */ }
+    // Older hubs have no /previews: then nothing shows as running.
+    const [t, pv] = await Promise.all([D.api("/today").catch(() => null), D.api("/previews").catch(() => null)]);
+    if (t) today = t; // else keep the last rows
+    if (Array.isArray(pv)) previews = pv.filter((s) => s.state == null || s.state === "pending" || s.state === "live");
     renderToday();
+    renderTop();
   }
   function renderToday() {
     const box = $("today");
     const rows = Array.isArray(today) ? today : [];
-    if (!changed("today", [rows, filter, D.offline, Math.floor(Date.now() / 30000)])) return;
+    if (!changed("today", [rows, filter, D.offline, previews.map((s) => [s.id, s.app_id, s.thread_id]), Math.floor(Date.now() / 30000)])) return;
     box.hidden = !rows.length;
     keepFocus(() => box.replaceChildren(...rows.map((r) => {
       const id = String(r.app_id);
@@ -628,8 +641,27 @@
       } else act = el("span", { className: `pill ${cls}` }, icon(ic), r.status);
       return el("article", { className: "today-row", dataset: { tone: r.tone } },
         hit, el("div", { className: "ln", title: r.line + when }, r.line + when),
-        el("div", { className: "ft" }, act, r.first_today ? el("span", { className: "first" }, "First today") : null));
+        el("div", { className: "ft" }, act, r.first_today ? el("span", { className: "first" }, "First today") : null,
+          runButton(r.app_id, r.name, `today-run-${id}`)));
     })));
+  }
+
+  // ---------- Run it: an app as it is in its folder, on the PC ----------
+  // The hub's open runs of whole apps (GET /api/previews, read with the Today
+  // rows on the board's own refresh; `previews` is declared with the board's
+  // state). An app already running shows Open, which shows that run instead
+  // of starting it again. A run of one piece of work is opened from its
+  // panel, so it does not count here.
+  const runningFor = (appId) => (appId == null ? null : previews.find((s) => s.app_id === appId && s.thread_id == null) ?? null);
+  function runButton(appId, name, key) {
+    const s = runningFor(appId);
+    const b = el("button", { type: "button", className: "btn sm run-btn", dataset: { key },
+      "aria-label": s ? `Open ${name}, running on your PC` : `Run it: ${name}`,
+      title: s ? `${name} is running on your PC. Open it to try it.` : `Start ${name} on your PC and try it here` },
+      icon("start"), s ? "Open" : "Run it");
+    b.disabled = D.offline;
+    b.onclick = () => D.runApp({ id: appId, name }, { sid: s?.id }).then(loadToday);
+    return b;
   }
 
   // ---------- Board ----------
