@@ -1,0 +1,94 @@
+#!/bin/sh
+# A private PostgreSQL for one agent, inside its own sealed box, so an app's
+# tests can run against a real database. It listens only on 127.0.0.1 in the
+# box, so nothing outside the box can reach it, and it accepts any password
+# (trust), so the app's usual development passwords just work. Its data lives
+# in the agent's home volume and is kept between runs of the same piece of
+# work; each piece has its own.
+#
+#   decurion-postgres start [--port 5432] [--db NAME] [--init DIR]
+#       Starts it. The first time, it also creates database NAME (as
+#       docker-compose's POSTGRES_DB does) and runs the *.sql and *.sh files
+#       in DIR in name order, the way the postgres image runs
+#       /docker-entrypoint-initdb.d. The superuser is "postgres".
+#   decurion-postgres stop [--port 5432]
+#   decurion-postgres status [--port 5432]
+#   decurion-postgres reset [--port 5432]   stops it and deletes its data
+set -eu
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+port=5432
+db=""
+init=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --port) port="$2"; shift 2 ;;
+    --db) db="$2"; shift 2 ;;
+    --init) init="$2"; shift 2 ;;
+    *) echo "decurion-postgres: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+case "$port" in
+  ''|*[!0-9]*) echo "decurion-postgres: --port must be a number" >&2; exit 2 ;;
+esac
+
+bin="$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)"
+data="$HOME/.decurion-postgres/$port"
+log="$data.log"
+pg() { "$bin/$@"; }
+running() { pg pg_ctl -D "$data" status >/dev/null 2>&1; }
+
+case "$cmd" in
+  start)
+    fresh=no
+    if [ ! -s "$data/PG_VERSION" ]; then
+      rm -rf "$data"
+      mkdir -p "$data"
+      pg initdb -D "$data" -U postgres --auth=trust --encoding=UTF8 --locale=C.UTF-8 >/dev/null
+      {
+        echo "listen_addresses = '127.0.0.1'"
+        echo "port = $port"
+        echo "unix_socket_directories = '$data'"
+        echo "max_connections = 50"
+        echo "shared_buffers = 64MB"
+        echo "fsync = off"
+      } >>"$data/postgresql.conf"
+      fresh=yes
+    fi
+    if ! running; then
+      pg pg_ctl -D "$data" -l "$log" -w -t 60 start >/dev/null
+    fi
+    if [ "$fresh" = yes ]; then
+      psql() { "$bin/psql" -h 127.0.0.1 -p "$port" -U postgres -v ON_ERROR_STOP=1 -q "$@"; }
+      if [ -n "$db" ] && [ "$db" != postgres ]; then
+        psql -d postgres -c "CREATE DATABASE \"$db\""
+      fi
+      if [ -n "$init" ]; then
+        for f in $(ls "$init" 2>/dev/null | sort); do
+          case "$f" in
+            *.sql) psql -d "${db:-postgres}" -f "$init/$f" ;;
+            *.sh) PGHOST=127.0.0.1 PGPORT="$port" PGUSER=postgres PGDATABASE="${db:-postgres}" sh "$init/$f" ;;
+          esac
+        done
+      fi
+    fi
+    echo "PostgreSQL is running on 127.0.0.1:$port (user postgres, any password${db:+, database $db})."
+    ;;
+  stop)
+    if running; then pg pg_ctl -D "$data" -w stop >/dev/null; fi
+    echo "PostgreSQL on port $port is stopped."
+    ;;
+  status)
+    if running; then echo "running on 127.0.0.1:$port"; else echo "not running on port $port"; exit 3; fi
+    ;;
+  reset)
+    if running; then pg pg_ctl -D "$data" -w -m immediate stop >/dev/null; fi
+    rm -rf "$data" "$log"
+    echo "PostgreSQL on port $port is stopped and its data deleted."
+    ;;
+  *)
+    echo "usage: decurion-postgres start|stop|status|reset [--port N] [--db NAME] [--init DIR]" >&2
+    exit 2
+    ;;
+esac

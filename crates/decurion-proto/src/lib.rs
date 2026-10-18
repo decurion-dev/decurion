@@ -15,7 +15,22 @@ use std::str::FromStr;
 /// built and how work is handed between computers. The hub refuses a runner
 /// built with a different number, so a PC and a cloud worker can never run
 /// the same work under different rules. Bump it whenever either changes.
-pub const RULES_VERSION: u32 = 8;
+pub const RULES_VERSION: u32 = 9;
+
+/// What every agent that may run an app's tests (builder, research, checker)
+/// is told about the private database in its box: `decurion-postgres` in the
+/// claude-worker image. One wording for all of them, used in `concat!`.
+#[macro_export]
+macro_rules! local_database {
+    () => {
+        "If the app or its tests need PostgreSQL, start a private one inside your box with decurion-postgres, \
+for example `decurion-postgres start --port 5433 --db app --init db/init`. Match the port, the database \
+name (POSTGRES_DB) and the setup folder (the one mounted at /docker-entrypoint-initdb.d) to the app's \
+docker-compose file or its .env example. It listens only inside your box and accepts any password; its \
+data is kept for this piece of work, and `decurion-postgres reset` starts it over. Run the app's database \
+tests against it instead of skipping them. "
+    };
+}
 
 /// Where a piece of work is. A thread is in exactly one state at a time, and
 /// only the moves in [`ThreadState::can_move_to`] are allowed.

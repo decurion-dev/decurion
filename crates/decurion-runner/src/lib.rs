@@ -366,6 +366,7 @@ const RULES: &str = concat!(
 Commit your work to this branch as you go. Do not push and do not open pull requests; \
 Decurion does that after review. ",
     run_it!(),
+    decurion_proto::local_database!(),
     browser_and_sites!(),
     "\n\n",
     questions_block!()
@@ -386,6 +387,7 @@ const RESEARCH_RULES: &str = concat!(
 You are working in your own throwaway copy of the code. Do not change the app's code: \
 nothing you change here is kept or sent anywhere, so do not commit, push or open pull requests. \
 You may run the app, its tests and scripts to find things out. ",
+    decurion_proto::local_database!(),
     browser_and_sites!(),
     "\n\n\
 Write your findings as ONE self-contained HTML page at /work/decurion-report.html for the owner, \
@@ -2714,6 +2716,12 @@ mod tests {
         };
         assert_eq!(shared(RULES), shared(RESEARCH_RULES));
         assert!(shared(RESEARCH_RULES).1.contains("```questions\n"));
+        // Both may run the app's tests, so both hear about the private
+        // database in their box.
+        for rules in [RULES, RESEARCH_RULES] {
+            assert!(rules.contains(decurion_proto::local_database!()));
+            assert!(rules.contains("decurion-postgres start --port"));
+        }
         // Test keys may not go into the report either, and commits are not
         // mentioned at all.
         let k = prompt_for("Look", Start::Fresh, true, &keys(), &[], None);

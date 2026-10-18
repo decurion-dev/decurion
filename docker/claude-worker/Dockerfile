@@ -108,6 +108,33 @@ COPY mcp-box.json /etc/decurion/mcp-box.json
 RUN chmod a+r /opt/decurion/browser-host.mjs /etc/decurion/mcp-box.json \
  && node /opt/decurion/browser-host.mjs --self-check
 
+# PostgreSQL, so an app's tests that need a database can run inside the box
+# (decurion-postgres starts a private one; see that script). It comes from
+# PostgreSQL's own Debian repository, checked against its signing key's
+# fingerprint, and PG_MAJOR is pinned. Only the server and client are kept;
+# the box reaches no package site for it at run time. The image's own
+# cluster is removed: agents make theirs in their home volume.
+ARG PG_MAJOR=16
+ARG PGDG_SIGNER=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gnupg wget \
+ && wget -q -O /tmp/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+ && gpg --batch --with-colons --show-keys /tmp/pgdg.asc | awk -F: '$1 == "fpr" { print $10; exit }' > /tmp/pgdg.fpr \
+ && if [ "$(cat /tmp/pgdg.fpr)" != "$PGDG_SIGNER" ]; then \
+      echo "PostgreSQL signing key fingerprint is $(cat /tmp/pgdg.fpr), expected $PGDG_SIGNER" >&2; exit 1; \
+    fi \
+ && gpg --batch --dearmor -o /usr/share/keyrings/pgdg.gpg /tmp/pgdg.asc \
+ && echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+      > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" \
+ && { pg_dropcluster --stop "${PG_MAJOR}" main || true; } \
+ && apt-get purge -y --auto-remove gnupg wget \
+ && rm -rf /var/lib/apt/lists/* /tmp/pgdg.asc /tmp/pgdg.fpr \
+ && "/usr/lib/postgresql/${PG_MAJOR}/bin/postgres" --version
+COPY decurion-postgres /usr/local/bin/decurion-postgres
+RUN chmod a+rx /usr/local/bin/decurion-postgres
+
 # On Linux the agent must have the same user id as the runner, or neither can
 # write the other's files in the shared work folder. The cloud worker builds
 # with --build-arg AGENT_UID=<its runner's id>; Docker Desktop on Windows does
@@ -122,4 +149,12 @@ ENV CLAUDE_CONFIG_DIR=/home/agent/.claude
 # root. The pinned toolchain stays ahead of it on PATH.
 ENV CARGO_HOME=/home/agent/.cargo \
     PATH=$PATH:/home/agent/.cargo/bin
+# Proves decurion-postgres works for the agent user: start, set up like
+# docker-compose would, query, then leave no data behind in the image.
+RUN mkdir -p /tmp/pg-init \
+ && printf "CREATE ROLE app_user LOGIN PASSWORD 'x';\nCREATE DATABASE app_test;\n" > /tmp/pg-init/01-init.sql \
+ && decurion-postgres start --port 5499 --db app --init /tmp/pg-init \
+ && psql -h 127.0.0.1 -p 5499 -U app_user -d app_test -tAc "select 1" | grep -qx 1 \
+ && decurion-postgres reset --port 5499 \
+ && rm -rf /tmp/pg-init "$HOME/.decurion-postgres"
 ENTRYPOINT ["claude"]
