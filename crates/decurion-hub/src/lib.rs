@@ -30,9 +30,11 @@ pub mod messages;
 pub mod protected;
 pub mod push;
 pub mod secrets;
+pub mod sign_in_lights;
 pub mod sign_ins;
 pub mod spend;
 pub mod store;
+pub mod tailscale;
 pub mod test_keys;
 pub mod usage;
 pub mod workers;
@@ -53,7 +55,7 @@ use decurion_proto::{
 };
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use store::{Store, StoreError};
 use workers::RunnerId;
@@ -105,8 +107,17 @@ pub struct AppState {
     pub store: Store,
     pub keys: Keys,
     login_code: Arc<str>,
-    /// Address phones use to reach the hub, e.g. the Tailscale https name.
-    public_url: Option<Arc<str>>,
+    /// Address phones and cloud workers use to reach the hub, e.g. its
+    /// Tailscale https name. "Connect your phone" changes it while the hub
+    /// runs (tailscale.rs), so it is read through [`AppState::public_url`].
+    public_url: Arc<RwLock<Option<Arc<str>>>>,
+    /// The port the hub listens on, which Tailscale shares as https.
+    port: u16,
+    /// Tailscale's program. Without one, it is looked for when needed
+    /// ([`tailscale::find`]).
+    tailscale: Option<Arc<std::path::Path>>,
+    /// Lets one "Connect your phone" run at a time.
+    connecting: Arc<tokio::sync::Mutex<()>>,
     pub(crate) push: Option<push::Pusher>,
     /// Where apps' test keys are kept. Without one, the key endpoints refuse.
     vault: Option<decurion_vault::Vault>,
@@ -121,17 +132,23 @@ pub struct AppState {
     pub(crate) folders: Option<Arc<folders::Places>>,
     /// The "Sign in on this PC" for a Max plan going on now, if any.
     pub(crate) claude: claude_sign_in::SignIns,
+    /// GitHub's last answer about the token, for the Sign-ins page.
+    pub(crate) github_check: sign_in_lights::GitHubCache,
 }
 
 impl AppState {
     /// `login_code` is printed for the owner at start and signs in browsers
-    /// until the hub restarts. `public_url` goes into pairing QR codes.
+    /// until the hub restarts. `public_url` goes into pairing QR codes;
+    /// without one, [`AppState::use_saved_public_url`] takes the saved one.
     pub fn new(store: Store, keys: Keys, login_code: String, public_url: Option<String>) -> Self {
         Self {
             store,
             keys,
             login_code: login_code.into(),
-            public_url: public_url.map(|u| u.trim_end_matches('/').into()),
+            public_url: Arc::new(RwLock::new(public_url.map(|u| clean_url(&u)))),
+            port: DEFAULT_PORT,
+            tailscale: None,
+            connecting: Arc::default(),
             push: None,
             vault: None,
             files: None,
@@ -140,12 +157,48 @@ impl AppState {
             browser: browser::Relays::default(),
             folders: None,
             claude: claude_sign_in::SignIns::default(),
+            github_check: sign_in_lights::GitHubCache::default(),
         }
     }
 
     /// Runs `program` in place of Claude Code for "Sign in on this PC" (tests).
     pub fn with_claude_program(mut self, program: std::path::PathBuf) -> Self {
         self.claude = claude_sign_in::SignIns::with_program(program);
+        self
+    }
+
+    /// The address phones and cloud workers use to reach the hub now.
+    pub fn public_url(&self) -> Option<Arc<str>> {
+        self.public_url
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn set_public_url(&self, url: Option<Arc<str>>) {
+        *self.public_url.write().unwrap_or_else(|e| e.into_inner()) = url;
+    }
+
+    /// Uses the address "Connect your phone" saved, when none was given at
+    /// start: `DECURION_PUBLIC_URL` always wins.
+    pub async fn use_saved_public_url(self) -> store::Result<Self> {
+        if self.public_url().is_none() {
+            if let Some(u) = self.store.saved_public_url().await? {
+                self.set_public_url(Some(clean_url(&u)));
+            }
+        }
+        Ok(self)
+    }
+
+    /// The port the hub listens on, for Tailscale to share.
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
+    }
+
+    /// Where Tailscale's program is. Tests point it at a stand-in.
+    pub fn with_tailscale(mut self, program: std::path::PathBuf) -> Self {
+        self.tailscale = Some(program.into());
         self
     }
 
@@ -194,6 +247,14 @@ impl AppState {
 
 const COOKIE: &str = "decurion_device";
 
+/// The hub's port unless `DECURION_ADDR` says otherwise.
+pub const DEFAULT_PORT: u16 = 7420;
+
+/// An address without the trailing slash, so paths join on cleanly.
+fn clean_url(u: &str) -> Arc<str> {
+    u.trim().trim_end_matches('/').into()
+}
+
 /// Writes a file so that a crash mid-write never leaves a half-written one.
 pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
@@ -229,6 +290,9 @@ pub fn router(state: AppState) -> Router {
         .route("/runner/claim", post(runner_claim))
         .route("/pairing", post(new_pairing))
         .route("/devices", get(list_devices))
+        // "Connect your phone": owner only, never cloud workers (tailscale.rs).
+        .route("/phone/connect", post(tailscale::connect_route))
+        .route("/phone/connection", get(tailscale::connection_route))
         .route("/devices/{id}/remove", post(remove_device))
         .route("/push/key", get(push_key))
         .route("/spend", get(get_spend))
@@ -309,6 +373,7 @@ pub fn router(state: AppState) -> Router {
         // Saved website sign-ins: owner and runner routes (sign_ins.rs).
         .merge(sign_ins::routes())
         .merge(claude_sign_in::routes())
+        .merge(sign_in_lights::routes())
         .layer(middleware::from_fn_with_state(state.clone(), require_key));
     Router::new()
         .route("/", get(board))
@@ -730,7 +795,7 @@ async fn new_pairing(
     if c != Caller::Owner {
         return forbidden("pairing a phone");
     }
-    let base = match &st.public_url {
+    let base = match st.public_url() {
         Some(u) => u.to_string(),
         None => {
             let host = headers
@@ -753,7 +818,7 @@ async fn new_pairing(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let warning = (!url.starts_with("https://")).then_some(
-        "This address is not https, so the phone cannot get notifications and may not reach it at all. Start the hub with DECURION_PUBLIC_URL set to its Tailscale https address.",
+        "This address is not https, so the phone cannot get notifications and may not reach it at all. Click Connect your phone to use Tailscale's https address instead.",
     );
     Json(Pairing {
         url,
@@ -1348,7 +1413,7 @@ async fn new_join_code(
             "code": code,
             "name": name,
             "minutes": workers::JOIN_HOURS * 60,
-            "hub_url": st.public_url.as_deref(),
+            "hub_url": st.public_url().as_deref(),
             "hub_commit": HUB_COMMIT,
             "rules_version": RULES_VERSION,
             "repo": REPO_URL,

@@ -509,7 +509,10 @@ mod tests {
         let a = format!("sk-ant-oat01-{}", "a".repeat(80));
         assert!(v.get_claude(Profile::A).expect("read").is_none());
         v.put_claude(Profile::A, &a).expect("save");
-        assert_eq!(v.get_claude(Profile::A).expect("read").as_deref(), Some(a.as_str()));
+        assert_eq!(
+            v.get_claude(Profile::A).expect("read").as_deref(),
+            Some(a.as_str())
+        );
         assert!(v.get_claude(Profile::B).expect("read").is_none());
         for bad in [
             "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789abcd",

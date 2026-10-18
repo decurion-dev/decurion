@@ -58,7 +58,13 @@ async fn hub(body: &str) -> Hub {
     Hub { r, vault, dir }
 }
 
-async fn call(r: &axum::Router, method: &str, path: &str, key: &str, body: Value) -> (StatusCode, Value) {
+async fn call(
+    r: &axum::Router,
+    method: &str,
+    path: &str,
+    key: &str,
+    body: Value,
+) -> (StatusCode, Value) {
     let req = Request::builder()
         .method(method)
         .uri(path)
@@ -101,13 +107,23 @@ async fn signing_in_on_the_pc_saves_the_sign_in_for_that_plan() {
          sleep 5"
     ))
     .await;
-    let (s, v) = call(&h.r, "POST", "/api/claude/sign-in", OWNER, json!({ "profile": "B" })).await;
+    let (s, v) = call(
+        &h.r,
+        "POST",
+        "/api/claude/sign-in",
+        OWNER,
+        json!({ "profile": "B" }),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["phase"], "waiting");
     assert_eq!(v["profile"], "B");
     let v = wait_for(&h.r, |v| v["phase"] != "waiting").await;
     assert_eq!(v["phase"], "saved", "{v}");
-    assert!(!v.to_string().contains("sk-ant"), "the page never sees the sign-in");
+    assert!(
+        !v.to_string().contains("sk-ant"),
+        "the page never sees the sign-in"
+    );
     assert_eq!(h.vault.get_claude(Profile::B).expect("read"), Some(t));
     assert_eq!(h.vault.get_claude(Profile::A).expect("read"), None);
 }
@@ -123,15 +139,39 @@ async fn when_the_page_does_not_open_the_owner_gives_claude_its_code() {
          sleep 5",
     )
     .await;
-    let (s, _) = call(&h.r, "POST", "/api/claude/sign-in", OWNER, json!({ "profile": "A" })).await;
+    let (s, _) = call(
+        &h.r,
+        "POST",
+        "/api/claude/sign-in",
+        OWNER,
+        json!({ "profile": "A" }),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     let v = wait_for(&h.r, |v| v["wants_code"] == true).await;
-    assert_eq!(v["link"], "https://claude.com/cai/oauth/authorize?code=true&state=s");
+    assert_eq!(
+        v["link"],
+        "https://claude.com/cai/oauth/authorize?code=true&state=s"
+    );
 
-    let (s, v) = call(&h.r, "POST", "/api/claude/sign-in/code", OWNER, json!({ "code": "two words" })).await;
+    let (s, v) = call(
+        &h.r,
+        "POST",
+        "/api/claude/sign-in/code",
+        OWNER,
+        json!({ "code": "two words" }),
+    )
+    .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
     let code = "Zx9_-".repeat(10);
-    let (s, v) = call(&h.r, "POST", "/api/claude/sign-in/code", OWNER, json!({ "code": code })).await;
+    let (s, v) = call(
+        &h.r,
+        "POST",
+        "/api/claude/sign-in/code",
+        OWNER,
+        json!({ "code": code }),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     let v = wait_for(&h.r, |v| v["phase"] != "waiting").await;
     assert_eq!(v["phase"], "saved", "{v}");
@@ -144,25 +184,65 @@ async fn when_the_page_does_not_open_the_owner_gives_claude_its_code() {
 #[tokio::test]
 async fn claude_stopping_early_saves_nothing_and_says_so() {
     let h = hub("printf 'Something went wrong\\r\\n'\nexit 1").await;
-    call(&h.r, "POST", "/api/claude/sign-in", OWNER, json!({ "profile": "A" })).await;
+    call(
+        &h.r,
+        "POST",
+        "/api/claude/sign-in",
+        OWNER,
+        json!({ "profile": "A" }),
+    )
+    .await;
     let v = wait_for(&h.r, |v| v["phase"] != "waiting").await;
     assert_eq!(v["phase"], "failed");
-    assert!(v["message"].as_str().is_some_and(|m| m.contains("Try again")), "{v}");
+    assert!(
+        v["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("Try again")),
+        "{v}"
+    );
     assert_eq!(h.vault.get_claude(Profile::A).expect("read"), None);
 }
 
 #[tokio::test]
 async fn one_sign_in_at_a_time_and_cancel_stops_it() {
     let h = hub("sleep 30").await;
-    let (s, _) = call(&h.r, "POST", "/api/claude/sign-in", OWNER, json!({ "profile": "A" })).await;
+    let (s, _) = call(
+        &h.r,
+        "POST",
+        "/api/claude/sign-in",
+        OWNER,
+        json!({ "profile": "A" }),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
-    let (s, v) = call(&h.r, "POST", "/api/claude/sign-in", OWNER, json!({ "profile": "B" })).await;
+    let (s, v) = call(
+        &h.r,
+        "POST",
+        "/api/claude/sign-in",
+        OWNER,
+        json!({ "profile": "B" }),
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
-    let (s, _) = call(&h.r, "POST", "/api/claude/sign-in/cancel", OWNER, Value::Null).await;
+    let (s, _) = call(
+        &h.r,
+        "POST",
+        "/api/claude/sign-in/cancel",
+        OWNER,
+        Value::Null,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     let v = wait_for(&h.r, |v| v["phase"] != "waiting").await;
     assert_eq!(v["phase"], "idle");
-    let (s, v) = call(&h.r, "POST", "/api/claude/sign-in/code", OWNER, json!({ "code": "abc" })).await;
+    let (s, v) = call(
+        &h.r,
+        "POST",
+        "/api/claude/sign-in/code",
+        OWNER,
+        json!({ "code": "abc" }),
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
 }
 

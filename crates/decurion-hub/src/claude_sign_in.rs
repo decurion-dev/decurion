@@ -433,7 +433,15 @@ async fn start(
                 Ok(w) => st.claude.set_writer(seq, w),
                 Err(e) => tracing::warn!(error = %e, "could not type into Claude's sign-in"),
             }
-            tokio::spawn(watch(st.clone(), seq, b.profile, vault, master, child, stop));
+            tokio::spawn(watch(
+                st.clone(),
+                seq,
+                b.profile,
+                vault,
+                master,
+                child,
+                stop,
+            ));
         }
         Err(e) => {
             tracing::warn!(error = %e, "could not start Claude Code for a sign-in");
@@ -581,7 +589,10 @@ async fn watch(
             if let Err(e) = st.store.date_claude_sign_in(profile, &fp).await {
                 tracing::warn!(error = %e, "could not date a Claude sign-in");
             }
-            tracing::info!(plan = profile.as_str(), "saved a Claude sign-in from the board");
+            tracing::info!(
+                plan = profile.as_str(),
+                "saved a Claude sign-in from the board"
+            );
             st.claude.finish(
                 seq,
                 Phase::Saved,
@@ -612,10 +623,7 @@ async fn code(
         return forbidden("signing in to Claude");
     }
     let code = b.code.trim();
-    if code.is_empty()
-        || code.len() > 512
-        || !code.chars().all(|c| c.is_ascii_graphic())
-    {
+    if code.is_empty() || code.len() > 512 || !code.chars().all(|c| c.is_ascii_graphic()) {
         return ApiError::from(crate::store::StoreError::Invalid(
             "Paste the code from Claude's page, without spaces.".into(),
         ))
@@ -681,6 +689,9 @@ mod tests {
         assert_eq!(find_token(&format!("Your token:\n{t}\n")), Some(t.clone()));
         assert_eq!(find_token(&format!("Your token:\n{t}")), None);
         assert_eq!(find_token("Your token:\nsk-ant-oat01-short\n"), None);
-        assert_eq!(find_token("sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEF\n"), None);
+        assert_eq!(
+            find_token("sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEF\n"),
+            None
+        );
     }
 }
