@@ -149,24 +149,32 @@ impl Hold {
     pub fn reason(&self) -> Option<String> {
         match self {
             Self::Clear => None,
-            Self::Protected(paths) => {
-                let mut list = paths
-                    .iter()
-                    .take(SHOWN)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                if paths.len() > SHOWN {
-                    list.push_str(&format!(" and {} more", paths.len() - SHOWN));
-                }
-                Some(format!(
-                    "Held for you: this changes protected parts of the app ({list}). The checker \
-passed it, but changes to protected parts always wait for you to look."
-                ))
-            }
+            Self::Protected(paths) => Some(format!(
+                "Held for you: this changes protected parts of the app ({}). The checker passed it, but changes to protected parts always wait for you to look.",
+                shown(paths)
+            )),
             Self::Unchecked(_) => Some(
                 "Held for you: the hub could not check whether this changes protected parts of \
 the app, so it waits for you to look. The checker passed it."
+                    .to_owned(),
+            ),
+        }
+    }
+
+    /// [`Hold::reason`] for a Bring up to date run, which no checker looks
+    /// at: what it changes is compared with the main it merged. It starts
+    /// "Held for you:" too.
+    pub fn update_reason(&self) -> Option<String> {
+        match self {
+            Self::Clear => None,
+            Self::Protected(paths) => Some(format!(
+                "Held for you: compared with main, this changes protected parts of the app ({}). \
+No checker looks at an update, so look it over yourself before you accept it.",
+                shown(paths)
+            )),
+            Self::Unchecked(_) => Some(
+                "Held for you: Decurion could not check whether this update changes protected \
+parts of the app, so look it over yourself before you accept it."
                     .to_owned(),
             ),
         }
@@ -184,6 +192,20 @@ the app, so it waits for you to look. The checker passed it."
             )),
         }
     }
+}
+
+/// A few changed paths for the owner, then "and N more".
+fn shown(paths: &[String]) -> String {
+    let mut list = paths
+        .iter()
+        .take(SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if paths.len() > SHOWN {
+        list.push_str(&format!(" and {} more", paths.len() - SHOWN));
+    }
+    list
 }
 
 /// What the hub needs to know about the work a review job checked.
@@ -408,7 +430,7 @@ impl Store {
     pub(crate) async fn set_thread_hold(&self, thread_id: i64, hold: &Hold) -> Result<()> {
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query("UPDATE threads SET hold = ? WHERE id = ?")
-            .bind(hold.reason())
+            .bind(hold.update_reason())
             .bind(thread_id)
             .execute(&mut *tx)
             .await?;
@@ -575,6 +597,28 @@ passed it, but changes to protected parts always wait for you to look."
             .note("Reset link")
             .expect("note")
             .contains("held for you"));
+    }
+
+    #[test]
+    fn an_update_is_never_said_to_have_passed_a_checker() {
+        let many = Hold::Protected((1..=7).map(|i| format!("f{i}")).collect());
+        for h in [many, Hold::Unchecked("git: boom".into())] {
+            let why = h.update_reason().expect("reason");
+            assert!(is_held(Some("needs_a_look"), Some(&why)), "{why}");
+            assert!(
+                !why.contains("checker passed") && !why.contains("The checker"),
+                "{why}"
+            );
+            assert!(!why.contains("boom"), "{why}");
+        }
+        let why = Hold::Protected(vec!["src/app.rs".into()])
+            .update_reason()
+            .expect("reason");
+        assert!(
+            why.contains("compared with main") && why.contains("(src/app.rs)"),
+            "{why}"
+        );
+        assert_eq!(Hold::Clear.update_reason(), None);
     }
 
     #[test]
