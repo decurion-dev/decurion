@@ -386,6 +386,10 @@ async fn a_piece_touching_protected_parts_is_held_even_when_the_checker_passes_i
             .any(|n| n.contains("Change passed the check") && n.contains("held for you")),
         "{notes:?}"
     );
+    // The plan's approval does not cover a held piece: it waits in review
+    // for the owner's own tap, and nothing goes to GitHub.
+    assert_eq!(p["thread_state"], "in_review", "{p}");
+    assert!(p.get("github").is_none(), "{p}");
 }
 
 #[tokio::test]
@@ -444,9 +448,15 @@ async fn a_piece_touching_only_unprotected_files_passes() {
     assert_eq!(p["review"], "passed", "{p}");
     assert_eq!(p["review_summary"], "Looks good.");
     assert!(
-        notes.iter().any(|n| n == "Change passed the check."),
+        notes
+            .iter()
+            .any(|n| n == "Change passed the check and is on its way to GitHub."),
         "{notes:?}"
     );
+    // The owner approved the plan, so a piece that passes is accepted and
+    // goes to GitHub without another tap.
+    assert_eq!(p["thread_state"], "done", "{p}");
+    assert_eq!(p["github"]["state"], "waiting", "{p}");
 }
 
 #[tokio::test]

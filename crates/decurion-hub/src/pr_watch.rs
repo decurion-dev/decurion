@@ -596,9 +596,23 @@ impl Store {
 // ---------- Looking ----------
 
 /// Called once, the moment a watched pull request is first seen merged.
-/// This is where a goal learns that one of its pieces was merged.
-async fn merged(_s: &Sender, thread_id: i64) {
+/// This is where a goal learns that one of its pieces was merged
+/// (`Store::piece_merged`, which does nothing for work outside a goal and
+/// nothing twice); when that was its last open piece, the goal is done and
+/// the owner hears so.
+async fn merged(s: &Sender, thread_id: i64) {
     tracing::info!(thread = thread_id, "pull request merged on GitHub");
+    match s.store.piece_merged(thread_id).await {
+        Ok(Some(n)) => {
+            if let Some(p) = &s.push {
+                p.send(&s.store, &n).await;
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::error!(error = %e, thread = thread_id, "could not record the merge on its goal")
+        }
+    }
 }
 
 /// Looks at every open pull request once. Returns how many it looked at.

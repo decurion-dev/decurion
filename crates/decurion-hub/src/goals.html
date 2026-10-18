@@ -244,6 +244,13 @@
   /* Composer */
   .composer { flex:none; padding:10px 20px calc(12px + env(safe-area-inset-bottom)); border-top:1px solid var(--line); background:var(--bg); }
   .composer .column > p { margin:0 0 8px; }
+  .quick { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 8px; }
+  .quick .btn { min-height:36px; border-radius:999px; padding:6px 14px; font-size:14px; }
+  .pp-protected { display:inline-flex; align-items:center; gap:6px; margin-top:6px; font-size:13px; font-weight:600; color:var(--warn-ink); background:var(--warn-soft); border-radius:999px; padding:3px 10px; }
+  .prs { list-style:none; margin:4px 0 0; padding:0; flex:1 1 100%; display:grid; gap:6px; }
+  .prs li { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; background:var(--card); border-radius:10px; padding:8px 12px; overflow-wrap:anywhere; }
+  .prs .n { font-weight:700; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .prs .t { flex:1 1 160px; min-width:0; font-weight:600; }
   .composer-box { display:flex; align-items:flex-end; gap:8px; background:var(--card); border:1px solid var(--line-strong); border-radius:24px; padding:5px 5px 5px 16px; }
   .composer-box:focus-within { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
   .composer textarea { flex:1; min-width:0; border:0; background:transparent; resize:none; font:inherit; font-size:16px; line-height:1.45; padding:9px 0; max-height:200px; color:var(--ink); outline:none; }
@@ -483,6 +490,7 @@
           <form class="composer" id="composer">
             <div class="column">
               <p class="hint" id="composer-note" hidden></p>
+              <div class="quick" id="quick" role="group" aria-label="Quick replies" hidden></div>
               <p class="talk-note" id="talk-note" role="status" hidden>Talk mode: your turn. Tap the red button when you're done.</p>
               <div class="composer-box">
                 <button class="clip" id="clip" type="button" aria-label="Add files to this goal" title="Add files to this goal" hidden>
@@ -839,7 +847,7 @@ function selectFromHash() {
 }
 function resetPane() {
   S.view = null; S.rendered.clear(); S.lastDay = "";
-  S.headSig = S.tailSig = S.piecesSig = "";
+  S.headSig = S.tailSig = S.piecesSig = S.quickSig = "";
   S.firstPaint = true; S.wasBusy = false;
   $("tail").replaceChildren(); $("pieces-body").replaceChildren(); $("g-actions").replaceChildren();
   $("g-title").textContent = ""; $("g-app").textContent = ""; $("g-state").textContent = ""; $("g-state").className = "pill";
@@ -989,7 +997,9 @@ async function openNotes(appId, appName) {
 function planStatus(m, ctx) {
   if (m.id !== ctx.latestPlan) return "replaced";
   const s = ctx.g.state;
-  if (s === "talking" || s === "plan_ready") return ctx.g.busy ? "waiting" : "approvable";
+  // Approving counts even while the lead is still answering (it cannot change an approved plan).
+  if (s === "plan_ready") return "approvable";
+  if (s === "talking") return ctx.g.busy ? "waiting" : "approvable";
   if (s === "working" || s === "for_review" || s === "done") return "approved";
   return "closed";
 }
@@ -1264,13 +1274,16 @@ function renderPlan(m, ctx) {
     el("div", { class: "pp" },
       el("div", { class: "pp-title" }, pc.title),
       el("div", { class: "pp-done" }, el("b", null, "Done when: "), pc.done_when),
+      pc.touches_protected ? el("div", { class: "pp-protected" }, "Changes a protected part: waits for one tap from you at the end") : null,
       pc.brief ? el("details", { class: "brief" }, el("summary", null, "What the builder is told"), el("div", null, pc.brief)) : null))));
   let foot = null;
   if (status === "approvable") {
     const btn = el("button", { class: "btn primary", type: "button", onclick: () => approve(m.id, btn, err) }, "Approve plan");
     const err = el("p", { class: "err-line", role: "alert" });
-    foot = [el("div", { class: "plan-foot" }, btn,
-      el("p", { class: "hint" }, "One tap starts every piece. Each is built, then checked by a second agent. You can still ask for changes first by replying below.")), err];
+    const hint = ctx.g.busy
+      ? "Your project lead is still answering your last message. Approving now starts this plan as it is."
+      : "One tap starts every piece. Each is built and checked by a second agent, and each one that passes goes to GitHub as a pull request by itself. Replying \u201cyes\u201d works too, or ask for changes below.";
+    foot = [el("div", { class: "plan-foot" }, btn, el("p", { class: "hint" }, hint)), err];
   } else if (status === "waiting") {
     foot = el("div", { class: "plan-foot" }, el("p", { class: "hint" }, "You can approve this once your project lead has finished thinking."));
   }
@@ -1294,7 +1307,8 @@ async function approve(msgId, btn, err) {
 // ---------- tail: thinking, stuck, review, closed ----------
 function renderTail(v) {
   const g = v.goal;
-  const sig = JSON.stringify([g.busy, g.stuck, g.state, boardHref()]);
+  const prs = (v.pieces ?? []).map(p => [p.thread_id, p.github?.state, p.github?.url, p.merged, p.review, p.thread_state]);
+  const sig = JSON.stringify([g.busy, g.stuck, g.state, boardHref(), prs]);
   if (sig === S.tailSig) return false;
   S.tailSig = sig;
   const parts = [];
@@ -1308,17 +1322,40 @@ function renderTail(v) {
       el("button", { class: "btn primary", type: "button", "data-action": "retry", onclick: () => goalAction("retry", "Try again") }, "Try again")));
   }
   if (g.state === "for_review") {
+    const sent = (v.pieces ?? []).some(p => p.github);
     parts.push(el("div", { class: "callout attn" },
-      el("p", null, "Everything is built and checked. Try it out from the board, then mark the goal done."),
+      el("p", null, sent
+        ? "Everything is built and checked. Merge the pull requests on GitHub, in this order. The goal closes by itself once they are all merged."
+        : "Everything is built and checked. Try it out from the board, then mark the goal done."),
+      finishList(v),
       el("a", { class: "btn", href: boardHref() }, "Open the board"),
       el("button", { class: "btn primary", type: "button", "data-action": "close", onclick: () => goalAction("close", "Mark done") }, "Mark done")));
   } else if (g.state === "done") {
-    parts.push(el("div", { class: "callout done" }, el("p", null, "You marked this goal done.")));
+    const merged = (v.pieces ?? []).some(p => p.merged);
+    parts.push(el("div", { class: "callout done" }, el("p", null, merged ? "Every pull request is merged, so this goal is done." : "You marked this goal done.")));
   } else if (g.state === "stopped") {
     parts.push(el("div", { class: "callout done" }, el("p", null, "This goal was stopped.")));
   }
   $("tail").replaceChildren(...parts);
   return true;
+}
+
+/** Each piece's pull request, in plan order (the order to merge), with where it stands. */
+function finishList(v) {
+  // Research pieces change no code, so they have no pull request to merge.
+  const pieces = (v.pieces ?? []).filter(p => !p.research);
+  if (!pieces.length) return null;
+  return el("ol", { class: "prs", "aria-label": "Pull requests to merge" }, pieces.map((p, i) => {
+    const gh = p.github;
+    let what;
+    if (p.merged) what = pill("Merged", "ok");
+    else if (gh?.state === "sent" && gh.url) what = el("a", { class: "btn", href: gh.url, target: "_blank", rel: "noopener" }, gh.pull_request ? "Open the pull request" : "Open a pull request");
+    else if (gh?.state === "failed") what = el("a", { class: "btn", href: boardHref() }, "Didn't reach GitHub: open the board");
+    else if (gh) what = el("span", { class: "hint" }, "Sending to GitHub…");
+    else if (p.review === "needs_a_look") what = el("a", { class: "btn", href: boardHref() }, "Needs your look on the board");
+    else what = el("span", { class: "hint" }, p.review === "failed" ? "Couldn't be finished" : "Not sent");
+    return el("li", null, el("span", { class: "n", "aria-hidden": "true" }, String(i + 1)), el("span", { class: "t" }, p.title), what);
+  }));
 }
 
 // ---------- pieces ----------
@@ -1451,7 +1488,28 @@ function renderPieces(v) {
 }
 
 // ---------- composer ----------
+/** The plan the owner is looking at, if it waits for approval: a plain "yes" approves exactly it. */
+function shownPlan(v) {
+  if (v.goal.state !== "plan_ready") return null;
+  return context(v).latestPlan;
+}
+/** One-tap replies while a plan waits: the three things the owner usually says. */
+function renderQuick(v) {
+  const plan = shownPlan(v), box = $("quick");
+  const sig = JSON.stringify([plan, S.id]);
+  if (sig === S.quickSig) return;
+  S.quickSig = sig;
+  box.hidden = plan == null;
+  if (plan == null) { box.replaceChildren(); return; }
+  box.replaceChildren(
+    el("button", { class: "btn primary", type: "button", onclick: () => sayToLead("Yes, do it") }, "Yes, do it"),
+    el("button", { class: "btn", type: "button", onclick: () => { $("say").focus(); } }, "Change something"),
+    el("button", { class: "btn ghost danger", type: "button", onclick: () => {
+      if (confirm("Stop this goal? Pieces of work that haven't started will be cancelled.")) goalAction("stop", "Stop goal");
+    } }, "Stop"));
+}
 function renderComposer(v) {
+  renderQuick(v);
   const closed = CLOSED.has(v.goal.state);
   const say = $("say");
   say.disabled = closed;
@@ -1478,19 +1536,26 @@ $("say").addEventListener("keydown", e => {
 });
 $("composer").addEventListener("submit", async e => {
   e.preventDefault();
-  const id = S.id, text = $("say").value.trim();
+  const text = $("say").value.trim();
+  if (text) sayToLead(text, true);
+});
+/** Sends the owner's words to the project lead, with the plan on screen: the hub reads a plain yes as its Approve. */
+async function sayToLead(text, typed = false) {
+  const id = S.id;
   if (id == null || !text || S.saying || (S.view && CLOSED.has(S.view.goal.state))) return;
   S.saying = true; updateSend(); $("say-err").textContent = "";
   try {
-    await post(`/goals/${id}/say`, { text });
-    S.says.delete(id);
-    if (S.id === id) { $("say").value = ""; autosize(); }
+    await post(`/goals/${id}/say`, { text, plan_message_id: S.view ? shownPlan(S.view) : null });
+    if (typed) {
+      S.says.delete(id);
+      if (S.id === id) { $("say").value = ""; autosize(); }
+    }
     S.forceStick = true;
     tick();
   } catch (x) {
     if (S.id === id) $("say-err").textContent = `Not sent: ${x.message}`;
   } finally { S.saying = false; updateSend(); }
-});
+}
 
 // ---------- small global behaviours ----------
 document.addEventListener("click", e => {

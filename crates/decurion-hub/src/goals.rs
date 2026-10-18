@@ -73,7 +73,7 @@ pub(crate) async fn say(
     if let Some(r) = owner_only(c, "talking to the coordinator") {
         return r;
     }
-    reply(st.store.goal_say(id, &b.text).await)
+    reply(st.store.goal_say(id, &b.text, b.plan_message_id).await)
 }
 
 pub(crate) async fn answer(
@@ -311,8 +311,14 @@ pub(crate) async fn helper_finish(
         None => Hold::Clear,
     };
     match st.store.finish_helper(id, &res, &hold).await {
-        Ok(news) => {
-            tell(&st, news);
+        Ok(done) => {
+            tell(&st, done.news);
+            // A piece the plan's approval accepted: sent now, the way the
+            // owner's Accept sends. The wish was saved with the accept, so a
+            // crash here still sends it at the next start.
+            if let (Some(t), Some(s)) = (done.send, st.sender()) {
+                s.spawn(t);
+            }
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => ApiError(e).into_response(),

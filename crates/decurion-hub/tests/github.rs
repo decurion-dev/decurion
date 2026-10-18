@@ -1364,3 +1364,166 @@ fn a_fix_goes_only_to_its_own_pull_requests_branch() {
     assert!(check_fix_branch("main", "main", Some("main")).is_err());
     assert!(check_fix_branch("decurion/x", "decurion/x", Some("decurion/x")).is_err());
 }
+
+/// Runs one helper job the hub has queued, answering with `text`.
+async fn run_helper(h: &Hub, kind: &str, text: &str) {
+    let claim = ok(
+        &h.r,
+        RUNNER,
+        "POST",
+        "/api/runner/helper/claim",
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
+    )
+    .await;
+    assert_eq!(claim["kind"], kind, "{claim}");
+    let id = claim["job_id"].as_i64().expect("job id");
+    let (s, _, _) = send(
+        &h.r,
+        RUNNER,
+        "POST",
+        &format!("/api/runner/helper/{id}/started"),
+        Body::from("{}"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _, _) = send(
+        &h.r,
+        RUNNER,
+        "POST",
+        &format!("/api/runner/helper/{id}/finish"),
+        Body::from(json!({"ok": true, "text": text, "cost_usd": 0.01}).to_string()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn a_piece_that_passes_its_check_goes_to_github_on_the_plans_approval() {
+    let h = hub(Tok::Fixed).await;
+    let (repo, bare) = app_repo(&h.dir, Origin::GitHub);
+    let main_before = branch_at(&bare, "main").expect("main");
+    let app = ok(
+        &h.r,
+        OWNER,
+        "POST",
+        "/api/apps",
+        json!({"name": "demo", "repo_path": repo.to_string_lossy(), "profile": "A"}),
+    )
+    .await["id"]
+        .as_i64()
+        .expect("app id");
+    let goal = ok(
+        &h.r,
+        OWNER,
+        "POST",
+        "/api/goals",
+        json!({"app_id": app, "text": "Fix the login page"}),
+    )
+    .await["id"]
+        .as_i64()
+        .expect("goal");
+    run_helper(&h, "coordinator", r#"{"say": "Plan.", "plan": {"summary": "Fix it.", "pieces": [{"title": "Fix the login page", "brief": "Fix src/login.rs.", "done_when": "You can sign in."}]}}"#).await;
+    let v = ok(
+        &h.r,
+        OWNER,
+        "GET",
+        &format!("/api/goals/{goal}"),
+        Value::Null,
+    )
+    .await;
+    let plan = v["messages"]
+        .as_array()
+        .and_then(|m| m.last())
+        .expect("plan")["id"]
+        .clone();
+    // The owner's one tap.
+    ok(
+        &h.r,
+        OWNER,
+        "POST",
+        &format!("/api/goals/{goal}/approve"),
+        json!({"plan_message_id": plan}),
+    )
+    .await;
+    run_helper(&h, "design", "Drawn.").await;
+    let work = ok(
+        &h.r,
+        RUNNER,
+        "POST",
+        "/api/runner/claim",
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
+    )
+    .await;
+    let thread = work["thread"]["id"].as_i64().expect("thread");
+    let branch = work["thread"]["branch"]
+        .as_str()
+        .expect("branch")
+        .to_owned();
+    let head = save_work(&h, thread, &branch).await;
+    ok(
+        &h.r,
+        RUNNER,
+        "POST",
+        &format!("/api/threads/{thread}/events"),
+        json!({"kind":"finished","ok":true,"summary":"Fixed the login form."}),
+    )
+    .await;
+    ok(
+        &h.r,
+        RUNNER,
+        "POST",
+        &format!("/api/threads/{thread}/move"),
+        json!({"to":"in_review"}),
+    )
+    .await;
+
+    // The checker passes it: no Accept tap, and it goes to GitHub.
+    run_helper(
+        &h,
+        "review",
+        r#"{"pass": true, "summary": "Sign-in works."}"#,
+    )
+    .await;
+    let t = settled(&h, thread).await;
+    assert_eq!(t["state"], "done");
+    assert_eq!(t["github"]["state"], "sent", "{t}");
+    assert_eq!(t["github"]["url"], "https://github.com/acme/demo/pull/1");
+    let sent_branch = format!("decurion/demo-{thread}-fix-the-login-page");
+    assert_eq!(
+        branch_at(&bare, &sent_branch).as_deref(),
+        Some(head.as_str())
+    );
+    assert_eq!(
+        branch_at(&bare, "main"),
+        Some(main_before),
+        "never the default branch"
+    );
+    let opened: Vec<_> = requests(&h).into_iter().filter(|s| s.0 == "POST").collect();
+    assert_eq!(opened.len(), 1);
+    // The audit says who moved it and why.
+    let why: Vec<String> = sqlx::query_scalar(
+        "SELECT note FROM audit WHERE thread_id = ? AND actor = 'hub' AND to_state = 'done'",
+    )
+    .bind(thread)
+    .fetch_all(h.store.pool())
+    .await
+    .expect("audit");
+    assert!(
+        why.iter().any(|n| n.contains("owner approved the plan")),
+        "{why:?}"
+    );
+
+    // When the owner merges it on GitHub, the watch sees it and the goal
+    // closes by itself.
+    h.fake.lock().expect("fake").merged.push(1);
+    assert_eq!(decurion_hub::pr_watch::poll(&h.state).await, 1);
+    let v = ok(
+        &h.r,
+        OWNER,
+        "GET",
+        &format!("/api/goals/{goal}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(v["goal"]["state"], "done", "{v}");
+}

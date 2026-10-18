@@ -99,6 +99,7 @@ async fn lead_says(r: &axum::Router, store: &Store, text: &str) -> Option<push::
         .finish_helper(job, &res, &Hold::Clear)
         .await
         .expect("finished")
+        .news
 }
 
 const QUESTION: &str = r#"{"say": "One question.", "questions": [{"id": "q1", "text": "Text or email?", "choices": ["Text", "Email"], "recommended": 0}]}"#;

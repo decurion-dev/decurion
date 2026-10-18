@@ -172,6 +172,7 @@ async fn note_in(tx: &mut Transaction<'_, Sqlite>, s: &BrowserSession, text: &st
         kind: MessageKind::Note,
         text: text.to_owned(),
         receipt: None,
+        accept_on_yes: false,
     };
     // A note never sends work back, so the reason is never used.
     add_message_in(tx, thread, &note, OWNER, "a note about the test browser").await?;

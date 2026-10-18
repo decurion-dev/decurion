@@ -3,11 +3,13 @@
 You give Decurion a goal in plain words. The coordinator talks it through with
 you like a project lead with a client: it reads your app's code, asks a few
 questions with choices (and says which one it would pick), then proposes a
-plan split into pieces of work. You approve the plan once. Each piece is built
-by its own agent in its own sealed box, then checked by a second agent that
-can send it back with notes. When everything is built and checked, the
-coordinator writes you a short report and the work waits for your review on
-the board.
+plan split into pieces of work. You approve the plan once, with the button or
+by replying "yes". Each piece is built by its own agent in its own sealed box,
+then checked by a second agent that can send it back with notes. A piece that
+passes goes to GitHub as a pull request by itself: your approval of the plan
+covers it. When everything is built and checked, the coordinator writes you a
+short report with the pull requests in the order to merge them. Once they are
+all merged, the goal closes by itself.
 
 ## What you see
 
@@ -40,8 +42,15 @@ the board.
 - Agents never act on Decurion. They return text; the hub checks it against a
   fixed shape and does the rest. A reply in the wrong shape is sent back to the
   coordinator once to fix.
-- One approval per goal: approving the plan starts every piece. Approval is
-  bound to the exact plan shown; a newer plan needs its own tap.
+- One approval per goal: approving the plan starts every piece, and covers
+  each piece that passes its check. Approval is bound to the exact plan shown;
+  a newer plan needs its own tap. A plain yes ("do it", "go ahead") typed or
+  said while a plan waits approves it, but only the plan that was on screen.
+  Approving works even while the coordinator is still answering; that answer
+  can no longer change the approved plan.
+- A piece that changes a protected part of the app (`.decurion/protected-paths`)
+  is held for the owner even when the checker passes it. The plan marks the
+  pieces the coordinator expects to touch one, so the owner knows up front.
 - Two review rounds at most. If problems remain, the piece is marked
   **needs a look** instead of looping.
 - Coordinator and checker runs use the app's own account and count toward the
@@ -79,7 +88,7 @@ Owner calls (board browser, paired phone, or owner key):
 | `GET /api/goals` | All goals, newest first |
 | `POST /api/goals` `{app_id, text}` | Starts a goal; the coordinator begins |
 | `GET /api/goals/{id}` | The goal, its conversation and its pieces (`GoalView`) |
-| `POST /api/goals/{id}/say` `{text}` | Says something to the coordinator |
+| `POST /api/goals/{id}/say` `{text, plan_message_id?}` | Says something to the coordinator; a plain yes with the waiting plan's id approves it |
 | `POST /api/goals/{id}/answer` `{to, answers:[{question_id, choice?, other?}]}` | Answers the questions in message `to` |
 | `POST /api/goals/{id}/approve` `{plan_message_id}` | Approves that exact plan and starts the work |
 | `POST /api/goals/{id}/retry` | Tries the coordinator's last turn again after it failed |

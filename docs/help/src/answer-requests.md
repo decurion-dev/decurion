@@ -41,7 +41,7 @@ When someone left comments on a pull request, the row says so, for example "PR #
 
 What each button does:
 
-- **Accept** marks the work Done.
+- **Accept** marks the work Done. A plain "yes" in the message box does the same when the agent did not ask you anything.
 - **Send back** gives the work back to the agent. It picks up where it left off.
 - **Reject** marks the work Failed. You can still retry it later.
 - **Continue** lets the work go on.
