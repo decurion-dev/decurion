@@ -181,8 +181,11 @@
 
   // The newest thing the agent said, whether its final summary or a message.
   // Other events, such as a blocked website visit, are never its words.
-  D.lastWords = (ev) => {
-    const last = [...ev].reverse().find((r) => r.event.kind === "finished" || r.event.kind === "message");
+  // A block of questions for the owner reads as just its questions here;
+  // D.rawWords keeps the block for the screens that draw its buttons.
+  D.lastWords = (ev) => D.questions(D.rawWords(ev)).plain;
+  D.rawWords = (ev) => {
+    const last = [...(ev ?? [])].reverse().find((r) => r.event.kind === "finished" || r.event.kind === "message");
     return last ? (last.event.summary ?? last.event.text ?? "") : "";
   };
 
@@ -289,6 +292,301 @@
   D.appName = (id) => apps[id]?.name ?? "";
 
   document.body.classList.toggle("pro", D.pro);
+})();
+
+// ---------- The agent's words: light formatting, its questions, next steps ----------
+// Agents write their summaries in a little markdown. D.richText draws the
+// parts they use (paragraphs, lists, headings, bold, code, quotes, simple
+// tables) with D.el and text nodes only: nothing an agent writes ever
+// becomes HTML, and its links stay plain text. D.questions pulls out what
+// the agent asks the owner, so screens can put it first, and D.askBox draws
+// it with one-tap answers. An answer goes the same way as the message box's
+// "Do this next": the work goes back to its agent with it. Nothing here
+// moves work any other way.
+(() => {
+  const { el, icon } = D;
+  const FENCE = /^\s*(`{3,}|~{3,})\s*([\w-]*)\s*$/;
+  const ROW = /^\s*\|.*\|\s*$/;
+  const RULE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+  const cells = (line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+  const spaces = (s) => s.replace(/\t/g, "    ").length;
+
+  // Lines into blocks: h, p, li (indent, ord, num), quote, code, table, hr.
+  function blocks(text) {
+    const lines = String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
+    const out = [];
+    let open = null; // the block that a next plain line joins
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      let m = line.match(FENCE);
+      if (m) {
+        const body = [];
+        let j = i + 1;
+        for (; j < lines.length; j++) {
+          const e = lines[j].match(/^\s*(`{3,}|~{3,})\s*$/);
+          if (e && e[1][0] === m[1][0] && e[1].length >= m[1].length) break;
+          body.push(lines[j]);
+        }
+        out.push({ k: "code", lang: m[2].toLowerCase(), text: body.join("\n") });
+        i = j;
+        open = null;
+        continue;
+      }
+      if (!line.trim()) { open = null; continue; }
+      if ((m = line.match(/^\s{0,3}#{1,6}\s+(.*?)[\s#]*$/))) { out.push({ k: "h", text: m[1] }); open = null; continue; }
+      if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { out.push({ k: "hr" }); open = null; continue; }
+      if (ROW.test(line) && i + 1 < lines.length && RULE.test(lines[i + 1])) {
+        const rows = [];
+        let j = i + 2;
+        while (j < lines.length && ROW.test(lines[j])) rows.push(cells(lines[j++]));
+        out.push({ k: "table", head: cells(line), rows });
+        i = j - 1;
+        open = null;
+        continue;
+      }
+      if ((m = line.match(/^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/))) {
+        const ord = /\d/.test(m[2]);
+        out.push(open = { k: "li", indent: spaces(m[1]), ord, num: ord ? parseInt(m[2], 10) : 0, text: m[3] });
+        continue;
+      }
+      if ((m = line.match(/^\s*>\s?(.*)$/))) {
+        if (open?.k === "quote") open.text += "\n" + m[1];
+        else out.push(open = { k: "quote", text: m[1] });
+        continue;
+      }
+      if (open) open.text += "\n" + line.trim();
+      else out.push(open = { k: "p", text: line.trim() });
+    }
+    return out;
+  }
+
+  // `code`, **bold**, __bold__, [text](address) as plain text, *italic*.
+  // No lookbehind: older phone browsers would refuse the whole file.
+  const INLINE = /`([^`]+)`|\*\*(\S(?:.*?\S)?)\*\*|__(\S(?:.*?\S)?)__|\[([^\]]+)\]\(([^)\s]+)\)|(^|[^\w*])\*([^\s*](?:[^*]*?[^\s*])?)\*(?![\w*])/g;
+  function inline(s, depth = 0) {
+    const out = [];
+    let last = 0;
+    for (const m of s.matchAll(INLINE)) {
+      const at = m.index + (m[7] !== undefined ? m[6].length : 0);
+      if (at > last) out.push(s.slice(last, at));
+      if (m[1] !== undefined) out.push(el("code", {}, m[1]));
+      else if (m[2] !== undefined || m[3] !== undefined) {
+        const inner = m[2] ?? m[3];
+        out.push(el("strong", {}, ...(depth < 2 ? inline(inner, depth + 1) : [inner])));
+      } else if (m[4] !== undefined) out.push(...inline(m[4], depth + 1), m[4] === m[5] ? "" : ` (${m[5]})`);
+      else out.push(el("em", {}, m[7]));
+      last = m.index + m[0].length;
+    }
+    if (last < s.length) out.push(s.slice(last));
+    return out;
+  }
+  const lines = (text) => text.split("\n").flatMap((l, i) => (i ? [el("br"), ...inline(l)] : inline(l)));
+
+  // D.richText(text) → a <div class="rich"> that is safe to put anywhere.
+  D.richText = (text) => {
+    const root = el("div", { className: "rich" });
+    let stack = []; // open lists: { indent, list, ord }
+    for (const b of blocks(text)) {
+      if (b.k !== "li") stack = [];
+      if (b.k === "h") root.append(el("p", { className: "rh" }, el("strong", {}, ...inline(b.text))));
+      else if (b.k === "p") root.append(el("p", {}, ...lines(b.text)));
+      else if (b.k === "quote") root.append(el("blockquote", {}, ...lines(b.text)));
+      else if (b.k === "hr") root.append(el("hr"));
+      else if (b.k === "code") root.append(el("pre", {}, el("code", {}, b.text)));
+      else if (b.k === "table") {
+        const n = Math.max(b.head.length, ...b.rows.map((r) => r.length));
+        const tr = (r, tag) => el("tr", {}, ...Array.from({ length: n }, (_, i) => el(tag, {}, ...inline(r[i] ?? ""))));
+        root.append(el("div", { className: "rtable" }, el("table", {},
+          el("thead", {}, tr(b.head, "th")), el("tbody", {}, ...b.rows.map((r) => tr(r, "td"))))));
+      } else {
+        while (stack.length && b.indent < stack[stack.length - 1].indent) stack.pop();
+        let top = stack[stack.length - 1];
+        if (top && b.indent === top.indent && top.ord !== b.ord) { stack.pop(); top = stack[stack.length - 1]; }
+        if (!top || b.indent > top.indent) {
+          const list = b.ord ? el("ol", b.num > 1 ? { start: b.num } : {}) : el("ul");
+          const host = top?.list.lastElementChild;
+          if (host && stack.length < 4) host.append(list); else root.append(list);
+          stack.push(top = { indent: b.indent, list, ord: b.ord });
+        }
+        top.list.append(el("li", {}, ...lines(b.text)));
+      }
+    }
+    return root;
+  };
+
+  // ---------- What the agent asks ----------
+  // Agents are told (RULES in the runner) to end with a ```questions block
+  // of JSON: [{ "text": "...", "choices": ["...", "..."] }]. Only the last
+  // block counts and it is checked strictly; a bad one gives no questions
+  // and leaves the text as it was. Without a block, sentences that ask
+  // something are picked out, with no choices.
+  const MAX_Q = 3, MAX_CHOICES = 4, Q_LEN = 300, C_LEN = 120;
+  const clip = (s, n) => {
+    const t = String(s).replace(/\s+/g, " ").trim();
+    return t.length > n ? t.slice(0, n - 1).trimEnd() + "…" : t;
+  };
+  const plain = (s) => s.replace(/\*\*|__|`/g, "").replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, "$1 ($2)");
+  const BLOCK = /^[ \t]*`{3}[ \t]*questions[ \t]*\n([\s\S]*?)\n[ \t]*`{3}[ \t]*$/gm;
+  function parseBlock(src) {
+    let v;
+    try { v = JSON.parse(src); } catch (_) { return null; }
+    if (!Array.isArray(v) || !v.length || v.length > MAX_Q) return null;
+    const out = [];
+    for (const q of v) {
+      if (!q || typeof q !== "object" || Array.isArray(q) || typeof q.text !== "string" || !q.text.trim()) return null;
+      const ch = q.choices ?? [];
+      if (!Array.isArray(ch) || ch.length === 1 || ch.length > MAX_CHOICES) return null;
+      if (ch.some((c) => typeof c !== "string" || !c.trim())) return null;
+      out.push({ text: clip(q.text, Q_LEN), choices: [...new Set(ch.map((c) => clip(c, C_LEN)))] });
+    }
+    return out;
+  }
+  // Words that mean the agent wants something from the owner. "No
+  // questions" is the opposite, so it never counts.
+  const ASKS = /\b(questions?|should I|shall I|do you want|would you like|worth checking|let me know|please confirm|your call|up to you|decide|which (one|do you))\b/i;
+  const NOT_ASKS = /\bno (open |other |further )?questions\b/i;
+  const ASKS_HEAD = /\b(questions?|decisions?|for you|to decide|open items?)\b/i;
+  const sentences = (t) => t.match(/[^.?!]+(?:[.?!]+["')\]]*|$)/g)?.map((x) => x.trim()).filter(Boolean) ?? [];
+  function guess(text) {
+    const under = [], loose = [];
+    let heading = false;
+    for (const b of blocks(text)) {
+      if (b.k === "code" || b.k === "hr" || b.k === "table") continue;
+      if (b.k === "h") { heading = ASKS_HEAD.test(b.text) && !NOT_ASKS.test(b.text); continue; }
+      const t = plain(b.text).replace(/\s+/g, " ").trim();
+      if (!t) continue;
+      if (heading) { under.push(t); continue; }
+      const asked = sentences(t).filter((x) => /\?["')\]]*$/.test(x));
+      if (asked.length) loose.push(...asked);
+      else if (ASKS.test(t) && !NOT_ASKS.test(t)) loose.push(t);
+    }
+    // Real questions beat sentences that only mention one.
+    const real = loose.filter((t) => /\?["')\]]*$/.test(t));
+    const pick = under.length ? under.slice(0, MAX_Q) : (real.length ? real : loose).slice(-MAX_Q);
+    // A section label such as "(e)" in front means nothing on its own.
+    return [...new Set(pick.map((t) => clip(t.replace(/^\(?[a-z0-9]{1,2}\)\s+/i, ""), Q_LEN)))].map((text) => ({ text, choices: [] }));
+  }
+  // D.questions(text) → { questions: [{ text, choices }], rest, fromBlock, plain }.
+  // `rest` is the text without the block; `plain` is for one-line uses.
+  D.questions = (text) => {
+    const s = String(text ?? "");
+    let last = null;
+    for (const m of s.matchAll(BLOCK)) last = m;
+    if (last) {
+      const qs = parseBlock(last[1]);
+      if (!qs) return { questions: [], rest: s, fromBlock: false, plain: s };
+      const rest = (s.slice(0, last.index) + s.slice(last.index + last[0].length)).replace(/\n{3,}/g, "\n\n").trim();
+      return { questions: qs, rest, fromBlock: true, plain: [rest, ...qs.map((q) => q.text)].filter(Boolean).join("\n\n") };
+    }
+    return { questions: guess(s), rest: s, fromBlock: false, plain: s };
+  };
+
+  // D.askBox(thread, questions, { onSent, onTalk(prefill), guessed }) → the "The
+  // agent asks" box. With one question a tap on a choice is the answer; with
+  // more, the owner picks for each and sends once. Every button stays off
+  // while an answer is on its way and after it went, and D.send carries a
+  // receipt, so an answer is never sent twice.
+  const picks = new Map();
+  D.askBox = (t, qs, opts = {}) => {
+    const key = `${t.id}|${t.updated_at}`;
+    const mine = picks.get(key) ?? {};
+    picks.set(key, mine);
+    const multi = qs.length > 1 && qs.some((q) => q.choices.length);
+    const all = [];
+    let sending = false, sent = false;
+    const err = el("p", { className: "field-error", role: "alert" });
+    const box = el("section", { className: `asks${t.state === "needs_you" ? " needs_you" : ""}`, "aria-label": "The agent asks" },
+      el("div", { className: "asks-title" }, icon("question"), opts.guessed ? "The agent seems to ask"
+        : qs.length > 1 ? `The agent asks ${qs.length} things` : "The agent asks"));
+    const answer = async (text) => {
+      if (sending || sent) return;
+      err.textContent = "";
+      if (D.offline) { err.textContent = "Your PC isn't answering. Answer when it's back."; return; }
+      sending = true;
+      paint();
+      try {
+        await D.send(`/threads/${t.id}/messages`, { kind: "follow_up", text });
+        sent = true;
+        picks.delete(key);
+        D.toast(`Sent. "${t.title}" went back to the agent with your answer.`, "send");
+        opts.onSent?.();
+      } catch (e) {
+        err.textContent = `Your answer did not go through. ${e.message}`;
+      } finally {
+        sending = false;
+        paint();
+      }
+    };
+    const choiceBtns = [];
+    qs.forEach((q, i) => {
+      const row = el("div", { className: "aq" }, el("p", { className: "aq-t" }, qs.length > 1 ? `${i + 1}. ${q.text}` : q.text));
+      if (q.choices.length) {
+        const btns = q.choices.map((c) => {
+          const b = el("button", { type: "button", className: "btn choice" }, c);
+          if (multi) b.setAttribute("aria-pressed", "false");
+          b.onclick = (ev) => {
+            ev.stopPropagation();
+            if (!multi) { answer(`${q.text} — ${c}`); return; }
+            mine[i] = mine[i] === c ? undefined : c;
+            paint();
+          };
+          choiceBtns.push([b, i, c]);
+          all.push(b);
+          return b;
+        });
+        row.append(el("div", { className: "aq-choices", role: "group", "aria-label": `Answers to: ${q.text}` }, ...btns));
+      }
+      box.append(row);
+    });
+    const foot = el("div", { className: "asks-foot" });
+    let sendAll = null;
+    if (multi) {
+      sendAll = el("button", { type: "button", className: "btn primary" }, icon("send"), "Send answers");
+      sendAll.onclick = (ev) => {
+        ev.stopPropagation();
+        const lines = qs.map((q, i) => mine[i] && `${q.text} — ${mine[i]}`).filter(Boolean);
+        if (lines.length) answer(lines.join("\n"));
+      };
+      all.push(sendAll);
+      foot.append(sendAll);
+    }
+    if (opts.onTalk) {
+      const own = el("button", { type: "button", className: "btn quiet" }, "Answer in your own words");
+      own.onclick = (ev) => {
+        ev.stopPropagation();
+        opts.onTalk(qs.map((q) => `${q.text}\nMy answer: `).join("\n\n"));
+      };
+      all.push(own);
+      foot.append(own);
+    }
+    if (foot.childNodes.length) box.append(foot);
+    box.append(el("p", { className: "hint" }, "Your answer goes back to the agent, and it picks up where it left off."), err);
+    function paint() {
+      for (const [b, i, c] of choiceBtns) if (multi) b.setAttribute("aria-pressed", mine[i] === c ? "true" : "false");
+      for (const b of all) b.disabled = sending || sent || D.offline;
+      if (sendAll && !sending && !sent) sendAll.disabled = D.offline || !qs.some((_, i) => mine[i]);
+    }
+    paint();
+    return box;
+  };
+
+  // ---------- Fix what it found ----------
+  // New work made from a summary, through the one "What do you want?" box
+  // (D.newWork, compose.js). Only offered where that box exists. The text
+  // stays well under the 8000 characters a goal may hold.
+  const FIX_MAX = 6000;
+  D.canFix = () => typeof D.newWork === "function";
+  D.fixText = (t, said) => {
+    const head = `Fix what "${t.title}" found:\n\n`;
+    let body = String(said ?? "").trim();
+    if (head.length + body.length > FIX_MAX) {
+      const cut = body.slice(0, FIX_MAX - head.length - 80);
+      body = cut.slice(0, Math.max(cut.lastIndexOf("\n"), cut.length - 200)).trimEnd() +
+        `\n\n(Cut short. The full summary is in "${t.title}".)`;
+    }
+    return head + body;
+  };
+  D.fixWork = (t, said) => { if (D.canFix()) D.newWork({ app_id: t.app_id, text: D.fixText(t, said) }); };
 })();
 
 // ---------- Crash-safety additions ----------
@@ -498,7 +796,7 @@
       }
       else if (e.kind === "finished") {
         const cost = pro && e.cost_usd != null ? `${D.money(e.cost_usd)} so far` : "";
-        item(e.ok ? "ok" : "bad", e.ok ? "done" : "failed", el("b", {}, e.ok ? "Finished" : "Could not finish"), when(r), el("div", {}, e.summary), cost && el("div", { className: "hint" }, cost));
+        item(e.ok ? "ok" : "bad", e.ok ? "done" : "failed", el("b", {}, e.ok ? "Finished" : "Could not finish"), when(r), el("div", {}, D.questions(e.summary).plain), cost && el("div", { className: "hint" }, cost));
       } else if (e.kind === "tool") {
         // Simple view folds a run of tool calls into one line.
         let j = i;
@@ -526,7 +824,12 @@
     running: "Change course now stops its current step and gives it your message. Do this next waits until it finishes what it's doing. A note adds information without stopping it.",
     queued: "This work is waiting for its turn. Whatever you send reaches the agent when it starts.",
   };
-  const HOW_IDLE = "The agent isn't working on this right now. Change course now or Do this next sends the work back to the agent with your message. A note waits for the next time it works.";
+  // When the agent is not working, Change course now and Do this next do the
+  // same thing (the work goes back to it with your message), so only the
+  // second shows, named for what it does from here.
+  const IDLE = new Set(["needs_you", "in_review", "failed"]);
+  const SEND_IDLE = { needs_you: "Send this answer", in_review: "Send back with this answer", failed: "Retry with this message" };
+  const howIdle = (state) => `The agent isn't working on this right now. ${SEND_IDLE[state] ?? "Do this next"} sends the work back to the agent with your message, and it picks up where it left off. A note waits for the next time it works.`;
   function sentText(t, kind) {
     if (kind === "note") return t.state === "running" ? "Note added. The agent sees it at its next step." : "Note added. The agent sees it the next time it works.";
     if (t.state === "queued") return "Sent. The agent gets it when it starts.";
@@ -562,7 +865,7 @@
           c.changed();
           c.load();
         } catch (e) {
-          err.textContent = `"${label}" did not go through. ${e.message}`;
+          err.textContent = `"${b.textContent}" did not go through. ${e.message}`;
         } finally {
           sending = false;
           btns.forEach((x) => (x.disabled = D.offline));
@@ -570,19 +873,95 @@
       };
       return b;
     });
-    const box = el("section", { className: "talk" },
-      el("label", { className: "section-title", for: "wk-msg" }, "Tell the agent something"),
-      ta, how, el("div", { className: "row" }, ...btns), waiting, err);
+    const title = el("label", { className: "section-title", for: "wk-msg" }, "Tell the agent something");
+    const box = el("section", { className: "talk" }, title, ta, how, el("div", { className: "row" }, ...btns), waiting, err);
     return {
       box, ta,
+      // "Answer the agent": brings the box into view with the cursor in it,
+      // starting it with `prefill` (the agent's questions) when it is empty.
+      answer(prefill) {
+        if (box.hidden) return;
+        if (prefill && !ta.value.trim()) {
+          ta.value = prefill;
+          drafts[id] = prefill;
+        }
+        const calm = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+        box.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
+        ta.focus({ preventScroll: true });
+        const at = prefill ? ta.value.indexOf("My answer: ") : -1;
+        const end = at >= 0 ? at + "My answer: ".length : ta.value.length;
+        ta.setSelectionRange(end, end);
+      },
       update(t, n) {
         box.hidden = t.state === "done";
-        how.textContent = HOW[t.state] ?? HOW_IDLE;
+        const idle = IDLE.has(t.state);
+        title.textContent = t.state === "in_review" || t.state === "needs_you" ? "Answer the agent" : "Tell the agent something";
+        how.textContent = HOW[t.state] ?? howIdle(t.state);
+        TALK.forEach(([kind, label], i) => {
+          btns[i].hidden = idle && kind === "steer";
+          btns[i].textContent = idle && kind === "follow_up" ? SEND_IDLE[t.state] : label;
+        });
         waiting.hidden = !n;
         waiting.replaceChildren(icon("queued"), `Waiting to reach the agent: ${D.plural(n, "message")}`);
         if (!sending) btns.forEach((x) => (x.disabled = D.offline));
       },
     };
+  }
+
+  // Closes the panel, then runs `fn` once the panel's own step back in the
+  // browser history is over, so a box `fn` opens is not closed by it.
+  function afterClose(fn) {
+    const popping = !!history.state?.work;
+    let ran = false;
+    const go = () => {
+      if (ran) return;
+      ran = true;
+      window.removeEventListener("popstate", go);
+      fn();
+    };
+    if (popping) { window.addEventListener("popstate", go); setTimeout(go, 400); }
+    panel.close();
+    if (!popping) go();
+  }
+
+  // "What next?": the choices from here in plain words, with shortcuts to
+  // the message box and to new work. The moves themselves stay the footer's
+  // buttons; this only says what each one does.
+  function whatNext(c, asks, said) {
+    const t = c.t, s = t.state;
+    const rows = [];
+    const row = (head, text, btn) => rows.push(el("div", { className: "nx" },
+      el("p", { className: "nx-h" }, head), el("p", { className: "nx-t" }, ...[text].flat()), btn || null));
+    const b = (w) => el("b", {}, w);
+    const talk = (label) => {
+      const x = el("button", { type: "button", className: "btn", dataset: { key: "wk-answer" } }, icon("question"), label);
+      x.onclick = () => c.parts.talk.answer(asks.length ? asks.map((q) => `${q.text}\nMy answer: `).join("\n\n") : "");
+      return x;
+    };
+    let fix = null;
+    if (D.canFix() && said.trim() && (s === "in_review" || s === "done")) {
+      fix = el("button", { type: "button", className: "btn", dataset: { key: "wk-fix" } }, icon("tool"), "Fix these");
+      fix.onclick = () => afterClose(() => D.fixWork(t, said));
+    }
+    if (s === "in_review") {
+      row("Looks right?", ["Tap ", b("Accept"), " at the bottom. Decurion sends it to GitHub as a pull request, and you merge it there."]);
+      row(asks.length ? "Want to answer in your own words, or ask for changes?" : "Has a question, or want changes?",
+        "Your message goes back to the agent, and it picks up where it left off.", talk("Answer the agent"));
+      if (fix) row("Want what it found fixed?", "Start new work from this summary. This piece stays as it is.", fix);
+      row("Don't want it?", [b("Reject"), " closes it. Nothing goes to GitHub. Its changes stay on its branch, and you can retry it later."]);
+    } else if (s === "needs_you") {
+      row("Answer it", asks.length ? "Tap an answer above, or type your own. The agent carries on with it."
+        : "Type your answer. The agent carries on with it.", asks.length ? null : talk("Answer the agent"));
+      row("Rather not answer?", [b("Continue"), " lets the agent carry on without an answer. ", b("Stop"), " ends the work; its changes stay on its branch."]);
+    } else if (s === "failed") {
+      row("Try again?", [b("Retry"), " starts it again, and it picks up where it left off."]);
+      row("Want it done differently?", "Tell the agent what to change. The work goes back to it with your message.", talk("Tell the agent"));
+    } else if (s === "done") {
+      if (t.github?.state === "sent" && t.github.pull_request) row("Merge it on GitHub", "Open the pull request above, look it over, and merge it there. Decurion never merges.");
+      if (fix) row("Want what it found fixed?", "Start new work from this summary.", fix);
+    }
+    if (!rows.length) return null;
+    return el("section", {}, el("div", { className: "section-title" }, "What next?"), el("div", { className: "next" }, ...rows));
   }
 
   function draw(c) {
@@ -620,16 +999,28 @@
     p.head.replaceWith(head);
     p.head = head;
 
-    const said = D.lastWords(ev);
+    // What the agent asks comes first, then GitHub, then its words in full,
+    // then what the owner can do next.
+    const { questions, rest, fromBlock } = D.questions(D.rawWords(ev));
+    const asks = IDLE.has(t.state) ? questions : [];
     const upper = [];
-    if (said && t.state !== "running") {
-      const label = { needs_you: "The agent is asking", in_review: "The agent's summary", failed: "What went wrong", done: "The agent's summary", queued: "Last thing it said" }[t.state];
-      upper.push(el("section", {}, el("div", { className: "section-title" }, label), el("div", { className: `callout ${t.state}` }, said)));
+    if (asks.length) {
+      upper.push(D.askBox(t, asks, {
+        onSent: () => { c.sig = ""; c.changed(); c.load(); },
+        onTalk: (pre) => p.talk.answer(pre),
+        guessed: !fromBlock,
+      }));
     }
     if (t.github) {
-      upper.unshift(el("section", {}, el("div", { className: "section-title" }, "GitHub"),
+      upper.push(el("section", {}, el("div", { className: "section-title" }, "GitHub"),
         D.github(t, () => { c.sig = ""; c.changed(); c.load(); })));
     }
+    if (rest.trim() && t.state !== "running") {
+      const label = { needs_you: asks.length ? "What the agent said" : "The agent is asking", in_review: "The agent's summary", failed: "What went wrong", done: "The agent's summary", queued: "Last thing it said" }[t.state];
+      upper.push(el("section", {}, el("div", { className: "section-title" }, label), el("div", { className: `callout rich-box ${t.state}` }, D.richText(rest))));
+    }
+    const next = whatNext(c, asks, rest);
+    if (next) upper.push(next);
     p.upper.replaceChildren(...upper);
     browserPart(c);
     p.talk.update(t, waiting);
@@ -786,7 +1177,9 @@
     };
     await c.load();
     if (cur !== c) return;
-    if (opts.talk && c.parts && !c.parts.talk.box.hidden) c.parts.talk.ta.focus();
+    if (opts.talk && c.parts && !c.parts.talk.box.hidden) {
+      if (opts.prefill) c.parts.talk.answer(opts.prefill); else c.parts.talk.ta.focus();
+    }
     timer = setInterval(c.load, 3000);
   };
   D.onPro(() => { if (cur?.parts) { cur.sig = ""; draw(cur); } });
