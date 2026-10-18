@@ -562,6 +562,43 @@ async fn board_sends_a_content_security_policy() {
     assert!(csp.contains("frame-ancestors 'none'"));
 }
 
+#[tokio::test]
+async fn the_plan_and_page_viewer_are_served_with_the_board_rules() {
+    let (r, _) = hub().await;
+    for path in ["/plan", "/pages/1/2"] {
+        let resp = r
+            .clone()
+            .oneshot(Request::get(path).body(Body::empty()).expect("req"))
+            .await
+            .expect("resp");
+        assert_eq!(resp.status(), StatusCode::OK, "{path}");
+        let h = resp.headers();
+        let csp = h
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(csp.contains("default-src 'self'"), "{path}");
+        assert!(csp.contains("frame-ancestors 'none'"), "{path}");
+        assert_eq!(
+            h.get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+            Some("no-store"),
+            "{path}"
+        );
+    }
+    // The viewer frames the agent's page with no permissions at all.
+    let resp = r
+        .clone()
+        .oneshot(Request::get("/pages/1/2").body(Body::empty()).expect("req"))
+        .await
+        .expect("resp");
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let html = String::from_utf8_lossy(&body);
+    assert!(html.contains(r#"f.setAttribute("sandbox", "");"#));
+    assert!(!html.contains("allow-scripts"));
+}
+
 async fn get(r: &axum::Router, path: &str, cookie: Option<&str>) -> axum::response::Response {
     let mut b = Request::get(path).header(header::USER_AGENT, "Mozilla/5.0 (Linux; Android 15)");
     if let Some(c) = cookie {
