@@ -49,6 +49,8 @@ If you add a dependency with a license that is not on the allow list, say so in 
 
 Pull requests written with the help of AI coding agents (including ones run through Decurion itself) are welcome. They are held to exactly the same bar as any other PR: a human is responsible for the change, the checks must pass, and a maintainer reviews it like any other contribution. Please make sure you understand and can explain every line you submit.
 
+Agents start at [AGENTS.md](AGENTS.md) (Claude Code reads it through [CLAUDE.md](CLAUDE.md)), which links the how-tos in [`docs/agents/`](docs/agents/).
+
 ## License and sign-off
 
 Decurion is licensed under the [Apache License 2.0](LICENSE). By contributing, you agree that your contribution is licensed under the same license (inbound = outbound), as described in section 5 of the license.

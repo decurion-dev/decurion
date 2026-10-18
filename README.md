@@ -66,6 +66,7 @@ Keep Docker Desktop's "Expose daemon on tcp://localhost:2375 without TLS" settin
 - `docs/help` help pages
 - `docs/spikes` what we tested and learned
 - `docs/help` the help pages, `docs/adr` design decisions, `docs/addons` how to write an add-on
+- [`AGENTS.md`](AGENTS.md) and [`docs/agents`](docs/agents/) the map, rules and how-tos that AI agents read before changing Decurion's own code
 - `packaging` the Windows installer and the Mac and Linux install scripts (see [RELEASING.md](RELEASING.md))
 
 Want to help? Read [CONTRIBUTING.md](CONTRIBUTING.md). Found a security problem? See [SECURITY.md](SECURITY.md).

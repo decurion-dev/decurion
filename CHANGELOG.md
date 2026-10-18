@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **A cap per app.** Each app can have its own monthly cap across all paid AIs, coordinator and review work included.
 - Contribution guide, security policy, code of conduct, issue and pull request templates, and a cargo-deny configuration for dependency license and source checks.
 - **Website limits for agents.** Each agent's container is on its own closed network whose only way out is a small gate. The gate lets through only the AIs (Claude, ChatGPT, Grok), the package stores (npm, PyPI, crates.io) and the websites you add for each app in Settings. Anything else is turned away and shows in the work's activity as a blocked visit. Agents can no longer reach your PC, home network or Tailscale devices. Installers build the gate the first time Decurion starts.
+- **Protected parts.** An app can list the parts it wants you to look at yourself in `.decurion/protected-paths`. A piece of a goal that changes any of them waits for you even when the checker passes it. The hub reads the list from the code the work started from, so the agent cannot take anything off it, and holds the piece if it cannot tell. Coordinators and builders now also read an app's AGENTS.md or CLAUDE.md first.
 
 ## [0.1.0] - Unreleased
 
