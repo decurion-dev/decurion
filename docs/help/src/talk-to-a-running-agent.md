@@ -5,7 +5,7 @@ This page shows how to change an agent's direction, give it more to do, or tell 
 ## Send a message
 
 1. On the board, click the card for the work.
-2. Find **Tell the agent something** in the panel. On your phone, tap **Tell the agent something** on the card.
+2. Find **Tell the agent something** on the panel's **Overview** tab, which opens first. On your phone, tap **Tell the agent something** on the card.
 3. Type your message.
 4. Click the button for what you want:
 

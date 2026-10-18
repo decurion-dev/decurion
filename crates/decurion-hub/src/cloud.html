@@ -39,6 +39,9 @@
     background: var(--accent-soft); color: var(--accent-ink); font: 650 14px/1 var(--font);
   }
   .card ol, .card ul:not(.rows) { margin: 0; padding-left: 22px; display: grid; gap: 4px; }
+  /* Only the open step is blue. */
+  .ptab .num { width: 22px; height: 22px; font-size: 12px; background: var(--surface-2); color: var(--muted); }
+  .ptab[aria-selected="true"] .num { background: var(--accent-soft); color: var(--accent-ink); }
   .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
   .field-error:empty { display: none; }
   .notice p + p { margin-top: 6px; }
@@ -112,7 +115,10 @@
     <ul class="rows" id="workers"></ul>
   </section>
 
-  <section class="card">
+  <!-- One step at a time, under a row of step tabs (D.tabs in ui.js). -->
+  <div id="steps"></div>
+
+  <section class="card step" id="step-1">
     <h2><span class="num">1</span>Make a Tailscale key</h2>
     <p>Tailscale is the private network that already lets your phone reach your PC. The new server joins it the same way, with a key.</p>
     <ol>
@@ -120,11 +126,13 @@
       <li>Press <b>Generate auth key</b>. Leave the settings as they are: a key that works once is right.</li>
       <li>Press <b>Generate key</b>, copy it, and paste it here.</li>
     </ol>
-    <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="tskey-auth-…" aria-label="Tailscale key">
+    <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="tskey-auth-…" aria-label="Tailscale key" aria-describedby="key-err">
+    <p class="field-error" id="key-err" role="alert"></p>
     <p class="notice safe">The key stays on this page. Decurion never sends it anywhere: it only goes into the setup text in step 2, and it is forgotten when you close this page.</p>
+    <div class="row"><button type="button" class="btn" data-next="2">Next: create a server</button></div>
   </section>
 
-  <section class="card">
+  <section class="card step" id="step-2">
     <h2><span class="num">2</span>Create a server</h2>
     <p>Rent a small server from any hosting company that offers Ubuntu and a <b>user data</b> box, for example
        <a href="https://www.hetzner.com/cloud" target="_blank" rel="noopener noreferrer">Hetzner</a> or
@@ -149,10 +157,11 @@
       <textarea id="setup-text" readonly aria-label="Setup text" spellcheck="false"></textarea>
       <div class="row"><button type="button" class="btn" id="copy">Copy</button><span class="hint" id="copied" role="status"></span></div>
       <p class="hint">This setup text works once, within <span id="valid-for">24 hours</span>. It holds your Tailscale key and a one-time Decurion code, so do not share it.</p>
+      <div class="row"><button type="button" class="btn" data-next="3">Next: wait for it to connect</button></div>
     </div>
   </section>
 
-  <section class="card">
+  <section class="card step" id="step-3">
     <h2><span class="num">3</span>Wait for it to connect</h2>
     <p>Once the server is created, it sets itself up: it joins Tailscale, builds Decurion and then connects to your PC.
        <b>The first time takes about 10 to 20 minutes.</b> You can close this page and come back.</p>
@@ -667,6 +676,16 @@ if (matchMedia("(max-width: 640px), (display-mode: standalone)").matches) {
   $("brand").href = "/inbox";
 }
 
+// The three steps, one shown at a time. Each step's Next button opens the
+// next one; the tabs open any step directly.
+const steps = D.tabs([
+  { id: "1", label: [D.el("span", { className: "num" }, "1"), "Key"], panel: $("step-1") },
+  { id: "2", label: [D.el("span", { className: "num" }, "2"), "Server"], panel: $("step-2") },
+  { id: "3", label: [D.el("span", { className: "num" }, "3"), "Connect"], panel: $("step-3") },
+], { label: "Steps", onPick: () => $("steps").scrollIntoView({ block: "nearest" }) });
+$("steps").replaceWith(steps.el);
+for (const b of document.querySelectorAll("[data-next]")) b.onclick = () => steps.select(b.dataset.next);
+
 // The name of the worker we are waiting for (from the last setup text), and when we started.
 let waitingFor = null, waitStart = 0;
 
@@ -696,11 +715,13 @@ function check(value, pattern, what) {
   return value;
 }
 
+$("key").oninput = () => { $("key-err").textContent = ""; };
 $("make").onclick = async () => {
   $("make-err").textContent = "";
   const key = $("key").value.trim();
-  if (!key) { $("make-err").textContent = "Paste your Tailscale key in step 1 first."; $("key").focus(); return; }
-  if (!/^tskey-[A-Za-z0-9_-]+$/.test(key)) { $("make-err").textContent = "That does not look like a Tailscale key. It starts with tskey-. Copy it again from the Tailscale keys page."; $("key").focus(); return; }
+  // A missing or wrong key is fixed in step 1, so the error shows there.
+  if (!key) { $("key-err").textContent = "Paste your Tailscale key here first."; steps.select("1"); $("key").focus(); return; }
+  if (!/^tskey-[A-Za-z0-9_-]+$/.test(key)) { $("key-err").textContent = "That does not look like a Tailscale key. It starts with tskey-. Copy it again from the Tailscale keys page."; steps.select("1"); $("key").focus(); return; }
   $("make").disabled = true;
   try {
     const j = await api("/workers/join-code", { method: "POST" });
