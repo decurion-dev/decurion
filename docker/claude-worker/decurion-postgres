@@ -82,7 +82,9 @@ set_up() {
     echo 'CREATE DATABASE :"name" OWNER :"owner";' | psql_su -d postgres -v name="$d" -v owner="$u"
   fi
   if [ -n "$init" ]; then
-    export POSTGRES_USER="$u" POSTGRES_DB="$d" POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
+    # Passed on only if the caller set one: logins here need no password.
+    : "${POSTGRES_PASSWORD:=}"
+    export POSTGRES_USER="$u" POSTGRES_DB="$d" POSTGRES_PASSWORD
     export PGHOST="$data" PGPORT="$port" PGUSER=postgres PGDATABASE="$d"
     local f
     for f in "$init"/*; do
