@@ -21,7 +21,7 @@ In Goals, each of the project lead's questions has its own mic beside **Somethin
 ## Hear replies and reports
 
 - Tap **Read aloud** on a project lead's reply, a question, or a finished piece of work's report. Tap **Stop** to stop.
-- On your phone's inbox, tap **Read what needs me** to hear everything that's waiting on you, top to bottom.
+- On your phone's inbox, tap **Read what needs me** to hear everything that needs you, top to bottom.
 - To hear new replies from your project lead as they arrive, turn on **Read new replies aloud** in **Settings**, under **Voice**.
 
 ## Talk mode

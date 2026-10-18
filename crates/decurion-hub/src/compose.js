@@ -298,7 +298,7 @@
       showClaudeChoice();
     }
 
-    // Fills the box in for the owner, such as "Fix these" on finished work.
+    // Fills the box in for the owner, such as "Fix what it found" on finished work.
     // The owner still reads it and presses the button; nothing is sent here.
     function fill({ app_id, text, mode: m } = {}) {
       if (app_id != null) { wantApp = String(app_id); setApp(app_id); }

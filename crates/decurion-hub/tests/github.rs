@@ -1245,7 +1245,7 @@ async fn fix_these_starts_one_fix_with_the_comments_as_data() {
     assert_eq!(n, 2);
 }
 
-/// Taps Fix these, builds the fix the way a runner does, puts it in review
+/// Taps Answer the comments, builds the fix the way a runner does, puts it in review
 /// and accepts it. Returns the fix and its commit.
 async fn fixed(h: &Hub, thread: i64, before_claim: Option<&str>) -> (i64, String) {
     param_comments(h);

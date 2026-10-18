@@ -60,7 +60,7 @@ work, each with how you will know it is done.
 Each piece of work runs on its own and shows on the board. When a piece is
 built, a checker agent tries it in a separate copy, takes "as built"
 pictures, and either passes it or sends it back with notes. A piece gets at
-most two checks; if it still has problems, it is marked **needs a look**. The
+most two checks; if it still has problems, it is marked **Needs you · take a look**. The
 checker lists what it ran and marks each thing it says as **Checked** or
 **Guessed**.
 

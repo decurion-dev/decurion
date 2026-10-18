@@ -63,7 +63,7 @@ hint to look for yourself.
 - **A research piece moves to Failed.** Its agent finished without a report or
   a summary. See [When something fails](when-something-fails.md), then send it
   back to try again.
-- **The research finished without a report.** The piece says **needs a look**.
+- **The research finished without a report.** The piece says **Needs you · take a look**.
   Read its activity on the board, or send it back.
 - **Ask why says the piece has not been built yet.** Wait until its agent has
   finished at least once.

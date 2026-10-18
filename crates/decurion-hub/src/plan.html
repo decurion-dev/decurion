@@ -321,7 +321,7 @@
   <section id="panel-pages" role="tabpanel" aria-labelledby="pt-pages" hidden>
     <div class="pg-tools" id="pg-tools" hidden>
       <p class="hint">Pages agents drew for this app: plans before the work, and pictures of it as built.</p>
-      <button class="fchip" type="button" id="only-waiting" aria-pressed="false"><span class="dot" aria-hidden="true"></span><span id="only-waiting-t">Waiting for you</span></button>
+      <button class="fchip" type="button" id="only-waiting" aria-pressed="false"><span class="dot" aria-hidden="true"></span><span id="only-waiting-t">Needs you</span></button>
     </div>
     <div id="pages-body"></div>
   </section>
@@ -369,18 +369,18 @@
   // One word, one symbol and one colour for each goal state.
   const GOAL = {
     talking: ["Talking it through", "talking", "talk"],
-    plan_ready: ["Plan ready for you", "you", "bang"],
+    plan_ready: ["Needs you · approve the plan", "you", "bang"],
     working: ["Working", "working", "half"],
-    for_review: ["Ready for your review", "you", "bang"],
+    for_review: ["Needs you · review the work", "you", "bang"],
     done: ["Done", "done", "check"],
     stopped: ["Stopped", "stopped", "cross"],
   };
   const STEP = {
     done: ["check", "", "done"],
     now: ["half", "Now", "an agent is on it now"],
-    you: ["bang", "Waiting for you", "waiting for you"],
+    you: ["bang", "Needs you", "needs you"],
     later: ["ring", "", "not started yet"],
-    problem: ["bang", "Needs a look", "needs a look"],
+    problem: ["bang", "Failed", "failed"],
     skipped: ["dash", "", "skipped"],
   };
   const KIND = { plan: ["Visual plan", "layout"], check: ["As built", "picture"] };
@@ -642,7 +642,7 @@
       return el("a", { className: `chip${p.waiting ? " waiting" : ""}`, href: `/pages/${p.goal_id}/${p.id}`, title: `${kind}: ${p.title}` },
         el("span", { className: "pic" }, shape(sym)),
         el("span", { className: "nm" }, p.title),
-        p.waiting ? el("span", { className: "wait" }, "Question waiting") : null);
+        p.waiting ? el("span", { className: "wait" }, "Needs you · a question") : null);
     }));
   }
 
@@ -860,7 +860,7 @@
     ct.textContent = lib?.length ? String(waiting || lib.length) : "";
     ct.className = waiting ? "ct wait" : "ct";
     ct.title = waiting ? `${D.plural(waiting, "page")} with questions for you` : "";
-    $("pt-pages").setAttribute("aria-label", waiting ? `Pages, ${waiting} waiting for you` : "Pages");
+    $("pt-pages").setAttribute("aria-label", waiting ? `Pages, ${waiting} ${waiting === 1 ? "needs" : "need"} you` : "Pages");
     if (S.tab !== "pages") return;
     const body = $("pages-body");
     if (!lib) {
@@ -869,7 +869,7 @@
       return;
     }
     $("pg-tools").hidden = !lib.length;
-    $("only-waiting-t").textContent = `Waiting for you${waiting ? ` (${waiting})` : ""}`;
+    $("only-waiting-t").textContent = `Needs you${waiting ? ` (${waiting})` : ""}`;
     // Group by goal, newest goal first, keeping the library's newest-first order.
     const groups = [];
     const byGoal = new Map();
@@ -894,7 +894,7 @@
         el("div", { className: "pg-grid" }, ...g.pages.map((p) => card(p)))))));
         body.append(el("div", { className: "empty-state", id: "pg-none", hidden: true },
           el("div", { className: "mark" }, icon("done", "l")),
-          el("h3", {}, "Nothing is waiting for you"),
+          el("h3", {}, "Nothing needs you"),
           el("p", {}, "Every question on these pages has an answer.")));
       }
     }
@@ -935,7 +935,7 @@
       el("span", { className: "kind" }, shape(sym), kind),
       el("span", { className: "pc-title" }, p.title),
       el("span", { className: "pc-meta" }, [p.piece_title && !p.title.includes(p.piece_title) ? p.piece_title : null, ago(p.created_at)].filter(Boolean).join(" · ")),
-      p.waiting ? el("span", { className: "badge" }, p.questions > 1 ? "Questions waiting for you" : "A question waiting for you") : null);
+      p.waiting ? el("span", { className: "badge" }, p.questions > 1 ? `Needs you · answer ${p.questions} questions` : "Needs you · answer a question") : null);
   }
 
   // ---------- Start ----------
