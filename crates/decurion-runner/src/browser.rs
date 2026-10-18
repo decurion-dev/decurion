@@ -12,10 +12,13 @@ use decurion_proto::browser::{
 };
 
 /// The most saved sign-ins one run's browser takes.
-pub const MAX_STATES: usize = 64;
+pub const MAX_STATES: usize = 16;
 /// The longest line the runner writes: a start line carries every saved
-/// sign-in, each at most [`MAX_STATE_BYTES`].
+/// sign-in, each at most [`MAX_STATE_BYTES`]. The box reads lines of up to
+/// 40 MiB (`MAX_IN_LINE` in browser-host.mjs), so this must stay below it.
 pub const MAX_TO_LINE: usize = MAX_STATES * (MAX_STATE_BYTES + (16 << 10));
+const BOX_MAX_IN_LINE: usize = 40 << 20;
+const _: () = assert!(MAX_TO_LINE < BOX_MAX_IN_LINE);
 /// The longest line the box may print: a saved sign-in, with room for the
 /// rest of the line. A screen frame is smaller.
 pub const MAX_FROM_LINE: usize = MAX_STATE_BYTES + (64 << 10);
@@ -283,6 +286,15 @@ mod tests {
         ));
         assert!(start_sign_in("file:///etc/passwd").is_err());
         assert!(start_sign_in("javascript:alert(1)").is_err());
+    }
+
+    #[test]
+    fn the_longest_start_line_fits_what_the_box_reads() {
+        // MAX_TO_LINE is checked against BOX_MAX_IN_LINE when compiling;
+        // this checks the box still reads that much.
+        let host = include_str!("../../../docker/claude-worker/browser-host.mjs");
+        assert_eq!(BOX_MAX_IN_LINE, 40 << 20);
+        assert!(host.contains("const MAX_IN_LINE = 40 << 20;"));
     }
 
     #[test]
