@@ -477,16 +477,19 @@ pub async fn remind(st: &AppState) -> Result<usize> {
             1 => "tomorrow".to_owned(),
             n => format!("in {n} days"),
         };
-        p.notify_to(
-            &st.store,
-            "A sign-in runs out soon",
-            &format!(
-                "{} runs out {when}. Open Settings, Sign-ins to renew it.",
-                item.label
-            ),
-            "/inbox#settings/sign-ins",
-        )
-        .await;
+        let n = crate::push::Notice {
+            url: "/inbox#settings/sign-ins".to_owned(),
+            tag: format!("sign-in-{}", item.key),
+            ..crate::push::Notice::new(
+                "",
+                "a sign-in runs out soon",
+                &format!(
+                    "{} runs out {when}. Open Settings, Sign-ins to renew it.",
+                    item.label
+                ),
+            )
+        };
+        p.send(&st.store, &n).await;
     }
     Ok(sent)
 }
