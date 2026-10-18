@@ -7,6 +7,8 @@
 // - Everything is built with D.el, so names, paths and hub text go in as
 //   text, never as HTML. The one exception is the pairing QR code, which the
 //   hub draws itself from the pairing link.
+// - Links from the hub (such as Tailscale's page to turn on HTTPS) are
+//   shown only when they are https, and built with D.el as links.
 // - Nothing the owner is typing is wiped by the timed refresh: lists with a
 //   focused field are not redrawn, and redraws give focus back by data-key.
 // - Test-key values and the GitHub token go to the hub once, in a password
@@ -30,6 +32,7 @@
   const siteDraft = {}, siteErr = {}, siteBusy = {}; // app id -> typed text, error, saving
   const sitesSaved = new Map();  // app id -> list the hub just stored
   let sitesSeq = 0, builtIn = null, devices = null;
+  let conn = null;                // GET /phone/connection: the address phones use
   const sigs = {};
   const parts = {};               // elements this module draws into, by name
 
@@ -174,8 +177,9 @@
     parts.github = el("div", { id: "github-token" }, loading("p"));
     parts.signIns = el("div", { id: "sign-in-apps" }, loading("p"));
     // Phones
-    parts.pair = el("button", { type: "button", className: "btn", id: "pair" }, icon("phone"), phone() ? "Pair another phone" : "Pair a phone");
+    parts.pair = el("button", { type: "button", className: "btn", id: "pair" });
     parts.pair.onclick = pairPhone;
+    pairLabel();
     parts.qr = el("div", { className: "qr", id: "qr", hidden: true });
     parts.devices = el("ul", { className: "rows", id: "devices" }, loading());
 
@@ -603,10 +607,65 @@
     });
   }
 
+  // Before the hub has an https address, the button sets Tailscale up first,
+  // so it says so.
+  function pairLabel() {
+    const text = conn && !conn.https ? "Connect your phone" : phone() ? "Pair another phone" : "Pair a phone";
+    if (!parts.pair || parts.pair.dataset.label === text) return;
+    parts.pair.dataset.label = text;
+    parts.pair.replaceChildren(icon("phone"), text);
+  }
+
+  async function loadConnection() {
+    try { conn = await D.api("/phone/connection"); } catch (e) {
+      if (e.signedOut) { signedOut(); return; }
+      conn = null;
+    }
+    pairLabel();
+  }
+
+  // "Connect your phone" fails with {error, link}; anything else is plain text.
+  function connectFailure(e) {
+    try {
+      const v = JSON.parse(e.message);
+      if (v && typeof v.error === "string") return { error: v.error, link: typeof v.link === "string" ? v.link : null };
+    } catch (_) { /* plain text */ }
+    return { error: e.message, link: null };
+  }
+
+  function showConnectFailure(f) {
+    const link = f.link && f.link.startsWith("https://")
+      ? el("a", { href: f.link, target: "_blank", rel: "noopener noreferrer" },
+        f.link.startsWith("https://tailscale.com/download") ? "Get Tailscale" : "Open the Tailscale page")
+      : null;
+    parts.qr.hidden = false;
+    fill(parts.qr, el("div", { className: "notice warn", role: "alert" }, icon("alert"),
+      el("div", { className: "grow" }, el("p", {}, f.error), link ? el("p", {}, link) : null)));
+  }
+
+  // Asks the hub to set up Tailscale's https address when it has none yet.
+  // True when the hub has one now.
+  async function connect() {
+    if (conn && conn.https) return true;
+    parts.pair.dataset.label = "";
+    parts.pair.replaceChildren(icon("phone"), "Connecting…");
+    try {
+      const c = await D.api("/phone/connect", { method: "POST" });
+      conn = { public_url: c.url, https: true };
+      return true;
+    } catch (e) {
+      if (e.signedOut) { signedOut(); return false; }
+      if (D.offline) { D.toast(`Couldn't connect your phone. ${e.message}`, "alert"); return false; }
+      showConnectFailure(connectFailure(e));
+      return false;
+    } finally { pairLabel(); }
+  }
+
   async function pairPhone() {
     const b = parts.pair;
     b.disabled = true;
     try {
+      if (!(await connect())) return;
       const p = await D.api("/pairing", { method: "POST" });
       const box = el("div", { className: "qr-box" });
       box.innerHTML = p.qr_svg; // drawn by the hub itself from the pairing link
@@ -848,6 +907,7 @@
       shown = true;
       render();
       loadDevices();
+      loadConnection();
       loadKeys();
       loadGitHub();
       loadSignIns();

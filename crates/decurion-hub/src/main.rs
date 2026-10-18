@@ -65,7 +65,12 @@ async fn main() -> anyhow::Result<()> {
         decurion_hub::github::Tokens::Owner(Some(vault.clone())),
     )
     .context("set up sending work to GitHub")?;
+    // DECURION_PUBLIC_URL wins; otherwise the address "Connect your phone"
+    // saved last time.
     let state = AppState::new(store, keys, code, public_url)
+        .use_saved_public_url()
+        .await?
+        .with_port(port)
         .with_push(pusher)
         .with_vault(vault)
         .with_files(dir.join("saved-work"))
