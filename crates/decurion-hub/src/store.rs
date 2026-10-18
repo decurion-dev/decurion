@@ -47,7 +47,7 @@ pub struct Store {
 
 const THREAD_COLS: &str =
     "id, app_id, title, prompt, state, ai, session_id, branch, place, updated_at, parent_id, background,
-     gh_state, gh_branch, gh_url, gh_pr, gh_error";
+     gh_state, gh_branch, gh_url, gh_pr, gh_error, fix_of";
 
 /// The actor recorded for the owner's own moves.
 pub const OWNER: &str = "owner";
@@ -59,7 +59,8 @@ pub const MAX_DEPTH: i64 = 5;
 pub(crate) const RECEIPT_REUSED: &str = "this receipt was already used for something else";
 
 pub(crate) const APP_COLS: &str =
-    "id, name, repo_path, profile, pay_per_use, monthly_cap_micros, sites";
+    "id, name, repo_path, profile, pay_per_use, monthly_cap_micros, sites, reviewer,
+     COALESCE(first_on = date('now', 'localtime'), 0) AS first_today";
 
 fn thread_from(row: &SqliteRow) -> Result<Thread> {
     let state: String = row.try_get("state")?;
@@ -79,6 +80,7 @@ fn thread_from(row: &SqliteRow) -> Result<Thread> {
         parent_id: row.try_get("parent_id")?,
         background: row.try_get("background")?,
         github: crate::github::send_from(row)?,
+        fix_of: row.try_get("fix_of")?,
     })
 }
 
@@ -95,6 +97,8 @@ pub(crate) fn app_from(row: &SqliteRow) -> Result<App> {
         monthly_cap_usd: row
             .try_get::<Option<i64>, _>("monthly_cap_micros")?
             .map(crate::spend::to_usd),
+        reviewer: row.try_get("reviewer")?,
+        first_today: row.try_get("first_today")?,
     })
 }
 
@@ -375,7 +379,7 @@ impl Store {
             let Some(row) = sqlx::query(
                 "SELECT t.id, t.app_id, t.title, t.prompt, t.state, t.ai, t.session_id, t.branch,
                         t.place, t.updated_at, t.parent_id, t.background, t.pay_per_use AS thread_ppu,
-                        t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error
+                        t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, t.fix_of
                  FROM threads t JOIN apps a ON a.id = t.app_id
                  WHERE t.state = 'queued' AND t.place = ?
                    AND (t.ai <> 'claude' OR t.pay_per_use = 1 OR a.pay_per_use = 1 OR NOT EXISTS (

@@ -281,6 +281,14 @@ pub struct App {
     /// paid account. `None` means only the accounts' own caps apply.
     #[serde(default)]
     pub monthly_cap_usd: Option<f64>,
+    /// The GitHub login who reviews this app's pull requests. Each one asks
+    /// them for a review and says they review next.
+    #[serde(default)]
+    pub reviewer: Option<String>,
+    /// The owner starred this app to go first in the queue today. Ends by
+    /// itself when the day does.
+    #[serde(default)]
+    pub first_today: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,6 +329,10 @@ pub struct Thread {
     /// Accepted work sent to GitHub by the hub, once the owner accepts it.
     #[serde(default)]
     pub github: Option<GitHubSend>,
+    /// This work fixes review comments on the pull request that work
+    /// opened, and goes to that same branch when accepted.
+    #[serde(default)]
+    pub fix_of: Option<i64>,
 }
 
 /// Where sending accepted work to GitHub has got to. Only the hub sends,
