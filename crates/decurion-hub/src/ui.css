@@ -293,6 +293,49 @@ dialog.panel[open] { display: flex; flex-direction: column; animation: slide .22
 .callout { border-radius: var(--radius); padding: 14px; background: var(--surface-2); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; max-height: 40vh; overflow: auto; }
 .callout.needs_you { background: var(--amber-soft); box-shadow: inset 0 0 0 1px var(--amber-line); }
 .callout.failed { background: var(--red-soft); box-shadow: inset 0 0 0 1px var(--red-line); }
+.callout.rich-box { white-space: normal; }
+
+/* The agent's words, lightly formatted (D.richText in ui.js). */
+.rich { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; overflow-wrap: anywhere; }
+.rich > * { margin: 0; min-width: 0; }
+.rich ul, .rich ol { margin: 0; padding-left: 1.4em; }
+.rich li + li { margin-top: 4px; }
+.rich li > ul, .rich li > ol { margin-top: 4px; }
+.rich li::marker { color: var(--muted); }
+.rich strong { font-weight: 650; }
+.rich code { font-family: var(--mono); font-size: .9em; background: var(--surface-3); padding: 1px 5px; border-radius: 4px; }
+.rich pre { padding: 10px 12px; background: var(--surface-3); border-radius: var(--radius-s); overflow-x: auto; font: 12.5px/1.45 var(--mono); white-space: pre; }
+.rich pre code { background: none; padding: 0; font-size: inherit; }
+.rich blockquote { padding-left: 10px; border-left: 3px solid var(--field-line); color: var(--muted); }
+.rich hr { border: 0; border-top: 1px solid var(--line); width: 100%; }
+.rich .rtable { overflow-x: auto; }
+.rich table { border-collapse: collapse; font-size: 13px; }
+.rich th, .rich td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top; }
+.rich th { background: var(--surface-2); font-weight: 650; }
+
+/* "The agent asks" (D.askBox): its questions first, each answer one tap. */
+.asks { display: grid; gap: 14px; padding: 14px; border-radius: var(--radius); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.asks.needs_you { background: var(--amber-soft); box-shadow: inset 0 0 0 1px var(--amber-line); }
+.asks-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.asks.needs_you .asks-title svg.i { color: var(--amber); }
+.aq { display: grid; gap: 8px; }
+.aq-t { font-weight: 650; font-size: 15px; line-height: 1.45; overflow-wrap: anywhere; }
+.aq-choices { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn.choice { flex: 1 1 200px; min-height: 44px; padding: 8px 14px; justify-content: flex-start; text-align: left; white-space: normal; line-height: 1.3; overflow-wrap: anywhere; }
+.btn.choice[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); box-shadow: inset 0 0 0 1px var(--accent); }
+.asks-foot { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.asks-foot .btn { min-height: 44px; }
+.asks .hint { margin-top: -6px; }
+.asks .field-error:empty { display: none; }
+
+/* "What next?": what each choice does, in plain words. */
+.next { display: grid; border-radius: var(--radius); box-shadow: inset 0 0 0 1px var(--line); }
+.nx { display: grid; gap: 4px; padding: 12px 14px; justify-items: start; }
+.nx + .nx { border-top: 1px solid var(--line); }
+.nx-h { font-weight: 650; font-size: 14px; }
+.nx-t { font-size: 14px; color: var(--muted); }
+.nx-t b { color: var(--ink); font-weight: 650; }
+.nx .btn { margin-top: 6px; min-height: 44px; }
 .asked { color: var(--muted); font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
 details.fold > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px; }
 details.fold > summary::-webkit-details-marker { display: none; }

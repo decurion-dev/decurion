@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **What next, and the agent's questions first.** Finished work now opens with what the agent asks you, each answer one tap (it goes back to the agent with your answer), then its summary laid out readably (lists and bold, no stray stars), then a "What next?" list saying what Accept, answering and Reject each do. "Fix these" starts new work from what an audit found. Agents are told to end with their questions in a fixed shape so the board and phone can show them as buttons.
 - Installers and a release workflow that builds them into a draft GitHub release.
 - Built-in help pages that explain each part of Decurion in plain language.
 - A design for add-ons, so new kinds of agents and tools can plug in later.
