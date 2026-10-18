@@ -467,13 +467,12 @@ pub struct Watched {
     /// "Conflicts with main" or "Behind main", while GitHub says so about
     /// the commit Decurion last pushed. Nothing otherwise.
     pub health: Option<String>,
-    /// A Bring up to date run the owner started is still under way.
-    pub updating: bool,
 }
 
 /// A fix is under way while its work is unfinished, or accepted but not yet
 /// sent.
-const FIX_UNDER_WAY: &str = "EXISTS (SELECT 1 FROM threads f WHERE f.fix_of = w.thread_id
+pub(crate) const FIX_UNDER_WAY: &str =
+    "EXISTS (SELECT 1 FROM threads f WHERE f.fix_of = w.thread_id
      AND (f.state NOT IN ('done', 'failed')
           OR (f.state = 'done' AND f.gh_state IN ('waiting', 'sending'))))";
 
@@ -677,11 +676,6 @@ impl Store {
                     (w.state = 'open' AND w.clash) AS clash,
                     CASE WHEN w.state = 'open' AND w.health_head = w.head THEN w.health END AS health,
                     w.base_ref,
-                    EXISTS (SELECT 1 FROM threads f WHERE f.fix_of = w.thread_id
-                        AND f.merge_from IS NOT NULL
-                        AND (f.state NOT IN ('done', 'failed')
-                             OR (f.state = 'done' AND f.gh_state IN ('waiting', 'sending'))))
-                        AS updating,
                     (SELECT json_group_array(c.author) FROM pr_comments c
                       WHERE c.thread_id = w.thread_id AND {OPEN_COMMENT}) AS authors
              FROM pr_watches w JOIN threads t ON t.id = w.thread_id JOIN apps a ON a.id = w.app_id
@@ -720,7 +714,6 @@ impl Store {
                         r.try_get::<Option<String>, _>("health")?.as_deref(),
                         r.try_get::<Option<String>, _>("base_ref")?.as_deref(),
                     ),
-                    updating: r.try_get("updating")?,
                     state,
                 })
             })

@@ -323,9 +323,16 @@ async fn review_comments_on_an_open_pull_request_ask_for_a_fix() {
         json!({
             "thread_id": t, "number": 88, "url": "https://github.com/me/app/pull/88",
             "state": "open", "event": "It is open", "event_at": "2026-10-18T08:00:00Z",
-            "can_merge": false, "health": null, "can_update": true,
+            "can_merge": false, "health": null, "can_update": false,
         })
     );
+    // Bring up to date waits until a look at GitHub has said which branch
+    // the pull request merges into.
+    sqlx::query("UPDATE pr_watches SET base_ref = 'main'")
+        .execute(store.pool())
+        .await
+        .expect("looked");
+    assert_eq!(today(&r).await[0]["last_pr"]["can_update"], true);
 
     // Once the fix is started for all of them, the pull request waits on the reviewer.
     sqlx::query("UPDATE pr_comments SET fix_thread = ?")

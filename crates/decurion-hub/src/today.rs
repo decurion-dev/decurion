@@ -523,19 +523,19 @@ impl Store {
 
         // Newest happening first: when it last changed, else when it opened.
         let mut watches = Vec::new();
-        for r in sqlx::query(
+        for r in sqlx::query(&format!(
             "SELECT w.thread_id, w.app_id, w.number, w.url, w.state, w.event, w.event_at,
                     COALESCE(t.dismissed_at IS NOT NULL, 0) AS dismissed,
                     (w.state = 'open' AND a.can_merge) AS can_merge,
                     CASE WHEN w.state = 'open' AND w.health_head = w.head THEN w.health END AS health,
                     w.base_ref,
-                    (w.state = 'open' AND NOT EXISTS (SELECT 1 FROM threads f WHERE f.fix_of = w.thread_id
-                        AND (f.state NOT IN ('done', 'failed')
-                             OR (f.state = 'done' AND f.gh_state IN ('waiting', 'sending'))))) AS can_update
+                    (w.state = 'open' AND w.base_ref IS NOT NULL
+                        AND NOT {under_way}) AS can_update
              FROM pr_watches w LEFT JOIN threads t ON t.id = w.thread_id
                   JOIN apps a ON a.id = w.app_id
              ORDER BY COALESCE(w.event_at, w.created_at) DESC, w.created_at DESC, w.thread_id DESC",
-        )
+            under_way = crate::pr_watch::FIX_UNDER_WAY
+        ))
         .fetch_all(self.pool())
         .await?
         {

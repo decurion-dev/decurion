@@ -1219,7 +1219,6 @@ async fn the_watcher_says_when_a_pull_request_conflicts_or_falls_behind() {
     decurion_hub::pr_watch::poll(&h.state).await;
     let w = watched(&h).await;
     assert_eq!(health(&w), "Conflicts with main", "{w}");
-    assert_eq!(w[0]["updating"], false);
     let base: Option<String> = sqlx::query_scalar("SELECT base_ref FROM pr_watches")
         .fetch_one(h.store.pool())
         .await
@@ -2416,7 +2415,6 @@ async fn bring_up_to_date_starts_one_run_on_the_pull_request_with_main_pinned() 
     refused(s, &v, "already under way");
     assert_eq!(thread_count(&h).await, 2);
     let w = watched(&h).await;
-    assert_eq!(w[0]["updating"], true, "{w}");
     assert_eq!(w[0]["fixing"], true, "{w}");
     // It stays on the PC.
     let (s, v) = call(
@@ -2706,7 +2704,6 @@ async fn an_accepted_update_moves_the_pull_request_forward_with_main_merged() {
     let w = watched(&h).await;
     assert_eq!(w[0]["event"], "Brought up to date", "{w}");
     assert_eq!(w[0]["health"], Value::Null, "{w}");
-    assert_eq!(w[0]["updating"], false, "{w}");
     let _ = thread;
 }
 
