@@ -53,6 +53,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - **Apps with very long file names.** On Windows, a goal or piece of work on an app with a file whose full path passed 260 characters stopped with "Filename too long" before it started. Decurion now copies those apps whatever the PC's own Git settings say.
+- **Missing lines in a card's activity.** When the board was saving something else at the same moment, an agent's progress line could be turned away and lost. The board now waits its turn, and the runner sends a line again if the board could not save it.
 
 ## [0.1.0] - Unreleased
 

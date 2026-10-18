@@ -133,9 +133,14 @@ impl Store {
     /// Opens (creating if needed) the database at `url`, e.g. `sqlite://hub.db`
     /// or `sqlite::memory:`, and applies migrations.
     pub async fn open(url: &str) -> Result<Self> {
+        // A writer waits up to this long for another writer. That only works
+        // for transactions that take the write lock when they start (`BEGIN
+        // IMMEDIATE`): one that reads first and writes later is refused at
+        // once instead of waiting, so every transaction here starts that way.
         let opts = SqliteConnectOptions::from_str(url)?
             .create_if_missing(true)
             .foreign_keys(true)
+            .busy_timeout(std::time::Duration::from_secs(10))
             .journal_mode(SqliteJournalMode::Wal);
         // In-memory databases are per-connection, so tests use one connection.
         let max = if url.contains(":memory:") { 1 } else { 4 };
@@ -748,7 +753,7 @@ impl Store {
             ));
         }
         self.thread(thread_id).await?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let holder: Option<String> = sqlx::query_scalar("SELECT runner FROM threads WHERE id = ?")
             .bind(thread_id)
             .fetch_one(&mut *tx)

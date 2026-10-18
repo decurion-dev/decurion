@@ -116,7 +116,7 @@ impl Store {
 
     /// Signs a device out for good and stops its notifications.
     pub async fn remove_device(&self, id: i64) -> Result<()> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         let done = sqlx::query(
             "UPDATE devices SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ? AND revoked_at IS NULL",
@@ -173,7 +173,7 @@ impl Store {
     /// Uses up a pairing code and creates the device in one transaction, so
     /// a failure never burns the code without a device to show for it.
     pub async fn pair_device(&self, code: &str, name: &str) -> Result<Option<String>> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         let done = sqlx::query(
             "UPDATE pairing_codes SET used_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE code_hash = ? AND used_at IS NULL
@@ -203,7 +203,7 @@ impl Store {
         if !s.endpoint.starts_with("https://") {
             return Err(StoreError::Invalid("push endpoint must be https".into()));
         }
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query("DELETE FROM push_subscriptions WHERE endpoint = ? AND device_id != ?")
             .bind(&s.endpoint)
             .bind(device_id)

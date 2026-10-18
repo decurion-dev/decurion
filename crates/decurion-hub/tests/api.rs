@@ -271,6 +271,124 @@ async fn runner_restart_resumes_the_same_session() {
     assert_eq!(store.audit_count(id).await.expect("audit"), 3);
 }
 
+/// A progress line arriving while something else holds the database's write
+/// lock waits its turn. It used to be refused at once ("database is locked"),
+/// and the runner dropped the line. In-memory test hubs have one connection,
+/// so this needs a real file.
+#[tokio::test]
+async fn an_event_waits_for_another_writer_instead_of_failing() {
+    let dir = std::env::temp_dir().join(format!("decurion-busy-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let url = format!("sqlite://{}", dir.join("hub.db").display());
+    let store = Store::open(&url).await.expect("store");
+    let r = router(AppState::new(
+        store.clone(),
+        Keys {
+            owner: OWNER.into(),
+            runner: RUNNER.into(),
+        },
+        LOGIN.into(),
+        None,
+    ));
+    let id = seed(&r).await;
+    claim(&r).await;
+
+    // Another writer holds the lock for half a second.
+    use sqlx::Connection;
+    let mut other = sqlx::SqliteConnection::connect(&url)
+        .await
+        .expect("connect");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut other)
+        .await
+        .expect("lock");
+    sqlx::query("UPDATE settings SET value = value WHERE key = 'cloud_worker_seq'")
+        .execute(&mut other)
+        .await
+        .expect("write");
+    let started = std::time::Instant::now();
+    let posting = tokio::spawn({
+        let r = r.clone();
+        async move {
+            let answer = call(
+                &r,
+                "POST",
+                &format!("/api/threads/{id}/events"),
+                Some(RUNNER),
+                json!({"kind":"message","text":"still here"}),
+            )
+            .await;
+            (answer, started.elapsed())
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    sqlx::query("COMMIT")
+        .execute(&mut other)
+        .await
+        .expect("unlock");
+
+    let ((s, body), took) = posting.await.expect("task");
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+    // It really met the lock and waited for it to be let go.
+    assert!(took >= std::time::Duration::from_millis(400), "{took:?}");
+    let (_, events) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{id}/events"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert!(events.to_string().contains("still here"), "{events}");
+    drop(other);
+    drop(r);
+    store.pool().close().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Every transaction that may write takes the write lock when it starts.
+/// One that starts as a reader and then writes is refused at once whenever
+/// another writer is busy; waiting does not help it. A plain `begin()` is
+/// allowed only on a line marked `read-only`. This keeps new code from
+/// bringing the refusal back.
+#[test]
+fn every_transaction_takes_the_write_lock_up_front() {
+    fn scan(dir: &std::path::Path, found: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).expect("dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                scan(&path, found);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).expect("read");
+                for (at, _) in text.match_indices(".begin()") {
+                    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+                    let line_end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+                    let marked = text[line_start..line_end].contains("read-only");
+                    let awaited = text[at + ".begin()".len()..]
+                        .trim_start()
+                        .starts_with(".await");
+                    if awaited && !marked {
+                        let line = text[..at].matches('\n').count() + 1;
+                        found.push(format!("{}:{line}", path.display()));
+                    }
+                }
+                if text.contains("query(\"BEGIN\")") || text.contains("begin_with(\"BEGIN\")") {
+                    found.push(format!("{}: a bare BEGIN", path.display()));
+                }
+            }
+        }
+    }
+    let mut found = Vec::new();
+    scan(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut found,
+    );
+    assert!(
+        found.is_empty(),
+        "use begin_with(\"BEGIN IMMEDIATE\"), or mark a pure read `// read-only`: {found:?}"
+    );
+}
+
 #[tokio::test]
 async fn events_come_only_from_the_runner() {
     let (r, _) = hub().await;

@@ -343,7 +343,7 @@ impl Store {
         raw_name: &str,
         size: Option<u64>,
     ) -> Result<String> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin().await?; // read-only: a reader never waits on writers
         let (name, _) = check_in(&mut tx, app_id, goal_id, raw_name, size).await?;
         tx.commit().await?;
         Ok(name)
@@ -353,7 +353,7 @@ impl Store {
     /// was used for one.
     pub async fn resent_context_file(&self, receipt: Option<&str>) -> Result<Option<ContextFile>> {
         check_receipt(receipt)?;
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin().await?; // read-only: a reader never waits on writers
         let done = receipt_result(&mut tx, receipt, ADD).await?;
         tx.commit().await?;
         match done {
