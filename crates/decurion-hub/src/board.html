@@ -392,7 +392,7 @@
     document.title = view === "settings" ? "Settings · Decurion" : "Decurion";
     if (view === "settings") {
       // Each settings tab opens at its top.
-      D.settings.show(h.split("/")[1]);
+      D.settings.show(h.split("/").slice(1).join("/"));
       window.scrollTo(0, 0);
     } else D.settings.hide();
     renderTop();
@@ -632,6 +632,24 @@
           try {
             await D.send(`/threads/${fixOn}/pr/fix`, {});
             D.toast("Started a fix for the comments.");
+          } catch (e) {
+            D.toast(e.message, "alert");
+          }
+          await refresh();
+          act.disabled = D.offline;
+        };
+      } else if (r.last_pr?.can_merge && r.last_pr.state === "open") {
+        // The app's rules let the owner merge from here. The hub merges only
+        // once GitHub says the checks passed, and says why when it won't.
+        const prId = r.last_pr.thread_id;
+        act = el("button", { type: "button", className: "btn primary sm", dataset: { key: `today-merge-${id}` },
+          title: `Merge pull request #${r.last_pr.number} on GitHub` }, icon("merge"), "Merge");
+        act.disabled = D.offline;
+        act.onclick = async () => {
+          act.disabled = true;
+          try {
+            await D.send(`/threads/${prId}/pr/merge`, {});
+            D.toast("Merged on GitHub.");
           } catch (e) {
             D.toast(e.message, "alert");
           }
