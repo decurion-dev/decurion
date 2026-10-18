@@ -686,10 +686,24 @@ pub const MAX_PAGE_BYTES: usize = 8 << 20;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HelperSource {
-    /// A read-only copy of the app's code as it is now, kept per goal.
-    App { goal_id: i64 },
-    /// A fresh, writable, throwaway copy of the app's code as it is now.
-    AppCopy { goal_id: i64 },
+    /// A read-only copy of the app's code at the goal's start commit, kept
+    /// per goal.
+    App {
+        goal_id: i64,
+        /// The goal's start commit: the runner builds the copy from the
+        /// hub's bundle of exactly it (`/runner/goals/{id}/base`). `None`
+        /// only for a goal from before start commits, copied from the
+        /// owner's folder as it is now.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start_commit: Option<String>,
+    },
+    /// A fresh, writable, throwaway copy of the app's code at the goal's
+    /// start commit, made the same way as [`HelperSource::App`].
+    AppCopy {
+        goal_id: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start_commit: Option<String>,
+    },
     /// A fresh, writable, throwaway copy of a thread's branch, taken from the
     /// runner's own review copy (never from the agent's folder). The commit
     /// the thread started from is the local branch `decurion-base`.

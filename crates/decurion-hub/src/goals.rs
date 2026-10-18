@@ -54,7 +54,13 @@ pub(crate) async fn add(
     if let Some(r) = owner_only(c, "starting a goal") {
         return r;
     }
-    match st.store.add_goal(&g).await {
+    // A goal that would be refused is refused before anything waits on the
+    // app's git server.
+    if let Err(e) = st.store.check_new_goal(&g).await {
+        return ApiError(e).into_response();
+    }
+    let start = crate::upstream::for_new_goal(&st, g.app_id).await;
+    match st.store.add_goal(&g, start.as_deref()).await {
         Ok(g) => (StatusCode::CREATED, Json(g)).into_response(),
         Err(e) => ApiError(e).into_response(),
     }
@@ -73,7 +79,19 @@ pub(crate) async fn say(
     if let Some(r) = owner_only(c, "talking to the coordinator") {
         return r;
     }
-    reply(st.store.goal_say(id, &b.text, b.plan_message_id).await)
+    // A plain yes to the plan on screen approves it: a later round's start
+    // is chosen first, outside the approval's transaction.
+    let next = match b.plan_message_id {
+        Some(plan) if decurion_proto::goal::is_plain_yes(b.text.trim()) => {
+            crate::upstream::for_next_round(&st, id, plan).await
+        }
+        _ => None,
+    };
+    reply(
+        st.store
+            .goal_say(id, &b.text, b.plan_message_id, next.as_deref())
+            .await,
+    )
 }
 
 pub(crate) async fn answer(
@@ -97,7 +115,12 @@ pub(crate) async fn approve(
     if let Some(r) = owner_only(c, "approving a plan") {
         return r;
     }
-    reply(st.store.approve_plan(id, b.plan_message_id).await)
+    let next = crate::upstream::for_next_round(&st, id, b.plan_message_id).await;
+    reply(
+        st.store
+            .approve_plan(id, b.plan_message_id, next.as_deref())
+            .await,
+    )
 }
 
 pub(crate) async fn retry(
@@ -271,15 +294,24 @@ pub(crate) async fn remove_note(
 #[derive(Deserialize)]
 pub(crate) struct RunnerName {
     runner: String,
+    /// A runner on other rules prepares helpers differently, so it gets no
+    /// helper job either, as with work claims.
+    #[serde(default)]
+    rules_version: Option<u32>,
 }
 
 pub(crate) async fn helper_claim(
     State(st): State<AppState>,
     Extension(c): Extension<Caller>,
+    runner: Option<Extension<RunnerId>>,
     Json(r): Json<RunnerName>,
 ) -> Response {
     if let Some(r) = runner_only(c) {
         return r;
+    }
+    if r.rules_version != Some(decurion_proto::RULES_VERSION) {
+        let id = runner.map_or_else(RunnerId::local, |Extension(id)| id);
+        return crate::other_rules(&id, r.rules_version);
     }
     match st.store.claim_helper(&r.runner).await {
         Ok(out) => {

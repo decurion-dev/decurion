@@ -826,6 +826,26 @@ async fn goal_row(tx: &mut Transaction<'_, Sqlite>, goal_id: i64) -> Result<(i64
         .ok_or(StoreError::NotFound)
 }
 
+/// Whether a goal already has pieces from an earlier approval.
+async fn has_pieces(tx: &mut Transaction<'_, Sqlite>, goal_id: i64) -> Result<bool> {
+    Ok(
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM goal_pieces WHERE goal_id = ?)")
+            .bind(goal_id)
+            .fetch_one(&mut **tx)
+            .await?,
+    )
+}
+
+/// A goal's start commit, read inside the caller's transaction.
+async fn goal_start(tx: &mut Transaction<'_, Sqlite>, goal_id: i64) -> Result<Option<String>> {
+    Ok(
+        sqlx::query_scalar("SELECT start_commit FROM goals WHERE id = ?")
+            .bind(goal_id)
+            .fetch_one(&mut **tx)
+            .await?,
+    )
+}
+
 async fn save_notes(
     tx: &mut Transaction<'_, Sqlite>,
     app_id: i64,
@@ -1028,19 +1048,26 @@ async fn recover_checks(tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
 
 /// Starts a goal inside `tx`: the goal, the owner's words as its first
 /// message, the coordinator's first turn and its row on the app's master
-/// plan, all or nothing. The caller has checked the app and the words.
+/// plan, all or nothing. The caller has checked the app and the words, and
+/// chose `start_commit` before opening `tx` (it may ask the app's git
+/// server, see [`crate::upstream::for_new_goal`]): every entry point must
+/// pass what it chose, which is why it is not optional here. `None` only
+/// when no start could be had; that goal's helpers copy the folder as
+/// before.
 pub(crate) async fn start_goal(
     tx: &mut Transaction<'_, Sqlite>,
     app_id: i64,
     title: &str,
     text: &str,
+    start_commit: Option<&str>,
 ) -> Result<i64> {
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO goals (app_id, title, session_id) VALUES (?, ?, ?) RETURNING id",
+        "INSERT INTO goals (app_id, title, session_id, start_commit) VALUES (?, ?, ?, ?) RETURNING id",
     )
     .bind(app_id)
     .bind(title)
     .bind(new_session())
+    .bind(start_commit)
     .fetch_one(&mut **tx)
     .await?;
     post(
@@ -1067,7 +1094,18 @@ async fn cancel_queued(tx: &mut Transaction<'_, Sqlite>, goal_id: i64) -> Result
 
 /// Approves plan `plan_message_id` of goal `id` inside the caller's
 /// transaction: one thread and one piece per piece of exactly that plan.
-async fn approve_in(tx: &mut Transaction<'_, Sqlite>, id: i64, plan_message_id: i64) -> Result<()> {
+/// `next_start` is a fresh start chosen by the caller beforehand
+/// ([`crate::upstream::for_next_round`]); it becomes the goal's start for a
+/// later round, when the goal already has pieces, or when the goal has no
+/// start yet (none could be chosen when it was created), so its pieces
+/// still share one. Otherwise the first approval keeps the start the goal
+/// was created with, which its plan was made on.
+async fn approve_in(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: i64,
+    plan_message_id: i64,
+    next_start: Option<&str>,
+) -> Result<()> {
     if goal_state(tx, id).await? != GoalState::PlanReady {
         return Err(bad("there is no plan waiting for approval"));
     }
@@ -1078,14 +1116,27 @@ async fn approve_in(tx: &mut Transaction<'_, Sqlite>, id: i64, plan_message_id: 
         return Err(bad("that is not the latest plan"));
     }
     let (app_id, goal_title) = goal_row(tx, id).await?;
+    if let Some(start) = next_start {
+        if has_pieces(tx, id).await? || goal_start(tx, id).await?.is_none() {
+            sqlx::query("UPDATE goals SET start_commit = ? WHERE id = ?")
+                .bind(start)
+                .bind(id)
+                .execute(&mut **tx)
+                .await?;
+        }
+    }
     for piece in &plan.pieces {
+        // Every piece starts from the goal's one start commit, the code its
+        // project lead planned against.
         let thread_id: i64 = sqlx::query_scalar(
-            "INSERT INTO threads (app_id, title, prompt, research) VALUES (?, ?, ?, ?) RETURNING id",
+            "INSERT INTO threads (app_id, title, prompt, research, base_commit)
+             VALUES (?, ?, ?, ?, (SELECT start_commit FROM goals WHERE id = ?)) RETURNING id",
         )
         .bind(app_id)
         .bind(clip(piece.title.trim(), 80))
         .bind(piece_prompt(&goal_title, &plan, piece))
         .bind(piece.research)
+        .bind(id)
         .fetch_one(&mut **tx)
         .await?;
         sqlx::query(
@@ -1237,15 +1288,54 @@ impl Store {
         })
     }
 
-    /// Starts a goal from the owner's words; the coordinator takes it from there.
-    pub async fn add_goal(&self, g: &NewGoal) -> Result<Goal> {
+    /// The goal's app, when approving `plan_message_id` now needs a start
+    /// chosen for its pieces: the plan is the one waiting, and either the
+    /// goal already has pieces (a later round) or it has no start yet. Only
+    /// reads; the approval checks all of this again.
+    pub(crate) async fn next_round(&self, goal: i64, plan_message_id: i64) -> Result<Option<i64>> {
+        let mut tx = self.pool().begin().await?; // read-only
+        let later = goal_state(&mut tx, goal).await? == GoalState::PlanReady
+            && latest_plan(&mut tx, goal).await?.map(|(m, _)| m) == Some(plan_message_id)
+            && (has_pieces(&mut tx, goal).await? || goal_start(&mut tx, goal).await?.is_none());
+        let app = if later {
+            Some(goal_row(&mut tx, goal).await?.0)
+        } else {
+            None
+        };
+        tx.rollback().await?;
+        Ok(app)
+    }
+
+    /// The commit a goal's helpers and pieces start from, fixed when the
+    /// goal was created. `None` for a goal from before start commits.
+    pub async fn goal_start_commit(&self, goal: i64) -> Result<Option<String>> {
+        let v: Option<Option<String>> =
+            sqlx::query_scalar("SELECT start_commit FROM goals WHERE id = ?")
+                .bind(goal)
+                .fetch_optional(self.pool())
+                .await?;
+        v.ok_or(StoreError::NotFound)
+    }
+
+    /// Refuses a goal that [`Store::add_goal`] would refuse, before its start
+    /// is chosen (which may ask the app's git server).
+    pub(crate) async fn check_new_goal(&self, g: &NewGoal) -> Result<()> {
         let text = g.text.trim();
         if text.is_empty() || text.chars().count() > 8000 {
             return Err(bad("say what you want in 1 to 8000 characters"));
         }
         self.app(g.app_id).await?;
+        Ok(())
+    }
+
+    /// Starts a goal from the owner's words; the coordinator takes it from
+    /// there. `start_commit` was chosen by the caller before this, outside
+    /// any transaction.
+    pub async fn add_goal(&self, g: &NewGoal, start_commit: Option<&str>) -> Result<Goal> {
+        self.check_new_goal(g).await?;
+        let text = g.text.trim();
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
-        let id = start_goal(&mut tx, g.app_id, &title_from(text), text).await?;
+        let id = start_goal(&mut tx, g.app_id, &title_from(text), text, start_commit).await?;
         tx.commit().await?;
         self.goal(id).await
     }
@@ -1302,7 +1392,14 @@ impl Store {
     /// that plan's Approve: the words are kept in the conversation and the
     /// work starts, with no turn for the lead. Anything else, or a yes to a
     /// plan that has since been replaced, goes to the lead as usual.
-    pub async fn goal_say(&self, id: i64, text: &str, shown_plan: Option<i64>) -> Result<Goal> {
+    /// `next_start` is as for [`Store::approve_plan`].
+    pub async fn goal_say(
+        &self,
+        id: i64,
+        text: &str,
+        shown_plan: Option<i64>,
+        next_start: Option<&str>,
+    ) -> Result<Goal> {
         let text = text.trim();
         if text.is_empty() || text.chars().count() > 8000 {
             return Err(bad("a message is 1 to 8000 characters"));
@@ -1316,7 +1413,7 @@ impl Store {
                 && latest_plan(&mut tx, id).await?.map(|(m, _)| m) == Some(plan);
             if waiting {
                 post(&mut tx, id, &body).await?;
-                approve_in(&mut tx, id, plan).await?;
+                approve_in(&mut tx, id, plan, next_start).await?;
                 tx.commit().await?;
                 return self.goal(id).await;
             }
@@ -1473,9 +1570,16 @@ impl Store {
     /// The owner's one approval: starts a piece of work for each piece of
     /// exactly the plan they saw. It counts even while the project lead is
     /// still answering: that answer can no longer change an approved plan.
-    pub async fn approve_plan(&self, id: i64, plan_message_id: i64) -> Result<Goal> {
+    /// `next_start` is a fresh start for a later round's pieces, chosen
+    /// before this by [`crate::upstream::for_next_round`].
+    pub async fn approve_plan(
+        &self,
+        id: i64,
+        plan_message_id: i64,
+        next_start: Option<&str>,
+    ) -> Result<Goal> {
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
-        approve_in(&mut tx, id, plan_message_id).await?;
+        approve_in(&mut tx, id, plan_message_id, next_start).await?;
         tx.commit().await?;
         self.goal(id).await
     }
@@ -1755,7 +1859,10 @@ impl Store {
                         session,
                         ok,
                         prompt,
-                        HelperSource::App { goal_id },
+                        HelperSource::App {
+                            goal_id,
+                            start_commit: goal_start(&mut tx, goal_id).await?,
+                        },
                         COORDINATOR_DISALLOWED,
                         Some(upto),
                     )
@@ -1766,7 +1873,10 @@ impl Store {
                     false,
                     row.try_get::<Option<String>, _>("prompt")?
                         .unwrap_or_default(),
-                    HelperSource::AppCopy { goal_id },
+                    HelperSource::AppCopy {
+                        goal_id,
+                        start_commit: goal_start(&mut tx, goal_id).await?,
+                    },
                     HELPER_DISALLOWED,
                     None,
                 ),

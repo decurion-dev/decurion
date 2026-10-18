@@ -534,7 +534,7 @@ async fn work_gets_its_apps_files_and_its_goals_but_not_another_goals() {
         "POST",
         "/api/runner/helper/claim",
         Some(RUNNER),
-        json!({"runner": "local"}),
+        json!({"runner": "local", "rules_version": decurion_proto::RULES_VERSION}),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{job}");

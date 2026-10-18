@@ -841,87 +841,58 @@ impl Store {
         self.plan_view(app_id).await
     }
 
+    /// Checks a fix request without changing anything, before its start is
+    /// chosen (which may ask the app's git server): `Some` with the first
+    /// answer to a resent receipt, an error for a request that would be
+    /// refused, `None` for one ready to go. [`Store::fix_todos`] checks it
+    /// all again in its own transaction.
+    pub(crate) async fn fix_todos_first(
+        &self,
+        app_id: i64,
+        f: &FixTodos,
+    ) -> Result<Option<(Goal, bool)>> {
+        let mut tx = self.pool().begin().await?; // read-only
+        let checked = fix_checks(&mut tx, app_id, f).await;
+        tx.rollback().await?;
+        match checked? {
+            FixChecked::Resent(id) => Ok(Some((self.goal(id).await?, false))),
+            FixChecked::Ready { .. } => Ok(None),
+        }
+    }
+
     /// Starts one goal to do these to-do items, with the owner's note, and
     /// links each item to it, all in one transaction. Returns the goal and
     /// whether it is new rather than the answer to a resent receipt.
-    pub async fn fix_todos(&self, app_id: i64, f: &FixTodos) -> Result<(Goal, bool)> {
-        let mut ids: Vec<i64> = Vec::new();
-        for id in &f.item_ids {
-            if !ids.contains(id) {
-                ids.push(*id);
-            }
-        }
-        if ids.is_empty() {
-            return Err(bad("Pick at least one to-do to fix."));
-        }
-        if ids.len() > MAX_FIX {
-            return Err(bad(
-                "Pick at most 10 to-dos at a time. Fix the rest in another goal.",
-            ));
-        }
-        let note = f.note.as_deref().map(str::trim).filter(|n| !n.is_empty());
-        if note.is_some_and(|n| n.chars().count() > MAX_NOTE) {
-            return Err(bad("Keep your note to 2000 characters or fewer."));
-        }
-        check_receipt(f.receipt.as_deref())?;
+    /// `start_commit` was chosen by the caller before this, outside any
+    /// transaction (see [`crate::coordinator::start_goal`]).
+    pub async fn fix_todos(
+        &self,
+        app_id: i64,
+        f: &FixTodos,
+        start_commit: Option<&str>,
+    ) -> Result<(Goal, bool)> {
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
-        if let Some(id) = receipt_result(&mut tx, f.receipt.as_deref(), "fix_todos").await? {
-            tx.commit().await?;
-            return Ok((self.goal(id).await?, false));
-        }
-        app_exists(&mut tx, app_id).await?;
-        let mut items = Vec::new();
-        let mut parents = HashSet::new();
-        for id in &ids {
-            let row = sqlx::query(
-                "SELECT p.app_id, p.kind, p.state, p.title, p.detail, p.parent_id,
-                        g.state AS fix_state
-                 FROM plan_items p LEFT JOIN goals g ON g.id = p.fix_goal_id WHERE p.id = ?",
-            )
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
-            let Some(row) = row.filter(|r| r.try_get::<i64, _>("app_id").ok() == Some(app_id))
-            else {
-                return Err(bad(
-                    "One of those to-dos is not on this app's plan. Reload the plan and try again.",
-                ));
-            };
-            let title: String = row.try_get("title")?;
-            if row.try_get::<String, _>("kind")? != "todo" {
-                return Err(bad("Pick to-do items to fix, not goals."));
+        let (ids, items, found_in) = match fix_checks(&mut tx, app_id, f).await? {
+            FixChecked::Resent(id) => {
+                tx.commit().await?;
+                return Ok((self.goal(id).await?, false));
             }
-            if row.try_get::<String, _>("state")? != "open" {
-                return Err(StoreError::Invalid(format!(
-                    "\"{}\" is already ticked off or dropped. Reopen it first.",
-                    clip(&title, 80)
-                )));
-            }
-            // A fix goal that was stopped, or closed with the item reopened,
-            // may be replaced; one still open may not.
-            let fix_state: Option<String> = row.try_get("fix_state")?;
-            if fix_state.is_some_and(|s| s != "done" && s != "stopped") {
-                return Err(StoreError::Refused(format!(
-                    "\"{}\" is already being fixed in another goal.",
-                    clip(&title, 80)
-                )));
-            }
-            parents.insert(row.try_get::<Option<i64>, _>("parent_id")?);
-            items.push((title, row.try_get::<Option<String>, _>("detail")?));
-        }
-        // Named only when every item was found in the same goal.
-        let found_in: Option<String> = match parents.into_iter().collect::<Vec<_>>().as_slice() {
-            [Some(parent)] => sqlx::query_scalar(
-                "SELECT g.title FROM plan_items p JOIN goals g ON g.id = p.goal_id WHERE p.id = ?",
-            )
-            .bind(parent)
-            .fetch_optional(&mut *tx)
-            .await?,
-            _ => None,
+            FixChecked::Ready {
+                ids,
+                items,
+                found_in,
+            } => (ids, items, found_in),
         };
+        let note = f.note.as_deref().map(str::trim).filter(|n| !n.is_empty());
         let text = fix_text(found_in.as_deref(), &items, note);
-        let goal_id =
-            crate::coordinator::start_goal(&mut tx, app_id, &fix_title(&items), &text).await?;
+        let goal_id = crate::coordinator::start_goal(
+            &mut tx,
+            app_id,
+            &fix_title(&items),
+            &text,
+            start_commit,
+        )
+        .await?;
         for id in &ids {
             sqlx::query(
                 "UPDATE plan_items SET fix_goal_id = ?,
@@ -936,6 +907,104 @@ impl Store {
         tx.commit().await?;
         Ok((self.goal(goal_id).await?, true))
     }
+}
+
+/// What checking a fix request found.
+enum FixChecked {
+    /// A resent receipt: the goal the first one started.
+    Resent(i64),
+    Ready {
+        ids: Vec<i64>,
+        /// Each item's title and detail.
+        items: Vec<(String, Option<String>)>,
+        /// The goal they were all found in, if one.
+        found_in: Option<String>,
+    },
+}
+
+/// Every check of a fix request, inside the caller's transaction.
+async fn fix_checks(
+    tx: &mut Transaction<'_, Sqlite>,
+    app_id: i64,
+    f: &FixTodos,
+) -> Result<FixChecked> {
+    let mut ids: Vec<i64> = Vec::new();
+    for id in &f.item_ids {
+        if !ids.contains(id) {
+            ids.push(*id);
+        }
+    }
+    if ids.is_empty() {
+        return Err(bad("Pick at least one to-do to fix."));
+    }
+    if ids.len() > MAX_FIX {
+        return Err(bad(
+            "Pick at most 10 to-dos at a time. Fix the rest in another goal.",
+        ));
+    }
+    let note = f.note.as_deref().map(str::trim).filter(|n| !n.is_empty());
+    if note.is_some_and(|n| n.chars().count() > MAX_NOTE) {
+        return Err(bad("Keep your note to 2000 characters or fewer."));
+    }
+    check_receipt(f.receipt.as_deref())?;
+    if let Some(id) = receipt_result(tx, f.receipt.as_deref(), "fix_todos").await? {
+        return Ok(FixChecked::Resent(id));
+    }
+    app_exists(tx, app_id).await?;
+    let mut items = Vec::new();
+    let mut parents = HashSet::new();
+    for id in &ids {
+        let row = sqlx::query(
+            "SELECT p.app_id, p.kind, p.state, p.title, p.detail, p.parent_id,
+                    g.state AS fix_state
+             FROM plan_items p LEFT JOIN goals g ON g.id = p.fix_goal_id WHERE p.id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some(row) = row.filter(|r| r.try_get::<i64, _>("app_id").ok() == Some(app_id)) else {
+            return Err(bad(
+                "One of those to-dos is not on this app's plan. Reload the plan and try again.",
+            ));
+        };
+        let title: String = row.try_get("title")?;
+        if row.try_get::<String, _>("kind")? != "todo" {
+            return Err(bad("Pick to-do items to fix, not goals."));
+        }
+        if row.try_get::<String, _>("state")? != "open" {
+            return Err(StoreError::Invalid(format!(
+                "\"{}\" is already ticked off or dropped. Reopen it first.",
+                clip(&title, 80)
+            )));
+        }
+        // A fix goal that was stopped, or closed with the item reopened,
+        // may be replaced; one still open may not.
+        let fix_state: Option<String> = row.try_get("fix_state")?;
+        if fix_state.is_some_and(|s| s != "done" && s != "stopped") {
+            return Err(StoreError::Refused(format!(
+                "\"{}\" is already being fixed in another goal.",
+                clip(&title, 80)
+            )));
+        }
+        parents.insert(row.try_get::<Option<i64>, _>("parent_id")?);
+        items.push((title, row.try_get::<Option<String>, _>("detail")?));
+    }
+    // Named only when every item was found in the same goal.
+    let found_in: Option<String> =
+        match parents.into_iter().collect::<Vec<_>>().as_slice() {
+            [Some(parent)] => sqlx::query_scalar(
+                "SELECT g.title FROM plan_items p JOIN goals g ON g.id = p.goal_id WHERE p.id = ?",
+            )
+            .bind(parent)
+            .fetch_optional(&mut **tx)
+            .await?,
+            _ => None,
+        };
+    Ok(FixChecked::Ready {
+        ids,
+        items,
+        found_in,
+    })
 }
 
 /// `GET /api/apps/{id}/plan`: the app's master plan.
@@ -1013,7 +1082,15 @@ pub(crate) async fn fix(
     if c != Caller::Owner {
         return forbidden("starting a goal");
     }
-    match st.store.fix_todos(app_id, &f).await {
+    // Refused and resent requests are answered before anything waits on
+    // the app's git server.
+    match st.store.fix_todos_first(app_id, &f).await {
+        Ok(Some((goal, fresh))) => return created_or_resent(goal, fresh),
+        Ok(None) => {}
+        Err(e) => return ApiError(e).into_response(),
+    }
+    let start = crate::upstream::for_new_goal(&st, app_id).await;
+    match st.store.fix_todos(app_id, &f, start.as_deref()).await {
         Ok((goal, fresh)) => created_or_resent(goal, fresh),
         Err(e) => ApiError(e).into_response(),
     }
