@@ -31,7 +31,7 @@ On a Mac or Linux, `decurion-start` works the same way. On Linux, run `sudo tail
 
 Everything you can do on the board. The phone has four tabs at the bottom:
 
-- **Inbox:** what needs you. Questions from agents show first, with answers you tap.
+- **Inbox:** what needs you. Questions from agents show first, with answers you tap. Plans waiting for your approval and your project lead's questions show here too, with the app's name, **Approve** and **Open plan**.
 - **Board:** all your work, by state and by app. Tap **New work** to ask for something: send it to your project lead, or pick **Just do it** for a small change. Tap a card to accept it, send it back, stop it, move it between your PC and the cloud, talk to its agent, or take over its test browser.
 - **Goals:** talk with your project lead, answer its questions, open the visual plan and approve it.
 - **Settings:** apps (with **Choose folder** to pick an app's folder on your PC), websites, test keys, website sign-ins, your GitHub token, caps, usage, computers and phones. Keys and tokens you type are hidden, never shown again except their last four characters, and never kept on the phone.
@@ -44,7 +44,17 @@ Everything you can do on the board. The phone has four tabs at the bottom:
 2. In the inbox, tap **Turn on notifications**.
 3. When your phone asks, tap **Allow**.
 
-Your phone now alerts you when work is ready for review, waiting on you, or stopped. It also alerts you when the pay-per-use spending cap is reached. Notifications show only a short line, never the agent's work.
+Your phone now alerts you when a plan is ready, your project lead has a question, work is ready for review, waiting on you, or stopped, and when work is ready to merge on GitHub. It also alerts you when the pay-per-use spending cap is reached. Each notice starts with the app's name, like "Refill tracker: ready for review". Notifications show only a short line, never the agent's work.
+
+### Act right from the notice
+
+On Android, and on a PC, some notices have buttons, so a plain yes needs no trip into the app:
+
+- **Approve plan** approves the plan the notice is about. If your project lead has written a newer plan since, nothing is approved and the notice tells you to open the plan.
+- **Accept** accepts finished work, and Decurion sends it to GitHub. **Look first** opens the inbox instead.
+- **Open pull request** opens the work on GitHub, where you merge it.
+
+The notice then changes to say what happened, such as "Refill tracker: plan approved". A button does the same as the button in the app, and tapping it on two phones still does it only once. Only a phone you paired can use these buttons. iPhones don't show buttons on notices; tap the notice to open the inbox instead.
 
 ## Remove a phone
 
