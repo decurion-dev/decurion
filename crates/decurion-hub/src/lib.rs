@@ -22,6 +22,7 @@ pub mod checkpoints;
 pub mod claude_sign_in;
 pub mod context;
 pub mod coordinator;
+pub mod deploy;
 pub mod devices;
 pub mod dismiss;
 pub mod folders;
@@ -143,6 +144,8 @@ pub struct AppState {
     pub(crate) claude: claude_sign_in::SignIns,
     /// GitHub's last answer about the token, for the Sign-ins page.
     pub(crate) github_check: sign_in_lights::GitHubCache,
+    /// Lets one deploy, or one look for changes to deploy, run at a time.
+    deploy_busy: deploy::Busy,
 }
 
 impl AppState {
@@ -167,6 +170,7 @@ impl AppState {
             folders: None,
             claude: claude_sign_in::SignIns::default(),
             github_check: sign_in_lights::GitHubCache::default(),
+            deploy_busy: deploy::Busy::default(),
         }
     }
 
@@ -241,6 +245,17 @@ impl AppState {
     pub fn with_github(mut self, g: github::GitHub) -> Self {
         self.github = Some(Arc::new(g));
         self
+    }
+
+    /// What deploying needs, if this hub keeps saved copies (deploys use
+    /// copies of apps' code kept beside them).
+    pub(crate) fn deployer(&self) -> Option<deploy::Deployer> {
+        Some(deploy::Deployer {
+            store: self.store.clone(),
+            dir: self.files.as_ref()?.deploy_dir(),
+            push: self.push.clone(),
+            busy: self.deploy_busy.clone(),
+        })
     }
 
     /// What sending to GitHub needs, if this hub is set up for it.
@@ -331,6 +346,11 @@ pub fn router(state: AppState) -> Router {
         .route("/threads/{id}/pr/fix", post(pr_watch::fix))
         .route("/threads/{id}/pr/merge", post(merge::tap))
         .route("/prs", get(pr_watch::list))
+        .route("/deploys", get(deploy::list))
+        .route("/deploys/{id}/go", post(deploy::go))
+        .route("/deploys/{id}/hide", post(deploy::hide))
+        .route("/deploys/{id}/log", get(deploy::log))
+        .route("/apps/{id}/deploy/check", post(deploy::check))
         .route("/github", get(github::settings))
         .route("/github/token", post(github::save_token))
         .route("/github/token/remove", post(github::remove_token))
