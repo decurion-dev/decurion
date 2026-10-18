@@ -49,7 +49,8 @@ gate: `docker build -t decurion/gate:dev -f docker/gate/Dockerfile .`.
 - **Owner-facing text** (errors from `StoreError::Invalid`/`Refused`, board labels, toasts, help pages) is for a non-programmer: short sentences, no jargon, say what happened and what to do next ("Remove spaces and other marks from the name."). See CONTRIBUTING.md "Rust style" and the pages in `docs/help/src/`.
 - **Rust**: stable only; `unsafe` forbidden and `unwrap()` denied outside tests (`Cargo.toml` workspace lints); use `expect("why it cannot fail")`. `thiserror` in libraries, `anyhow` with context in binaries. Log with `tracing`; never log tokens, keys or test-key values.
 - **Migrations**: `crates/decurion-hub/migrations/NNNN_name.sql`, embedded by `sqlx::migrate!` in `Store::open`. Numbers run 0001-0008, then 0040+ (spaced apart so parallel branches do not collide, see `0040_goals.sql`). Use the next free number above the highest file. Never edit or renumber a shipped migration. Start the file with a `--` comment saying why.
-- **UI**: each page is one `.html` file in `crates/decurion-hub/src/`, served by `page(include_str!("x.html"))` in `lib.rs` with a strict CSP (no outside scripts). Shared code is `ui.js` (`window.D`: `D.api`, `D.el`, `D.toast`) and `ui.css`. Build DOM with `D.el`; text goes in as text, never as HTML.
+- **UI**: each page is one `.html` file in `crates/decurion-hub/src/`, served by `page(include_str!("x.html"))` in `lib.rs` with a strict CSP (no outside scripts). Shared code is `ui.js` (`window.D`: `D.api`, `D.el`, `D.toast`, `D.tabs`) and `ui.css`. Build DOM with `D.el`; text goes in as text, never as HTML.
+- **Screens show one thing at a time**: tabs, never a long stack of boxes. A new area is a new tab, not another box under the rest. Follow [the style guide](docs/agents/style-guide.md).
 - **State moves** go through `checked_move` in `store.rs`, which checks `can_move_to` and writes an audit row in the same transaction.
 - **Owner taps** carry a `receipt`; the hub acts once and answers a resend with the first result (`receipt_result`, `save_receipt`).
 - **Box or handover changes** bump `RULES_VERSION` in `crates/decurion-proto/src/lib.rs`.
@@ -77,7 +78,7 @@ Never weaken one of these to get a task done. If a task seems to need it, stop a
 Read the matching how-to before you start a task of that kind. They name the real files, functions and tests to copy from.
 
 - [How a goal flows through Decurion](docs/agents/architecture.md)
-- [Add a screen, a setting or an API route](docs/agents/add-a-screen-or-setting.md)
+- [Add a screen, a setting or an API route](docs/agents/add-a-screen-or-setting.md), and the [style guide for screens](docs/agents/style-guide.md)
 - [Add a new kind of agent (worker type)](docs/agents/add-a-worker-type.md)
 - [Add a tool for agents](docs/agents/add-a-tool-for-agents.md)
 - [Write an add-on (designed, not built yet)](docs/agents/write-an-add-on.md)

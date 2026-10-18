@@ -256,6 +256,55 @@
     return b;
   };
 
+  // ---------- Tabs ----------
+  // The style guide's rule: a screen shows one thing at a time, never a long
+  // stack of boxes. D.tabs makes the row of tabs over views of one thing (a
+  // piece of work's Overview, Activity and Details; a setup's steps): words
+  // with a blue line under the open one, 44px tall, arrow keys move between
+  // them. items: [{ id, label, panel }], where label is text or elements and
+  // panel is the element the tab shows; the others are hidden, not removed,
+  // so nothing typed in them is lost. onPick(id) runs after each change.
+  // Areas of a page (Settings) use a side list instead (settings.js).
+  D.tabs = (items, { label = "Show", selected = items[0]?.id, onPick } = {}) => {
+    const uid = `tb${++tabSeq}`;
+    let current = null;
+    const buttons = items.map((it) => {
+      const b = D.el("button", { type: "button", className: "ptab", role: "tab", id: `${uid}-${it.id}`, "aria-controls": `${uid}-${it.id}-p`, dataset: { tab: it.id } },
+        ...[].concat(it.label));
+      it.panel.id = it.panel.id || `${uid}-${it.id}-p`;
+      b.setAttribute("aria-controls", it.panel.id);
+      it.panel.setAttribute("role", "tabpanel");
+      it.panel.setAttribute("aria-labelledby", b.id);
+      b.onclick = () => select(it.id);
+      return b;
+    });
+    const row = D.el("div", { className: "ptabs", role: "tablist", "aria-label": label }, ...buttons);
+    row.addEventListener("keydown", (e) => {
+      const at = items.findIndex((it) => it.id === current);
+      const to = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: items.length - 1 }[e.key];
+      if (to == null) return;
+      e.preventDefault();
+      const it = items[(to + items.length) % items.length];
+      select(it.id);
+      buttons[items.indexOf(it)].focus();
+    });
+    function select(id) {
+      if (!items.some((it) => it.id === id)) id = items[0]?.id;
+      const changed = id !== current;
+      current = id;
+      items.forEach((it, i) => {
+        const on = it.id === id;
+        buttons[i].setAttribute("aria-selected", on ? "true" : "false");
+        buttons[i].tabIndex = on ? 0 : -1;
+        it.panel.hidden = !on;
+      });
+      if (changed) onPick?.(id);
+    }
+    select(selected);
+    return { el: row, select, get current() { return current; } };
+  };
+  let tabSeq = 0;
+
   // ---------- Toasts and confirmations ----------
   // `undo`, when given, adds an Undo button that runs it and closes the toast.
   D.toast = (text, icon = "done", undo = null) => {
@@ -1149,7 +1198,24 @@
         // The same for Run it, kept apart so it and Watch never fight.
         run: el("div", { className: "part" }),
       };
-      p.body = el("div", { className: "work-body live" }, p.err, p.upper, p.browser, p.run, p.talk.box, p.lower);
+      // One view at a time (the style guide's tabs rule): Overview has what
+      // the agent asks and said, what to do next and the message box;
+      // Activity has every step; Details has what was asked, the bigger and
+      // smaller tasks, and Pro view's facts. Opening the panel shows Overview.
+      p.now = el("div", { className: "part" });
+      p.activity = el("div", { className: "part" });
+      p.overview = el("div", { className: "part tab-part" }, p.upper, p.now, p.browser, p.run, p.talk.box);
+      p.actPanel = el("div", { className: "part tab-part" }, p.activity);
+      p.details = el("div", { className: "part tab-part" }, p.lower);
+      p.body = el("div", { className: "work-body live" }, p.err, p.overview, p.actPanel, p.details);
+      p.tabs = D.tabs([
+        { id: "overview", label: "Overview", panel: p.overview },
+        { id: "activity", label: "Activity", panel: p.actPanel },
+        { id: "details", label: "Details", panel: p.details },
+      ], { label: "Show", onPick: () => { p.body.scrollTop = 0; } });
+      // Answering always happens on Overview, where the message box is.
+      const answer = p.talk.answer;
+      p.talk.answer = (pre) => { p.tabs.select("overview"); answer(pre); };
       panel.replaceChildren(p.head, p.body, p.foot);
     }
     const p = c.parts;
@@ -1162,7 +1228,8 @@
         el("span", { className: "tag" }, icon("app"), D.appName(t.app_id) || "Unknown app"),
         app && el("span", { className: "tag dot-sep" }, icon("ai"), D.aiLabel(app, t)),
         el("span", { className: "tag dot-sep" }, icon(D.PLACES[t.place]?.[0] ?? "pc"), D.PLACES[t.place]?.[1] ?? "Your PC"),
-        el("span", { className: "tag dot-sep updated" }, `Updated ${D.ago(t.updated_at)}`)));
+        el("span", { className: "tag dot-sep updated" }, `Updated ${D.ago(t.updated_at)}`)),
+      p.tabs.el);
     p.head.replaceWith(head);
     p.head = head;
 
@@ -1191,7 +1258,15 @@
     }
     const next = whatNext(c, asks, rest);
     if (next) upper.push(next);
+    // Before it has started there is nothing else to show: say what was asked.
+    if (!ev.length) upper.push(el("section", {}, el("div", { className: "section-title" }, "What you asked"), el("p", { className: "asked" }, t.prompt)));
     p.upper.replaceChildren(...upper);
+    // While it works, Overview shows its last few steps; Activity has them all.
+    if (t.state === "running" && ev.length) {
+      const see = el("button", { type: "button", className: "btn quiet sm", dataset: { key: "wk-see-all" } }, "See all activity");
+      see.onclick = () => p.tabs.select("activity");
+      p.now.replaceChildren(el("section", {}, el("div", { className: "section-title" }, "Latest"), timeline(ev.slice(-3), D.pro), see));
+    } else p.now.replaceChildren();
     browserPart(c);
     runPart(c);
     c.asked = asks.length > 0;
@@ -1215,11 +1290,10 @@
           el("span", { className: "nm" }, k.title, k.background ? el("span", { className: "hint" }, " · keeps going on its own") : null),
           open(k, `wk-kid-${k.id}`))))));
     }
-    lower.push(el("section", {},
-      el("details", { className: "fold", open: t.state === "queued" || !ev.length },
-        el("summary", { className: "section-title" }, icon("right"), "What you asked"),
-        el("p", { className: "asked" }, t.prompt))));
-    lower.push(el("section", {}, el("div", { className: "section-title" }, "Activity"), timeline(ev, D.pro)));
+    // Details is its own tab, so what was asked shows in full, not folded.
+    lower.push(el("section", {}, el("div", { className: "section-title" }, "What you asked"),
+      el("p", { className: "asked" }, t.prompt)));
+    p.activity.replaceChildren(ev.length ? timeline(ev, D.pro) : el("p", { className: "hint" }, "Nothing yet. Steps show here as the agent takes them."));
     if (D.pro) {
       const last = [...ev].reverse().find((r) => r.event.kind === "finished");
       const kv = el("dl", { className: "kv" });
