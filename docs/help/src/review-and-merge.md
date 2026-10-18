@@ -25,7 +25,9 @@ Decurion only ever adds a new branch. It never changes your app's main branch, n
    - **Open pull request** if Decurion opened the pull request for you. Look it over on GitHub, wait for the checks to pass, then click **Merge pull request** there.
    - **Open pull request on GitHub** if it did not. Tap it, and GitHub opens a page with the pull request filled in. Click **Create pull request**, then merge it there when you are ready.
 
-The pull request says what was done, what the checker found, and any protected parts that were held for you. It also says that Decurion made it.
+The pull request says what was done, what the checker ran and found (each finding marked checked or guessed), and any protected parts that were held for you. It also says that Decurion made it.
+
+A **research** piece changes no code, so accepting it only marks it done. Nothing goes to GitHub. See [Research, Ask why, and the checker's proof](research-and-ask-why.md).
 
 ## Let Decurion open the pull request for you
 

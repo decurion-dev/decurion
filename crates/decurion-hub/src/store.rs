@@ -47,7 +47,7 @@ pub struct Store {
 
 const THREAD_COLS: &str =
     "id, app_id, title, prompt, state, ai, session_id, branch, place, updated_at, parent_id, background,
-     gh_state, gh_branch, gh_url, gh_pr, gh_error";
+     gh_state, gh_branch, gh_url, gh_pr, gh_error, research";
 
 /// The actor recorded for the owner's own moves.
 pub const OWNER: &str = "owner";
@@ -79,6 +79,7 @@ fn thread_from(row: &SqliteRow) -> Result<Thread> {
         parent_id: row.try_get("parent_id")?,
         background: row.try_get("background")?,
         github: crate::github::send_from(row)?,
+        research: row.try_get("research")?,
     })
 }
 
@@ -375,7 +376,7 @@ impl Store {
             let Some(row) = sqlx::query(
                 "SELECT t.id, t.app_id, t.title, t.prompt, t.state, t.ai, t.session_id, t.branch,
                         t.place, t.updated_at, t.parent_id, t.background, t.pay_per_use AS thread_ppu,
-                        t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error
+                        t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, t.research
                  FROM threads t JOIN apps a ON a.id = t.app_id
                  WHERE t.state = 'queued' AND t.place = ?
                    AND (t.ai <> 'claude' OR t.pay_per_use = 1 OR a.pay_per_use = 1 OR NOT EXISTS (
@@ -481,7 +482,14 @@ impl Store {
             };
             let messages = crate::messages::list(&mut tx, t.id, true).await?;
             tx.commit().await?;
-            let thread = self.thread(t.id).await?;
+            let mut thread = self.thread(t.id).await?;
+            // What other pieces of the same goal found, for this run only:
+            // the saved brief stays exactly what the owner approved.
+            let mut conn = self.pool.acquire().await?;
+            if let Some(n) = crate::coordinator::earlier_pieces_note(&mut conn, t.id).await? {
+                thread.prompt.push_str(&n);
+            }
+            drop(conn);
             let app = self.app(thread.app_id).await?;
             let checkpoint = self.latest_checkpoint(t.id).await?;
             let test_keys = self.test_key_names(app.id).await?;

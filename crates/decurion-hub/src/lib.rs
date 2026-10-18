@@ -26,14 +26,18 @@ pub mod folders;
 pub mod github;
 pub mod limits;
 pub mod messages;
+pub mod pages;
+pub mod plan;
 pub mod protected;
 pub mod push;
+pub mod research;
 pub mod secrets;
 pub mod sign_ins;
 pub mod spend;
 pub mod store;
 pub mod test_keys;
 pub mod usage;
+pub mod why;
 pub mod workers;
 
 mod goals;
@@ -257,6 +261,13 @@ pub fn router(state: AppState) -> Router {
             get(runner_download),
         )
         .route("/runner/threads/{id}/credential", post(runner_credential))
+        // A research piece's report page, escaped inside JSON (research.rs).
+        .route(
+            "/runner/threads/{id}/report",
+            post(goals::save_report).layer(DefaultBodyLimit::max(
+                decurion_proto::goal::MAX_PAGE_BYTES * 2 + (1 << 20),
+            )),
+        )
         .route("/goals", get(goals::list).post(goals::add))
         .route("/goals/{id}", get(goals::view))
         .route("/goals/{id}/say", post(goals::say))
@@ -265,7 +276,17 @@ pub fn router(state: AppState) -> Router {
         .route("/goals/{id}/retry", post(goals::retry))
         .route("/goals/{id}/close", post(goals::close))
         .route("/goals/{id}/stop", post(goals::stop))
+        .route("/goals/{id}/why", post(why::ask))
         .route("/goals/{id}/pages/{page}", get(goals::page))
+        .route("/goals/{id}/reports/{thread}", get(goals::report))
+        .route("/goals/{id}/pages/{page}/questions", get(pages::questions))
+        .route("/goals/{id}/pages/{page}/answer", post(pages::answer))
+        .route("/library", get(plan::library))
+        .route("/apps/{id}/plan", get(plan::view))
+        .route("/apps/{id}/plan/items", post(plan::add_item))
+        .route("/apps/{id}/plan/fix", post(plan::fix))
+        .route("/plan/items/{id}", post(plan::edit_item))
+        .route("/plan/items/{id}/move", post(plan::move_item))
         .route("/apps/{id}/notes", get(goals::notes))
         .route("/apps/{id}/notes/{note}/remove", post(goals::remove_note))
         .route("/runner/helper/claim", post(goals::helper_claim))
@@ -305,6 +326,8 @@ pub fn router(state: AppState) -> Router {
         .route("/cloud", get(cloud_page))
         .route("/runner/join", post(runner_join))
         .route("/goals", get(goals_page))
+        .route("/plan", get(plan_page))
+        .route("/pages/{goal}/{page}", get(view_page))
         .route("/login", get(login_page).post(login))
         .route("/pair", get(pair_page).post(pair))
         .route("/sw.js", get(service_worker))
@@ -611,6 +634,19 @@ async fn inbox() -> Response {
 
 async fn goals_page() -> Response {
     page(include_str!("goals.html"))
+}
+
+/// The master plan and the page library. Data comes from `/api/apps/{id}/plan`
+/// and `/api/library`.
+async fn plan_page() -> Response {
+    page(include_str!("plan.html"))
+}
+
+/// One agent page beside the answer panel. The page script reads the goal and
+/// page ids from the address; the agent's page itself loads from the
+/// owner-only `/api/goals/{goal}/pages/{page}` in a frame that runs nothing.
+async fn view_page() -> Response {
+    page(include_str!("view.html"))
 }
 
 /// Sets the device cookie. `Secure` whenever the hub is reached over https

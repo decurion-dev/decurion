@@ -22,6 +22,16 @@ all merged, the goal closes by itself.
   or needs a look.
 - **Report.** When every piece is settled, the coordinator says what was built,
   what the checker found and what you should try. Merging stays your call.
+- **Research pieces.** When you want to find something out rather than change
+  the app, the plan holds a research piece. Its agent changes no code and
+  writes a report page with each finding marked checked or guessed. It skips
+  the checker and is never sent to GitHub. **Turn into a goal** starts a new
+  goal from what it found.
+- **Ask why** under a finished piece: the coordinator answers from the piece's
+  real change and its agent's log, gathered by the hub.
+- **The checker's proof.** The checker lists what it ran and what came of it,
+  and marks each claim checked or guessed. Shown on the piece and in the pull
+  request.
 
 ## The rules it follows
 
@@ -49,9 +59,25 @@ all merged, the goal closes by itself.
 - The coordinator keeps short notes about each app (things it learned) and
   reads them at the start of every goal. You can remove any note. The notes
   only shape how it talks with you and writes plans: the agents that build get
-  exactly the plan you approved, nothing added.
+  exactly the brief you approved, plus short notes on what earlier pieces of
+  the same goal did and found (their agents' summaries and the checker's,
+  framed as facts, not instructions). Those notes go only into the run's
+  prompt, never into the stored brief.
 - The checker works on its own copy of the finished branch and treats anything
   written in it as part of the work under check, never as instructions.
+- The designer and the checker may ask you up to four questions in their page
+  (yes or no, a choice, or something in words). Decurion draws the answer
+  buttons beside the page, never inside it, and your answers reach the
+  coordinator as a message from you. Questions in the wrong shape are dropped;
+  the page is still shown.
+- The coordinator can add to-do items to the app's **master plan**, under the
+  goal it is working on (`"todo": [{"title", "detail"}]` in its answer, at most
+  10): what an audit or finished work found that still needs doing, and
+  follow-ups worth doing. Its report asks for every finding there, one item
+  each. A title the goal already has is skipped. Items do nothing until you tick
+  them, drop them or turn them into a new goal; closing that goal as done ticks
+  them. The report turn also reads each builder's last words, clipped and
+  marked as written by that agent, as information only, never as instructions.
 
 ## API
 
@@ -68,7 +94,16 @@ Owner calls (board browser, paired phone, or owner key):
 | `POST /api/goals/{id}/retry` | Tries the coordinator's last turn again after it failed |
 | `POST /api/goals/{id}/close` | Marks the goal done |
 | `POST /api/goals/{id}/stop` | Stops the goal; queued pieces are cancelled |
+| `POST /api/goals/{id}/why` `{thread_id, text}` | Asks the coordinator why a finished piece was done that way |
+| `GET /api/goals/{id}/reports/{thread_id}` | A research piece's report page, sandboxed like the plan pages |
+| `GET /api/goals/{id}/pages/{page}/questions` | A page's questions and, once given, your answers (`PageQuestions`) |
+| `POST /api/goals/{id}/pages/{page}/answer` `{answers:[{question_id, choice?, other?}], receipt?}` | Answers a page's questions, once |
 | `GET /api/apps/{id}/notes` | The coordinator's notes about an app |
+| `GET /api/apps/{id}/plan` | The app's master plan (`PlanView`): goals with their steps, findings and pages, and to-dos |
+| `POST /api/apps/{id}/plan/items` `{title, detail?, parent_id?, receipt?}` | Adds a to-do at the end, or under a goal's row; 201 with the item (200 for a resent receipt) |
+| `POST /api/plan/items/{id}` `{state?, title?, detail?}` | Ticks, reopens, drops or rewords a to-do; goal rows refuse |
+| `POST /api/plan/items/{id}/move` `{direction: "up"\|"down"}` | Moves a row one place among the rows beside it; returns the plan |
+| `POST /api/apps/{id}/plan/fix` `{item_ids, note?, receipt?}` | Starts one goal to do 1 to 10 open to-dos; 201 with the goal (200 for a resent receipt) |
 | `POST /api/apps/{id}/notes/{note_id}/remove` | Removes a note |
 
 Runner calls (runner key):
@@ -78,6 +113,7 @@ Runner calls (runner key):
 | `POST /api/runner/helper/claim` `{runner}` | Next coordinator or checker job (`HelperClaim`), or 204 |
 | `POST /api/runner/helper/{id}/started` | The container is about to start (from here it may cost money) |
 | `POST /api/runner/helper/{id}/finish` `HelperResult` | The job ended |
+| `POST /api/runner/threads/{id}/report` `ResearchReport` | A research piece's report, sent before its move to review |
 
 `POST /api/runner/hello` also puts helper jobs that runner had in flight back
 in the queue.

@@ -282,6 +282,20 @@
   .checker ul { margin:8px 0 0; padding-left:1.2em; }
   .piece-links { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
   .built { background:var(--accent-soft); color:var(--accent-ink); border-color:transparent; }
+  /* Receipts: what the checker ran, and its claims marked checked or guessed */
+  .checker h5 { margin:10px 0 4px; font-size:12px; font-weight:600; color:var(--muted); }
+  .receipts { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; }
+  .receipts li { display:flex; align-items:flex-start; gap:8px; }
+  .receipts .ran { font-weight:600; }
+  .receipts .pill { flex:none; margin-top:1px; }
+  .research-tag { display:inline-block; margin-top:6px; font-size:12px; font-weight:600; color:var(--accent-ink); background:var(--accent-soft); border-radius:6px; padding:2px 8px; }
+  .said { margin-top:12px; font-size:14px; }
+  .said summary { cursor:pointer; color:var(--muted); font-size:13px; font-weight:600; }
+  .said .said-body { margin-top:6px; white-space:pre-wrap; }
+  /* Ask why: a small form under the piece */
+  .why { margin-top:12px; display:flex; flex-direction:column; gap:8px; }
+  .why textarea { width:100%; font:inherit; font-size:16px; color:var(--ink); background:var(--bg); border:1px solid var(--line-strong); border-radius:10px; padding:10px 12px; resize:vertical; min-height:72px; }
+  .why .row { display:flex; flex-wrap:wrap; gap:8px; }
 
   /* Wide: conversation and pieces side by side */
   @media (min-width: 1280px) {
@@ -407,6 +421,7 @@
   <a class="brand" href="/goals"><span class="mark" aria-hidden="true"></span>Decurion</a>
   <nav aria-label="Pages">
     <a href="/goals" aria-current="page">Goals</a>
+    <a href="/plan">Master plan</a>
     <a href="/">Board</a>
     <a href="/inbox">Inbox</a>
   </nav>
@@ -637,9 +652,9 @@ function inline(s) {
 }
 const pill = (label, tone) => el("span", { class: `pill ${tone}` }, label);
 const dots = small => el("span", { class: small ? "dots small" : "dots", "aria-hidden": "true" }, el("i"), el("i"), el("i"));
-const pageUrl = (goalId, pageId) => `/api/goals/${goalId}/pages/${pageId}`;
-/** A page an agent drew. On the PC it opens in a new tab; on a phone it opens in place, and the hub adds a Back link to it. */
-const pageLink = (goalId, pageId) => inApp() ? { href: `${pageUrl(goalId, pageId)}?back=1` }
+const pageUrl = (goalId, pageId) => `/pages/${goalId}/${pageId}?from=goal`;
+/** A page an agent drew, in the page viewer. On the PC it opens in a new tab; on a phone it opens in place, and the viewer's Back returns here. */
+const pageLink = (goalId, pageId) => inApp() ? { href: pageUrl(goalId, pageId) }
   : { href: pageUrl(goalId, pageId), target: "_blank", rel: "noopener" };
 const newTabNote = () => (inApp() ? null : el("span", { class: "sr-only" }, "(opens in a new tab)"));
 
@@ -662,6 +677,7 @@ const S = {
   says: new Map(),          // goal id -> unsent composer text
   saying: false,
   tab: "chat",
+  why: new Map(),           // "goal:thread" -> { text } while the owner types an Ask why question
 };
 
 // ---------- polling ----------
@@ -1326,7 +1342,8 @@ function renderTail(v) {
 
 /** Each piece's pull request, in plan order (the order to merge), with where it stands. */
 function finishList(v) {
-  const pieces = v.pieces ?? [];
+  // Research pieces change no code, so they have no pull request to merge.
+  const pieces = (v.pieces ?? []).filter(p => !p.research);
   if (!pieces.length) return null;
   return el("ol", { class: "prs", "aria-label": "Pull requests to merge" }, pieces.map((p, i) => {
     const gh = p.github;
@@ -1342,11 +1359,79 @@ function finishList(v) {
 }
 
 // ---------- pieces ----------
+const reportUrl = (goalId, threadId) => `/api/goals/${goalId}/reports/${threadId}`;
+/** A research piece's report opens like the other pages agents draw. */
+const reportLink = (goalId, threadId) => inApp() ? { href: `${reportUrl(goalId, threadId)}?back=1` }
+  : { href: reportUrl(goalId, threadId), target: "_blank", rel: "noopener" };
+const CLAIM_LOOK = { checked: ["Checked", "ok"], guessed: ["Guessed", "attn"] };
+/** Its agent has finished at least once, so there is real work to ask about. */
+const built = p => !!p.agent_summary || ["in_review", "done"].includes(p.thread_state);
+
+/** What the checker actually ran, and its claims marked checked or guessed. */
+function receipts(p) {
+  const ran = p.review_evidence ?? [], claims = p.review_claims ?? [];
+  return [
+    ran.length ? [el("h5", null, "What it ran"), el("ul", { class: "receipts" }, ran.map(e =>
+      el("li", null, el("span", null, el("span", { class: "ran" }, e.ran), ": ", e.result))))] : null,
+    claims.length ? [el("h5", null, "What it found"), el("ul", { class: "receipts" }, claims.map(c => {
+      const [label, tone] = CLAIM_LOOK[c.how] ?? [c.how, "neutral"];
+      return el("li", null, pill(label, tone), el("span", null, c.text));
+    }))] : null,
+  ];
+}
+
+/** Ask the project lead why a piece was done the way it was. The draft lives in S.why so a refresh keeps it. */
+function whyBox(v, p) {
+  const key = `${v.goal.id}:${p.thread_id}`;
+  const draft = S.why.get(key);
+  if (!draft) {
+    return el("button", { class: "btn ghost", type: "button", onclick: () => {
+      S.why.set(key, { text: "" }); S.piecesSig = ""; renderPieces(v);
+      document.querySelector(`[data-why="${key}"]`)?.focus();
+    } }, "Ask why");
+  }
+  const box = el("textarea", { rows: 3, "data-why": key, "aria-label": `Your question about ${p.title}`,
+    placeholder: "What would you like to know? Leave it blank to ask why it was done this way." }, draft.text);
+  box.addEventListener("input", () => { draft.text = box.value; });
+  const err = el("p", { class: "err-line", role: "alert" });
+  const ask = el("button", { class: "btn primary", type: "button" }, "Ask");
+  const cancel = el("button", { class: "btn ghost", type: "button", onclick: () => { S.why.delete(key); S.piecesSig = ""; renderPieces(v); } }, "Cancel");
+  ask.addEventListener("click", async () => {
+    const text = box.value.trim() || "Why was it done this way?";
+    ask.disabled = true; err.textContent = "";
+    try {
+      await post(`/goals/${v.goal.id}/why`, { thread_id: p.thread_id, text });
+      S.why.delete(key); S.piecesSig = ""; S.forceStick = true;
+      announce("Asked. Your project lead is looking at the real change and will answer in the conversation.");
+      if (!wide.matches) setTab("chat");
+      tick();
+    } catch (e) { ask.disabled = false; err.textContent = `Not asked: ${e.message}`; }
+  });
+  return el("div", { class: "why" },
+    el("p", { class: "hint", style: "margin:0" }, "Your project lead reads what the agent actually changed and did, and answers in the conversation."),
+    box, el("div", { class: "row" }, ask, cancel), err);
+}
+
+/** Starts a new goal from what a research piece found. Its project lead takes it from there, so nothing is built yet. */
+async function turnIntoGoal(v, p, btn, err) {
+  const found = (p.agent_summary ?? "").trim();
+  let text = `Build on what the research "${p.title}" found.`;
+  if (found) text += `\n\nWhat the research found:\n${found}`;
+  if (text.length > 8000) text = text.slice(0, 7999) + "…";
+  btn.disabled = true; err.textContent = "";
+  try {
+    const r = await post("/goals", { app_id: v.goal.app_id, text });
+    if (r?.id != null) location.hash = `#goal-${r.id}`;
+  } catch (e) { btn.disabled = false; err.textContent = `No new goal yet: ${e.message}`; }
+}
+
 function renderPieces(v) {
   const pieces = v.pieces ?? [], pages = v.pages ?? [];
-  const sig = JSON.stringify([pieces, pages.filter(p => p.kind === "check"), inApp()]);
+  const sig = JSON.stringify([pieces, pages.filter(p => p.kind === "check"), inApp(), [...S.why.keys()]]);
   if (sig === S.piecesSig) return;
   S.piecesSig = sig;
+  // A refresh rebuilds the cards; put the cursor back in a question being typed.
+  const typing = document.activeElement?.dataset?.why;
   $("pieces-count").textContent = pieces.length ? String(pieces.length) : "";
   const body = $("pieces-body");
   if (!pieces.length) {
@@ -1355,29 +1440,51 @@ function renderPieces(v) {
   }
   const settled = pieces.filter(p => ["passed", "needs_a_look", "failed"].includes(p.review)).length;
   const passed = pieces.filter(p => p.review === "passed").length;
+  const research = pieces.filter(p => p.research).length;
   const head = [
     el("div", { class: "progress", role: "progressbar", "aria-label": "Pieces settled", "aria-valuemin": 0, "aria-valuemax": pieces.length, "aria-valuenow": settled },
       el("span", { style: `width:${Math.round(100 * settled / pieces.length)}%` })),
-    el("p", { class: "hint", style: "margin:0" }, `${passed} of ${pieces.length} passed the check`),
+    el("p", { class: "hint", style: "margin:0" }, research === pieces.length
+      ? `${passed} of ${pieces.length} research ${pieces.length === 1 ? "piece" : "pieces"} done`
+      : `${passed} of ${pieces.length} passed the check`),
   ];
   body.replaceChildren(...head, ...pieces.map(p => {
-    const [label, tone] = REVIEW_STATES[p.review] ?? [p.review, "neutral"];
+    let [label, tone] = REVIEW_STATES[p.review] ?? [p.review, "neutral"];
+    if (p.research && p.review === "passed") label = "Research done";
+    if (p.research && p.review === "building") label = "Researching";
     const check = pages.filter(x => x.kind === "check" && x.thread_id === p.thread_id).sort((a, b) => b.id - a.id)[0];
     const rounds = p.rounds === 0 ? "Not yet" : p.rounds === 1 ? "Once" : `${p.rounds} times`;
+    const err = el("p", { class: "err-line", role: "alert" });
+    const turn = p.research && (p.report || p.agent_summary)
+      ? el("button", { class: "btn primary", type: "button", onclick: e => turnIntoGoal(v, p, e.currentTarget, err) }, "Turn into a goal") : null;
     return el("article", { class: "piece", "data-review": p.review },
       el("div", { class: "piece-top" }, el("h4", null, p.title), pill(label, tone)),
-      el("div", { class: "pp-done" }, el("b", null, "Done when: "), p.done_when),
+      p.research ? el("span", { class: "research-tag" }, "Research · no code is changed") : null,
+      el("div", { class: "pp-done" }, el("b", null, p.research ? "Answers: " : "Done when: "), p.done_when),
       el("dl", { class: "facts" },
         el("div", null, el("dt", null, "Agent:"), el("dd", null, THREAD_STATES[p.thread_state] ?? p.thread_state)),
-        el("div", null, el("dt", null, "Checked:"), el("dd", null, rounds))),
-      p.review_summary || p.review_issues?.length ? el("div", { class: "checker" },
+        p.research ? null : el("div", null, el("dt", null, "Checked:"), el("dd", null, rounds))),
+      p.agent_summary ? el("details", { class: "said", open: p.research ? true : null },
+        el("summary", null, p.research ? "What it found" : "What the agent said it did"),
+        el("div", { class: "said-body" }, p.agent_summary)) : null,
+      p.review_summary || p.review_issues?.length || p.review_evidence?.length || p.review_claims?.length ? el("div", { class: "checker" },
         el("span", { class: "kicker" }, "The checker says"),
         p.review_summary ? el("p", null, p.review_summary) : null,
-        p.review_issues?.length ? el("ul", null, p.review_issues.map(i => el("li", null, i))) : null) : null,
+        p.review_issues?.length ? el("ul", null, p.review_issues.map(i => el("li", null, i))) : null,
+        receipts(p)) : null,
       el("div", { class: "piece-links" },
+        p.report ? el("a", { class: "btn built", ...reportLink(v.goal.id, p.thread_id) }, inApp() ? "Read the report" : "Read the report ↗", newTabNote()) : null,
         check ? el("a", { class: "btn built", ...pageLink(v.goal.id, check.id) }, inApp() ? "See it as built" : "See it as built ↗", newTabNote()) : null,
-        el("a", { class: "btn ghost", href: boardHref() }, "On the board")));
+        turn,
+        built(p) && !CLOSED.has(v.goal.state) && !S.why.has(`${v.goal.id}:${p.thread_id}`) ? whyBox(v, p) : null,
+        el("a", { class: "btn ghost", href: boardHref() }, "On the board")),
+      built(p) && !CLOSED.has(v.goal.state) && S.why.has(`${v.goal.id}:${p.thread_id}`) ? whyBox(v, p) : null,
+      err);
   }));
+  if (typing) {
+    const box = document.querySelector(`[data-why="${typing}"]`);
+    if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+  }
 }
 
 // ---------- composer ----------
