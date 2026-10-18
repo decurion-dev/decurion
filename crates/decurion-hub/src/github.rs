@@ -53,6 +53,7 @@ use axum::extract::{Path as UrlPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use decurion_proto::goal::{Basis, Evidence, ReviewClaim};
 use decurion_proto::{GitHubSend, SendState, Thread, ThreadState};
 use serde::Deserialize;
 use sqlx::sqlite::SqliteRow;
@@ -312,6 +313,10 @@ pub struct Story {
     pub held: bool,
     /// The GitHub login who reviews the app's pull requests.
     pub reviewer: Option<String>,
+    /// What the checker ran in its last check, and what came of it.
+    pub evidence: Vec<Evidence>,
+    /// What the checker said about the work, each checked or guessed.
+    pub claims: Vec<ReviewClaim>,
 }
 
 fn clip(s: &str, max: usize) -> String {
@@ -323,6 +328,13 @@ fn clip(s: &str, max: usize) -> String {
         c.push_str("...");
         c
     }
+}
+
+/// One line of a checker's receipt for a bullet: on one line so it cannot
+/// break the list, any sign-in taken out of web addresses, and clipped.
+fn receipt_line(s: &str, max: usize) -> String {
+    let one = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    clip(&scrub(&one), max)
 }
 
 /// The pull request's title: the work's own title.
@@ -346,6 +358,41 @@ pub fn pr_body(s: &Story) -> String {
     match s.review.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         Some(t) => b.push_str(&clip(t, 3000)),
         None => b.push_str("No checker looked at this work: it was added straight to the board."),
+    }
+    // The checker's receipts, so a reader can tell what was proven by a test
+    // or a screen from what the checker only reasoned. The list sizes are
+    // already bounded by `ReviewVerdict::validate`; take no more than that.
+    let ran: Vec<String> = s
+        .evidence
+        .iter()
+        .take(decurion_proto::goal::MAX_EVIDENCE)
+        .map(|e| {
+            format!(
+                "- {}: {}",
+                receipt_line(&e.ran, 300),
+                receipt_line(&e.result, 500)
+            )
+        })
+        .collect();
+    if !ran.is_empty() {
+        b.push_str("\n\nWhat it ran:\n\n");
+        b.push_str(&ran.join("\n"));
+    }
+    let found: Vec<String> = s
+        .claims
+        .iter()
+        .take(decurion_proto::goal::MAX_CLAIMS)
+        .map(|c| {
+            let how = match c.how {
+                Basis::Checked => "Checked",
+                Basis::Guessed => "Guessed",
+            };
+            format!("- {how}: {}", receipt_line(&c.text, 500))
+        })
+        .collect();
+    if !found.is_empty() {
+        b.push_str("\n\nWhat it found:\n\n");
+        b.push_str(&found.join("\n"));
     }
     if s.held {
         b.push_str(
@@ -863,18 +910,21 @@ pub(crate) fn send_from(row: &SqliteRow) -> Result<Option<GitHubSend>> {
 
 /// Records, inside the accept's own transaction, that the hub is to send
 /// thread `id` to GitHub, and the branch it goes to. Work sent before is
-/// left as it is.
-/// A fix of review comments goes to the branch of the pull request it
-/// answers instead of a new one.
+/// left as it is. A research piece changed no code, so nothing of it is
+/// ever sent: accepting it only marks it done. A fix of review comments
+/// goes to the branch of the pull request it answers instead of a new one.
 pub(crate) async fn want_send(tx: &mut Transaction<'_, Sqlite>, id: i64) -> Result<()> {
-    let (app, title, pr_branch): (String, String, Option<String>) = sqlx::query_as(
-        "SELECT a.name, t.title, w.branch FROM threads t JOIN apps a ON a.id = t.app_id
+    let (app, title, research, pr_branch): (String, String, bool, Option<String>) = sqlx::query_as(
+        "SELECT a.name, t.title, t.research, w.branch FROM threads t JOIN apps a ON a.id = t.app_id
          LEFT JOIN pr_watches w ON w.thread_id = t.fix_of
          WHERE t.id = ?",
     )
     .bind(id)
     .fetch_one(&mut **tx)
     .await?;
+    if research {
+        return Ok(());
+    }
     let branch = pr_branch.unwrap_or_else(|| send_branch(&app, id, &title));
     // The commit sent is the one accepted: the work's latest saved copy,
     // which cannot change once the work is in review.
@@ -896,7 +946,8 @@ impl Store {
         let row = sqlx::query(
             "SELECT t.app_id, a.repo_path, t.title, t.gh_branch, t.gh_head, t.branch,
                  (SELECT MAX(c.id) FROM checkpoints c WHERE c.thread_id = t.id) AS checkpoint,
-                 p.review, p.review_summary, g.title AS goal, a.reviewer,
+                 p.review, p.review_summary, p.review_evidence, p.review_claims,
+                 g.title AS goal, a.reviewer,
                  w.thread_id AS watch, w.branch AS w_branch, w.head AS w_head, w.url AS w_url,
                  w.number AS w_number, w.state AS w_state
              FROM threads t JOIN apps a ON a.id = t.app_id
@@ -919,6 +970,16 @@ impl Store {
         .await?
         .flatten();
         let review: Option<String> = row.try_get("review")?;
+        // Work added straight to the board has no piece, so no receipts; a
+        // list that does not read only leaves the receipts out.
+        let evidence: Vec<Evidence> = row
+            .try_get::<Option<String>, _>("review_evidence")?
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default();
+        let claims: Vec<ReviewClaim> = row
+            .try_get::<Option<String>, _>("review_claims")?
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default();
         let review_summary: Option<String> = row.try_get("review_summary")?;
         let held = review.as_deref() == Some("needs_a_look")
             && review_summary
@@ -943,6 +1004,8 @@ impl Store {
                 review: review_summary,
                 held,
                 reviewer: row.try_get("reviewer")?,
+                evidence,
+                claims,
             },
             fix: match row.try_get::<Option<i64>, _>("watch")? {
                 None => None,
@@ -959,11 +1022,12 @@ impl Store {
     }
 
     /// Takes a waiting send for this hub. False if it is not waiting (sent,
-    /// being sent, or never asked for).
+    /// being sent, or never asked for). Research is never sent, whatever
+    /// its row says.
     async fn start_send(&self, id: i64) -> Result<bool> {
         let done = sqlx::query(
             "UPDATE threads SET gh_state = 'sending'
-             WHERE id = ? AND gh_state = 'waiting' AND state = 'done'",
+             WHERE id = ? AND gh_state = 'waiting' AND state = 'done' AND research = 0",
         )
         .bind(id)
         .execute(self.pool())
@@ -1717,11 +1781,33 @@ mod tests {
             ),
             held: true,
             reviewer: Some("param".into()),
+            evidence: vec![Evidence {
+                ran: "the app's tests".into(),
+                result: "42 of 42 passed".into(),
+            }],
+            claims: vec![
+                ReviewClaim {
+                    text: "The login form works\non a phone.".into(),
+                    how: Basis::Checked,
+                },
+                ReviewClaim {
+                    text: "See https://me:secret@example.com/x for more.".into(),
+                    how: Basis::Guessed,
+                },
+            ],
         };
         let body = pr_body(&s);
         assert!(body.contains("param reviews next."), "{body}");
         assert!(body.contains("## What was done\n\nFixed the login form."));
         assert!(body.contains("## The checker\n\nHeld for you:"));
+        assert!(
+            body.contains("Looks good.\n\nWhat it ran:\n\n- the app's tests: 42 of 42 passed"),
+            "{body}"
+        );
+        assert!(body.contains(
+            "What it found:\n\n- Checked: The login form works on a phone.\n- Guessed: See https://example.com/x for more."
+        ));
+        assert!(!body.contains("secret"), "{body}");
         assert!(body.contains("## Protected parts"));
         assert!(body.contains("Part of the goal: Make sign-in work on phones"));
         assert!(body.contains("Decurion made this pull request"));
@@ -1733,6 +1819,7 @@ mod tests {
         });
         assert!(plain.contains("did not leave a summary"));
         assert!(plain.contains("No checker looked at this work"));
+        assert!(!plain.contains("What it ran") && !plain.contains("What it found"));
         assert!(!plain.contains("Protected parts"));
         assert!(!plain.contains("reviews next"));
         assert_eq!(

@@ -422,6 +422,7 @@ mod tests {
             background: false,
             github: None,
             fix_of: None,
+            research: false,
         };
         Claim {
             thread,

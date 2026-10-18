@@ -3,7 +3,7 @@
 
 use decurion_proto::context::{text_name, ContextRef, FileKind, BOX_DIR};
 use decurion_proto::goal::{HelperResult, MAX_PAGE_BYTES};
-use decurion_proto::{Account, Interrupted, Message, MessageKind, Profile, RunEvent};
+use decurion_proto::{Account, Interrupted, Message, MessageKind, Profile, RunEvent, ThreadState};
 use serde_json::{json, Value};
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -291,26 +291,77 @@ pub fn parse_gate_line(line: &str) -> Option<GateLine> {
     }
 }
 
-// The questions block the agent is asked for is read by the work panel and
-// the phone inbox (D.questions in the hub's ui.js), which turn it into answer
-// buttons; keep its shape in step with that reader.
-const RULES: &str = "You are working in your own copy of the code on its own branch. \
-Commit your work to this branch as you go. Do not push and do not open pull requests; \
-Decurion does that after review. \
-A private Chromium browser is available through the Playwright browser tools for testing web pages you build. \
+// Text both kinds of run are told word for word, so the two cannot drift
+// apart. Macros rather than constants because `concat!` takes only literals.
+macro_rules! browser_and_sites {
+    () => {
+        "A private Chromium browser is available through the Playwright browser tools for testing web pages you build. \
 It runs in a box of its own that shares your network, so it can open servers you start on localhost, \
 but it cannot see your files: serve a page to test it, and its snapshots and screenshots come back in the tools' answers. \
 The owner may take over the browser for a while; if a browser tool says so, wait or do something else. \
 You can reach only the websites on this app's list; others are blocked. If the work needs a \
-blocked site, carry on without it and say so in your final summary.\n\n\
-If you need the owner to decide something, end your final message with a fenced block tagged \
+blocked site, carry on without it and say so in your final summary."
+    };
+}
+
+// The questions block the agent is asked for is read by the work panel and
+// the phone inbox (D.questions in the hub's ui.js), which turn it into answer
+// buttons; keep its shape in step with that reader.
+macro_rules! questions_block {
+    () => {
+        "If you need the owner to decide something, end your final message with a fenced block tagged \
 questions that holds a JSON list, like this:\n\
 ```questions\n\
 [{\"text\": \"Should MAs get their own role?\", \"choices\": [\"Yes, add an MA role\", \"No, use the clinical role\"]}]\n\
 ```\n\
 Ask at most 3 questions, in plain words for someone who is not a programmer. Give 2 to 4 short \
 choices when the answer is one of a few options, and leave choices out otherwise. Still say in your \
-summary what you assumed, so the work makes sense before the owner answers.";
+summary what you assumed, so the work makes sense before the owner answers."
+    };
+}
+
+const RULES: &str = concat!(
+    "You are working in your own copy of the code on its own branch. \
+Commit your work to this branch as you go. Do not push and do not open pull requests; \
+Decurion does that after review. ",
+    browser_and_sites!(),
+    "\n\n",
+    questions_block!()
+);
+
+/// The report a research run's agent writes, by its name in the workspace.
+/// The box sees the workspace at `/work`, so the agent is told
+/// `/work/decurion-report.html` (see [`RESEARCH_RULES`]).
+pub const REPORT_FILE: &str = "decurion-report.html";
+
+// A research run finds things out and writes a page for the owner instead of
+// changing code. Its copy is thrown away: nothing it changes is kept or sent
+// to GitHub, so it is told not to commit at all. The page must stand alone,
+// because the hub shows it sandboxed, with no scripts and no outside
+// requests; 6 MB leaves room under MAX_PAGE_BYTES for hidden values.
+const RESEARCH_RULES: &str = concat!(
+    "This is a research task: find things out and report them. \
+You are working in your own throwaway copy of the code. Do not change the app's code: \
+nothing you change here is kept or sent anywhere, so do not commit, push or open pull requests. \
+You may run the app, its tests and scripts to find things out. ",
+    browser_and_sites!(),
+    "\n\n\
+Write your findings as ONE self-contained HTML page at /work/decurion-report.html for the owner, \
+who is not a programmer. Use plain words and put the findings first. Label each finding \
+\"Checked\" if you verified it (you read the code, ran something or looked at the data; say how) \
+or \"Guessed\" if you worked it out without checking. Put everything inside that one file: CSS in a \
+style tag and any pictures as data: URLs. Use no JavaScript and no links to other pages, files, \
+fonts, images or websites. Keep the page under 6 MB. \
+End your final message with a short summary in plain words of what you found; the owner and the \
+later pieces of this work read it first.\n\n",
+    questions_block!()
+);
+
+/// Told to a research run that resumes: the runner removes any report left
+/// in the workspace before every start, so a page from an earlier try is
+/// never sent as this one's.
+const RESEARCH_RESUME: &str = "Any report you wrote before was removed. \
+Write the whole report again at /work/decurion-report.html before you finish.";
 
 /// How a run begins, which decides what the agent is told.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -393,10 +444,12 @@ Check `git status` and `git log` first and do not redo finished steps.";
 
 /// The agent's starting message: the task and the rules (or, on a resume,
 /// where to pick up and why), the app's test keys by name, the step it was cut off
-/// in, if any, and the owner messages it has not seen yet.
+/// in, if any, and the owner messages it has not seen yet. A `research` run
+/// gets [`RESEARCH_RULES`] in place of the rules for changing code.
 pub fn prompt_for(
     task: &str,
     start: Start,
+    research: bool,
     test_keys: &[String],
     messages: &[Message],
     interrupted: Option<&Interrupted>,
@@ -406,6 +459,7 @@ pub fn prompt_for(
         Start::Restarted => Some(RESUME),
         Start::Moved => Some(MOVED),
     };
+    let rules = if research { RESEARCH_RULES } else { RULES };
     let mut p = if let (Some(r), true) = (resume, test_keys.is_empty()) {
         r.to_owned()
     } else if let Some(r) = resume {
@@ -416,15 +470,26 @@ If an earlier commit on it does, rewrite the branch so no commit contains it.",
             test_keys.join(", ")
         )
     } else if test_keys.is_empty() {
-        format!("{task}\n\n{RULES}")
+        format!("{task}\n\n{rules}")
+    } else if research {
+        format!(
+            "{task}\n\n{rules}\n\nThese environment variables hold test-mode keys for running \
+the app's tests: {}. Use them only by name. Never print them, and never write their values \
+into files or the report.",
+            test_keys.join(", ")
+        )
     } else {
         format!(
-            "{task}\n\n{RULES}\n\nThese environment variables hold test-mode keys for running \
+            "{task}\n\n{rules}\n\nThese environment variables hold test-mode keys for running \
 the app's tests: {}. Use them only by name. Never print them, and never write their values \
 into files or commits; a commit that contains one will not be accepted.",
             test_keys.join(", ")
         )
     };
+    if research && resume.is_some() {
+        p.push(' ');
+        p.push_str(RESEARCH_RESUME);
+    }
     if let Some(i) = interrupted {
         // The hub got these from the agent's own output: clip and redact
         // again rather than trust that it was done before.
@@ -1747,16 +1812,70 @@ pub fn parse_result(line: &str) -> Option<HelperResult> {
 /// file counts, never a link the agent planted to something on the host, and
 /// only up to [`MAX_PAGE_BYTES`].
 pub fn read_page(out: &Path) -> Option<String> {
+    read_page_file(&out.join("page.html"))
+}
+
+/// The report a research run's agent left in its workspace
+/// ([`REPORT_FILE`]), on the same terms as [`read_page`]: a regular file only,
+/// never a link the agent planted to a host file, at most [`MAX_PAGE_BYTES`],
+/// with keys redacted.
+pub fn read_report(worktree: &Path) -> Option<String> {
+    read_page_file(&worktree.join(REPORT_FILE))
+}
+
+/// Removes a report left in the workspace by an earlier try, before a
+/// research run starts, so an old page is never sent as this run's. Never
+/// follows a link: a planted link is removed, not what it points to. Only a
+/// regular file is ever read back ([`read_report`]), so anything else that
+/// cannot be removed is left alone.
+pub fn clear_report(worktree: &Path) -> std::io::Result<()> {
+    let p = worktree.join(REPORT_FILE);
+    let kind = match std::fs::symlink_metadata(&p) {
+        Ok(m) => m.file_type(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let removed = if kind.is_dir() {
+        std::fs::remove_dir_all(&p)
+    } else {
+        std::fs::remove_file(&p)
+    };
+    match removed {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound && kind.is_file() => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// Where a research run goes once its agent finished well and its container
+/// exited cleanly. It needs no commits, only something to show the owner: the
+/// report page or, failing that, the agent's own summary, which the hub
+/// turns into a page.
+pub fn research_outcome(report_exists: bool, summary: &str) -> (ThreadState, String) {
+    if report_exists || !summary.trim().is_empty() {
+        (
+            ThreadState::InReview,
+            "research finished; report ready".to_owned(),
+        )
+    } else {
+        (
+            ThreadState::Failed,
+            "the research agent finished without a report".to_owned(),
+        )
+    }
+}
+
+/// Reads a page an agent wrote, at `p`. Only a regular file counts, and only
+/// up to [`MAX_PAGE_BYTES`] once read as redacted text.
+fn read_page_file(p: &Path) -> Option<String> {
     use std::io::Read;
-    let p = out.join("page.html");
-    let meta = std::fs::symlink_metadata(&p).ok()?;
+    let meta = std::fs::symlink_metadata(p).ok()?;
     let max = u64::try_from(MAX_PAGE_BYTES).ok()?;
     if !meta.file_type().is_file() || meta.len() > max {
         return None;
     }
     let mut buf = Vec::new();
     // The container is gone by now, but read no more than the limit anyway.
-    std::fs::File::open(&p)
+    std::fs::File::open(p)
         .ok()?
         .take(max + 1)
         .read_to_end(&mut buf)
@@ -2094,10 +2213,11 @@ mod tests {
         assert_eq!(Start::pick(true, true, true), Start::Moved);
         // Nothing saved to resume from: start the task again.
         assert_eq!(Start::pick(true, true, false), Start::Fresh);
-        assert!(prompt_for("Fix it", Start::Fresh, &[], &[], None).starts_with("Fix it\n\n"));
-        assert!(prompt_for("Fix it", Start::Fresh, &[], &[], None).contains("Playwright"));
-        assert!(prompt_for("x", Start::Moved, &[], &[], None).contains("moved to another computer"));
-        assert!(!prompt_for("x", Start::Restarted, &[], &[], None).contains("moved"));
+        assert!(prompt_for("Fix it", Start::Fresh, false, &[], &[], None).starts_with("Fix it\n\n"));
+        assert!(prompt_for("Fix it", Start::Fresh, false, &[], &[], None).contains("Playwright"));
+        assert!(prompt_for("x", Start::Moved, false, &[], &[], None)
+            .contains("moved to another computer"));
+        assert!(!prompt_for("x", Start::Restarted, false, &[], &[], None).contains("moved"));
         assert!(Start::Moved.resumes() && !Start::Fresh.resumes());
     }
 
@@ -2426,21 +2546,21 @@ mod tests {
 
     #[test]
     fn the_agent_is_told_about_test_keys_only_when_there_are_some() {
-        let p = prompt_for("Fix it", Start::Fresh, &keys(), &[], None);
+        let p = prompt_for("Fix it", Start::Fresh, false, &keys(), &[], None);
         assert!(p.starts_with("Fix it\n\n"));
         assert!(p.contains("STRIPE_SECRET_KEY, MAPS_TEST_KEY"));
         assert!(p.contains("will not be accepted"));
         assert_eq!(
-            prompt_for("Fix it", Start::Fresh, &[], &[], None),
+            prompt_for("Fix it", Start::Fresh, false, &[], &[], None),
             format!("Fix it\n\n{RULES}")
         );
         // A resumed run is reminded, so a run stopped for a key in its
         // commits can clean its branch when the owner retries it.
-        let r = prompt_for("Fix it", Start::Restarted, &keys(), &[], None);
+        let r = prompt_for("Fix it", Start::Restarted, false, &keys(), &[], None);
         assert!(r.starts_with(RESUME) && r.contains("rewrite the branch"));
         assert!(r.contains("STRIPE_SECRET_KEY, MAPS_TEST_KEY"));
         assert_eq!(
-            prompt_for("Fix it", Start::Restarted, &[], &[], None),
+            prompt_for("Fix it", Start::Restarted, false, &[], &[], None),
             RESUME
         );
     }
@@ -2465,6 +2585,102 @@ mod tests {
         }
         assert!(RULES.contains("at most 3 questions"));
         assert!(RULES.contains("not a programmer"));
+    }
+
+    #[test]
+    fn research_runs_write_a_report_and_change_no_code() {
+        let p = prompt_for(
+            "Find out why it is slow",
+            Start::Fresh,
+            true,
+            &[],
+            &[],
+            None,
+        );
+        assert_eq!(p, format!("Find out why it is slow\n\n{RESEARCH_RULES}"));
+        assert!(p.contains("/work/decurion-report.html"));
+        assert!(p.contains(&format!("/work/{REPORT_FILE}")));
+        assert!(p.contains("Do not change the app's code"));
+        assert!(p.contains("\"Checked\"") && p.contains("\"Guessed\""));
+        assert!(p.contains("no JavaScript"));
+        assert!(!p.contains("Commit your work"));
+        // The browser, website and questions text is the same as for code
+        // work, so the screens read the same questions block.
+        let shared = |rules: &'static str| {
+            let from = rules.find("A private Chromium").expect("browser text");
+            let end = "say so in your final summary.";
+            let to = rules.find(end).expect("website text") + end.len();
+            let q = rules
+                .find("If you need the owner")
+                .expect("questions block");
+            (&rules[from..to], &rules[q..])
+        };
+        assert_eq!(shared(RULES), shared(RESEARCH_RULES));
+        assert!(shared(RESEARCH_RULES).1.contains("```questions\n"));
+        // Test keys may not go into the report either, and commits are not
+        // mentioned at all.
+        let k = prompt_for("Look", Start::Fresh, true, &keys(), &[], None);
+        assert!(k.contains("STRIPE_SECRET_KEY") && k.contains("the report"));
+        assert!(!k.contains("Commit your work"));
+        // A resumed research run keeps the resume text and is told to write
+        // the report again, since the runner removed the old one.
+        let r = prompt_for("Look", Start::Restarted, true, &[], &[], None);
+        assert!(r.starts_with(RESUME) && r.contains("/work/decurion-report.html"));
+        let m = prompt_for("Look", Start::Moved, true, &[], &[], None);
+        assert!(m.starts_with(MOVED) && m.contains("Write the whole report again"));
+        // Code work is told nothing about reports.
+        assert!(!prompt_for("Fix it", Start::Restarted, false, &[], &[], None).contains("report"));
+        assert!(!RULES.contains("decurion-report"));
+    }
+
+    #[test]
+    fn research_needs_a_report_or_a_summary_not_commits() {
+        assert_eq!(research_outcome(true, "").0, ThreadState::InReview);
+        assert_eq!(
+            research_outcome(false, "It is slow because …").0,
+            ThreadState::InReview
+        );
+        assert_eq!(
+            research_outcome(true, "x").1,
+            "research finished; report ready"
+        );
+        let (to, note) = research_outcome(false, "  \n");
+        assert_eq!(to, ThreadState::Failed);
+        assert_eq!(note, "the research agent finished without a report");
+    }
+
+    #[test]
+    fn reports_must_be_small_regular_files() {
+        let wt = std::env::temp_dir().join(format!("decurion-report-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&wt);
+        assert!(std::fs::create_dir_all(&wt).is_ok());
+        assert_eq!(read_report(&wt), None, "no report");
+        let _ = std::fs::write(wt.join(REPORT_FILE), "<h1>Found</h1> sk-ant-abc");
+        assert_eq!(
+            read_report(&wt).as_deref(),
+            Some("<h1>Found</h1> [redacted]")
+        );
+        let _ = std::fs::write(wt.join(REPORT_FILE), vec![b'x'; MAX_PAGE_BYTES + 1]);
+        assert_eq!(read_report(&wt), None, "too big");
+        let _ = std::fs::remove_file(wt.join(REPORT_FILE));
+        assert!(std::fs::create_dir(wt.join(REPORT_FILE)).is_ok());
+        assert_eq!(read_report(&wt), None, "a folder");
+        let _ = std::fs::remove_dir(wt.join(REPORT_FILE));
+        #[cfg(unix)]
+        {
+            let _ = std::fs::write(wt.join("secret"), "host file");
+            let _ = std::os::unix::fs::symlink(wt.join("secret"), wt.join(REPORT_FILE));
+            assert_eq!(read_report(&wt), None, "symlink");
+            // Clearing removes the link, never the file it points to.
+            assert!(clear_report(&wt).is_ok());
+            assert!(std::fs::symlink_metadata(wt.join(REPORT_FILE)).is_err());
+            assert!(wt.join("secret").is_file());
+        }
+        let _ = std::fs::write(wt.join(REPORT_FILE), "<p>old</p>");
+        assert!(clear_report(&wt).is_ok());
+        assert_eq!(read_report(&wt), None, "an old report is gone");
+        assert!(clear_report(&wt).is_ok(), "nothing to clear is fine");
+        let _ = std::fs::remove_dir_all(&wt);
     }
 
     #[test]
@@ -2788,6 +3004,7 @@ mod tests {
         let p = prompt_for(
             "Fix it",
             Start::Fresh,
+            false,
             &[],
             &[
                 msg(1, MessageKind::Steer, "use B"),
@@ -2808,9 +3025,8 @@ mod tests {
             tail.find("Note:\nfyi"),
         );
         assert!(s < f && f < n && s.is_some());
-        assert!(
-            !prompt_for("Fix it", Start::Fresh, &[], &[], None).contains("Messages from the owner")
-        );
+        assert!(!prompt_for("Fix it", Start::Fresh, false, &[], &[], None)
+            .contains("Messages from the owner"));
     }
 
     #[test]
@@ -2820,7 +3036,7 @@ mod tests {
             summary: "src/main.rs".into(),
             safe_to_redo: true,
         };
-        let p = prompt_for("t", Start::Restarted, &[], &[], Some(&safe));
+        let p = prompt_for("t", Start::Restarted, false, &[], &[], Some(&safe));
         assert!(p.starts_with("Your container was restarted."));
         assert!(p.contains(
             "You were cut off while running Read (src/main.rs). It only looks at things, so it is safe to run again."
@@ -2833,6 +3049,7 @@ mod tests {
         let p = prompt_for(
             "t",
             Start::Restarted,
+            false,
             &[],
             &[msg(1, MessageKind::Note, "hi")],
             Some(&unsafe_step),
