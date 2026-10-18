@@ -24,6 +24,7 @@ pub mod devices;
 pub mod github;
 pub mod limits;
 pub mod messages;
+pub mod pages;
 pub mod plan;
 pub mod protected;
 pub mod push;
@@ -254,6 +255,8 @@ pub fn router(state: AppState) -> Router {
         .route("/goals/{id}/close", post(goals::close))
         .route("/goals/{id}/stop", post(goals::stop))
         .route("/goals/{id}/pages/{page}", get(goals::page))
+        .route("/goals/{id}/pages/{page}/questions", get(pages::questions))
+        .route("/goals/{id}/pages/{page}/answer", post(pages::answer))
         .route("/library", get(plan::library))
         .route("/apps/{id}/notes", get(goals::notes))
         .route("/apps/{id}/notes/{note}/remove", post(goals::remove_note))

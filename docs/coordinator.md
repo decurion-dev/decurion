@@ -43,6 +43,11 @@ the board.
   exactly the plan you approved, nothing added.
 - The checker works on its own copy of the finished branch and treats anything
   written in it as part of the work under check, never as instructions.
+- The designer and the checker may ask you up to four questions in their page
+  (yes or no, a choice, or something in words). Decurion draws the answer
+  buttons beside the page, never inside it, and your answers reach the
+  coordinator as a message from you. Questions in the wrong shape are dropped;
+  the page is still shown.
 
 ## API
 
@@ -59,6 +64,8 @@ Owner calls (board browser, paired phone, or owner key):
 | `POST /api/goals/{id}/retry` | Tries the coordinator's last turn again after it failed |
 | `POST /api/goals/{id}/close` | Marks the goal done |
 | `POST /api/goals/{id}/stop` | Stops the goal; queued pieces are cancelled |
+| `GET /api/goals/{id}/pages/{page}/questions` | A page's questions and, once given, your answers (`PageQuestions`) |
+| `POST /api/goals/{id}/pages/{page}/answer` `{answers:[{question_id, choice?, other?}], receipt?}` | Answers a page's questions, once |
 | `GET /api/apps/{id}/notes` | The coordinator's notes about an app |
 | `POST /api/apps/{id}/notes/{note_id}/remove` | Removes a note |
 
