@@ -120,6 +120,16 @@ impl Files {
         self.dir.join("repos").join(format!("app-{app_id}.git"))
     }
 
+    /// Makes the app's bare copy if it is not there yet. The caller holds
+    /// `git_lock`.
+    pub(crate) async fn init_cache(&self, cache: &Path) -> Result<()> {
+        if !cache.exists() {
+            std::fs::create_dir_all(cache).map_err(io)?;
+            git(cache, &["init", "--quiet", "--bare"]).await?;
+        }
+        Ok(())
+    }
+
     /// Brings the app's cache up to date with the owner's checkout, making
     /// it first if needed. The caller holds `git_lock`.
     pub(crate) async fn fetch_app(&self, cache: &Path, repo_path: &str) -> Result<()> {

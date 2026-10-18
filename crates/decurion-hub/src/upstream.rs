@@ -434,16 +434,6 @@ pub(crate) fn identity(repo_path: &str, url: &str) -> String {
 }
 
 impl Files {
-    /// Makes the app's bare copy if it is not there yet. The caller holds
-    /// `git_lock`.
-    pub(crate) async fn init_cache(&self, cache: &Path) -> Result<()> {
-        if !cache.exists() {
-            std::fs::create_dir_all(cache).map_err(io)?;
-            git(cache, &["init", "--quiet", "--bare"]).await?;
-        }
-        Ok(())
-    }
-
     /// The bare repo that only takes fetches from the app's git server.
     pub(crate) fn upstream_cache(&self, app_id: i64) -> PathBuf {
         self.app_cache(app_id)
