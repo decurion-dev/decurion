@@ -24,9 +24,9 @@ Taking over is useful when the agent is stuck on a step that is easier for you t
 | --- | --- |
 | Click something | Tap or click it in the picture. |
 | Scroll | Drag the picture up or down. On a PC, you can also use the mouse wheel. |
-| Type | Tap the field in the picture first, then type in the box under the picture and tap **Send**. On a PC, you can also click the picture and type straight away. |
-| Press a key | Tap **Enter**, **Tab** or **Backspace**. |
-| Go back a page | Tap **Back**. |
+| Type | On a PC, click the field in the picture and type. On a phone, tap the field, then tap **Keyboard** under the picture and type. Pasting works too. While a ring shows around the picture, your typing goes to the page. |
+| Press a key | On a PC, use your keyboard: Enter, Tab, Backspace, Delete, the arrows, and Ctrl+A (select all), Ctrl+Z (undo) and Ctrl+Y (redo). On a Mac, use Cmd. On a phone, tap **Enter**, **Tab** or **⌫** under the picture. |
+| Go back a page | Tap **Back**. On a PC it sits beside the address. |
 
 3. When you are done, click **Hand back**. The agent is told it can use the browser again, and it looks at the page fresh before it carries on.
 

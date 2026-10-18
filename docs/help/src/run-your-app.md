@@ -36,9 +36,9 @@ The first time you run an app, Decurion has to fetch what the app needs before i
 | --- | --- |
 | Click something | Tap or click it in the picture. |
 | Scroll | Drag the picture up or down. On a PC, you can also use the mouse wheel. |
-| Type | Tap the field in the picture first, then type in the box under the picture and tap **Send**. On a PC, you can also click the picture and type straight away. |
-| Press a key | Tap **Enter**, **Tab** or **Backspace**. |
-| Go back a page | Tap **Back**. |
+| Type | On a PC, click the field in the picture and type. On a phone, tap the field, then tap **Keyboard** under the picture and type. Pasting works too. While a ring shows around the picture, your typing goes to the app. |
+| Press a key | On a PC, use your keyboard: Enter, Tab, Backspace, Delete, the arrows, and Ctrl+A (select all), Ctrl+Z (undo) and Ctrl+Y (redo). On a Mac, use Cmd. On a phone, tap **Enter**, **Tab** or **⌫** under the picture. |
+| Go back a page | Tap **Back**. On a PC it sits beside the address. |
 
 On a PC, click **Bigger** to fill the window. Click **Smaller** to go back.
 

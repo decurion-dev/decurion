@@ -120,17 +120,19 @@ const MCP_CONFIG = {
 const MAX_INLINE = 256 << 10;
 const TEXT_FILES = new Set(['.yml', '.yaml', '.log', '.txt', '.md', '.json']);
 
-// The named keys the owner's screen can send, as Chrome wants them.
-const KEYS = {
-  Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' },
-  Tab: { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 },
-  Backspace: { key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 },
-  Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 },
-  ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38 },
-  ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 },
-  ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 },
-  ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 },
-};
+// The named keys the owner's screen can press, in Playwright's names
+// (pressed with page.keyboard.press). The same list as KEYS in
+// crates/decurion-proto/src/browser.rs, in the same order: a runner test
+// reads this one and checks. Editing keys only: nothing here closes a tab,
+// opens one or opens the browser's own tools, and no other name is pressed.
+const KEYS = new Set([
+  'Enter', 'Tab', 'Shift+Tab', 'Backspace', 'Delete', 'Escape',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+  'Shift+ArrowUp', 'Shift+ArrowDown', 'Shift+ArrowLeft', 'Shift+ArrowRight',
+  'Home', 'End', 'Shift+Home', 'Shift+End', 'PageUp', 'PageDown',
+  'Control+a', 'Control+z', 'Control+y', 'Control+Shift+z',
+  'Control+Backspace', 'Control+Delete', 'Control+ArrowLeft', 'Control+ArrowRight',
+]);
 
 // ---- Lines to the runner -------------------------------------------------
 
@@ -672,11 +674,10 @@ async function onInput(input) {
       return;
     }
     case 'key': {
-      const k = KEYS[input.key];
-      if (!k) return;
-      const { text, ...rest } = k;
-      await s.send('Input.dispatchKeyEvent', { type: text ? 'keyDown' : 'rawKeyDown', ...rest, ...(text ? { text, unmodifiedText: text } : {}) });
-      await s.send('Input.dispatchKeyEvent', { type: 'keyUp', ...rest });
+      if (typeof input.key !== 'string' || !KEYS.has(input.key)) return;
+      // Playwright holds the modifiers down around the key and sends the
+      // text a key makes (Enter is a new line in a text box).
+      await page.keyboard.press(input.key);
       return;
     }
     case 'go': {

@@ -34,7 +34,7 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use decurion_proto::browser::{
     BrowserWant, Controller, Input, RelayDown, RelayUp, ViewerDown, ViewerUp, IDLE_HAND_BACK_SECS,
-    MAX_FRAME_BYTES, MAX_INPUT_BYTES,
+    KEYS, MAX_FRAME_BYTES, MAX_INPUT_BYTES,
 };
 use decurion_proto::preview::PREVIEW_IDLE_SECS;
 use decurion_proto::{MessageKind, NewMessage, ThreadState};
@@ -70,18 +70,6 @@ const RUNNER_QUEUE: usize = 64;
 const PING_EVERY: Duration = Duration::from_secs(20);
 /// How wide frames may be asked for, in pixels.
 const WIDTHS: (u32, u32, u32) = (320, 1280, 1920);
-/// The named keys the owner's screen may press.
-const KEYS: &[&str] = &[
-    "Enter",
-    "Tab",
-    "Backspace",
-    "Escape",
-    "ArrowUp",
-    "ArrowDown",
-    "ArrowLeft",
-    "ArrowRight",
-];
-
 /// The browser routes, merged into the `/api` router behind the same keys.
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -1180,10 +1168,21 @@ mod tests {
             y: 0.1
         }));
         assert!(!input_ok(&Input::Click { x: 1.5, y: 0.1 }));
-        assert!(!input_ok(&Input::Key { key: "F12".into() }));
         assert!(input_ok(&Input::Key {
             key: "Backspace".into()
         }));
+        // Editing shortcuts pass; keys the browser itself acts on do not.
+        for ok in ["Control+a", "Shift+Tab", "Control+Shift+z"] {
+            assert!(input_ok(&Input::Key { key: ok.into() }), "{ok}");
+        }
+        for refused in ["Control+w", "Control+t", "Alt+F4", "F12", "control+a"] {
+            assert!(
+                !input_ok(&Input::Key {
+                    key: refused.into()
+                }),
+                "{refused}"
+            );
+        }
         assert!(!input_ok(&Input::Go {
             url: "file:///etc/passwd".into()
         }));

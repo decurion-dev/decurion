@@ -19,7 +19,7 @@ Why: most of what keeps a browser signed in is locked away from the agent, but s
 5. If you like, in **Page to check**, paste the address of a page that only works when signed in, such as your account page. Before each run, Decurion opens it to check the sign-in still works.
 6. Click **Add sign-in**.
 7. Click **Sign in** next to it. A browser window opens at the sign-in page.
-8. Sign in with the test account, as you normally would.
+8. Sign in with the test account, as you normally would: click a field in the picture and type straight into it. On a phone, tap the field, then tap **Keyboard**.
 9. When you see that you are signed in, tap **I'm signed in, save**.
 
 The list now shows **Signed in**, until when, and which websites the sign-in covers. Your password was typed into the website only; Decurion never keeps it.
