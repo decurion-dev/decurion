@@ -1,5 +1,6 @@
-// Decurion's settings, shared by the board and the phone: apps and the
-// websites their agents may use, computers, accounts and caps, test keys,
+// Decurion's settings, shared by the board and the phone: one Sign-ins list
+// with a light for every account (and "Sign in on this PC" for Claude), apps
+// and the websites their agents may use, computers, accounts and caps, test keys,
 // the GitHub token, website sign-ins and paired phones, plus the usage
 // summary the board shows in its sidebar.
 //
@@ -15,6 +16,10 @@
 //   field with autofill and spellcheck off, are cleared after saving, and
 //   never come back except as their last four characters. They are never
 //   kept in the page's storage, put in a toast or logged.
+//
+// - Claude's sign-in never reaches this page: "Sign in on this PC" only
+//   starts it, shows Claude's own link if its page did not open, and sends
+//   the short code that page gives. Lights come from the hub as they are.
 //
 // Use: D.settings.mount(box, { refresh, onSignedOut, place }) once, then
 // D.settings.update({ apps, spend, accounts, workers }) after each load,
@@ -176,6 +181,10 @@
     parts.keys = el("div", { id: "key-apps" }, loading("p"));
     parts.github = el("div", { id: "github-token" }, loading("p"));
     parts.signIns = el("div", { id: "sign-in-apps" }, loading("p"));
+    // Sign-ins
+    parts.lights = el("ul", { className: "rows", id: "sign-in-lights" }, loading());
+    parts.lightsNote = el("div", { id: "sign-in-note" });
+    parts.claude = el("div", { id: "claude-sign-in", hidden: true });
     // Phones
     parts.pair = el("button", { type: "button", className: "btn", id: "pair" });
     parts.pair.onclick = pairPhone;
@@ -193,6 +202,9 @@
       el("div", {}, el("h3", { className: "sub-h" }, "Paired phones and browsers"), parts.devices));
 
     return el("div", { className: `settings${phone() ? " on-phone" : ""}` },
+      card("sign-ins", "shield", "Sign-ins",
+        "Every account Decurion signs in with, in one place. Green is fine, amber needs you soon, red needs you now. You get a reminder on your phone a week before a sign-in runs out.",
+        parts.lightsNote, parts.lights, parts.claude),
       card("apps", "app", "Apps",
         `Each app is a git checkout on ${here()}. Agents work on their own copy and never touch yours. An app can also have its own monthly cap on pay-per-use money, across Claude, ChatGPT and Grok.`,
         parts.appRows, parts.sitesNote, parts.addApp),
@@ -208,7 +220,7 @@
       card("github", "branch", "GitHub",
         `When you accept work, Decurion sends it to the app's GitHub page as a new branch, using ${here()}'s own GitHub sign-in. With a GitHub token saved here, it also opens the pull request for you. Without one, you get a button that opens it in one tap. Decurion never merges: you do that on GitHub.`,
         parts.github),
-      card("sign-ins", "key", "Website sign-ins",
+      card("site-sign-ins", "key", "Website sign-ins",
         "Let this app's agents check pages that need a sign-in. You sign in once, in a sign-in window on your PC or phone; the sign-in is kept on your PC and your password is never saved. Use test accounts only: an agent may be able to read part of what a website keeps.",
         parts.signIns),
       phones,
@@ -681,6 +693,156 @@
     finally { b.disabled = D.offline; }
   }
 
+  // ---------- Sign-ins ----------
+  // The hub works out each light; this draws them and the buttons that fix them.
+  let lights = null, lightsAt = 0, claudePoll = null;
+  const longDay = (iso) => new Date(iso).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
+  const LAMP = { green: "Fine", amber: "Needs you soon", red: "Needs you now", grey: "Not set up" };
+  function whenText(i) {
+    if (!i.expires_at || i.days_left == null) return null;
+    const d = i.days_left;
+    if (d < 0) return `Ran out ${longDay(i.expires_at)}`;
+    if (d === 0) return "Runs out today";
+    if (d === 1) return "Runs out tomorrow";
+    if (d <= 30) return `Runs out in ${d} days`;
+    return `Good until ${longDay(i.expires_at)}`;
+  }
+  async function loadLights(force) {
+    if (!force && Date.now() - lightsAt < 60000) return;
+    lightsAt = Date.now();
+    try { lights = await D.api("/sign-in-lights"); } catch (e) {
+      if (e.signedOut) { signedOut(); return; }
+      if (!lights) parts.lights.replaceChildren(el("li", { className: "empty" }, `Couldn't load sign-ins. ${e.message}`));
+      return;
+    }
+    if (!changed("lights", [lights, D.offline])) return;
+    const need = lights.red + lights.amber;
+    fill(parts.lightsNote, need
+      ? el("div", { className: `notice ${lights.red ? "bad" : "warn"}`, role: "status" }, icon("alert"),
+        el("span", { className: "grow" }, need === 1 ? "1 sign-in needs you." : `${need} sign-ins need you.`))
+      : el("p", { className: "hint" }, "Everything Decurion needs is signed in."));
+    keepFocus(() => parts.lights.replaceChildren(...lights.items.map(lightRow)));
+  }
+  function lightRow(i) {
+    const when = whenText(i);
+    return el("li", { className: `light-row ${i.light}` },
+      el("span", { className: `lamp ${i.light}`, role: "img", "aria-label": LAMP[i.light] ?? "", title: LAMP[i.light] ?? "" }),
+      el("div", { className: "who" }, el("b", {}, i.label),
+        el("span", { className: "hint" }, when ? `${i.text} · ${when}` : i.text)),
+      lightButton(i));
+  }
+  function lightButton(i) {
+    const btn = (text, onclick, primary) => {
+      const b = el("button", { type: "button", className: `btn sm${primary ? " primary" : ""}`, dataset: { key: `light-${i.key}` } }, text);
+      b.disabled = D.offline;
+      b.onclick = () => onclick(b);
+      return b;
+    };
+    const urgent = i.light === "red" || i.light === "amber";
+    switch (i.action) {
+      case "claude_sign_in":
+        return btn(i.light === "green" ? "Sign in again" : "Sign in on this PC", (b) => startClaude(i.profile, b), urgent || i.light === "grey");
+      case "github_token":
+        return el("a", { className: `btn sm${urgent ? " primary" : ""}`, href: "#settings/github" }, i.light === "grey" ? "Add a token" : "Change");
+      case "connect_phone":
+        return btn("Connect your phone", async () => {
+          root?.querySelector("#set-phones")?.scrollIntoView({ behavior: "smooth", block: "start" });
+          await pairPhone();
+          loadLights(true);
+        }, true);
+      case "site_sign_in":
+        return btn(i.light === "grey" ? "Sign in" : "Sign in again", (b) => startSignIn({ id: i.id }, b).then(() => loadLights(true)), urgent);
+      case "add_cloud":
+        return el("a", { className: "btn sm", href: "/cloud" }, "Add one");
+      default:
+        return null;
+    }
+  }
+
+  // "Sign in on this PC": Claude Code opens its sign-in page in the PC's
+  // browser and Decurion keeps what it gives back. This panel follows along.
+  async function startClaude(profile, b) {
+    b.disabled = true;
+    try {
+      const s = await D.api("/claude/sign-in", { method: "POST", body: JSON.stringify({ profile }) });
+      showClaude(s);
+    } catch (e) {
+      if (e.signedOut) { signedOut(); return; }
+      D.toast(`Couldn't start the Claude sign-in. ${e.message}`, "alert");
+    } finally { b.disabled = D.offline; }
+  }
+  async function pollClaude() {
+    clearTimeout(claudePoll);
+    claudePoll = null;
+    let s;
+    try { s = await D.api("/claude/sign-in"); } catch (e) {
+      if (e.signedOut) { signedOut(); return; }
+      claudePoll = setTimeout(pollClaude, 3000);
+      return;
+    }
+    showClaude(s);
+  }
+  async function cancelClaude() {
+    try { showClaude(await D.api("/claude/sign-in/cancel", { method: "POST" })); }
+    catch (e) { if (e.signedOut) { signedOut(); return; } D.toast(`Couldn't stop the sign-in. ${e.message}`, "alert"); }
+  }
+  function showClaude(s) {
+    clearTimeout(claudePoll);
+    claudePoll = null;
+    const box = parts.claude;
+    if (!s || s.phase === "idle") { box.hidden = true; box.replaceChildren(); box.dataset.state = ""; return; }
+    const plan = `Claude ${s.profile ?? ""}`.trim();
+    if (s.phase === "saved" || s.phase === "failed") {
+      box.hidden = false;
+      box.dataset.state = "";
+      const close = el("button", { type: "button", className: "btn quiet sm" }, "OK");
+      close.onclick = cancelClaude;
+      const retry = s.phase === "failed" && s.profile ? el("button", { type: "button", className: "btn sm" }, "Try again") : null;
+      if (retry) retry.onclick = () => startClaude(s.profile, retry);
+      fill(box, el("div", { className: `notice ${s.phase === "saved" ? "" : "bad"}`, role: "status" },
+        icon(s.phase === "saved" ? "done" : "alert"),
+        el("span", { className: "grow" }, s.message ?? (s.phase === "saved" ? `Signed in to ${plan}.` : "The sign-in did not finish.")),
+        retry, close));
+      if (s.phase === "saved") D.toast(`Signed in to ${plan}.`);
+      loadLights(true);
+      return;
+    }
+    // Waiting: keep a half-typed code, only redraw when something changed.
+    claudePoll = setTimeout(pollClaude, 1500);
+    const key = JSON.stringify([s.profile, s.link, s.wants_code]);
+    if (box.dataset.state === key) return;
+    box.dataset.state = key;
+    box.hidden = false;
+    const cancel = el("button", { type: "button", className: "btn quiet sm" }, "Cancel");
+    cancel.onclick = cancelClaude;
+    const steps = el("div", { className: "grow" },
+      el("p", {}, el("b", {}, `Signing in to ${plan}`)),
+      el("p", { className: "hint" }, phone()
+        ? `Claude's sign-in page opens in the browser on your PC. Sign in there with the account for ${plan}. This updates by itself.`
+        : `Claude's sign-in page opens in this PC's browser. Sign in with the account for ${plan}, then come back here. This updates by itself.`),
+      s.profile === "B" ? el("p", { className: "hint" }, "If the page signs you in to your other Claude account, sign out of Claude in that browser first.") : null);
+    let more = null;
+    if (s.link && s.link.startsWith("https://")) {
+      const code = el("input", { id: "claude-code", type: "text", autocomplete: "off", spellcheck: false, autocapitalize: "off", placeholder: "Paste the code from Claude's page", dataset: { key: "claude-code" } });
+      const err = el("span", { className: "field-error", role: "alert" });
+      const form = el("form", { className: "form-grid", noValidate: true, autocomplete: "off" },
+        el("div", { className: "field" }, el("label", { htmlFor: "claude-code" }, "Code from Claude's page"), code),
+        el("div", { className: "full actions" }, el("button", { className: "btn primary", type: "submit" }, "Send code"), err));
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        err.textContent = "";
+        if (!code.value.trim()) { err.textContent = "Paste the code first."; code.focus(); return; }
+        try { showClaude(await D.api("/claude/sign-in/code", { method: "POST", body: JSON.stringify({ code: code.value.trim() }) })); code.value = ""; }
+        catch (x) { if (x.signedOut) { signedOut(); return; } err.textContent = x.message; }
+      };
+      more = el("details", { className: "fold" }, el("summary", {}, "The page didn't open?"),
+        el("p", { className: "hint" }, "Open Claude's page yourself, sign in, and copy the code it shows. Then paste it here."),
+        el("p", {}, el("a", { href: s.link, target: "_blank", rel: "noopener noreferrer" }, "Open Claude's sign-in page")),
+        form);
+    }
+    keepFocus(() => fill(box, el("div", { className: "notice", role: "status" }, icon("key"), steps, cancel), more));
+  }
+
   // ---------- Test keys ----------
   // Drawn when Settings opens and after each change, not on the timer, so a
   // half-typed key is never wiped. Values go to the hub once and never come back.
@@ -908,6 +1070,8 @@
       render();
       loadDevices();
       loadConnection();
+      loadLights(true);
+      pollClaude();
       loadKeys();
       loadGitHub();
       loadSignIns();
@@ -917,7 +1081,7 @@
     hide() { shown = false; },
     get shown() { return shown; },
     // On the page's timer: phones paired from another screen show up.
-    tick() { if (shown) loadDevices(); },
+    tick() { if (shown) { loadDevices(); loadLights(); } },
     render,
     usage,
   };
