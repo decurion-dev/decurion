@@ -16,6 +16,15 @@ pub struct Device {
     pub has_push: bool,
 }
 
+/// A signed-in device, found from its cookie.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignedIn {
+    pub id: i64,
+    /// This lookup wrote its "last used" time (at most every five minutes):
+    /// the moment to renew its cookie.
+    pub seen_now: bool,
+}
+
 #[derive(Debug, Clone, serde::Deserialize, Serialize)]
 pub struct PushSubscription {
     pub endpoint: String,
@@ -56,8 +65,10 @@ impl Store {
 
     /// The device a cookie token belongs to, if it is still signed in. Its
     /// "last used" time is written at most once every five minutes, so the
-    /// board's polling does not turn into constant database writes.
-    pub async fn device_for_token(&self, token: &str) -> Result<Option<i64>> {
+    /// board's polling does not turn into constant database writes. When
+    /// this call wrote it, `seen_now` is set and the caller sends the cookie
+    /// again with a fresh lifetime, so a device in use never expires.
+    pub async fn device_for_token(&self, token: &str) -> Result<Option<SignedIn>> {
         let h = hash(token);
         let id: Option<i64> = sqlx::query_scalar(
             "SELECT id FROM devices WHERE token_hash = ? AND revoked_at IS NULL",
@@ -65,17 +76,21 @@ impl Store {
         .bind(&h)
         .fetch_optional(self.pool())
         .await?;
-        if let Some(id) = id {
-            sqlx::query(
-                "UPDATE devices SET last_seen = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                 WHERE id = ? AND (last_seen IS NULL
-                     OR last_seen < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-5 minutes'))",
-            )
-            .bind(id)
-            .execute(self.pool())
-            .await?;
-        }
-        Ok(id)
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        let done = sqlx::query(
+            "UPDATE devices SET last_seen = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ? AND (last_seen IS NULL
+                 OR last_seen < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-5 minutes'))",
+        )
+        .bind(id)
+        .execute(self.pool())
+        .await?;
+        Ok(Some(SignedIn {
+            id,
+            seen_now: done.rows_affected() == 1,
+        }))
     }
 
     pub async fn devices(&self) -> Result<Vec<Device>> {

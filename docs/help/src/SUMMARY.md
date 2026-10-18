@@ -11,6 +11,7 @@
 - [Save website sign-ins](save-website-sign-ins.md)
 - [Choose your rules](choose-your-rules.md)
 - [Connect your phone](connect-your-phone.md)
+- [Check your sign-ins](check-your-sign-ins.md)
 
 # Everyday use
 
