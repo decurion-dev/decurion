@@ -535,8 +535,8 @@ function renderToday() {
       act = el("span", { className: `pill ${cls}` }, D.icon(ic), r.status);
     }
     return el("div", { className: "tr", dataset: { tone: r.tone } }, go, act);
-  }), more > 0 ? Object.assign(el("button", { type: "button", className: "btn quiet sm more-apps" }, `and ${D.plural(more, "more app")}`),
-    { onclick: () => { todayAll = true; renderToday(); } }) : null);
+  }), ...(more > 0 ? [Object.assign(el("button", { type: "button", className: "btn quiet sm more-apps" }, `and ${D.plural(more, "more app")}`),
+    { onclick: () => { todayAll = true; renderToday(); } })] : []));
 }
 let busy = false, again = false;
 async function refresh() {
