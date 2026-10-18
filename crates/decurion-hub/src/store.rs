@@ -315,6 +315,15 @@ impl Store {
         if !from.can_move_to(to) {
             return Err(StoreError::BadMove { from, to });
         }
+        // Only the runner says work is finished: on the way to review it checks
+        // the branch for test keys, and accepted work then goes to GitHub. An
+        // owner's tap must not skip that check.
+        if actor == OWNER && from == ThreadState::Running && to == ThreadState::InReview {
+            return Err(StoreError::Refused(
+                "Work goes to review when its agent finishes. To end it now, stop it instead."
+                    .into(),
+            ));
+        }
         let (mut to, mut note) = (to, note);
         if actor == OWNER && to == ThreadState::Failed {
             stop_children(&mut tx, id).await?;

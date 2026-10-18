@@ -801,6 +801,64 @@ async fn work_rejected_or_sent_back_is_not_sent() {
 }
 
 #[tokio::test]
+async fn the_owner_cannot_skip_the_finish_checks_on_the_way_to_github() {
+    // A runner moves work to review only after checking its branch for test
+    // keys; accepted work then goes to GitHub. The owner's own tap on
+    // running work must not get it there without that check.
+    let h = hub(Tok::Fixed).await;
+    let (repo, bare) = app_repo(&h.dir, Origin::GitHub);
+    let app = ok(
+        &h.r,
+        OWNER,
+        "POST",
+        "/api/apps",
+        json!({"name": "demo", "repo_path": repo.to_string_lossy(), "profile": "A"}),
+    )
+    .await["id"]
+        .as_i64()
+        .expect("app id");
+    ok(
+        &h.r,
+        OWNER,
+        "POST",
+        "/api/threads",
+        json!({"app_id": app, "title": "Half done", "prompt": "Do it."}),
+    )
+    .await;
+    let work = ok(
+        &h.r,
+        RUNNER,
+        "POST",
+        "/api/runner/claim",
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
+    )
+    .await;
+    let thread = work["thread"]["id"].as_i64().expect("thread");
+    let (s, v) = call(
+        &h.r,
+        OWNER,
+        "POST",
+        &format!("/api/threads/{thread}/move"),
+        json!({"to":"in_review","expect":"running"}),
+    )
+    .await;
+    assert!(s.is_client_error(), "{s} {v}");
+    assert!(v.to_string().contains("stop it instead"), "{v}");
+    let t = ok(
+        &h.r,
+        OWNER,
+        "GET",
+        &format!("/api/threads/{thread}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(t["state"], "running", "{t}");
+    assert_eq!(decurion_hub::github::resume(&h.state).await, 0);
+    let refs = git(&bare, &["for-each-ref", "--format=%(refname)"]);
+    assert_eq!(refs, "refs/heads/main");
+}
+
+#[tokio::test]
 async fn the_github_token_is_saved_once_and_shown_only_by_its_last_four() {
     let h = hub(Tok::Settings).await;
     let (s, v) = call(&h.r, OWNER, "GET", "/api/github", Value::Null).await;
