@@ -3608,14 +3608,14 @@ async fn run_one(hub: &Hub, data: &Path, gate: &Gate, claim: Claim) {
     run_claimed(hub, data, gate, claim).await;
     browser_box::settle(id).await;
     if !remove_container(id).await {
-        let name = container_name(id);
-        tracing::error!(id, container = %name, "could not remove the agent's container after its run");
-        let text = format!(
-            "Decurion could not remove this agent's box (the Docker container named {name}) \
-after it finished, so it may still be working. Stop it yourself: open Docker Desktop, find \
-{name} under Containers, and delete it."
+        // Only logged: the run is over, so the board no longer takes this
+        // piece's activity. The next attempt at it refuses to start while the
+        // box is still there, and says so on the card.
+        tracing::error!(
+            id,
+            container = %container_name(id),
+            "could not remove the agent's container after its run"
         );
-        hub.event(id, &RunEvent::Message { text }).await;
     }
     clear_gate(&BoxNet::work(id)).await;
 }
