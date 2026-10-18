@@ -8,6 +8,7 @@ use decurion_proto::{
     sites, App, Claim, HelloReply, JoinReply, JoinRequest, Live, MoveRequest, NewCheckpoint, Place,
     RunCredential, RunEvent, RunnerHello, SignInSession, ThreadState, RULES_VERSION,
 };
+use decurion_runner::dispatch;
 use decurion_runner::gatekeeper::{Gatekeeper, Grant, ANTHROPIC_API};
 use decurion_runner::handover::{
     bundle_spec, context_import_args, host_git_args, host_git_env, is_sha, move_note,
@@ -498,10 +499,18 @@ async fn workspace(
         return Ok((dir, false));
     }
     tracing::info!(id, checkpoint = ?c.checkpoint, "rebuilding this work's copy from the hub");
-    set_aside(&dir)?;
+    // A work folder can be large; deleting it must not stall the other
+    // pieces running alongside (their stop and budget checks share this task).
+    let aside = dir.clone();
+    tokio::task::spawn_blocking(move || set_aside(&aside))
+        .await
+        .context("setting the old copy aside stopped")??;
     std::fs::create_dir_all(dir.parent().context("workspace parent")?)?;
     let tmp = sibling(&dir, "partial");
-    remove_all(&tmp)?;
+    let old = tmp.clone();
+    tokio::task::spawn_blocking(move || remove_all(&old))
+        .await
+        .context("clearing an unfinished copy stopped")??;
     let xfer = transfer_dir(data, id)?;
 
     let base_bundle = xfer.join("base.bundle");
@@ -3011,7 +3020,7 @@ async fn cloud_identity(data: &Path, http: &reqwest::Client) -> anyhow::Result<C
 /// trying while the hub is out of reach. If the hub follows other rules,
 /// records the commit the hub was built from and exits with code 3, so the
 /// cloud server's updater rebuilds the runner at that commit.
-async fn hello(hub: &Hub, data: &Path) -> anyhow::Result<Vec<i64>> {
+async fn hello(hub: &Hub, data: &Path) -> anyhow::Result<HelloReply> {
     let body = RunnerHello {
         runner: hub.name.clone(),
         rules_version: RULES_VERSION,
@@ -3029,7 +3038,7 @@ async fn hello(hub: &Hub, data: &Path) -> anyhow::Result<Vec<i64>> {
         match r {
             Ok(r) if r.status().is_success() => {
                 let reply: HelloReply = r.json().await.context("could not read hello reply")?;
-                return Ok(reply.paused);
+                return Ok(reply);
             }
             Ok(r) if r.status() == StatusCode::CONFLICT => {
                 let reply: HelloReply = r
@@ -3447,13 +3456,25 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     clean_helper_leftovers(&data).await;
-    let paused = hello(&hub, &data).await?;
-    if !paused.is_empty() {
+    let reply = hello(&hub, &data).await?;
+    if !reply.paused.is_empty() {
         tracing::info!(
-            ?paused,
+            paused = ?reply.paused,
             "requeued work this runner had in flight; it will resume"
         );
     }
+    let wanted = dispatch::max_runs(place, std::env::var("DECURION_MAX_RUNS").ok().as_deref())
+        .map_err(anyhow::Error::msg)?;
+    // An older hub ignores the busy list, so two attempts at one piece could
+    // overlap here; with it, run one at a time until the hub is updated.
+    let max = if reply.concurrent { wanted } else { 1 };
+    if max < wanted {
+        tracing::warn!(
+            wanted,
+            "this hub is older and hands out one piece at a time; update it to run several"
+        );
+    }
+    tracing::info!(max_runs = max, "taking work");
     // Coordinator, design and review jobs work on the app's own repo, which
     // only the PC has.
     if place == Place::Pc {
@@ -3461,90 +3482,135 @@ async fn main() -> anyhow::Result<()> {
         // Sign-in windows save into this PC's vault, so only the PC opens them.
         tokio::spawn(sign_in_loop(hub.clone(), data.clone()));
     }
-    loop {
-        let r = hub
-            .post(
-                "/runner/claim",
-                &serde_json::json!({ "runner": hub.name, "rules_version": RULES_VERSION }),
-            )
-            .await;
-        match r {
-            Ok(resp) if resp.status() == StatusCode::NO_CONTENT => {
-                tokio::time::sleep(Duration::from_secs(3)).await;
-            }
-            Ok(resp) => {
-                let claim: Claim = match resp.json().await {
-                    Ok(c) => c,
-                    Err(err) => {
-                        // The hub already marked it running; a runner restart
-                        // will requeue it.
-                        tracing::error!(%err, "could not read claimed work");
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                        continue;
-                    }
-                };
-                let id = claim.thread.id;
-                tracing::info!(
-                    id,
-                    resume = claim.resume,
-                    checkpoint = ?claim.checkpoint,
-                    "running"
-                );
-                // Read here, not in `run`, so its errors can be hidden too.
-                let keys = match test_keys(&hub, &data, &claim) {
-                    Ok(k) => k,
-                    Err(err) => {
-                        tracing::error!(%err, id, "could not read test keys");
-                        fail(&hub, id, &err.to_string()).await;
-                        continue;
-                    }
-                };
-                let mut secrets: Vec<String> = keys.iter().map(|(_, v)| v.clone()).collect();
-                // The app's saved website sign-ins, for the run's browser box.
-                // pi runs have no browser, so they get none.
-                let (states, site_secrets) = if claim.thread.ai == decurion_proto::Ai::Claude {
-                    match sign_ins::site_states(&data, hub.place, &claim) {
-                        Ok(s) => s,
-                        Err(err) => {
-                            tracing::error!(%err, id, "could not open saved sign-ins");
-                            fail(&hub, id, &err.to_string()).await;
-                            continue;
-                        }
-                    }
-                } else {
-                    (Vec::new(), Vec::new())
-                };
-                // One that could not be opened needs the owner to sign in again.
-                for r in sign_ins::missing(&claim, &states) {
-                    if let Err(err) =
-                        sign_ins::report_signed_out(&hub.access(), r.id, id, r.version).await
-                    {
-                        tracing::warn!(%err, id, sign_in = r.id, "could not report a missing sign-in");
-                    }
-                }
-                secrets.extend(site_secrets.iter().cloned());
-                if let Err(err) = run(&hub, &data, &gate, claim, &keys, states, site_secrets).await
-                {
-                    let note = hide(&err.to_string(), &secrets);
-                    tracing::error!(err = %note, id, "run failed");
-                    fail(&hub, id, &note).await;
-                }
-            }
-            // The hub was updated while this runner was waiting for work.
-            Err(HubError::Refused(_, s, text)) if s == StatusCode::CONFLICT => {
-                match serde_json::from_str::<HelloReply>(&text) {
-                    Ok(reply) => match rules_differ(&data, &reply)? {},
-                    Err(_) => {
-                        tracing::warn!(%text, "hub refused to hand out work; retrying");
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                    }
-                }
-            }
+    let drained: std::cell::RefCell<Option<HelloReply>> = std::cell::RefCell::new(None);
+    let (h, d, g, dr) = (&hub, data.as_path(), &gate, &drained);
+    dispatch::dispatch(
+        max,
+        move |busy| claim_next(h, busy, dr),
+        move |claim| run_one(h, d, g, claim),
+    )
+    .await;
+    // Only a drain ends the loop: the hub was updated to other rules, and
+    // every running piece has now finished.
+    let reply = drained
+        .take()
+        .context("stopped taking work for no reason")?;
+    match rules_differ(&data, &reply)? {}
+}
+
+/// Asks the hub for one more piece of work, listing the ones still busy
+/// here. Waits a little before saying there is none, so the dispatcher does
+/// not ask again at once; runs keep going meanwhile.
+async fn claim_next(
+    hub: &Hub,
+    busy: Vec<i64>,
+    drained: &std::cell::RefCell<Option<HelloReply>>,
+) -> dispatch::Next<Claim> {
+    let r = hub
+        .post(
+            "/runner/claim",
+            &serde_json::json!({
+                "runner": hub.name,
+                "rules_version": RULES_VERSION,
+                "busy": busy,
+            }),
+        )
+        .await;
+    match r {
+        Ok(resp) if resp.status() == StatusCode::NO_CONTENT => {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+        Ok(resp) => match resp.json::<Claim>().await {
+            Ok(claim) => return dispatch::Next::Work(claim.thread.id, claim),
             Err(err) => {
-                tracing::warn!(%err, "could not ask the hub for work; retrying");
+                // The hub already marked it running; a runner restart will
+                // requeue it.
+                tracing::error!(%err, "could not read claimed work");
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
+        },
+        // The hub was updated while this runner was working.
+        Err(HubError::Refused(_, s, text)) if s == StatusCode::CONFLICT => {
+            match serde_json::from_str::<HelloReply>(&text) {
+                Ok(reply) => {
+                    tracing::warn!(
+                        "the hub follows other rules now; finishing the work in hand first"
+                    );
+                    *drained.borrow_mut() = Some(reply);
+                    return dispatch::Next::Drain;
+                }
+                Err(_) => {
+                    tracing::warn!(%text, "hub refused to hand out work; retrying");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            }
         }
+        Err(err) => {
+            tracing::warn!(%err, "could not ask the hub for work; retrying");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }
+    dispatch::Next::Idle
+}
+
+/// Runs one claimed piece of work to the very end: the run itself, then any
+/// browser removal still going and a sweep for anything of this piece left
+/// on this computer, so a later attempt at it starts clean. The piece stays
+/// busy (the hub will not hand it back here) until this returns.
+async fn run_one(hub: &Hub, data: &Path, gate: &Gate, claim: Claim) {
+    let id = claim.thread.id;
+    browser_box::remember_given(id, &claim.sign_ins);
+    run_claimed(hub, data, gate, claim).await;
+    browser_box::settle(id).await;
+    let leftovers = [container_name(id), browser_container_name(id)];
+    remove_named(id, &leftovers).await;
+    clear_gate(&BoxNet::work(id)).await;
+    browser_box::forget_given(id);
+}
+
+async fn run_claimed(hub: &Hub, data: &Path, gate: &Gate, claim: Claim) {
+    let id = claim.thread.id;
+    tracing::info!(
+        id,
+        resume = claim.resume,
+        checkpoint = ?claim.checkpoint,
+        "running"
+    );
+    // Read here, not in `run`, so its errors can be hidden too.
+    let keys = match test_keys(hub, data, &claim) {
+        Ok(k) => k,
+        Err(err) => {
+            tracing::error!(%err, id, "could not read test keys");
+            fail(hub, id, &err.to_string()).await;
+            return;
+        }
+    };
+    let mut secrets: Vec<String> = keys.iter().map(|(_, v)| v.clone()).collect();
+    // The app's saved website sign-ins, for the run's browser box.
+    // pi runs have no browser, so they get none.
+    let (states, site_secrets) = if claim.thread.ai == decurion_proto::Ai::Claude {
+        match sign_ins::site_states(data, hub.place, &claim) {
+            Ok(s) => s,
+            Err(err) => {
+                tracing::error!(%err, id, "could not open saved sign-ins");
+                fail(hub, id, &err.to_string()).await;
+                return;
+            }
+        }
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    // One that could not be opened needs the owner to sign in again.
+    for r in sign_ins::missing(&claim, &states) {
+        if let Err(err) = sign_ins::report_signed_out(&hub.access(), r.id, id, r.version).await {
+            tracing::warn!(%err, id, sign_in = r.id, "could not report a missing sign-in");
+        }
+    }
+    secrets.extend(site_secrets.iter().cloned());
+    if let Err(err) = run(hub, data, gate, claim, &keys, states, site_secrets).await {
+        let note = hide(&err.to_string(), &secrets);
+        tracing::error!(err = %note, id, "run failed");
+        fail(hub, id, &note).await;
     }
 }
 

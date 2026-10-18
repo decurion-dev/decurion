@@ -28,7 +28,7 @@ Every piece of work is in one of these states. You see the same words on the boa
 
 | Word | What it means |
 | --- | --- |
-| Queued | Waiting to start. |
+| Queued | Waiting to start. Your PC works on up to 3 pieces at once; the rest wait here for a free place. |
 | Running | An agent is working on it. |
 | Needs you | It stopped and is waiting for you to decide something. |
 | In review | The agent finished and saved its changes. Look at it and decide. |

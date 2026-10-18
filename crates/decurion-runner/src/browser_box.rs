@@ -148,12 +148,42 @@ impl Drop for Remover {
         }
         let (id, name) = (self.id, std::mem::take(&mut self.name));
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
-            rt.spawn(async move {
+            let key = name.clone();
+            let task = rt.spawn(async move {
                 if !remove_named(id, std::slice::from_ref(&name)).await {
                     tracing::error!(container = %name, "could not remove the browser box");
                 }
             });
+            // Kept, not let go: the run's piece of work stays busy until this
+            // removal is done ([`settle`]), so it can never remove the box of
+            // a later attempt that has the same name.
+            removals().push((key, task));
         }
+    }
+}
+
+/// Browser box removals started by a [`Remover`] being dropped, by name.
+static REMOVALS: std::sync::Mutex<Vec<(String, JoinHandle<()>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn removals() -> std::sync::MutexGuard<'static, Vec<(String, JoinHandle<()>)>> {
+    REMOVALS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Waits for any removal of `thread`'s browser box that is still going, so
+/// none outlives the run that started it.
+pub(crate) async fn settle(thread: i64) {
+    let name = browser_container_name(thread);
+    let mine: Vec<JoinHandle<()>> = {
+        let mut all = removals();
+        let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *all)
+            .into_iter()
+            .partition(|(n, _)| *n == name);
+        *all = rest;
+        mine.into_iter().map(|(_, t)| t).collect()
+    };
+    for t in mine {
+        let _ = t.await;
     }
 }
 
@@ -616,6 +646,47 @@ async fn relay_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A browser box removal started by a run ending early is waited for
+    /// before the piece of work counts as done, so it can never remove the
+    /// box of the next attempt, which has the same name.
+    #[tokio::test]
+    async fn a_dropped_browser_removal_is_waited_for() {
+        let thread = 987_654_321;
+        let name = browser_container_name(thread);
+        drop(Remover {
+            id: thread,
+            name: name.clone(),
+            armed: true,
+        });
+        assert!(
+            removals().iter().any(|(n, _)| *n == name),
+            "the removal is kept, not let go"
+        );
+        settle(thread).await;
+        assert!(!removals().iter().any(|(n, _)| *n == name));
+    }
+
+    /// With several pieces running, each report names the copy its own
+    /// piece was given, and nothing is said once the piece has ended.
+    #[test]
+    fn each_piece_remembers_the_sign_in_copy_it_was_given() {
+        let r = |id, version| decurion_proto::SignInRef {
+            id,
+            label: "Staging admin".into(),
+            check_url: None,
+            login_url: None,
+            version,
+        };
+        remember_given(11, &[r(5, 1)]);
+        remember_given(12, &[r(5, 2)]);
+        assert_eq!(given_version(11, 5), Some(1));
+        assert_eq!(given_version(12, 5), Some(2));
+        forget_given(11);
+        assert_eq!(given_version(11, 5), None);
+        assert_eq!(given_version(12, 5), Some(2));
+        forget_given(12);
+    }
 
     #[test]
     fn only_a_change_in_what_the_hub_wants_wakes_the_relay() {
