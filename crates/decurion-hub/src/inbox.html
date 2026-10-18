@@ -159,6 +159,16 @@
   .wcard .foot .acts { margin-left: auto; color: var(--faint); }
   .wcard .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--steel); animation: breathe 1.8s ease-in-out infinite; }
   .board-more { width: 100%; min-height: 48px; border-radius: var(--radius); }
+  .board-clear { justify-self: end; min-height: 44px; }
+  .board-cleared { color: var(--muted); font-size: 14px; text-align: center; padding: 18px 12px; border: 1px dashed var(--line); border-radius: var(--radius-l); }
+  .dis-toggle { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 0 14px; border: 1px dashed var(--line); border-radius: var(--radius-l);
+    background: none; color: var(--muted); font: 600 14px/1 var(--font); text-align: left; cursor: pointer; }
+  .dis-toggle .grow { flex: 1; }
+  .dis-toggle .n { font-variant-numeric: tabular-nums; color: var(--faint); }
+  .dis-toggle svg.i { width: 16px; height: 16px; }
+  .dis-toggle svg.i:last-child { transition: transform .12s var(--ease); }
+  .dis-toggle[aria-expanded="true"] svg.i:last-child { transform: rotate(90deg); }
+  .wcard.dismissed { opacity: .72; }
   @keyframes breathe { 50% { opacity: .3; } }
   /* Which app the board shows, like the app list on the PC's board. Scrolls with the cards. */
   .app-chips { display: flex; gap: 8px; overflow-x: auto; margin: 0 calc(-1 * var(--side)); padding: 2px var(--side) 2px; scrollbar-width: none; }
@@ -370,7 +380,7 @@ const BOARD_LIMIT = 40;
 
 const S = {
   tab: "inbox", threads: null, goals: [], apps: {}, appList: [], limits: [], signIns: [], prs: [], err: null, signedOut: false, updated: null,
-  chip: null, actErr: null, open: new Set(), notifyOn: false,
+  chip: null, actErr: null, open: new Set(), notifyOn: false, showDismissed: false,
   // The board tab's app filter, remembered like the PC board's; how many cards it shows; whether a cloud worker exists.
   app: D.store.get("decurion.board.app") || "all", limit: BOARD_LIMIT, hasCloud: false,
 };
@@ -397,7 +407,8 @@ const byNewest = (a, b) => b.updated_at.localeCompare(a.updated_at);
 const URGENCY = { needs_you: 0, failed: 1, done: 1, in_review: 2 };
 // Accepted work is done, unless it could not be sent to GitHub.
 const needsYou = (t) => t.state === "done" ? t.github?.state === "failed" : t.state in MEANS;
-const inboxItems = () => (S.threads ?? []).filter(needsYou).sort((a, b) => URGENCY[a.state] - URGENCY[b.state] || byNewest(a, b));
+// Dismissed work never waits in the inbox; it stays under Dismissed on the board tab.
+const inboxItems = () => (S.threads ?? []).filter((t) => needsYou(t) && !t.dismissed_at).sort((a, b) => URGENCY[a.state] - URGENCY[b.state] || byNewest(a, b));
 const counts = (list = S.threads ?? []) => {
   const c = Object.fromEntries(CHIPS.map((s) => [s, 0]));
   for (const t of list) if (t.state in c) c[t.state]++;
@@ -405,7 +416,11 @@ const counts = (list = S.threads ?? []) => {
 };
 // The app the board tab shows, or "all". Only offered with two apps or more.
 const appFilter = () => (S.appList.length >= 2 && S.app !== "all" && S.apps[S.app] ? S.app : "all");
-const boardThreads = () => (S.threads ?? []).filter((t) => appFilter() === "all" || String(t.app_id) === appFilter());
+const inApp = (t) => appFilter() === "all" || String(t.app_id) === appFilter();
+const boardThreads = () => (S.threads ?? []).filter((t) => inApp(t) && !t.dismissed_at);
+// Dismissed work of the chosen chip, newest dismissed first. Shown only when opened.
+const dismissedItems = () => (S.threads ?? []).filter((t) => inApp(t) && t.dismissed_at && t.state === chipNow())
+  .sort((a, b) => b.dismissed_at.localeCompare(a.dismissed_at));
 const chipNow = () => {
   if (S.chip) return S.chip;
   const c = counts(boardThreads());
@@ -704,6 +719,17 @@ function inboxCard(t, anim) {
     onMoved: leave,
     onError: (msg) => { S.actErr = { id: t.id, msg }; placeErr(); },
   });
+  // Failed work you won't retry, or accepted work you'll send yourself, can be put away.
+  if (D.finished(t)) {
+    const put = el("button", { type: "button", className: "btn quiet" }, D.icon("archive"), "Dismiss");
+    put.onclick = async (e) => {
+      e.stopPropagation();
+      put.disabled = true;
+      if (await D.dismiss("threads", [t], { onChanged: leave })) return;
+      put.disabled = D.offline;
+    };
+    moves.push(put);
+  }
   moves.forEach((b) => (b.disabled = D.offline));
   if (moves.length) {
     const [main, ...rest] = moves;
@@ -1027,7 +1053,7 @@ function renderChips() {
 function boardCard(t, anim) {
   const app = S.apps[t.app_id];
   const line = D.cardLine(t, tailNow(t, 5));
-  const b = el("button", { type: "button", className: "wcard" + (anim === "still" ? " still" : ""), dataset: { state: t.state, key: t.id, anim } },
+  const b = el("button", { type: "button", className: "wcard" + (t.dismissed_at ? " dismissed" : "") + (anim === "still" ? " still" : ""), dataset: { state: t.state, key: t.id, anim } },
     el("div", { className: "meta" },
       el("span", { className: "tag" }, D.icon("app"), el("span", {}, D.appName(t.app_id) || "Unknown app")),
       app && el("span", { className: "tag dot-sep" }, D.aiLabel(app, t))),
@@ -1052,7 +1078,8 @@ function renderBoard() {
   renderChips();
   renderAppChips();
   const sel = chipNow(), all = boardItems(), items = all.slice(0, S.limit);
-  if (!items.length) {
+  const gone = sel === "done" || sel === "failed" ? dismissedItems() : [];
+  if (!items.length && !gone.length) {
     // No work at all (or none for this app): the way to start some, right here.
     const one = appFilter() !== "all" ? D.appName(+appFilter()) : "";
     const none = !boardThreads().length;
@@ -1064,14 +1091,39 @@ function renderBoard() {
     return;
   }
   box.querySelector(".board-more")?.remove();
-  reconcile(box, items.map((t) => {
+  const cardItem = (t) => {
     const app = S.apps[t.app_id];
     return {
-      key: t.id,
-      sig: JSON.stringify([t.state, t.updated_at, t.title, t.github, D.appName(t.app_id), D.aiLabel(app, t), D.cardLine(t, tailNow(t, 5))]),
+      key: String(t.id),
+      sig: JSON.stringify([t.state, t.updated_at, t.title, t.github, t.dismissed_at, D.appName(t.app_id), D.aiLabel(app, t), D.cardLine(t, tailNow(t, 5))]),
       build: (anim) => boardCard(t, anim),
     };
-  }));
+  };
+  // Done and Failed: Dismiss all on top, the dismissed ones folded below.
+  const head = [];
+  if ((sel === "done" || sel === "failed") && all.length >= 2) {
+    head.push({ key: "clear", sig: JSON.stringify([sel, all.length, D.offline]), build: () => {
+      const b = el("button", { type: "button", className: "btn quiet board-clear", dataset: { key: "clear" }, disabled: D.offline },
+        D.icon("archive"), `Dismiss all ${all.length}`);
+      b.onclick = async () => { b.disabled = true; if (!(await D.dismiss("threads", all, { onChanged: refresh }))) b.disabled = D.offline; };
+      return b;
+    } });
+  } else if (!all.length) {
+    head.push({ key: "cleared", sig: sel, build: () => el("p", { className: "board-cleared", dataset: { key: "cleared" } },
+      "All cleared. Dismissed work is kept below.") });
+  }
+  const tail = [];
+  if (gone.length) {
+    const on = S.showDismissed;
+    tail.push({ key: "dis-toggle", sig: JSON.stringify([on, gone.length]), build: () => {
+      const b = el("button", { type: "button", className: "dis-toggle", dataset: { key: "dis-toggle" }, "aria-expanded": on ? "true" : "false" },
+        D.icon("archive"), el("span", { className: "grow" }, on ? "Hide dismissed" : "Dismissed"), el("span", { className: "n" }, gone.length), D.icon("right"));
+      b.onclick = () => { S.showDismissed = !S.showDismissed; render(); };
+      return b;
+    } });
+    if (on) tail.push(...gone.map(cardItem));
+  }
+  reconcile(box, [...head, ...items.map(cardItem), ...tail]);
   const extra = all.length - items.length;
   if (extra > 0) {
     const more = el("button", { type: "button", className: "btn board-more", dataset: { key: "more" } },
@@ -1083,7 +1135,8 @@ function renderBoard() {
       await Promise.all(boardTails());
       render();
     };
-    box.append(more);
+    const tog = box.querySelector('[data-key="dis-toggle"]');
+    if (tog) tog.before(more); else box.append(more);
   }
 }
 

@@ -23,6 +23,7 @@ pub mod claude_sign_in;
 pub mod context;
 pub mod coordinator;
 pub mod devices;
+pub mod dismiss;
 pub mod folders;
 pub mod github;
 pub mod limits;
@@ -283,6 +284,7 @@ pub fn router(state: AppState) -> Router {
     let api = Router::new()
         .route("/apps", get(list_apps).post(add_app))
         .route("/threads", get(list_threads).post(add_thread))
+        .route("/threads/dismiss", post(dismiss::work))
         .route("/threads/{id}", get(get_thread))
         .route("/threads/{id}/move", post(move_thread))
         .route("/threads/{id}/events", get(list_events).post(add_event))
@@ -351,6 +353,7 @@ pub fn router(state: AppState) -> Router {
             )),
         )
         .route("/goals", get(goals::list).post(goals::add))
+        .route("/goals/dismiss", post(dismiss::goals))
         .route("/goals/{id}", get(goals::view))
         .route("/goals/{id}/say", post(goals::say))
         .route("/goals/{id}/answer", post(goals::answer))

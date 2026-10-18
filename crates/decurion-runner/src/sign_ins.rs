@@ -432,6 +432,7 @@ mod tests {
             github: None,
             fix_of: None,
             research: false,
+            dismissed_at: None,
         };
         Claim {
             thread,

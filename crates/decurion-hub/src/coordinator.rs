@@ -86,7 +86,7 @@ pub struct HelperClaimOutcome {
 }
 
 const GOAL_SELECT: &str = "SELECT g.id, g.app_id, g.title, g.state, g.stuck, g.created_at,
-    g.updated_at, EXISTS (SELECT 1 FROM helper_jobs j WHERE j.goal_id = g.id
+    g.updated_at, g.dismissed_at, EXISTS (SELECT 1 FROM helper_jobs j WHERE j.goal_id = g.id
         AND j.kind = 'coordinator' AND j.state IN ('queued', 'running')) AS busy
     FROM goals g";
 
@@ -101,6 +101,7 @@ fn goal_from(row: &SqliteRow) -> Result<Goal> {
         stuck: row.try_get("stuck")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
+        dismissed_at: row.try_get("dismissed_at")?,
     })
 }
 

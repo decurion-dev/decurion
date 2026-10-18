@@ -51,6 +51,7 @@
     retry: ["M3 12a9 9 0 1 0 3-6.7L3 8", "M3 3v5h5"],
     branch: ["M6 3v12", "c18,6,3", "c6,18,3", "M18 9a9 9 0 0 1-9 9"],
     send: ["M12 19V5", "m5 12 7-7 7 7"],
+    archive: ["M3 4h18v4H3z", "M5 8v11a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8", "M10 12h4"],
     trash: ["M3 6h18", "M8 6V4h8v2", "M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"],
     menu: ["M4 6h16", "M4 12h16", "M4 18h16"],
     sun: ["c12,12,4", "M12 2v2", "M12 20v2", "m4.9 4.9 1.4 1.4", "m17.7 17.7 1.4 1.4", "M2 12h2", "M20 12h2", "m6.3 17.7-1.4 1.4", "m19.1 4.9-1.4 1.4"],
@@ -254,12 +255,18 @@
   };
 
   // ---------- Toasts and confirmations ----------
-  D.toast = (text, icon = "done") => {
+  // `undo`, when given, adds an Undo button that runs it and closes the toast.
+  D.toast = (text, icon = "done", undo = null) => {
     let box = document.querySelector(".toasts");
     if (!box) { box = D.el("div", { className: "toasts", role: "status", "aria-live": "polite" }); document.body.append(box); }
-    const t = D.el("div", { className: "toast" }, D.icon(icon), D.el("span", {}, text));
+    const t = D.el("div", { className: "toast" }, D.icon(icon), D.el("span", { className: "grow" }, text));
+    if (undo) {
+      const b = D.el("button", { type: "button", className: "toast-undo" }, "Undo");
+      b.onclick = () => { t.remove(); undo(); };
+      t.append(b);
+    }
     box.append(t);
-    setTimeout(() => t.remove(), 6000);
+    setTimeout(() => t.remove(), undo ? 9000 : 6000);
   };
 
   // Resolves true only when the owner presses the yes button.
@@ -761,6 +768,31 @@
     }
   };
 
+  // ---------- Dismissing finished things ----------
+  // Done or failed work, and finished goals, can be dismissed: hidden into a
+  // Dismissed view, never deleted, and brought back with one tap. The hub
+  // refuses anything still going (dismiss.rs).
+  D.finished = (t) => t.state === "done" || t.state === "failed";
+  // kind is "threads" or "goals"; items are the things shown, with titles.
+  D.dismiss = async (kind, items, { dismissed = true, onChanged } = {}) => {
+    const list = (items ?? []).filter(Boolean);
+    if (!list.length || D.offline) return false;
+    const what = kind === "goals" ? ["goal", "goals"] : ["piece of work", "pieces of work"];
+    try {
+      await D.api(`/${kind}/dismiss`, { method: "POST", body: JSON.stringify({ ids: list.map((t) => t.id), dismissed }) });
+    } catch (e) {
+      D.toast(`${dismissed ? "Dismiss" : "Bring back"} did not go through. ${e.message}`, "alert");
+      return false;
+    }
+    const one = list.length === 1 ? `"${list[0].title}"` : D.plural(list.length, ...what);
+    if (dismissed) {
+      D.toast(`Dismissed ${one}. ${list.length === 1 ? "It's" : "They're"} kept under Dismissed if you need ${list.length === 1 ? "it" : "them"} again.`, "archive",
+        () => D.dismiss(kind, list, { dismissed: false, onChanged }));
+    } else D.toast(`${one[0].toUpperCase()}${one.slice(1)} ${list.length === 1 ? "is" : "are"} back.`, "done");
+    if (onChanged) onChanged();
+    return true;
+  };
+
   // ---------- Sent to GitHub ----------
   // Accepted work goes to GitHub as a branch, with a pull request or a link
   // that opens one. Only GitHub links are ever drawn as links.
@@ -1188,6 +1220,16 @@
           p.err.hidden = false;
           p.err.replaceChildren(icon("alert"), el("span", { className: "grow" }, `The move did not go through. ${e.message}`));
         }
+      };
+      moves.push(b);
+    }
+    // Finished work can be put out of the way, or brought back.
+    if (D.finished(t)) {
+      const back = !!t.dismissed_at;
+      const b = el("button", { type: "button", className: "btn quiet" }, icon(back ? "retry" : "archive"), back ? "Bring back" : "Dismiss");
+      b.onclick = async () => {
+        b.disabled = true;
+        if (await D.dismiss("threads", [t], { dismissed: !back })) { panel.close(); c.changed(); } else b.disabled = D.offline;
       };
       moves.push(b);
     }
