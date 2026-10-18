@@ -1,45 +1,47 @@
 # Write an add-on
 
-**The add-on system is designed but not built.** The design is
-[ADR 0001](../adr/0001-add-on-system.md) (status **Proposed**), with an
-author guide in [`docs/addons/README.md`](../addons/README.md) and a
-commented manifest in
+**Add-ons version 1 is built, for tools only.** The design is
+[ADR 0001](../adr/0001-add-on-system.md); its "What v1 ships" section says
+exactly what runs today. The author guide is
+[`docs/addons/README.md`](../addons/README.md), and a working add-on to copy
+is [`docs/addons/word-count/`](../addons/word-count/). The full design's
+manifest, with agent types and checks that do not run yet, is
 [`docs/addons/example/decurion-addon.toml`](../addons/example/decurion-addon.toml).
-There is no `addons` table, no `decurion addon` command, no wasmtime and no
-MCP proxy in the code today. Do not write code that assumes they exist, and
-do not tell the owner an add-on can be installed.
 
-**Until it is built, a new capability goes in as a normal change to
-Decurion**, through the self-improvement flow
-([`improve-decurion-itself.md`](improve-decurion-itself.md)): a new agent kind
-per [`add-a-worker-type.md`](add-a-worker-type.md), a built-in tool per
-[`add-a-tool-for-agents.md`](add-a-tool-for-agents.md). If you are asked to
-build the add-on system itself, that is Phase 5 work: read the whole ADR,
-its "Depends on" notes and its open questions first, and keep to it.
+## Where the code is
 
-## The design in short
+| Piece | File |
+| --- | --- |
+| Shared shapes, tree hash, path and name rules, hard-stop websites | `crates/decurion-proto/src/addon.rs` (`AddonUse`, `ToolUse`, `Bundle`, `tree_hash`, `HARD_STOP_SITES`), `Claim.addons` |
+| Reading a manifest, the card's fixed sentences, update diffs | `crates/decurion-hub/src/addon_manifest.rs` (`parse`, `can_lines`, `new_lines`, `NEVER`) |
+| Fetch, stage, approve, per-app on and off, update, remove, the log, the run's download | `crates/decurion-hub/src/addons.rs`, migration `0120_addons.sql` |
+| The Settings tab | `crates/decurion-hub/src/addons.js` (`window.DAddons`), one line each in `settings.js` |
+| Tool box arguments, MCP config, the bundle check | `crates/decurion-runner/src/addons.rs` |
+| Starting and stopping tool boxes in a run | `crates/decurion-runner/src/addon_box.rs`, called from `run` and `run_in_box` in runner `main.rs` |
+| Tests | `crates/decurion-hub/tests/addons.rs`, and the unit tests in each file above |
 
-- **Package:** a git repo (or folder) with `decurion-addon.toml` (`decurion_api = "1"`, `[addon]` id, name, semver version) and the files it names. Installed from a git URL pinned to a full commit plus a SHA-256 tree hash. No store, no install scripts, nothing runs at install.
-- **Three kinds:**
-  - `[[agent]]` a new kind of agent: an image by `@sha256:` digest, a command, start, resume and budget argument templates, and an event adapter (`builtin:claude-stream-json` or a WASM `parse-line`). Runs with exactly the Claude worker's hardening; it cannot add mounts, devices, capabilities or networks.
-  - `[[tool]]` an MCP server in its own image. `placement = "box"`: a sidecar sharing the run's allowlist, no secrets. `placement = "hub"`: beside the hub, holds its declared secrets, reached only through a per-run MCP proxy. Every exposed function lists an `effect`: `read`, `write`, or a hard stop (`outbound_message`, `deploy`, `production_data`, `spend`) that waits for the owner on every call.
-  - `[[check]]` a WASM component in wasmtime with fuel, memory and time limits and only the host functions granted. Hooks `before-tool`, `after-run`, `redact-event`. Verdicts can only tighten (`pass`, `deny`, `flag`); a trap counts as deny or flag.
-- **Permissions** are a closed list (`network`, `worktree`, `secrets`, hooks, effects), each shown to the owner as one fixed sentence. One approval to install; an update that widens anything needs a new approval and the old version keeps running meanwhile. An unknown key in `permissions`, `secrets` or `expose` refuses the install.
+## Rules to keep
+
+- **No add-on code in the agent's box.** The agent's box holds the run's Claude credential. Tools run in boxes of their own (`tool_box_args`): no credential, no `/work`, no home volume, read-only root, only the add-on's checked files at `/addon`, and at most one test key by name.
+- **Only Decurion's MCP config.** Tools reach the agent as a second value of the one `--mcp-config` (`add_to_run`), before `--strict-mcp-config`. Never add a path a repo controls.
+- **Exactly the approved bytes.** The hub hashes the staged files at Add, its kept copy before every run's download, and the runner hashes what it got. Never skip one of the three.
+- **Hard stops are refused, not half-supported.** Until the hub-side MCP proxy exists, an add-on whose tool sends messages, deploys, touches production data or spends money is refused at install, and so are websites in `HARD_STOP_SITES`. Do not add a way around that.
+- **Owner only.** Every add-on route is owner-only except `GET /api/runner/threads/{id}/addons/{addon}`, which needs the runner holding that work. Do not add add-on routes to `cloud_reach`.
+- **Everything goes in `addon_log`**, which is append-only.
+- **Box changes bump `RULES_VERSION`.**
+
+## Not built yet
+
+Agent types, checks (wasmtime), `placement = "hub"` with the MCP proxy (a key agents never see, per-function filtering, per-call hard stops), tools in images of their own, stdio tools, tool access to the app's code, a `decurion addon` command line, dev mode, signing. Each is refused today with a plain message. If you are asked to build one, read the ADR's design and open questions first and keep to them.
 
 ## What an add-on can never do
 
 See ADR 0001 section 3 "Never grantable": use or see Claude logins (vault
-names `claude-profile-*` and `anthropic-api` are reserved), switch an app's
+names `claude-profile-*` and `anthropic-api` are reserved, and a test key's
+name can never start with `CLAUDE_` or `ANTHROPIC_`), switch an app's
 profile or provider, get the hub's GitHub, cloud or push credentials, reach
 the Docker socket or host paths, merge, push, deploy, touch production data,
 raise or skip the spending cap, approve inbox items, edit the policy file, or
 send messages without a hard stop. Add-ons do not change the rule that
 Decurion never handles PHI or PII. These are enforced by the hub and runner
 having no path that hands them over, not by trusting add-on code.
-
-## What is not possible even in the design (v1)
-
-A store; automatic updates; board panels or any add-on UI; add-ons that
-change workflows, policy or board states; add-ons depending on other add-ons;
-tools running directly on the host; computer-use or browser add-ons; paid
-add-ons; installs by anyone but the owner (ADR 0001 "Out of scope for v1").
