@@ -432,38 +432,68 @@ async fn folder_objects(folder: &Path) -> Result<PathBuf> {
 /// folder: git does not ask the server for what the folder already has
 /// (often everything, when the folder fetched lately), and the folder is
 /// only ever read, so those objects are copied here from it, locally.
+/// What either copy's branches already reach is left out, and nothing is
+/// written when that is everything, so asking again at the same commit
+/// adds nothing.
 async fn keep_what_it_needs(up: &Path, cache: &Path, own: &Path, sha: &str) -> Result<()> {
-    let have = git(cache, &["for-each-ref", "--format=%(objectname)"]).await?;
-    let revs = format!("{sha}\n--not\n{have}\n");
+    let mut revs = format!("{sha}\n--not\n");
+    for repo in [cache, up] {
+        for tip in git(repo, &["for-each-ref", "--format=%(objectname)"])
+            .await?
+            .lines()
+            .filter(|l| !l.is_empty())
+        {
+            revs.push_str(tip);
+            revs.push('\n');
+        }
+    }
+    let missing = with_input(up, own, &["rev-list", "--stdin", "--count"], &revs).await?;
+    if missing.trim() == "0" {
+        return Ok(());
+    }
     let pack = std::path::absolute(up.join("objects").join("pack").join("pack")).map_err(io)?;
+    let pack = pack.to_string_lossy().into_owned();
+    with_input(
+        up,
+        own,
+        &["pack-objects", "--revs", "--quiet", &pack],
+        &revs,
+    )
+    .await?;
+    Ok(())
+}
+
+/// git in the server copy `up`, borrowing the owner's folder's objects
+/// `own`, with `input` on its standard input. Returns what it printed.
+async fn with_input(up: &Path, own: &Path, args: &[&str], input: &str) -> Result<String> {
     let mut child = tokio::process::Command::new("git")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_NO_LAZY_FETCH", "1")
         .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", own)
         .arg("-C")
         .arg(up)
-        .args(["pack-objects", "--revs", "--quiet"])
-        .arg(pack)
+        .args(args)
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(io)?;
+    let what = args.first().copied().unwrap_or("");
     let mut stdin = child
         .stdin
         .take()
-        .ok_or_else(|| StoreError::Invalid("git pack-objects: no input".into()))?;
-    stdin.write_all(revs.as_bytes()).await.map_err(io)?;
+        .ok_or_else(|| StoreError::Invalid(format!("git {what}: no input")))?;
+    stdin.write_all(input.as_bytes()).await.map_err(io)?;
     drop(stdin);
     let out = child.wait_with_output().await.map_err(io)?;
     if !out.status.success() {
         return Err(StoreError::Invalid(format!(
-            "git pack-objects: {}",
+            "git {what}: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
 /// The start when the server's default cannot be had, and which fallback
@@ -894,10 +924,55 @@ mod tests {
         let b = sh(&r.origin, &["rev-parse", "trunk"]);
         assert_eq!(start_commit(&files, 1, &r.path()).await.expect("start"), b);
         let b2 = r.advance("b2");
-        files.upstream.pass(Duration::from_secs(REUSE_SECS - 1));
+        // Half the window: real time spent by the test itself (git is slow
+        // on a busy Windows machine) stays well inside the rest.
+        files.upstream.pass(Duration::from_secs(REUSE_SECS / 2));
         assert_eq!(start_commit(&files, 1, &r.path()).await.expect("start"), b);
-        files.upstream.pass(Duration::from_secs(2));
+        files.upstream.pass(Duration::from_secs(REUSE_SECS));
         assert_eq!(start_commit(&files, 1, &r.path()).await.expect("start"), b2);
+    }
+
+    /// How many packs and objects the app's server copy holds.
+    fn held(files: &Files) -> (usize, String) {
+        let up = files.upstream_cache(1);
+        let packs = std::fs::read_dir(up.join("objects").join("pack"))
+            .expect("packs")
+            .filter(|e| {
+                e.as_ref()
+                    .is_ok_and(|e| e.path().extension().is_some_and(|x| x == "pack"))
+            })
+            .count();
+        let counts = sh(&up, &["count-objects", "-v"])
+            .lines()
+            .filter(|l| l.starts_with("count:") || l.starts_with("in-pack:"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        (packs, counts)
+    }
+
+    /// The owner's folder sits well behind the server. Asking again at the
+    /// same server commit, once the last answer is old, copies nothing more
+    /// into the server copy: not the folder's missing history again, and
+    /// not an empty pack.
+    #[tokio::test]
+    async fn asking_again_at_the_same_commit_adds_nothing() {
+        let r = Repos::new();
+        let mut tip = String::new();
+        for n in 0..5 {
+            tip = r.advance(&format!("b{n}"));
+        }
+        let files = r.files();
+        assert_eq!(
+            start_commit(&files, 1, &r.path()).await.expect("start"),
+            tip
+        );
+        let first = held(&files);
+        files.age_answers();
+        assert_eq!(
+            start_commit(&files, 1, &r.path()).await.expect("start"),
+            tip
+        );
+        assert_eq!(held(&files), first);
     }
 
     #[test]
