@@ -13,7 +13,7 @@ Why: most of what keeps a browser signed in is locked away from the agent, but s
 ## Add a website sign-in
 
 1. Open the board and click **Settings**.
-2. Find **Website sign-ins**, then the app the sign-in is for.
+2. Open the **Website sign-ins** tab and find the app the sign-in is for.
 3. In **Name**, type your own name for it, such as `Staging admin`.
 4. In **Sign-in page**, paste the address of the website's sign-in page. It must start with `https://`. Sites running on your own PC (`localhost`) can't be signed in to this way yet. Don't put a name or password in the address.
 5. If you like, in **Page to check**, paste the address of a page that only works when signed in, such as your account page. Before each run, Decurion opens it to check the sign-in still works.

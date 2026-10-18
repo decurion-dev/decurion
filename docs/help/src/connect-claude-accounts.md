@@ -8,7 +8,7 @@ Decurion never sees your Claude password. Claude gives Decurion a **sign-in** fo
 
 ## Sign in from the board
 
-1. Open the board and click **Settings**. **Sign-ins** is the first section.
+1. Open the board and click **Settings**. **Sign-ins** is the first tab.
 2. Click **Sign in on this PC** next to **Claude A**.
 3. Claude's own sign-in page opens in your PC's browser. Sign in with the Claude account you want to use as Claude A, and allow access.
 4. Come back to the board. After a moment it says **Signed in**, the light turns green, and the row says when the sign-in runs out.

@@ -34,7 +34,7 @@ Everything you can do on the board. The phone has four tabs at the bottom:
 - **Inbox:** what needs you. Questions from agents show first, with answers you tap. Plans waiting for your approval and your project lead's questions show here too, with the app's name, **Approve** and **Open plan**.
 - **Board:** all your work, by state and by app. Tap **New work** to ask for something: send it to your project lead, or pick **Just do it** for a small change. Tap a card to accept it, send it back, stop it, move it between your PC and the cloud, talk to its agent, or take over its test browser.
 - **Goals:** talk with your project lead, answer its questions, open the visual plan and approve it.
-- **Settings:** apps (with **Choose folder** to pick an app's folder on your PC), websites, test keys, website sign-ins, your GitHub token, caps, usage, computers and phones. Keys and tokens you type are hidden, never shown again except their last four characters, and never kept on the phone.
+- **Settings:** a list of tabs to tap into, one for each area: sign-ins, apps (with **Choose folder** to pick an app's folder on your PC), websites, test keys, website sign-ins, your GitHub token, caps, usage, computers and phones. **‹ Settings** at the top takes you back to the list. Keys and tokens you type are hidden, never shown again except their last four characters, and never kept on the phone.
 
 ## Turn on notifications
 

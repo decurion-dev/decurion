@@ -24,10 +24,14 @@
 //   starts it, shows Claude's own link if its page did not open, and sends
 //   the short code that page gives. Lights come from the hub as they are.
 //
-// Use: D.settings.mount(box, { refresh, onSignedOut, place }) once, then
+// Each area is its own tab (#settings/<tab>): a side list on the PC, a list
+// to tap into on the phone.
+//
+// Use: D.settings.mount(box, { refresh, onSignedOut, place, top }) once, then
 // D.settings.update({ apps, spend, accounts, workers }) after each load,
-// D.settings.show(part) when the settings view opens, D.settings.hide()
-// when it closes, and D.settings.tick() on the page's timer.
+// D.settings.show(tab) when the settings view opens or its address changes,
+// D.settings.hide() when it closes, and D.settings.tick() on the page's
+// timer. top is shown above the phone's list of tabs.
 // D.settings.usage(el) draws the pay-per-use and Max plan summary into el.
 // D.settings.setFirst(app, on) stars an app to go first today, or unstars it.
 "use strict";
@@ -207,30 +211,107 @@
       parts.qr,
       el("div", {}, el("h3", { className: "sub-h" }, "Paired phones and browsers"), parts.devices));
 
-    return el("div", { className: `settings${phone() ? " on-phone" : ""}` },
-      card("sign-ins", "shield", "Sign-ins",
+    const cards = {
+      "sign-ins": card("sign-ins", "shield", "Sign-ins",
         "Every account Decurion signs in with, in one place. Green is fine, amber needs you soon, red needs you now. You get a reminder on your phone a week before a sign-in runs out.",
         parts.lightsNote, parts.claude, parts.lights),
-      card("apps", "app", "Apps",
+      apps: card("apps", "app", "Apps",
         `Each app is a git checkout on ${here()}. Agents work on their own copy and never touch yours. An app can also have its own monthly cap on pay-per-use money, across Claude, ChatGPT and Grok.`,
         parts.appRows, parts.sitesNote, parts.addApp),
-      card("computers", "cloud", "Computers",
+      computers: card("computers", "cloud", "Computers",
         "Where agents work. Each piece of work runs on your PC or on a cloud worker, under the same rules, and can move between them at any time.",
         parts.workerRows, el("div", {}, parts.addCloud)),
-      card("accounts", "money", "Accounts",
+      accounts: card("accounts", "money", "Accounts",
         "Claude A and Claude B are flat-rate Max plans. Their bars show how much of this week's allowance and of the current five-hour allowance is used, as Claude last said while working. The other accounts are billed by use: work on them stops and asks you when the month's total reaches that account's cap. Each run can spend at most $10 of what is left.",
         parts.spendBig, parts.accountRows),
-      card("keys", "key", "Test keys",
+      keys: card("keys", "key", "Test keys",
         "Test keys reach this app's agents while they work. They are kept in Windows' secure store and shown again only as their last four characters. Live keys are refused.",
         parts.keys),
-      card("github", "branch", "GitHub",
+      github: card("github", "branch", "GitHub",
         `When you accept work, Decurion sends it to the app's GitHub page as a new branch, using ${here()}'s own GitHub sign-in. With a GitHub token saved here, it also opens the pull request for you. Without one, you get a button that opens it in one tap. Decurion never merges: you do that on GitHub.`,
         parts.github),
-      card("site-sign-ins", "key", "Website sign-ins",
+      "site-sign-ins": card("site-sign-ins", "globe", "Website sign-ins",
         "Let this app's agents check pages that need a sign-in. You sign in once, in a sign-in window on your PC or phone; the sign-in is kept on your PC and your password is never saved. Use test accounts only: an agent may be able to read part of what a website keeps.",
         parts.signIns),
       phones,
-      voiceCard());
+      voice: voiceCard(),
+    };
+    return tabs(cards);
+  }
+
+  // ---------- Tabs ----------
+  // One tab per area, so the owner sees one thing at a time instead of a long
+  // page. On the PC the tabs are a list beside the open one; on the phone they
+  // are a list to tap into, with a way back. Each tab is a plain link,
+  // #settings/<id>, so the back button works and anything (a reminder on the
+  // phone, a button elsewhere) can open one directly. Every card stays built
+  // while hidden, so moving between tabs never loses what the owner typed.
+  const TABS = [
+    { id: "sign-ins", icon: "shield", name: "Sign-ins", about: "Every account Decurion uses" },
+    { id: "apps", icon: "app", name: "Apps", about: "Your apps, their websites and caps" },
+    { id: "computers", icon: "cloud", name: "Computers", about: "Your PC and cloud workers" },
+    { id: "accounts", icon: "money", name: "Accounts", about: "Max plans and pay-per-use money" },
+    { id: "keys", icon: "key", name: "Test keys", about: "Keys agents use while testing" },
+    { id: "github", icon: "branch", name: "GitHub", about: "Where accepted work goes" },
+    { id: "site-sign-ins", icon: "globe", name: "Website sign-ins", about: "Pages agents may sign in to" },
+    { id: "phones", icon: "phone", name: "Phones", about: "Pair a phone, see paired ones" },
+    { id: "voice", icon: "mic", name: "Voice", about: "Talk and hear replies on this device" },
+  ];
+  // Older links used other names for some tabs.
+  const OLD_NAMES = { spending: "accounts" };
+  let tabList = [], current = null, fromList = false;
+  const tabIds = () => tabList.map((t) => t.id);
+
+  function tabs(cards) {
+    tabList = TABS.filter((t) => cards[t.id]);
+    parts.cards = cards;
+    parts.notes = {};
+    parts.links = {};
+    const links = tabList.map((t) => {
+      parts.notes[t.id] = el("span", { className: "note" }, t.about);
+      const a = el("a", { className: "set-tab", href: `#settings/${t.id}`, dataset: { key: `tab-${t.id}` } },
+        el("span", { className: "ic" }, icon(t.icon)),
+        el("span", { className: "nm" }, el("b", {}, t.name), parts.notes[t.id]),
+        phone() ? icon("right") : null);
+      parts.links[t.id] = a;
+      return el("li", {}, a);
+    });
+    parts.index = el("div", { className: "set-index" }, phone() ? opts.top : null,
+      el("nav", { "aria-label": "Settings" }, el("ul", { className: "set-tabs" }, ...links)));
+    // The phone's way back to the list. Coming from the list, it steps back
+    // in history, so the back button and this link agree.
+    const back = phone() ? el("a", { className: "set-back", href: "#settings" }, icon("left"), "Settings") : null;
+    if (back) back.onclick = (e) => { if (fromList) { e.preventDefault(); history.back(); } };
+    parts.panel = el("div", { className: "set-panel" }, back, ...tabList.map((t) => cards[t.id]));
+    const box = el("div", { className: `settings${phone() ? " on-phone" : ""}` }, parts.index, parts.panel);
+    parts.box = box;
+    select(current);
+    return box;
+  }
+  // Opens one tab, or on the phone the list when id is null. The PC always
+  // has a tab open: the first one when none is asked for. stepped is true
+  // when the owner moved here from inside Settings, not from a link elsewhere.
+  function select(id, stepped = false) {
+    id = OLD_NAMES[id] ?? id;
+    if (!tabIds().includes(id)) id = phone() ? null : tabList[0]?.id ?? null;
+    if (id !== current) fromList = stepped && phone() && current === null && id !== null;
+    current = id;
+    for (const t of tabList) {
+      parts.cards[t.id].hidden = t.id !== id;
+      if (t.id === id) parts.links[t.id].setAttribute("aria-current", "page");
+      else parts.links[t.id].removeAttribute("aria-current");
+    }
+    parts.box?.classList.toggle("tab-open", id !== null);
+    return id;
+  }
+  // A short status beside a tab's name, such as "2 need you" on Sign-ins.
+  // Without one, the tab shows its plain description (on the phone only).
+  function tabNote(id, text, tone) {
+    const n = parts.notes?.[id];
+    if (!n) return;
+    const t = TABS.find((x) => x.id === id);
+    n.className = `note${tone ? ` status ${tone}` : ""}`;
+    fill(n, tone ? icon("alert") : null, text ?? t.about);
   }
 
   // Voice choices are kept on each phone or PC, not on the hub, so this card
@@ -895,6 +976,7 @@
       ? el("div", { className: `notice ${lights.red ? "bad" : "warn"}`, role: "status" }, icon("alert"),
         el("span", { className: "grow" }, need === 1 ? "1 sign-in needs you." : `${need} sign-ins need you.`))
       : el("p", { className: "hint" }, "Everything Decurion needs is signed in."));
+    tabNote("sign-ins", need ? `${need} need${need === 1 ? "s" : ""} you` : null, need ? (lights.red ? "bad" : "warn") : null);
     keepFocus(() => parts.lights.replaceChildren(...lights.items.map(lightRow)));
   }
   function lightRow(i) {
@@ -920,7 +1002,7 @@
         return el("a", { className: `btn sm${urgent ? " primary" : ""}`, href: "#settings/github" }, i.light === "grey" ? "Add a token" : "Change");
       case "connect_phone":
         return btn("Connect your phone", async () => {
-          root?.querySelector("#set-phones")?.scrollIntoView({ behavior: "smooth", block: "start" });
+          location.hash = "#settings/phones";
           await pairPhone();
           loadLights(true);
         }, true);
@@ -1242,10 +1324,14 @@
       }
       render();
     },
-    // The settings view opened: load what only settings needs, and scroll to
-    // a part ("accounts", "apps", ...) when one is asked for.
+    // The settings view opened, or its address changed: open the tab asked
+    // for ("accounts", "apps", ...), and load what only settings needs.
+    // Gives back the open tab's id, or null for the phone's list.
     show(part) {
+      const was = shown;
       shown = true;
+      const id = select(part, was);
+      if (was) return id;
       render();
       loadDevices();
       loadConnection();
@@ -1254,8 +1340,7 @@
       loadKeys();
       loadGitHub();
       loadSignIns();
-      const target = part && root?.querySelector(`#set-${CSS.escape(part === "spending" ? "accounts" : part)}`); // Spending became Accounts
-      return target || null;
+      return id;
     },
     hide() { shown = false; },
     get shown() { return shown; },
