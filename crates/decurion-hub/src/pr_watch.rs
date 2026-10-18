@@ -342,7 +342,7 @@ pub(crate) async fn sent(
 
 /// Comments still waiting for a fix: never taken, or taken by a fix the
 /// owner then rejected.
-const OPEN_COMMENT: &str = "(c.fix_thread IS NULL
+pub(crate) const OPEN_COMMENT: &str = "(c.fix_thread IS NULL
      OR c.fix_thread IN (SELECT id FROM threads WHERE state = 'failed'))";
 
 /// The board's and inbox's view of one watched pull request.

@@ -125,6 +125,20 @@
   .notice.bad { align-items: flex-start; }
   .notice.bad svg.i { margin-top: 2px; }
 
+  /* ---------- Today: one row per app, what it waits on (GET /api/today) ---------- */
+  .today-card { display: grid; padding: 6px 4px 6px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l); }
+  .today-card .th { padding: 8px 0 4px; font-size: 13px; font-weight: 650; color: var(--muted); }
+  .today-card .tr { display: flex; align-items: center; gap: 10px; min-height: 52px; padding-right: 10px; }
+  .today-card .tr + .tr { border-top: 1px solid var(--line); }
+  .today-card .go { flex: 1; min-width: 0; display: grid; gap: 2px; padding: 6px 0; border: 0; background: none; text-align: left; cursor: pointer; color: var(--ink); font: inherit; }
+  .today-card .go .nm { font: 600 15px/1.3 var(--font); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .today-card .go .ln { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .today-card .tr .btn { flex: none; min-height: 40px; }
+  .today-card .pill { flex: none; }
+  .today-card .pill svg.i.spin { animation: none; }
+  .today-card .pill.t-merge { color: var(--accent-ink); background: var(--accent-soft); }
+  .today-card .more-apps { justify-self: start; margin: 2px 0 6px -6px; }
+
   /* Notifications prompt */
   .ask { padding: 12px 12px 12px 14px; border-radius: var(--radius-l); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
   .ask .ic { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-2); color: var(--ink); flex: none; }
@@ -300,6 +314,7 @@
 
 <main class="page" id="page">
   <section class="view" id="view-inbox" aria-labelledby="title">
+    <section class="today-card live" id="today" aria-label="Today: what each app waits on" hidden></section>
     <div class="notice ask" id="notify" hidden></div>
     <div class="err-slot" id="act-err" role="alert"></div>
     <div class="read-all" id="read-all" hidden></div>
@@ -475,11 +490,60 @@ async function loadGoals() {
   for (const id of approving) if (!ids.has(id)) approving.delete(id);
   await Promise.all(waiting.map(loadGoalView));
 }
+// The Today card: one row per app, with the hub's own words (today.rs), the
+// same as the board's strip. A row opens the Board tab for that app. Kept
+// short on a phone: five rows, then "and N more".
+const TODAY_ROWS = 5;
+const TONES = { needs_you: ["needs_you", "needs_you"], working: ["running", "running"], reviewer: ["in_review", "in_review"],
+  merge: ["t-merge", "branch"], done: ["done", "done"], quiet: ["queued", "queued"] };
+let today = null, todayAll = false, todaySig = "";
+async function loadToday() {
+  try { today = await D.api("/today"); } catch (_) { /* keep the last rows */ }
+  renderToday();
+}
+function renderToday() {
+  const box = $("today");
+  const rows = Array.isArray(today) ? today : [];
+  const sig = JSON.stringify([rows, todayAll, D.offline]);
+  if (sig === todaySig) return;
+  todaySig = sig;
+  box.hidden = !rows.length;
+  const shown = todayAll ? rows : rows.slice(0, TODAY_ROWS);
+  const more = rows.length - shown.length;
+  box.replaceChildren(el("div", { className: "th" }, "Today"), ...shown.map((r) => {
+    const go = el("button", { type: "button", className: "go" },
+      el("span", { className: "nm" }, r.name), el("span", { className: "ln" }, r.line));
+    go.onclick = () => { setAppFilter(String(r.app_id)); location.hash = "#board"; };
+    const fixOn = r.open_comments > 0 ? (r.fix_thread_id ?? r.last_pr?.thread_id) : null;
+    let act;
+    if (fixOn != null) {
+      act = el("button", { type: "button", className: "btn primary", disabled: D.offline }, D.icon("tool"), "Fix these");
+      act.onclick = async () => {
+        if (D.offline) return;
+        act.disabled = true;
+        try {
+          await D.send(`/threads/${fixOn}/pr/fix`, {});
+          D.toast("Started a fix for the comments.");
+        } catch (e) {
+          D.toast(e.message, "alert");
+        }
+        todaySig = "";
+        refresh();
+      };
+    } else {
+      const [cls, ic] = TONES[r.tone] ?? TONES.quiet;
+      act = el("span", { className: `pill ${cls}` }, D.icon(ic), r.status);
+    }
+    return el("div", { className: "tr", dataset: { tone: r.tone } }, go, act);
+  }), more > 0 ? Object.assign(el("button", { type: "button", className: "btn quiet sm more-apps" }, `and ${D.plural(more, "more app")}`),
+    { onclick: () => { todayAll = true; renderToday(); } }) : null);
+}
 let busy = false, again = false;
 async function refresh() {
   if (busy) { again = true; return; }
   busy = true;
   const goalsJob = loadGoals();
+  loadToday();
   try {
     // Hubs without the limits endpoint answer 404; that just means no limits.
     // Money and accounts only matter on the Settings tab. Computers also say

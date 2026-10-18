@@ -34,6 +34,7 @@ pub mod sign_ins;
 pub mod spend;
 pub mod store;
 pub mod test_keys;
+pub mod today;
 pub mod usage;
 pub mod workers;
 
@@ -260,6 +261,8 @@ pub fn router(state: AppState) -> Router {
             get(runner_download),
         )
         .route("/runner/threads/{id}/credential", post(runner_credential))
+        // The Today strip: owner only, never cloud workers (today.rs).
+        .route("/today", get(today::list))
         .route("/goals", get(goals::list).post(goals::add))
         .route("/goals/{id}", get(goals::view))
         .route("/goals/{id}/say", post(goals::say))
