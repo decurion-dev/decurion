@@ -66,6 +66,9 @@
     plan: ["M11 6h10", "M11 12h10", "M11 18h10", "m3 6 1.5 1.5L7 5", "m3 12 1.5 1.5L7 11", "m3 18 1.5 1.5L7 17"],
     mic: ["M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z", "M5 11a7 7 0 0 0 14 0", "M12 18v3"],
     star: ["M12 2.5l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4l-5.9 3.1 1.2-6.5-4.8-4.6 6.6-.9z"],
+    deploy: ["M12 13v8", "m8 17 4-4 4 4", "M20 16.6A5 5 0 0 0 18 7h-1.3A8 8 0 1 0 4 15.3"],
+    open: ["M15 3h6v6", "M10 14 21 3", "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"],
+    log: ["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6", "M16 13H8", "M16 17H8", "M10 9H8"],
   };
   const SVG = "http://www.w3.org/2000/svg";
   D.icon = (name, cls = "") => {
@@ -197,6 +200,21 @@
     if (r.status === 401) { const e = new Error(D.signedOutText); e.signedOut = true; throw e; }
     if (!r.ok) throw new Error((await r.text()) || `The hub said ${r.status}.`);
     return r.status === 204 ? null : r.json();
+  };
+  // The same as D.api for the few routes that answer plain text, such as a
+  // deploy's output.
+  D.apiText = async (path) => {
+    let r;
+    try {
+      r = await fetch("/api" + path, { headers: { accept: "text/plain" } });
+    } catch (_) {
+      setOffline(true);
+      throw new Error("Can't reach your PC right now.");
+    }
+    setOffline(false);
+    if (r.status === 401) { const e = new Error(D.signedOutText); e.signedOut = true; throw e; }
+    if (!r.ok) throw new Error((await r.text()) || `The hub said ${r.status}.`);
+    return r.text();
   };
 
   // Events come in pages of 500; fetch them all so the outcome is never cut off.
@@ -2268,4 +2286,164 @@ Add or fix .decurion/run.json so the app starts in a fresh box: one install comm
     d.querySelector("#fp-t").focus();
     go(String(start ?? "").trim());
   });
+})();
+
+// ---------- One-tap deploy (D.deployBox) ----------
+// The deploy part of an app's Today row, the same on the board and the
+// phone. The hub chooses every word on a card (deploy.rs `card_words`); this
+// only picks a colour and symbol from its state and draws it. Rules that
+// must stay true: one tap is the whole ask (no "are you sure"), except that
+// changed deploy steps are shown before the tap that runs them; every tap
+// carries the exact commit the card showed and a receipt; output from the
+// steps goes in as text, never as HTML.
+(() => {
+  const { el, icon } = D;
+  // Word comes from the hub; this is the colour and symbol for each state.
+  const LOOK = { waiting: ["needs_you", "deploy"], deploying: ["running", "running"], failed: ["failed", "failed"], live: ["done", "done"] };
+  const pill = (c) => {
+    const [cls, ic] = LOOK[c.state] ?? LOOK.waiting;
+    return el("span", { className: `pill ${cls}` }, icon(ic), c.status);
+  };
+  // Cards whose "What's in it" is open, so a redraw keeps it open.
+  const whatOpen = new Set();
+  const STEPS_CHANGED = "These deploy steps changed since the last release. Check them, then deploy.";
+
+  async function deploy(c, btn, onChange) {
+    if (D.offline) return;
+    btn.disabled = true;
+    try {
+      await D.send(`/deploys/${c.id}/go`, { commit: c.commit });
+      D.toast(`${c.app} is deploying. Its card shows how far it has got.`, "deploy");
+    } catch (e) {
+      D.toast(e.message, "alert");
+    }
+    btn.disabled = D.offline;
+    onChange();
+  }
+
+  async function notNow(c, btn, onChange) {
+    if (D.offline) return;
+    btn.disabled = true;
+    try {
+      await D.send(`/deploys/${c.id}/hide`, {});
+      D.toast(`Hidden until the next merge to ${c.app}.`);
+    } catch (e) {
+      D.toast(e.message, "alert");
+    }
+    btn.disabled = D.offline;
+    onChange();
+  }
+
+  async function check(c, btn, onChange) {
+    if (D.offline) return;
+    btn.disabled = true;
+    const was = btn.lastChild.textContent;
+    btn.lastChild.textContent = "Checking…";
+    try {
+      const list = await D.api(`/apps/${c.app_id}/deploy/check`, { method: "POST" });
+      const ready = (Array.isArray(list) ? list : []).some((x) => x.state === "waiting");
+      D.toast(ready ? `${c.app} has a new change ready to deploy.` : `Nothing new to deploy for ${c.app}.`);
+    } catch (e) {
+      D.toast(e.message, "alert");
+    }
+    btn.lastChild.textContent = was;
+    btn.disabled = D.offline;
+    onChange();
+  }
+
+  // A sheet with a title, a body and a footer, closed by its X or Escape.
+  function sheet(title, kids, foot) {
+    const close = el("button", { type: "button", className: "btn icon quiet dl-close", "aria-label": "Close" }, icon("close", "l"));
+    const d = el("dialog", { className: "dl-sheet", "aria-labelledby": "dl-t" },
+      el("header", { className: "dl-sheet-head" }, el("h2", { id: "dl-t" }, title), close),
+      el("div", { className: "dl-sheet-body" }, ...kids),
+      el("footer", { className: "dl-sheet-foot" }, ...foot));
+    close.onclick = () => d.close();
+    d.addEventListener("close", () => d.remove());
+    document.body.append(d);
+    d.showModal();
+    return d;
+  }
+
+  // Changed deploy steps: the owner sees the files and the steps before the
+  // one Deploy inside runs them.
+  function showChangedSteps(c, onChange) {
+    const cancel = el("button", { type: "button", className: "btn" }, "Cancel");
+    const go = el("button", { type: "button", className: "btn primary" }, icon("deploy"), "Deploy");
+    const d = sheet(`Deploy ${c.app}`, [
+      el("div", { className: "notice warn" }, icon("alert"), el("span", { className: "grow" }, STEPS_CHANGED)),
+      el("div", {}, el("h3", { className: "section-title" }, "Changed since the last release"),
+        el("ul", { className: "dl-mono" }, ...c.steps_changed.map((f) => el("li", {}, f)))),
+      el("div", {}, el("h3", { className: "section-title" }, "Deploy steps, in order"),
+        el("ol", { className: "dl-mono dl-steps" }, ...c.steps.map((s) => el("li", {}, s)))),
+    ], [cancel, go]);
+    cancel.onclick = () => d.close();
+    go.onclick = async () => { await deploy(c, go, onChange); d.close(); };
+    cancel.focus();
+  }
+
+  // Everything the steps printed. While the deploy runs, it follows along.
+  function showLog(c) {
+    const head = el("div", { className: "dl-log-head" }, pill(c), el("span", { className: "dl-line" }, c.line));
+    const out = el("pre", { className: "dl-log", tabIndex: 0, "aria-label": "What the deploy steps printed" }, "Loading…");
+    const close = el("button", { type: "button", className: "btn" }, "Close");
+    const d = sheet(`${c.app}: deploy details`, [head, out], [close]);
+    close.onclick = () => d.close();
+    let timer = null, card = c;
+    const load = async () => {
+      try {
+        const atEnd = out.scrollHeight - out.scrollTop - out.clientHeight < 24;
+        out.textContent = await D.apiText(`/deploys/${c.id}/log`);
+        if (atEnd) out.scrollTop = out.scrollHeight;
+      } catch (e) {
+        out.textContent = e.message;
+      }
+      if (card.state !== "deploying" || !d.open) return;
+      const now = (await D.api("/deploys").catch(() => null) ?? []).find((x) => x.id === c.id);
+      if (now) { card = now; head.replaceChildren(pill(now), el("span", { className: "dl-line" }, now.line)); }
+      if (d.open) timer = setTimeout(load, 3000);
+    };
+    d.addEventListener("close", () => clearTimeout(timer));
+    load().then(() => { out.scrollTop = out.scrollHeight; });
+    close.focus();
+  }
+
+  // D.deployBox(card, { onChange }) draws one deploy card. `onChange` runs
+  // after every tap, so the page fetches the card again.
+  D.deployBox = (c, { onChange = () => {} } = {}) => {
+    const btn = (cls, ic, words, key, fn) => {
+      const b = el("button", { type: "button", className: `btn ${cls}`.trim(), dataset: { key: `deploy-${key}-${c.id}` } }, icon(ic), el("span", {}, words));
+      b.disabled = D.offline;
+      b.onclick = () => fn(b);
+      return b;
+    };
+    const acts = [];
+    if (c.button) {
+      const changed = c.state === "waiting" && c.steps_changed.length > 0;
+      acts.push(btn("primary", c.state === "failed" ? "retry" : "deploy", c.button, "go",
+        (b) => (changed ? showChangedSteps(c, onChange) : deploy(c, b, onChange))));
+    }
+    if (c.state === "deploying" || c.state === "failed") acts.push(btn("", "log", "Details", "log", () => showLog(c)));
+    if (c.state === "live" && c.site) {
+      acts.push(el("a", { className: "btn", href: c.site, target: "_blank", rel: "noopener noreferrer", dataset: { key: `deploy-site-${c.id}` } },
+        icon("open"), "Open site"));
+    }
+    if (c.state === "live") acts.push(btn("quiet", "retry", "Check for changes", "check", (b) => check(c, b, onChange)));
+    if (c.state === "waiting" || c.state === "failed") acts.push(btn("quiet", "close", "Not now", "hide", (b) => notNow(c, b, onChange)));
+
+    let what = null;
+    if (c.state === "waiting" && (c.changes.length || c.site)) {
+      what = el("details", { className: "fold dl-what", open: whatOpen.has(c.id) },
+        el("summary", { dataset: { key: `deploy-what-${c.id}` } }, icon("right"), "What's in it"),
+        c.changes.length ? el("ul", {}, ...c.changes.map((t) => el("li", {}, t))) : null,
+        el("p", { className: "dl-where" }, c.short ? `Version ${c.short}` : "",
+          c.site ? el("span", {}, c.short ? " · goes live at " : "Goes live at ", el("span", { className: "mono" }, c.site)) : null));
+      what.addEventListener("toggle", () => { if (what.open) whatOpen.add(c.id); else whatOpen.delete(c.id); });
+    }
+    return el("div", { className: "deploy-box", dataset: { state: c.state } },
+      el("div", { className: "dl-top" }, pill(c)),
+      el("p", { className: "dl-line", title: c.line }, c.line),
+      what,
+      el("div", { className: "dl-acts" }, ...acts));
+  };
 })();
