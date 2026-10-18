@@ -1079,6 +1079,20 @@ async fn add_thread(
     }
 }
 
+/// Saves the protected-parts hold of a Bring up to date run about to go to
+/// review ([`protected::update_hold`]); nothing for other work. Without the
+/// hub's saved copies there is nothing to check, so the work is held.
+async fn decide_update_hold(st: &AppState, id: i64) -> Result<(), StoreError> {
+    if st.store.merge_from(id).await?.is_none() {
+        return Ok(());
+    }
+    let hold = match st.files.as_deref() {
+        Some(files) => protected::update_hold(&st.store, files, id).await,
+        None => protected::Hold::Unchecked("this hub keeps no saved copies".into()),
+    };
+    st.store.set_thread_hold(id, &hold).await
+}
+
 async fn move_thread(
     State(st): State<AppState>,
     axum::Extension(c): axum::Extension<Caller>,
@@ -1104,15 +1118,14 @@ async fn move_thread(
         _ => c.actor().to_owned(),
     };
     // A Bring up to date run has no checker: its protected-parts hold is
-    // decided here, from its saved copy, before it shows in review, so the
-    // owner never sees it there without the reason.
-    if c == Caller::Runner && m.to == InReview {
-        if let (Some(files), Ok(Some(_))) = (st.files.as_deref(), st.store.merge_from(id).await) {
-            let hold = protected::update_hold(&st.store, files, id).await;
-            if let Err(e) = st.store.set_thread_hold(id, &hold).await {
-                tracing::error!(error = %e, thread = id, "could not save the update's hold");
-                return ApiError(e).into_response();
-            }
+    // decided here, from its saved copy, before any move of it into review,
+    // whoever asks for the move, so the owner never sees it there without
+    // the reason. A hold that cannot be decided holds the work; a lookup
+    // that fails refuses the move.
+    if m.to == InReview {
+        if let Err(e) = decide_update_hold(&st, id).await {
+            tracing::error!(error = %e, thread = id, "could not decide the update's hold");
+            return ApiError(e).into_response();
         }
     }
     match st

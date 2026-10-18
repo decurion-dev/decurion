@@ -90,6 +90,36 @@ async fn seed(r: &axum::Router) -> i64 {
     t["id"].as_i64().expect("id")
 }
 
+/// A Bring up to date run always reaches review with its protected-parts
+/// hold decided. Here the hub keeps no saved copies, so it cannot check:
+/// the work is held rather than shown as clear.
+#[tokio::test]
+async fn an_update_never_reaches_review_without_its_hold_decided() {
+    let (r, store) = hub().await;
+    let id = seed(&r).await;
+    let main = "a".repeat(40);
+    sqlx::query("UPDATE threads SET merge_from = ?, merge_ref = 'main' WHERE id = ?")
+        .bind(&main)
+        .bind(id)
+        .execute(store.pool())
+        .await
+        .expect("update");
+    let c = claim(&r).await;
+    assert_eq!(c["merge_from"], main.as_str());
+    let (s, t) = call(
+        &r,
+        "POST",
+        &format!("/api/threads/{id}/move"),
+        Some(RUNNER),
+        json!({"to":"in_review"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{t}");
+    let hold = t["hold"].as_str().expect("held");
+    assert!(hold.starts_with("Held for you:"), "{hold}");
+    assert!(!hold.contains("checker"), "{hold}");
+}
+
 #[tokio::test]
 async fn api_requires_a_key() {
     let (r, _) = hub().await;
