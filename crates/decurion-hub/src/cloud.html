@@ -661,9 +661,9 @@ function el(tag, attrs = {}, text = "") { const e = document.createElement(tag);
 $("mark").append(D.mark(28));
 for (const s of document.querySelectorAll("[data-icon]")) s.replaceWith(D.icon(s.dataset.icon));
 
-// A phone (or the installed app) comes here from its Settings tab, so Back goes there.
+// A phone (or the installed app) comes here from Settings, Computers, so Back goes there.
 if (matchMedia("(max-width: 640px), (display-mode: standalone)").matches) {
-  $("back").href = "/inbox#settings"; $("back-text").textContent = "Back to settings";
+  $("back").href = "/inbox#settings/computers"; $("back-text").textContent = "Back to settings";
   $("brand").href = "/inbox";
 }
 
