@@ -1470,6 +1470,8 @@ async fn pages_load_their_shared_look_without_signing_in() {
     for (path, kind) in [
         ("/ui.css", "text/css"),
         ("/ui.js", "text/javascript"),
+        ("/compose.js", "text/javascript"),
+        ("/settings.js", "text/javascript"),
         ("/icon.svg", "image/svg+xml"),
         ("/icon-192.png", "image/png"),
         ("/icon-512.png", "image/png"),

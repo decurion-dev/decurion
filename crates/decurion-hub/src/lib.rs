@@ -287,6 +287,15 @@ pub fn router(state: AppState) -> Router {
             "/ui.js",
             get(|| async { asset("text/javascript; charset=utf-8", include_str!("ui.js")) }),
         )
+        // The new-work form and the settings, shared by the board and the phone.
+        .route(
+            "/compose.js",
+            get(|| async { asset("text/javascript; charset=utf-8", include_str!("compose.js")) }),
+        )
+        .route(
+            "/settings.js",
+            get(|| async { asset("text/javascript; charset=utf-8", include_str!("settings.js")) }),
+        )
         .route(
             "/icon.svg",
             get(|| async { asset("image/svg+xml", include_str!("icon.svg")) }),
