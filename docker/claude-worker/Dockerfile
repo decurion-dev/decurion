@@ -154,10 +154,13 @@ RUN mkdir -p /tmp/pg-init \
       echo "a failed setup was reported as success" >&2; exit 1; \
     fi \
  && test ! -e "$HOME/.decurion-postgres/5499" \
- && printf 'echo "for $POSTGRES_USER in $POSTGRES_DB" > "$HOME/pg-env"\n' > /tmp/pg-init/02-broken.sql.sh \
  && rm /tmp/pg-init/02-broken.sql \
+ && printf 'CREATE TABLE who AS SELECT current_user AS u;\n' > /tmp/pg-init/02-who.sql \
+ && printf 'export FROM_EARLIER=yes\n' > /tmp/pg-init/03-set.sh \
+ && printf 'echo "$FROM_EARLIER for $POSTGRES_USER in $POSTGRES_DB" > "$HOME/pg-env"\n' > /tmp/pg-init/04-use.sh \
  && decurion-postgres start --port 5499 --user app --init /tmp/pg-init \
- && grep -qx "for app in app" "$HOME/pg-env" \
+ && grep -qx "yes for app in app" "$HOME/pg-env" \
+ && psql -h 127.0.0.1 -p 5499 -U app -d app -tAc "select u from who" | grep -qx app \
  && psql -h 127.0.0.1 -p 5499 -U app_user -d app_test -tAc "select 1" | grep -qx 1 \
  && psql -h 127.0.0.1 -p 5499 -U app -d app -tAc "select current_user" | grep -qx app \
  && decurion-postgres stop --port 5499 \
