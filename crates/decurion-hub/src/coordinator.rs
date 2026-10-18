@@ -1093,7 +1093,7 @@ impl Store {
 
     pub async fn goal_view(&self, id: i64) -> Result<GoalView> {
         let goal = self.goal(id).await?;
-        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.pool().begin().await?; // read-only: a reader never waits on writers
         let app_name = app_name(&mut tx, goal.app_id).await?;
         let messages = messages_in(&mut tx, id).await?;
         let rows = sqlx::query(

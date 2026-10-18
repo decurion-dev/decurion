@@ -252,7 +252,7 @@ pub(crate) async fn record_cost(
 
 impl Store {
     pub async fn spend(&self) -> Result<Spend> {
-        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.pool().begin().await?; // read-only: a reader never waits on writers
         let cap = cap_micros(&mut tx, Account::Api).await?;
         let api = spent_micros(&mut tx, Account::Api).await?;
         let max: i64 = sqlx::query_scalar(&format!(
@@ -287,7 +287,7 @@ impl Store {
     /// Every account, in the order the board shows them. Paid accounts carry
     /// this month's money; Max plans carry what Claude last reported.
     pub async fn accounts(&self) -> Result<Vec<AccountMeter>> {
-        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.pool().begin().await?; // read-only: a reader never waits on writers
         let mut out = Vec::with_capacity(Account::ALL.len());
         for account in Account::ALL {
             let (spent_usd, cap_usd) = if account.is_paid() {
