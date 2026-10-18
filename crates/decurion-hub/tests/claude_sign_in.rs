@@ -197,10 +197,34 @@ async fn claude_stopping_early_saves_nothing_and_says_so() {
     assert!(
         v["message"]
             .as_str()
-            .is_some_and(|m| m.contains("Try again")),
+            .is_some_and(|m| m.contains("Try again") && m.contains("Something went wrong")),
         "{v}"
     );
     assert_eq!(h.vault.get_claude(Profile::A).expect("read"), None);
+}
+
+#[tokio::test]
+async fn claude_that_cannot_run_is_reported_without_waiting() {
+    let h = hub(
+        "printf \"'node' is not recognized as an internal or external command\\r\\n\"\nsleep 30",
+    )
+    .await;
+    call(
+        &h.r,
+        "POST",
+        "/api/claude/sign-in",
+        OWNER,
+        json!({ "profile": "A" }),
+    )
+    .await;
+    let v = wait_for(&h.r, |v| v["phase"] != "waiting").await;
+    assert_eq!(v["phase"], "failed");
+    assert!(
+        v["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("didn't start")),
+        "{v}"
+    );
 }
 
 #[tokio::test]

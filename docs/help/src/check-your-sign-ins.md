@@ -46,7 +46,8 @@ A week before something with a known date runs out, your phone gets a notificati
 ## If something goes wrong
 
 - **"Claude Code is not installed on this PC."** Install Claude Code (the installer offers it), then click the button again.
-- **"A Claude sign-in is already open."** Finish it in the browser, or click **Cancel**, then start again.
+- **"A Claude sign-in is already open."** Finish it in the browser, or click **Cancel** at the top of Sign-ins, then start again.
+- **"Claude Code didn't start its sign-in on this PC."** Decurion waits up to 45 seconds for Claude's page. Update Claude Code, then click **Try again**. If the message ends with what Claude said, that line tells whoever helps you what went wrong.
 - **"The sign-in took too long."** Decurion waits 10 minutes. Click **Try again**.
 - **Claude B signs in as your Claude A account.** Your browser is still signed in to Claude A. Sign out of Claude in that browser, then click **Sign in on this PC** next to Claude B again.
 - **GitHub is red: "GitHub no longer takes this token."** Make a new token on GitHub and save it in Settings, GitHub. See [Review and merge work](review-and-merge.md).

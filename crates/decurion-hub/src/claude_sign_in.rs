@@ -11,7 +11,10 @@
 //!   never logged, never sent to a page, never put in the database (only the
 //!   start of its SHA-256, to tell whether the saved one is still the one
 //!   dated here), and never handed to a box from here.
-//! - Nothing Claude prints is logged or shown: it may hold the sign-in.
+//! - Nothing Claude prints is logged or shown: it may hold the sign-in. The
+//!   one exception is a sign-in that failed: Claude's last line is shown and
+//!   logged so the owner (and whoever helps) can see why, unless it holds
+//!   anything shaped like a Claude key ([`last_words`]).
 //! - Only the official Claude Code CLI makes the sign-in; the hub never talks
 //!   to Claude's sign-in service itself.
 //! - One sign-in at a time, stopped after [`GIVE_UP`] so a forgotten one does
@@ -29,14 +32,19 @@ use decurion_proto::Profile;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
+use std::ffi::OsString;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, Notify};
 
 /// How long the owner has to finish signing in.
 const GIVE_UP: Duration = Duration::from_secs(10 * 60);
+/// How long Claude has to show its sign-in (open the page, or print its
+/// link) before the board says it did not start, instead of leaving the
+/// owner waiting the whole [`GIVE_UP`] on a page that will never answer.
+const STARTING: Duration = Duration::from_secs(45);
 /// What Claude prints is kept up to this much, newest last.
 const KEEP_BYTES: usize = 256 * 1024;
 /// Wide enough that Claude never wraps its sign-in or its link.
@@ -216,6 +224,77 @@ fn find_claude() -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// What to run for Claude Code, and the arguments that come before ours.
+/// npm installs a `claude.cmd` script; run through cmd.exe inside a
+/// pseudo-terminal it can hang with no Claude under it, and stopping cmd.exe
+/// would leave Claude behind. So the script is read for what it starts
+/// (Claude's own program, or its `cli.js` under Node) and that runs directly.
+/// Anything else, or a script that cannot be read, runs as it is.
+fn command(program: &Path) -> (PathBuf, Vec<OsString>) {
+    let as_is = (program.to_path_buf(), Vec::new());
+    let ext = |p: &Path, want: &str| {
+        p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case(want))
+    };
+    if !(ext(program, "cmd") || ext(program, "bat")) {
+        return as_is;
+    }
+    let Some(dir) = program.parent() else {
+        return as_is;
+    };
+    let Some(rel) = std::fs::read_to_string(program)
+        .ok()
+        .and_then(|s| shim_target(&s))
+    else {
+        return as_is;
+    };
+    let target = rel
+        .split(['\\', '/'])
+        .filter(|p| !p.is_empty())
+        .fold(dir.to_path_buf(), |p, part| p.join(part));
+    if !target.is_file() {
+        return as_is;
+    }
+    if ext(&target, "exe") {
+        return (target, Vec::new());
+    }
+    if !ext(&target, "js") {
+        return as_is;
+    }
+    // Node as the script itself would find it: beside the script, then on
+    // the PATH, then where Node's own installer puts it.
+    let node = std::iter::once(dir.join("node.exe"))
+        .chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|d| d.join("node.exe")),
+        )
+        .chain(
+            std::env::var_os("ProgramFiles")
+                .map(|p| PathBuf::from(p).join("nodejs").join("node.exe")),
+        )
+        .find(|p| p.is_file());
+    match node {
+        Some(node) => (node, vec![target.into_os_string()]),
+        None => as_is,
+    }
+}
+
+/// The program an npm `.cmd` script starts, relative to the script's folder:
+/// the quoted path after `%dp0%` (or the older `%~dp0`) under node_modules.
+fn shim_target(script: &str) -> Option<String> {
+    script
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .filter_map(|q| q.strip_prefix("%dp0%").or_else(|| q.strip_prefix("%~dp0")))
+        .find(|rest| rest.contains("node_modules"))
+        .map(|rest| rest.trim_start_matches(['\\', '/']).to_owned())
+}
+
 /// What Claude has printed so far, as plain text without terminal codes,
 /// plus the targets of the links it drew.
 #[derive(Default)]
@@ -300,12 +379,39 @@ fn find_token(text: &str) -> Option<String> {
     Some(token.to_owned())
 }
 
-/// Claude's link for signing in by hand, if it showed one.
-fn find_link(links: &[String]) -> Option<String> {
-    links
-        .iter()
-        .find(|l| l.starts_with("https://") && l.contains("/oauth/authorize"))
-        .cloned()
+/// Claude's link for signing in by hand, if it showed one: as a terminal
+/// link, or as plain text (Windows' pseudo-terminal drops terminal links).
+fn find_link(text: &str, links: &[String]) -> Option<String> {
+    let is_link = |l: &str| l.starts_with("https://") && l.contains("/oauth/authorize");
+    links.iter().find(|l| is_link(l)).cloned().or_else(|| {
+        text.match_indices("https://")
+            .map(|(i, _)| text[i..].split(char::is_whitespace).next().unwrap_or(""))
+            .find(|l| is_link(l))
+            .map(str::to_owned)
+    })
+}
+
+/// Whether Claude has got as far as its sign-in: it printed a link, or
+/// talks about the browser or the code.
+fn shows_sign_in(text: &str, links: &[String]) -> bool {
+    let t = text.to_lowercase();
+    !links.is_empty() || t.contains("https://") || t.contains("browser") || t.contains("paste code")
+}
+
+/// Claude's last line, to show why a sign-in failed. Nothing that could be
+/// a key goes out: a line with `sk-ant` anywhere in what was printed means
+/// nothing is shown.
+fn last_words(text: &str) -> Option<String> {
+    if text.contains("sk-ant") {
+        return None;
+    }
+    let line = text.lines().map(str::trim).rfind(|l| !l.is_empty())?;
+    Some(line.chars().take(200).collect())
+}
+
+/// Whether what Windows printed says Claude could not run at all.
+fn could_not_run(text: &str) -> bool {
+    text.contains("is not recognized") || text.contains("Terminate batch job")
 }
 
 fn fingerprint(token: &str) -> String {
@@ -472,7 +578,9 @@ fn open(program: &std::path::Path) -> anyhow::Result<Opened> {
         pixel_width: 0,
         pixel_height: 0,
     })?;
-    let mut cmd = CommandBuilder::new(program);
+    let (exe, first) = command(program);
+    let mut cmd = CommandBuilder::new(exe);
+    cmd.args(first);
     cmd.arg("setup-token");
     cmd.cwd(std::env::temp_dir());
     if cfg!(not(windows)) && std::env::var_os("TERM").is_none() {
@@ -491,6 +599,7 @@ enum Event {
 }
 
 const STOPPED: &str = "Claude stopped before the sign-in finished. Try again.";
+const NOT_STARTED: &str = "Claude Code didn't start its sign-in on this PC. Check that Claude Code is installed and up to date, then try again.";
 const CANCELLED: &str = "";
 
 /// Watches Claude until it prints the sign-in, stops, is cancelled or runs
@@ -537,12 +646,20 @@ async fn watch(
     let mut screen = Screen::default();
     let give_up = tokio::time::sleep(GIVE_UP);
     tokio::pin!(give_up);
+    let starting = tokio::time::sleep(STARTING);
+    tokio::pin!(starting);
+    let mut started = false;
     // After Claude exits, what it printed last may still be on its way.
     let mut grace: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
     let end: std::result::Result<String, &'static str> = loop {
         tokio::select! {
             _ = &mut give_up => break Err("The sign-in took too long, so Decurion stopped it. Try again."),
             _ = stop.notified() => break Err(CANCELLED),
+            _ = &mut starting, if !started => {
+                // Only the size: what Claude printed may hold the sign-in.
+                tracing::warn!(bytes = screen.raw.len(), "Claude Code showed no sign-in");
+                break Err(NOT_STARTED);
+            }
             _ = async {
                 match grace.as_mut() {
                     Some(g) => g.await,
@@ -556,7 +673,12 @@ async fn watch(
                     if let Some(t) = find_token(&text) {
                         break Ok(t);
                     }
-                    st.claude.progress(seq, find_link(&links), text.contains("Paste code here"));
+                    if could_not_run(&text) {
+                        tracing::warn!("Claude Code could not run for a sign-in");
+                        break Err(NOT_STARTED);
+                    }
+                    started = started || shows_sign_in(&text, &links);
+                    st.claude.progress(seq, find_link(&text, &links), text.contains("Paste code here"));
                 }
                 Some(Event::Exited) => {
                     if grace.is_none() {
@@ -569,7 +691,14 @@ async fn watch(
     };
     let _ = killer.kill();
     drop(master);
+    let said = match end {
+        Err(STOPPED) | Err(NOT_STARTED) => last_words(&screen.read().0),
+        _ => None,
+    };
     drop(screen);
+    if let Some(said) = &said {
+        tracing::warn!(said = %said, "a Claude sign-in did not finish");
+    }
     match end {
         Ok(token) => {
             let fp = fingerprint(&token);
@@ -603,7 +732,13 @@ async fn watch(
             );
         }
         Err(CANCELLED) => st.claude.finish(seq, Phase::Idle, None),
-        Err(text) => st.claude.finish(seq, Phase::Failed, Some(text.into())),
+        Err(text) => {
+            let message = match said {
+                Some(said) => format!("{text} Claude said: \"{said}\""),
+                None => text.into(),
+            };
+            st.claude.finish(seq, Phase::Failed, Some(message));
+        }
     }
 }
 
@@ -678,9 +813,90 @@ mod tests {
         let (text, links) = plain(s);
         assert_eq!(text, "Welcome to\n\nhttps://claude.com/cai\n\n");
         assert_eq!(
-            find_link(&links).as_deref(),
+            find_link(&text, &links).as_deref(),
             Some("https://claude.com/cai/oauth/authorize?code=true")
         );
+        assert!(shows_sign_in(&text, &links));
+        assert!(!shows_sign_in("Welcome\n", &[]));
+    }
+
+    #[test]
+    fn a_link_drawn_as_plain_text_is_found_too() {
+        let text = "Browser didn't open? Use the url below\n https://claude.com/cai/oauth/authorize?code=true&state=s \nPaste code here";
+        assert_eq!(
+            find_link(text, &[]).as_deref(),
+            Some("https://claude.com/cai/oauth/authorize?code=true&state=s")
+        );
+        assert_eq!(find_link("see https://claude.com/docs\n", &[]), None);
+    }
+
+    #[test]
+    fn npm_scripts_are_read_for_what_they_start() {
+        // What npm writes today, and what older npm wrote.
+        let now = "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  SET \"_prog=node\"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js\" %*\r\n";
+        assert_eq!(
+            shim_target(now).as_deref(),
+            Some("node_modules\\@anthropic-ai\\claude-code\\cli.js")
+        );
+        let old = "@IF EXIST \"%~dp0\\node.exe\" (\r\n  \"%~dp0\\node.exe\"  \"%~dp0\\node_modules\\@anthropic-ai\\claude-code\\cli.js\" %*\r\n)";
+        assert_eq!(
+            shim_target(old).as_deref(),
+            Some("node_modules\\@anthropic-ai\\claude-code\\cli.js")
+        );
+        let exe = "\"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe\"   %*";
+        assert_eq!(
+            shim_target(exe).as_deref(),
+            Some("node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe")
+        );
+        assert_eq!(shim_target("@echo off\r\nclaude.exe %*"), None);
+    }
+
+    #[test]
+    fn an_npm_script_runs_claude_under_node_directly() {
+        let dir =
+            std::env::temp_dir().join(format!("decurion-shim-{}", uuid::Uuid::new_v4().simple()));
+        let pkg = dir
+            .join("node_modules")
+            .join("@anthropic-ai")
+            .join("claude-code");
+        std::fs::create_dir_all(&pkg).expect("dir");
+        std::fs::write(pkg.join("cli.js"), "").expect("cli");
+        std::fs::write(dir.join("node.exe"), "").expect("node");
+        let shim = dir.join("claude.cmd");
+        std::fs::write(
+            &shim,
+            "\"%dp0%\\node.exe\" \"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js\" %*",
+        )
+        .expect("shim");
+        let (exe, first) = command(&shim);
+        assert_eq!(exe, dir.join("node.exe"));
+        assert_eq!(first, vec![pkg.join("cli.js").into_os_string()]);
+        // Today's npm package starts Claude's own program.
+        std::fs::create_dir_all(pkg.join("bin")).expect("bin");
+        std::fs::write(pkg.join("bin").join("claude.exe"), "").expect("exe");
+        std::fs::write(
+            &shim,
+            "\"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe\"   %*",
+        )
+        .expect("shim");
+        assert_eq!(
+            command(&shim),
+            (pkg.join("bin").join("claude.exe"), Vec::new())
+        );
+        // Anything that is not a script runs as it is.
+        let plain = dir.join("claude");
+        assert_eq!(command(&plain), (plain.clone(), Vec::new()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_sign_in_shows_claude_s_last_line_but_never_a_key() {
+        assert_eq!(
+            last_words("Opening browser\n\nOAuth error: timed out \n\n").as_deref(),
+            Some("OAuth error: timed out")
+        );
+        assert_eq!(last_words("Your token:\nsk-ant-oat01-abc\nbye\n"), None);
+        assert_eq!(last_words("\n \n"), None);
     }
 
     #[test]
