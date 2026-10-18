@@ -377,3 +377,131 @@ details.fold[open] > summary svg.i { transform: rotate(90deg); }
 
 /* The sign-in window (D.openBrowserViewer). */
 .si-body { padding: 16px 20px calc(16px + env(safe-area-inset-bottom)); overflow-y: auto; display: grid; gap: 12px; }
+
+/* ---------- Settings (settings.js), on the board and the phone ---------- */
+.usage { display: grid; gap: 7px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--ink); text-decoration: none; font-size: 13px; transition: border-color .12s var(--ease); }
+.usage:hover { border-color: var(--field-line); }
+.usage .lbl { color: var(--muted); font-size: 12px; font-weight: 600; }
+.usage .num { font-variant-numeric: tabular-nums; }
+.usage .num b { font-size: 15px; }
+.usage .num span { color: var(--muted); }
+.usage .hint { font-size: 12px; }
+.meter { height: 6px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
+.meter > span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--steel); transition: width .4s var(--ease); }
+.meter.near > span { background: var(--amber-line); }
+.usage.near .num b { color: var(--amber); }
+/* One line per Claude Max plan under the pay-per-use total. */
+.usage .plan { display: flex; justify-content: space-between; gap: 8px; margin-top: 3px; font-size: 12px; }
+.usage .plan span:last-child { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.usage .plan.near span:last-child { color: var(--amber); font-weight: 600; }
+
+
+.settings { display: grid; gap: 18px; grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 1080px; align-items: start; }
+.settings .wide { grid-column: 1 / -1; }
+.scard { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l); padding: 20px; display: grid; gap: 16px; scroll-margin-top: 80px; }
+.scard > header { display: flex; gap: 12px; align-items: flex-start; }
+.scard > header .ic { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--surface-2); color: var(--muted); flex: none; }
+.scard > header h2 { font-size: 17px; }
+.scard > header p { color: var(--muted); font-size: 14px; margin-top: 2px; }
+.scard h3 { font-size: 14px; }
+.rows { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); }
+.rows li { display: flex; align-items: center; gap: 12px; padding: 12px 14px; flex-wrap: wrap; }
+.rows li + li { border-top: 1px solid var(--line); }
+.rows .ic { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; background: var(--surface-2); color: var(--muted); flex: none; }
+.rows .who { flex: 1; min-width: 160px; display: grid; gap: 2px; }
+.rows .who b { font-weight: 600; overflow-wrap: anywhere; }
+.rows .who .mono, .rows .who .hint { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.rows .empty { color: var(--muted); font-size: 14px; justify-content: center; padding: 18px; }
+/* Websites an app's agents may use, under each app's row. */
+.rows .sites { flex: 1 1 100%; display: grid; gap: 8px; margin-left: 44px; min-width: 0; }
+.sites-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.sites-h svg.i { width: 14px; height: 14px; color: var(--muted); }
+.sites-h .hint { font-size: 13px; }
+.rows .site-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.rows .site-chips > li { display: inline-flex; align-items: center; gap: 2px; flex-wrap: nowrap; min-height: 30px; padding: 0 1px 0 10px; border: 1px solid var(--line); border-radius: 99px; background: var(--surface-2); font: 13px/1.2 var(--mono); overflow-wrap: anywhere; }
+.rows .site-chips > li .btn { border-radius: 99px; color: var(--muted); }
+.rows .site-chips > li .btn:hover { color: var(--ink); background: var(--surface-3); }
+.site-add { display: flex; gap: 8px; max-width: 440px; }
+.site-add input { flex: 1; min-width: 0; font-size: 14px; }
+.sites .field-error:empty { display: none; }
+.sites-note { display: grid; gap: 6px; }
+.sites-note summary { color: var(--muted); font-size: 13px; width: fit-content; }
+.sites-note .builtin { list-style: none; margin: 6px 0 0 22px; padding: 0; display: flex; flex-wrap: wrap; gap: 2px 14px; font: 12.5px/1.6 var(--mono); color: var(--muted); }
+.acct { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); padding: 4px 10px; border-radius: 99px; background: var(--surface-2); white-space: nowrap; }
+.acct svg.i { width: 14px; height: 14px; }
+.acct .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.acct.on .dot { background: var(--green); }
+.form-grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); padding-top: 16px; border-top: 1px solid var(--line); }
+.form-grid .full { grid-column: 1 / -1; }
+.form-grid .actions { display: flex; gap: 10px; align-items: center; }
+.field .field-error:empty { display: none; }
+.money-in { position: relative; max-width: 180px; }
+.money-in span { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.money-in input { padding-left: 24px; font-variant-numeric: tabular-nums; }
+.cap-row { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
+.spend-big { display: grid; gap: 10px; padding: 16px; border-radius: var(--radius); background: var(--surface-2); }
+.spend-big .num { font: 650 26px/1 var(--font-display); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.spend-big .num span { font: 400 14px var(--font); color: var(--muted); letter-spacing: 0; margin-left: 6px; }
+.spend-big.near .num { color: var(--amber); }
+.spend-big .meter { height: 8px; background: var(--surface-3); }
+/* Accounts: Max plan allowances and pay-per-use caps. */
+.acct-meters { flex: 1 1 260px; min-width: 0; display: grid; gap: 10px; }
+.acct-meter { display: grid; gap: 5px; font-size: 13px; }
+.acct-meter .line { display: flex; justify-content: space-between; gap: 2px 12px; flex-wrap: wrap; }
+.acct-meter .line > span:first-child { color: var(--muted); }
+.acct-meter .line b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.acct-meter .meter { height: 8px; }
+.acct-out { display: flex; align-items: center; gap: 6px; color: var(--amber); font-size: 13px; font-weight: 600; }
+.row-cap { flex-basis: 100%; display: grid; gap: 6px; padding-left: 44px; }
+.row-cap .cap-row { align-items: center; }
+.row-cap .money-in { width: 140px; }
+.row-cap .field-error:empty { display: none; }
+.qr { display: grid; gap: 12px; justify-items: start; }
+.qr-box { background: #fff; padding: 14px; border-radius: var(--radius-l); box-shadow: 0 0 0 1px var(--line); line-height: 0; }
+.qr-box svg { width: 196px; height: 196px; display: block; }
+.qr a { font-size: 13px; overflow-wrap: anywhere; }
+.sub-h { font-size: 14px; margin: 0 0 8px; }
+.per-app > .sub-h { margin: 8px 0; }
+/* The folder picker and the Show button sit beside their field. */
+.path-row, .secret-row { display: flex; gap: 8px; align-items: center; }
+.path-row input, .secret-row input { flex: 1; min-width: 0; }
+.path-row .btn { flex: none; }
+.this-tag { display: inline-flex; align-items: center; margin-left: 8px; padding: 2px 8px; border-radius: 99px; background: var(--surface-2); color: var(--muted); font-size: 12px; font-weight: 600; vertical-align: 1px; }
+input[type="password"], input[type="url"] {
+  font: 15px/1.4 var(--font); color: var(--ink);
+  background: var(--surface); border: 1px solid var(--field-line); border-radius: var(--radius-s);
+  min-height: var(--control-h); padding: 7px 10px; width: 100%;
+  transition: border-color .12s var(--ease), box-shadow .12s var(--ease);
+}
+
+@media (max-width: 899px) {
+  .settings { grid-template-columns: 1fr; }
+  .rows .sites { margin-left: 0; }
+}
+@media (max-width: 640px) {
+  .form-grid { grid-template-columns: 1fr; }
+  .scard { padding: 16px; }
+  .row-cap { padding-left: 0; }
+  .row-cap .money-in { flex: 1 1 120px; width: auto; max-width: none; }
+}
+
+/* Settings on the phone: one column at any width, every tap target at
+   least 44px, nothing wider than the screen. */
+.settings.on-phone { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.settings.on-phone .form-grid { grid-template-columns: minmax(0, 1fr); }
+.settings.on-phone .scard { padding: 16px; gap: 14px; scroll-margin-top: 8px; }
+.settings.on-phone .scard > header .ic { display: none; }
+.settings.on-phone .rows li { padding: 12px; gap: 10px; }
+.settings.on-phone .rows .who { min-width: 0; flex: 1 1 150px; }
+.settings.on-phone .rows .sites, .settings.on-phone .row-cap { margin-left: 0; padding-left: 0; }
+.settings.on-phone .row-cap .money-in { flex: 1 1 120px; width: auto; max-width: none; }
+.settings.on-phone .btn, .settings.on-phone .btn.sm { min-height: 44px; }
+.settings.on-phone .btn.icon.sm { width: 44px; }
+.settings.on-phone .rows .site-chips > li { min-height: 44px; padding-left: 12px; }
+.settings.on-phone .site-add { max-width: none; }
+.settings.on-phone .acct { white-space: normal; }
+.settings.on-phone .form-grid .actions { flex-wrap: wrap; }
+.settings.on-phone .form-grid .actions .btn.primary { flex: 1 1 100%; }
+.settings.on-phone .qr-box svg { width: min(196px, 60vw); height: min(196px, 60vw); }
+.settings.on-phone .check { min-height: 44px; }
+.settings.on-phone .sites-note summary { min-height: 44px; }

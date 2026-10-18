@@ -193,6 +193,16 @@
     .iacts .sub .btn { flex: 0 0 auto; width: auto; min-width: 120px; }
   }
 
+  /* ---------- Settings tab: usage and Pro view above the shared settings ---------- */
+  .set-top { display: grid; gap: 12px; margin-bottom: 12px; }
+  .set-top .usage { padding: 14px 16px; border-radius: var(--radius-l); gap: 8px; font-size: 14px; }
+  .set-top .usage .lbl { font-size: 13px; }
+  .set-top .usage .num b { font-size: 18px; }
+  .set-top .usage .plan, .set-top .usage .hint { font-size: 13px; }
+  .pro-row { display: grid; gap: 2px; padding: 6px 16px 12px; border: 1px solid var(--line); border-radius: var(--radius-l); background: var(--surface); }
+  .pro-row .switch { min-height: 44px; font-size: 15px; font-weight: 600; justify-content: flex-start; }
+  .pro-row .switch .state { margin-left: auto; }
+
   /* ---------- Work panel: task tree and messages (same in board.html and inbox.html) ---------- */
   .work-body .part { display: contents; }
   .talk { display: grid; gap: 8px; }
@@ -325,8 +335,14 @@ async function refresh() {
   busy = true;
   try {
     // Hubs without the limits endpoint answer 404; that just means no limits.
-    const [apps, list, limits, signIns] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/limits").catch(() => []),
-      D.api("/sign-ins").catch(() => [])]);
+    // Money, accounts and computers only matter on the Settings tab.
+    const forSettings = S.tab === "settings";
+    const seq = D.settings.seq();
+    const [apps, list, limits, signIns, more] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/limits").catch(() => []),
+      D.api("/sign-ins").catch(() => []),
+      forSettings ? Promise.all([D.api("/spend"), D.api("/accounts").catch(() => null), D.api("/workers").catch(() => [])]) : null]);
+    if (more) D.settings.update({ apps, spend: more[0], accounts: more[1], workers: more[2], seq });
+    else D.settings.update({ apps, seq });
     S.limits = Array.isArray(limits) ? limits : [];
     // Website sign-ins that stopped working or are about to.
     S.signIns = (Array.isArray(signIns) ? signIns : []).filter((x) => x.status === "expired" || x.status === "expiring")
@@ -684,13 +700,27 @@ function renderBoard() {
 }
 
 // ---------- Settings tab ----------
-// Placeholder until settings.js draws the board's settings here.
+// The board's own settings (settings.js), with a usage summary and the Pro
+// view switch on top, since the phone has no sidebar or top bar for them.
 function renderSettings() {
   const box = $("settings");
-  if (box.dataset.mode) return;
-  box.dataset.mode = "placeholder";
-  box.replaceChildren(el("div", { className: "empty-state calm" }, el("div", { className: "halo" }, D.icon("settings")),
-    el("h3", {}, "Settings are on their way."), el("p", {}, "For now, change settings from the board on your PC.")));
+  if (!box.dataset.mode) {
+    box.dataset.mode = "settings";
+    const use = el("a", { className: "usage", id: "set-usage", href: "#settings/accounts", hidden: true, "aria-label": "Usage this month. Open accounts." });
+    const pro = D.switchEl("Pro view", () => D.pro, (v) => D.setPro(v), (paint) => D.onPro(paint));
+    const host = el("div");
+    box.replaceChildren(el("div", { className: "set-top" }, use,
+      el("div", { className: "pro-row" }, pro,
+        el("span", { className: "hint" }, "Shows every step an agent takes, and its branch and cost, when you open a piece of work."))), host);
+    D.settings.mount(host, { refresh: () => refresh(), onSignedOut: () => { S.signedOut = true; render(); }, place: "phone" });
+  }
+  D.settings.usage($("set-usage"));
+}
+// Opens the settings view, at a part such as #settings/accounts.
+function showSettings() {
+  renderSettings();
+  const target = D.settings.show(location.hash.split("/")[1]);
+  if (target) requestAnimationFrame(() => target.scrollIntoView({ block: "start" }));
 }
 
 function render() {
@@ -714,8 +744,14 @@ function setTab(tab) {
   render();
   window.scrollTo(0, scrollMem[tab] ?? 0);
   if (tab === "board" && S.threads) Promise.all(boardTails()).then(render);
+  if (tab === "settings") { if (!S.signedOut) showSettings(); refresh(); } else D.settings.hide();
 }
-window.addEventListener("hashchange", () => { const r = routeOf(location.hash); if (r) setTab(r); });
+window.addEventListener("hashchange", () => {
+  const r = routeOf(location.hash);
+  if (!r) return;
+  if (r === "settings" && S.tab === "settings") { if (!S.signedOut) showSettings(); return; }
+  setTab(r);
+});
 for (const t of TABS) {
   $("tab-" + t).addEventListener("click", (e) => {
     if (S.tab !== t) return;
@@ -781,8 +817,9 @@ async function setUpNotifications() {
 setUpNotifications().catch(() => { /* notifications are optional; the inbox still works */ });
 
 render();
+if (S.tab === "settings" && !S.signedOut) showSettings();
 refresh();
-setInterval(() => { if (!document.hidden) refresh(); }, 5000);
+setInterval(() => { if (!document.hidden) { refresh(); D.settings.tick(); } }, 5000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 </script>
 </body>

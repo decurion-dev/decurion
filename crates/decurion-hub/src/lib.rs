@@ -294,7 +294,12 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/settings.js",
-            get(|| async { asset("text/javascript; charset=utf-8", include_str!("settings.js")) }),
+            get(|| async {
+                asset(
+                    "text/javascript; charset=utf-8",
+                    include_str!("settings.js"),
+                )
+            }),
         )
         .route(
             "/icon.svg",
@@ -710,15 +715,33 @@ async fn new_pairing(
     .into_response()
 }
 
+/// A paired device as Settings lists it: `this_device` marks the phone or
+/// browser asking, so Settings can say "This phone" next to it.
+#[derive(serde::Serialize)]
+struct DeviceRow {
+    #[serde(flatten)]
+    device: devices::Device,
+    this_device: bool,
+}
+
 async fn list_devices(
     State(st): State<AppState>,
     axum::Extension(c): axum::Extension<Caller>,
+    axum::Extension(DeviceId(me)): axum::Extension<DeviceId>,
 ) -> Response {
     if c != Caller::Owner {
         return forbidden("listing devices");
     }
     match st.store.devices().await {
-        Ok(d) => Json(d).into_response(),
+        Ok(d) => Json(
+            d.into_iter()
+                .map(|device| DeviceRow {
+                    this_device: me == Some(device.id),
+                    device,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
         Err(e) => ApiError(e).into_response(),
     }
 }
