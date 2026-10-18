@@ -81,6 +81,22 @@ pub struct AppNote {
     pub created_at: String,
 }
 
+/// The goal a piece of work belongs to, for its work panel: why it went to
+/// GitHub without the owner's Accept, or why it waits for one.
+#[derive(Debug, Clone, Serialize)]
+pub struct PieceOf {
+    pub goal_id: i64,
+    pub goal_title: String,
+    pub review: ReviewState,
+    /// Accepted by the owner's approval of the plan: the checker passed it,
+    /// so the hub moved it to Done and sends it to GitHub (`finish_helper`).
+    /// False when the owner accepted it with their own tap.
+    pub by_plan: bool,
+    /// The checker passed it, but it changes protected parts of the app, so
+    /// the plan's approval does not cover it ([`crate::protected`]).
+    pub held: bool,
+}
+
 /// What the runner gets when it asks for helper work.
 #[derive(Debug)]
 pub struct HelperClaimOutcome {
@@ -2438,6 +2454,36 @@ impl Store {
         }
         tx.commit().await?;
         Ok(news)
+    }
+
+    /// The goal a thread is a piece of, or `None` for work added straight to
+    /// the board. A piece the checker passed and the hub moved to Done went
+    /// by the plan's approval; one moved to Done any other way was the
+    /// owner's own Accept (the same rule as the report turn's summary).
+    pub async fn piece_of(&self, thread_id: i64) -> Result<Option<PieceOf>> {
+        let t = self.thread(thread_id).await?;
+        let row = sqlx::query(
+            "SELECT p.goal_id, g.title, p.review, p.review_summary
+             FROM goal_pieces p JOIN goals g ON g.id = p.goal_id WHERE p.thread_id = ?",
+        )
+        .bind(thread_id)
+        .fetch_optional(self.pool())
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let review: String = row.try_get("review")?;
+        let summary: Option<String> = row.try_get("review_summary")?;
+        let held = crate::protected::is_held(Some(&review), summary.as_deref());
+        let review =
+            ReviewState::from_str(&review).map_err(|e| StoreError::Invalid(e.to_string()))?;
+        Ok(Some(PieceOf {
+            goal_id: row.try_get("goal_id")?,
+            goal_title: row.try_get("title")?,
+            review,
+            by_plan: !t.research && t.state == ThreadState::Done && review == ReviewState::Passed,
+            held,
+        }))
     }
 
     /// Called after any move of a thread. Starts a check when a piece's agent

@@ -72,7 +72,11 @@ To find something out without changing the app, or to ask why a piece was
 done a certain way, see [Research, Ask why, and the checker's proof](research-and-ask-why.md).
 
 A piece that passes goes to GitHub as a pull request by itself. You approved
-the plan, so you are not asked again.
+the plan, so you are not asked again. Open the piece on the board and its
+**Overview** says so: "Sent to GitHub by itself because you approved the plan",
+with a link back to the goal. While the checker is still looking, it says the
+piece goes by itself if it passes. A piece that changes a protected part says
+**Held for you** and waits for you to tap **Accept**.
 
 You can stop the goal at any time with **Stop goal**, under the **•••** button.
 
