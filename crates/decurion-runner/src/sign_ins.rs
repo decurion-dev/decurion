@@ -415,6 +415,7 @@ mod tests {
             sites: Vec::new(),
             reviewer: None,
             first_today: false,
+            rules: Default::default(),
         };
         let thread = Thread {
             id: 1,

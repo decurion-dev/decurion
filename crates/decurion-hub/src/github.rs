@@ -409,8 +409,8 @@ protected parts of the app (listed in the checker's notes above). You looked at 
         b.push_str(&format!("{r} reviews next.\n\n"));
     }
     b.push_str(
-        "Decurion made this pull request when you accepted the work. Decurion never merges: \
-look it over and merge it here when you are ready.",
+        "Decurion made this pull request when you accepted the work. Decurion never merges by \
+itself: look it over and merge it here when you are ready.",
     );
     b
 }

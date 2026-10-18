@@ -59,6 +59,8 @@
     sun: ["c12,12,4", "M12 2v2", "M12 20v2", "m4.9 4.9 1.4 1.4", "m17.7 17.7 1.4 1.4", "M2 12h2", "M20 12h2", "m6.3 17.7-1.4 1.4", "m19.1 4.9-1.4 1.4"],
     moon: ["M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"],
     shield: ["M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"],
+    lock: ["M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z", "M7 11V7a5 5 0 0 1 10 0v4"],
+    merge: ["c18,18,3", "c6,6,3", "M6 21V9a9 9 0 0 0 9 9"],
     globe: ["c12,12,10", "M2 12h20", "M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20z"],
     expand: ["M15 3h6v6", "M9 21H3v-6", "M21 3l-7 7", "M3 21l7-7"],
     plan: ["M11 6h10", "M11 12h10", "M11 18h10", "m3 6 1.5 1.5L7 5", "m3 12 1.5 1.5L7 11", "m3 18 1.5 1.5L7 17"],
@@ -1171,7 +1173,12 @@
       row("Try again?", [b("Retry"), " starts it again, and it picks up where it left off."]);
       row("Want it done differently?", "Tell the agent what to change. The work goes back to it with your message.", talk("Tell the agent"));
     } else if (s === "done") {
-      if (t.github?.state === "sent" && t.github.pull_request) row("Merge it on GitHub", "Open the pull request above, look it over, and merge it there. Decurion never merges.");
+      // An app whose rules allow merging from Decurion gets a Merge button
+      // on the pull request's card (board's Today, phone's inbox) instead.
+      if (t.github?.state === "sent" && t.github.pull_request) {
+        if (apps[t.app_id]?.rules?.merge) row("Merge it", ["Tap ", b("Merge"), " on its pull request on the board's Today strip or in your phone's inbox. Decurion merges once GitHub says the checks passed. You can also merge it on GitHub."]);
+        else row("Merge it on GitHub", "Open the pull request above, look it over, and merge it there. This app's rules leave merging to you or your reviewer.");
+      }
       if (fix) row("Want what it found fixed?", "Start new work from this summary.", fix);
     }
     if (!rows.length) return null;

@@ -27,6 +27,7 @@ pub mod dismiss;
 pub mod folders;
 pub mod github;
 pub mod limits;
+pub mod merge;
 pub mod messages;
 pub mod pages;
 pub mod plan;
@@ -311,6 +312,7 @@ pub fn router(state: AppState) -> Router {
         .route("/apps/{id}/pay-per-use", post(set_pay_per_use))
         .route("/apps/{id}/sites", post(set_sites))
         .route("/apps/{id}/edit", post(edit_app))
+        .route("/apps/{id}/rules", post(set_rules))
         .route("/apps/{id}/first", post(set_first_today))
         .route("/sites/built-in", get(built_in_sites))
         .route("/apps/{id}/cap", post(set_app_cap))
@@ -326,6 +328,7 @@ pub fn router(state: AppState) -> Router {
         .route("/threads/{id}/place", post(set_place))
         .route("/threads/{id}/github", post(github::retry))
         .route("/threads/{id}/pr/fix", post(pr_watch::fix))
+        .route("/threads/{id}/pr/merge", post(merge::tap))
         .route("/prs", get(pr_watch::list))
         .route("/github", get(github::settings))
         .route("/github/token", post(github::save_token))
@@ -2115,6 +2118,38 @@ async fn edit_app(
     }
     match st.store.edit_app(id, &b).await {
         Ok((app, _)) => Json(app).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// The owner changes an app's rules: whether Decurion may merge or deploy
+/// it (each still one tap), its deploy steps, whether checked work goes to
+/// GitHub by itself, and whether it holds patient data. Owner only, and not
+/// in `cloud_reach`.
+async fn set_rules(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+    Json(b): Json<store::RulesEdit>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("changing an app's rules");
+    }
+    match st.store.set_rules(id, &b).await {
+        Ok((app, fresh)) => {
+            if fresh {
+                let r = &app.rules;
+                tracing::info!(
+                    app = id,
+                    merge = r.merge,
+                    deploy = r.deploy,
+                    send_checked = r.send_checked,
+                    patient_data = r.patient_data,
+                    "the owner changed an app's rules"
+                );
+            }
+            Json(app).into_response()
+        }
         Err(e) => ApiError(e).into_response(),
     }
 }

@@ -522,15 +522,16 @@ details.fold[open] > summary svg.i { transform: rotate(90deg); }
 .rows .who b { font-weight: 600; overflow-wrap: anywhere; }
 .rows .who .mono, .rows .who .hint { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
 .rows .empty { color: var(--muted); font-size: 14px; justify-content: center; padding: 18px; }
-/* Websites an app's agents may use, under each app's row. */
-.rows .sites { flex: 1 1 100%; display: grid; gap: 8px; margin-left: 44px; min-width: 0; }
+/* Websites an app's agents may use, on the app's page. */
+.sites { display: grid; gap: 8px; min-width: 0; }
+.rows .sites { flex: 1 1 100%; margin-left: 44px; }
 .sites-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
 .sites-h svg.i { width: 14px; height: 14px; color: var(--muted); }
 .sites-h .hint { font-size: 13px; }
-.rows .site-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
-.rows .site-chips > li { display: inline-flex; align-items: center; gap: 2px; flex-wrap: nowrap; min-height: 30px; padding: 0 1px 0 10px; border: 1px solid var(--line); border-radius: 99px; background: var(--surface-2); font: 13px/1.2 var(--mono); overflow-wrap: anywhere; }
-.rows .site-chips > li .btn { border-radius: 99px; color: var(--muted); }
-.rows .site-chips > li .btn:hover { color: var(--ink); background: var(--surface-3); }
+.site-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.site-chips > li { display: inline-flex; align-items: center; gap: 2px; flex-wrap: nowrap; min-height: 30px; padding: 0 1px 0 10px; border: 1px solid var(--line); border-radius: 99px; background: var(--surface-2); font: 13px/1.2 var(--mono); overflow-wrap: anywhere; }
+.site-chips > li .btn { border-radius: 99px; color: var(--muted); }
+.site-chips > li .btn:hover { color: var(--ink); background: var(--surface-3); }
 .site-add { display: flex; gap: 8px; max-width: 440px; }
 .site-add input { flex: 1; min-width: 0; font-size: 14px; }
 .sites .field-error:empty { display: none; }
@@ -569,6 +570,68 @@ details.fold[open] > summary svg.i { transform: rotate(90deg); }
 /* Changing an app, under its row, and its go-first-today star. */
 .row-edit { flex-basis: 100%; min-width: 0; margin-left: 44px; }
 .row-edit .actions { flex-wrap: wrap; }
+/* Apps: a short list, one row per app, each a link to the app's page. */
+.rows.app-list { overflow: hidden; }
+.rows li.go-row { padding: 0; }
+.go-row > a { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 12px 14px; color: var(--ink); text-decoration: none; transition: background-color .12s var(--ease); }
+.go-row > a:hover { background: var(--surface-2); }
+.go-row > a:focus-visible { outline-offset: -2px; border-radius: 0; }
+.go-row .who { min-width: 0; gap: 6px; }
+.go-row > a > svg.i:last-child { flex: none; color: var(--faint); }
+.rule-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.rule-chips .pill { font-weight: 600; }
+/* Full control is a quiet blue; PR only and Patient data stay steel. */
+.pill.rule-full { color: var(--accent-ink); background: var(--accent-soft); }
+.set-apps, .app-page { display: grid; gap: 18px; min-width: 0; grid-template-columns: minmax(0, 1fr); }
+.set-apps > [hidden], .app-page[hidden], .app-tab[hidden] { display: none; }
+/* The app's page: its name, then a row of tabs that scrolls inside itself
+   when it does not fit, then the open tab. */
+.app-page .ptabs { margin-bottom: -6px; }
+.app-tab { min-width: 0; }
+.tab-card .tab-about { color: var(--muted); font-size: 14px; }
+.always-on { display: grid; gap: 4px; padding-top: 14px; border-top: 1px solid var(--line); }
+.always-on h3 { font-size: 14.5px; }
+.always-on .locks { margin-top: 6px; }
+.app-head { display: grid; gap: 6px; min-width: 0; }
+.app-head .set-back { margin: -10px 0 -4px; }
+.app-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
+.app-title h2 { font: 650 24px/1.2 var(--font-display); letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.app-title h2:focus { outline: none; }
+.app-path { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.app-gone { justify-items: start; }
+.app-gone h2 { font-size: 17px; }
+.app-gone h2:focus { outline: none; }
+.app-page .form-grid { border-top: 0; padding-top: 0; }
+.app-page .row-cap { padding-left: 0; }
+.app-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.app-page .row-cap .btn.sm, .app-acts .btn.sm { min-height: var(--control-h); }
+.plan-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); align-items: start; }
+.plan-grid select { width: auto; min-width: 160px; flex: 1 1 160px; max-width: 240px; }
+.plan-grid .field-error:empty { display: none; }
+/* Rules: PR only or Full control in one tap, then one switch per rule. */
+.rules-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.rules-seg { display: inline-flex; padding: 3px; gap: 3px; border-radius: 10px; background: var(--surface-2); }
+.rules-opt { min-height: 38px; padding: 0 16px; border: 0; border-radius: 8px; background: none; color: var(--muted); font: 600 14px/1 var(--font); cursor: pointer; white-space: nowrap; transition: background-color .12s var(--ease), color .12s var(--ease); }
+.rules-opt:hover { color: var(--ink); }
+.rules-opt[aria-pressed="true"] { background: var(--surface); color: var(--accent-ink); box-shadow: 0 0 0 1px var(--line), 0 1px 3px rgba(15, 18, 24, 0.12); }
+.rules-opt[disabled] { cursor: not-allowed; opacity: .6; }
+.rules-mix { font-size: 14px; font-weight: 600; color: var(--ink); }
+.rule-row { display: flex; align-items: center; gap: 4px 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.rule-txt { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.rule-txt b { font-size: 14.5px; font-weight: 600; }
+.switch.rule-sw { flex: none; min-width: 44px; min-height: 44px; justify-content: center; padding: 0; }
+.rule-sw .track { width: 42px; height: 24px; }
+.rule-sw .track::after { width: 18px; height: 18px; }
+.rule-sw[aria-checked="true"] .track::after { transform: translateX(18px); }
+.switch[disabled] { cursor: not-allowed; opacity: .55; }
+.deploy-steps { display: grid; gap: 12px; padding: 4px 0 4px 14px; border-left: 2px solid var(--line); }
+.deploy-steps textarea.steps { font: 13px/1.6 var(--mono); min-height: 96px; white-space: pre; overflow-x: auto; }
+.deploy-steps .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.rule-field { padding-top: 12px; border-top: 1px solid var(--line); }
+.rule-field .cap-row input { flex: 1 1 200px; min-width: 0; max-width: 360px; }
+.locks { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 14px; }
+.locks li { display: flex; gap: 10px; align-items: flex-start; }
+.locks svg.i { flex: none; width: 16px; height: 16px; margin-top: 2px; color: var(--muted); }
 .btn.star[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
 .btn.star[aria-pressed="true"] svg.i { fill: currentColor; }
 .qr { display: grid; gap: 12px; justify-items: start; }
@@ -630,7 +693,7 @@ input[type="password"], input[type="url"] {
 .settings.on-phone .row-cap .money-in { flex: 1 1 120px; width: auto; max-width: none; }
 .settings.on-phone .btn, .settings.on-phone .btn.sm { min-height: 44px; }
 .settings.on-phone .btn.icon.sm { width: 44px; }
-.settings.on-phone .rows .site-chips > li { min-height: 44px; padding-left: 12px; }
+.settings.on-phone .site-chips > li { min-height: 44px; padding-left: 12px; }
 .settings.on-phone .site-add { max-width: none; }
 .settings.on-phone .acct { white-space: normal; }
 .settings.on-phone .form-grid .actions { flex-wrap: wrap; }
@@ -638,6 +701,12 @@ input[type="password"], input[type="url"] {
 .settings.on-phone .qr-box svg { width: min(196px, 60vw); height: min(196px, 60vw); }
 .settings.on-phone .check { min-height: 44px; }
 .settings.on-phone .sites-note summary { min-height: 44px; }
+.settings.on-phone .rules-seg { display: flex; width: 100%; }
+.settings.on-phone .rules-opt { flex: 1 1 0; min-height: 44px; padding: 0 10px; }
+.settings.on-phone .app-title h2 { font-size: 21px; }
+.settings.on-phone .deploy-steps { padding-left: 10px; }
+.settings.on-phone .plan-grid select { max-width: none; }
+.settings.on-phone .rule-field .cap-row input { max-width: none; }
 
 /* ---------- The folder picker (D.pickFolder in ui.js) ---------- */
 dialog.fp {

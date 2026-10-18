@@ -26,10 +26,10 @@ use decurion_runner::{
     backoff, browser_container_name, check_home_volume, clear_report, container_name,
     context_prompt, design_home_volume, goal_home_volume, helper_container_name, helper_run_args,
     helper_tool_container_name, hide, hide_cut, home_volume, is_interrupted_turn, is_turn_start,
-    parse_line_hiding, parse_result, part_done, pi_run_args, prompt_for, read_page, read_report,
-    redact, research_outcome, retriable, run_args, sibling, valid_branch, Acks, Action,
-    Conversation, Credential, FirstResult, LeakScanner, PiRun, Sandbox, Start, Step, BUDGET_STOP,
-    DOCKER_CLI_ENV, LIMIT_STOP,
+    parse_line_hiding, parse_result, part_done, patient_data_prompt, pi_run_args, prompt_for,
+    read_page, read_report, redact, research_outcome, retriable, run_args, sibling, valid_branch,
+    Acks, Action, Conversation, Credential, FirstResult, LeakScanner, PiRun, Sandbox, Start, Step,
+    BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
 };
 use decurion_runner::{gate_args, parse_gate_line, BoxNet, GateLine, GATE_IMAGE, RELAY_URL};
 use decurion_vault::{check_name, Vault};
@@ -1882,6 +1882,10 @@ make sure Docker Desktop is running and delete that container there",
         prompt.push_str("\n\n");
         prompt.push_str(&more);
     }
+    if let Some(more) = patient_data_prompt(&c.app) {
+        prompt.push_str("\n\n");
+        prompt.push_str(more);
+    }
     if !pi {
         if let Some(more) = sign_ins::sign_ins_prompt(&c.sign_ins, &states) {
             prompt.push_str("\n\n");
@@ -2723,6 +2727,10 @@ async fn helper_container(
     if let Some(more) = context_prompt(&job.context) {
         prompt.push_str("\n\n");
         prompt.push_str(&more);
+    }
+    if let Some(more) = patient_data_prompt(&job.app) {
+        prompt.push_str("\n\n");
+        prompt.push_str(more);
     }
     // Written from its own task, so stdout and stderr are read meanwhile: a
     // big prompt and a chatty container could otherwise each wait on the

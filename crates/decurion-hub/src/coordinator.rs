@@ -153,6 +153,19 @@ async fn note(
     post(tx, goal_id, &GoalMessageBody::Note { text: text.into() }).await
 }
 
+/// Whether a goal's piece that passes its check goes to GitHub by itself:
+/// its app's "Checked work goes to GitHub by itself" rule (on unless the
+/// owner turned it off).
+async fn sends_checked(tx: &mut Transaction<'_, Sqlite>, thread_id: i64) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT a.send_checked FROM threads t JOIN apps a ON a.id = t.app_id WHERE t.id = ?",
+    )
+    .bind(thread_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .unwrap_or(true))
+}
+
 async fn set_state(tx: &mut Transaction<'_, Sqlite>, goal_id: i64, state: GoalState) -> Result<()> {
     sqlx::query(
         "UPDATE goals SET state = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
@@ -2293,6 +2306,23 @@ impl Store {
                                         .execute(&mut *tx)
                                         .await?;
                                     note(&mut tx, goal_id, line).await?;
+                                }
+                                _ if !sends_checked(&mut tx, t).await? => {
+                                    // The owner's rules for this app say passed
+                                    // pieces wait for their Accept: it stays in
+                                    // review, as Accept expects.
+                                    sqlx::query(
+                                        "UPDATE goal_pieces SET review = 'passed' WHERE thread_id = ?",
+                                    )
+                                    .bind(t)
+                                    .execute(&mut *tx)
+                                    .await?;
+                                    note(
+                                        &mut tx,
+                                        goal_id,
+                                        format!("{piece_title} passed the check. It waits for your Accept before it goes to GitHub."),
+                                    )
+                                    .await?;
                                 }
                                 _ => {
                                     sqlx::query(
