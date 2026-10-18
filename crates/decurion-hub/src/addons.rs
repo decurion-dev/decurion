@@ -1453,6 +1453,8 @@ fn tools_of(m: &Manifest) -> Vec<String> {
 /// and stay within one run's limit. `update` is set when `m` is a new
 /// version of an add-on already on for them, so the refusal says the
 /// update was not applied.
+// Responses are what axum handlers return; boxing them buys nothing here.
+#[allow(clippy::result_large_err)]
 async fn fits_apps(
     st: &AppState,
     m: &Manifest,
