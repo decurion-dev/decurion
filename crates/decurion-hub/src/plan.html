@@ -36,17 +36,17 @@
   .app-pick label { font-size: 12px; font-weight: 600; color: var(--muted); }
   .app-pick select { min-width: 220px; font-weight: 600; }
 
-  .tabs { display: flex; gap: 4px; margin: 22px 0 22px; border-bottom: 1px solid var(--line); }
-  .tab {
+  .ptabs { display: flex; gap: 4px; margin: 22px 0 22px; border-bottom: 1px solid var(--line); }
+  .ptab {
     display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px; margin-bottom: -1px;
     border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer;
     color: var(--muted); font: 600 15px/1 var(--font);
   }
-  .tab:hover { color: var(--ink); }
-  .tab[aria-selected="true"] { color: var(--accent-ink); border-bottom-color: var(--accent); }
-  .tab .ct { font: 600 12px/20px var(--font); min-width: 22px; padding: 0 7px; border-radius: 99px; background: var(--surface-2); color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
-  .tab .ct:empty { display: none; }
-  .tab .ct.wait { background: var(--amber-soft); color: var(--amber); box-shadow: inset 0 0 0 1px var(--amber-line); }
+  .ptab:hover { color: var(--ink); }
+  .ptab[aria-selected="true"] { color: var(--accent-ink); border-bottom-color: var(--accent); }
+  .ptab .ct { font: 600 12px/20px var(--font); min-width: 22px; padding: 0 7px; border-radius: 99px; background: var(--surface-2); color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
+  .ptab .ct:empty { display: none; }
+  .ptab .ct.wait { background: var(--amber-soft); color: var(--amber); box-shadow: inset 0 0 0 1px var(--amber-line); }
 
   /* ---------- Summary ---------- */
   .summary {
@@ -61,7 +61,7 @@
   .bar > span { display: block; height: 100%; border-radius: inherit; background: var(--green); transition: width .5s var(--ease); }
 
   /* ---------- Rows ---------- */
-  .rows { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 12px; }
+  .plan-rows { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 12px; }
   .row {
     background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l);
     padding: 16px 12px 16px 18px; box-shadow: 0 1px 2px rgba(15, 18, 24, 0.04); position: relative;
@@ -239,18 +239,31 @@
   .badge { display: inline-flex; align-items: center; gap: 6px; justify-self: start; margin-top: 4px; padding: 3px 10px 3px 4px; border-radius: 99px; font: 600 12.5px/1.4 var(--font); color: var(--amber); background: var(--amber-soft); box-shadow: inset 0 0 0 1px var(--amber-line); }
   .badge::before { content: "!"; display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: var(--amber); color: var(--amber-soft); font: 800 11px/1 var(--font); }
 
+  /* The phone's bottom tabs (D.phoneTabs), shown on a phone only. */
+  .tabbar { display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; padding-bottom: env(safe-area-inset-bottom); background: var(--surface); border-top: 1px solid var(--line); }
+  .tabbar .tabs { display: flex; max-width: 520px; margin: 0 auto; }
+  .tabbar .tab { flex: 1; height: 64px; display: grid; justify-items: center; align-content: center; gap: 4px; color: var(--muted); text-decoration: none; font: 600 12px/1 var(--font); position: relative; }
+  .tabbar .ind { position: relative; width: 56px; height: 30px; border-radius: 99px; display: grid; place-items: center; }
+  .tabbar svg.i { width: 22px; height: 22px; stroke-width: 1.9; }
+  .tabbar .tab[aria-current="page"] { color: var(--accent-ink); }
+  .tabbar .tab[aria-current="page"] .ind { background: var(--accent-soft); }
+  .tabbar .tab:focus-visible { outline-offset: -4px; border-radius: var(--radius); }
+  .tabbar .badge { display: none; }
+
   @media (max-width: 640px) {
+    .tabbar { display: block; }
+    .top nav { display: none; }
     .top { padding-left: 16px; padding-right: 16px; gap: 10px; }
     .brand .nm { display: none; }
     .top nav { margin-left: auto; }
     .top nav a { padding: 0 9px; font-size: 14px; min-height: 40px; }
     .top nav a svg.i { display: none; }
-    .wrap { padding: 20px 16px calc(48px + env(safe-area-inset-bottom)); }
+    .wrap { padding: 20px 16px calc(64px + 40px + env(safe-area-inset-bottom)); }
     .head h1 { font-size: 26px; }
     .app-pick { width: 100%; }
     .app-pick select { width: 100%; min-width: 0; }
-    .tabs { margin: 16px 0 16px; }
-    .tab { flex: 1; justify-content: center; }
+    .ptabs { margin: 16px 0 16px; }
+    .ptab { flex: 1; justify-content: center; }
     .summary { grid-template-columns: 1fr; padding: 16px; }
     .tools { justify-content: flex-start; }
     .row { padding: 14px 8px 14px 14px; }
@@ -294,14 +307,14 @@
     </div>
   </div>
 
-  <div class="tabs" role="tablist" aria-label="Show">
-    <button class="tab" type="button" role="tab" id="tab-plan" aria-controls="panel-plan" aria-selected="true">Plan</button>
-    <button class="tab" type="button" role="tab" id="tab-pages" aria-controls="panel-pages" aria-selected="false" tabindex="-1">Pages<span class="ct" id="pages-ct"></span></button>
+  <div class="ptabs" role="tablist" aria-label="Show">
+    <button class="ptab" type="button" role="tab" id="pt-plan" aria-controls="panel-plan" aria-selected="true">Plan</button>
+    <button class="ptab" type="button" role="tab" id="pt-pages" aria-controls="panel-pages" aria-selected="false" tabindex="-1">Pages<span class="ct" id="pages-ct"></span></button>
   </div>
 
-  <section id="panel-plan" role="tabpanel" aria-labelledby="tab-plan">
+  <section id="panel-plan" role="tabpanel" aria-labelledby="pt-plan">
     <div id="plan-top"></div>
-    <ol class="rows" id="rows" aria-label="The plan, in order"></ol>
+    <ol class="plan-rows" id="rows" aria-label="The plan, in order"></ol>
     <div id="plan-empty"></div>
     <form class="add-box" id="add-box" novalidate hidden>
       <label for="add-text">Add to the plan</label>
@@ -314,7 +327,7 @@
     </form>
   </section>
 
-  <section id="panel-pages" role="tabpanel" aria-labelledby="tab-pages" hidden>
+  <section id="panel-pages" role="tabpanel" aria-labelledby="pt-pages" hidden>
     <div class="pg-tools" id="pg-tools" hidden>
       <p class="hint">Pages agents drew for this app: plans before the work, and pictures of it as built.</p>
       <button class="fchip" type="button" id="only-waiting" aria-pressed="false"><span class="dot" aria-hidden="true"></span><span id="only-waiting-t">Waiting for you</span></button>
@@ -322,6 +335,8 @@
     <div id="pages-body"></div>
   </section>
 </main>
+
+<nav class="tabbar" id="tabbar" aria-label="Sections"></nav>
 
 <script src="/ui.js"></script>
 <script>
@@ -402,6 +417,8 @@
   $("brand").prepend(D.mark(28));
   $("nav-board").prepend(icon("board"));
   $("nav-goals").prepend(icon("send"));
+  $("nav-plan").prepend(icon("plan"));
+  $("tabbar").replaceWith(D.phoneTabs("plan"));
 
   // ---------- Routing: #app=3&tab=pages ----------
   function readHash() {
@@ -418,18 +435,18 @@
   }
   function setTab(tab, focus = false) {
     S.tab = tab;
-    for (const [t, b] of [["plan", $("tab-plan")], ["pages", $("tab-pages")]]) {
+    for (const [t, b] of [["plan", $("pt-plan")], ["pages", $("pt-pages")]]) {
       b.setAttribute("aria-selected", String(t === tab));
       b.tabIndex = t === tab ? 0 : -1;
       $(`panel-${t}`).hidden = t !== tab;
     }
-    if (focus) $(`tab-${tab}`).focus();
+    if (focus) $(`pt-${tab}`).focus();
     writeHash();
     if (tab === "pages") renderPages();
   }
-  $("tab-plan").onclick = () => setTab("plan");
-  $("tab-pages").onclick = () => setTab("pages");
-  document.querySelector(".tabs").addEventListener("keydown", (e) => {
+  $("pt-plan").onclick = () => setTab("plan");
+  $("pt-pages").onclick = () => setTab("pages");
+  document.querySelector(".ptabs").addEventListener("keydown", (e) => {
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
     e.preventDefault();
     setTab(S.tab === "plan" ? "pages" : "plan", true);
@@ -847,7 +864,7 @@
     ct.textContent = lib?.length ? String(waiting || lib.length) : "";
     ct.className = waiting ? "ct wait" : "ct";
     ct.title = waiting ? `${D.plural(waiting, "page")} with questions for you` : "";
-    $("tab-pages").setAttribute("aria-label", waiting ? `Pages, ${waiting} waiting for you` : "Pages");
+    $("pt-pages").setAttribute("aria-label", waiting ? `Pages, ${waiting} waiting for you` : "Pages");
     if (S.tab !== "pages") return;
     const body = $("pages-body");
     if (!lib) {

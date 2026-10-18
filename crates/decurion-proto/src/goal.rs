@@ -525,6 +525,10 @@ pub struct HelperClaim {
     /// micro-dollars; cost reports are running totals that include it.
     #[serde(default)]
     pub prior_micros: i64,
+    /// Files the owner attached for the app and this goal; see
+    /// [`crate::Claim::context`].
+    #[serde(default)]
+    pub context: Vec<crate::context::ContextRef>,
 }
 
 /// How a helper job ended, posted by the runner.

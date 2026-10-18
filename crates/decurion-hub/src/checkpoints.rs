@@ -97,6 +97,12 @@ impl Files {
         std::fs::create_dir_all(self.thread_dir(thread))
     }
 
+    /// Where files the owner attached for agents are kept (see
+    /// [`crate::context`]).
+    pub(crate) fn context_dir(&self) -> PathBuf {
+        self.dir.join("context")
+    }
+
     /// The hub's own bare copy of an app's repo.
     pub(crate) fn app_cache(&self, app_id: i64) -> PathBuf {
         self.dir.join("repos").join(format!("app-{app_id}.git"))

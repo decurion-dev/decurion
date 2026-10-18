@@ -747,6 +747,39 @@ async fn only_the_owner_pairs_or_manages_devices() {
 }
 
 #[tokio::test]
+async fn a_phone_sees_which_paired_device_is_itself() {
+    let (r, _) = hub().await;
+    let mut cookies = Vec::new();
+    for _ in 0..2 {
+        let (_, p) = call(&r, "POST", "/api/pairing", Some(OWNER), Value::Null).await;
+        let path = p["url"]
+            .as_str()
+            .expect("url")
+            .trim_start_matches("https://hub.test")
+            .to_owned();
+        cookies.push(cookie_pair(&post_pair(&r, &path).await));
+    }
+    let resp = get(&r, "/api/devices", Some(&cookies[1])).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+    let list: Value = serde_json::from_slice(&bytes).expect("json");
+    let marks: Vec<bool> = list
+        .as_array()
+        .expect("list")
+        .iter()
+        .map(|d| d["this_device"].as_bool().expect("flag"))
+        .collect();
+    assert_eq!(marks, [false, true]);
+    // The owner key is no device, so nothing is marked.
+    let (_, list) = call(&r, "GET", "/api/devices", Some(OWNER), Value::Null).await;
+    assert!(list
+        .as_array()
+        .expect("list")
+        .iter()
+        .all(|d| d["this_device"] == false && d["name"] == "Android phone"));
+}
+
+#[tokio::test]
 async fn cookies_are_secure_behind_https() {
     let (r, _) = hub().await;
     let resp = r
@@ -1507,6 +1540,8 @@ async fn pages_load_their_shared_look_without_signing_in() {
     for (path, kind) in [
         ("/ui.css", "text/css"),
         ("/ui.js", "text/javascript"),
+        ("/compose.js", "text/javascript"),
+        ("/settings.js", "text/javascript"),
         ("/icon.svg", "image/svg+xml"),
         ("/icon-192.png", "image/png"),
         ("/icon-512.png", "image/png"),

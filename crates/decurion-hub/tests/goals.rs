@@ -285,6 +285,49 @@ async fn a_goal_becomes_reviewed_work() {
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN, "pages are the owner's");
+    let back = format!("href=\"/goals#goal-{goal}\"");
+    let (_, plain) = call(
+        &r,
+        "GET",
+        &format!("/api/goals/{goal}/pages/{}", page["id"]),
+        OWNER,
+        json!({}),
+    )
+    .await;
+    assert!(!plain.as_str().expect("html").contains(&back));
+    // The phone opens the page in place of the goal: same sandbox, plus a
+    // plain link back to the goal.
+    let resp = raw(
+        &r,
+        "GET",
+        &format!("/api/goals/{goal}/pages/{}?back=1", page["id"]),
+        OWNER,
+        json!({}),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let header_csp = |resp: &axum::response::Response| {
+        resp.headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string()
+    };
+    assert_eq!(
+        header_csp(&resp),
+        csp,
+        "the phone's copy is sandboxed the same"
+    );
+    let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+    let html = String::from_utf8_lossy(&bytes);
+    assert!(
+        html.starts_with("<h1>Plan</h1>") && html.contains(&back),
+        "{html}"
+    );
+    assert!(
+        !html.contains("<script") && !html.contains("src="),
+        "{html}"
+    );
 
     // Only the latest plan can be approved, and only by the owner.
     let (s, _) = call(

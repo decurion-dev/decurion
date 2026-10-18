@@ -39,49 +39,49 @@
 
   .side { min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--surface); }
   .sheet-head { display: none; }
-  .side-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px 20px calc(28px + env(safe-area-inset-bottom)); display: grid; gap: 22px; align-content: start; }
+  .side-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px 20px calc(28px + env(safe-area-inset-bottom)); display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; align-content: start; }
   .side-body > section + section { border-top: 1px solid var(--line); padding-top: 20px; }
   .side-body h2 { font: 650 15px/1.3 var(--font-display); margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
   .nothing { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: var(--radius); background: var(--surface-2); color: var(--muted); font-size: 14px; }
   .nothing svg.i { color: var(--faint); }
 
   /* The agent asks: the same pieces the board will use. */
-  .asks h2 .n { font: 600 12px/20px var(--font); padding: 0 8px; border-radius: 99px; color: var(--amber); background: var(--amber-soft); box-shadow: inset 0 0 0 1px var(--amber-line); }
-  .asks-say { font-size: 14px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; margin: -2px 0 12px; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
-  .ask { border: 0; margin: 0; padding: 0; min-width: 0; }
-  .ask + .ask { margin-top: 18px; }
-  .ask legend, .ask .q { float: left; width: 100%; padding: 0; margin-bottom: 10px; font-weight: 700; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
-  .ask-choices { clear: both; display: grid; gap: 8px; }
-  .ask-choices.short { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
-  .ask-choice {
+  .page-asks h2 .n { font: 600 12px/20px var(--font); padding: 0 8px; border-radius: 99px; color: var(--amber); background: var(--amber-soft); box-shadow: inset 0 0 0 1px var(--amber-line); }
+  .page-asks-say { font-size: 14px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; margin: -2px 0 12px; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+  .page-ask { border: 0; margin: 0; padding: 0; min-width: 0; }
+  .page-ask + .page-ask { margin-top: 18px; }
+  .page-ask legend, .page-ask .q { float: left; width: 100%; padding: 0; margin-bottom: 10px; font-weight: 700; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
+  .page-ask-choices { clear: both; display: grid; gap: 8px; }
+  .page-ask-choices.short { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
+  .btn.page-ask-choice {
     display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 9px 12px;
     text-align: left; font: 500 14.5px/1.35 var(--font); color: var(--ink); overflow-wrap: anywhere;
     background: var(--surface); border: 1px solid var(--field-line); border-radius: 10px; cursor: pointer;
     transition: border-color .12s var(--ease), background-color .12s var(--ease);
   }
-  .ask-choice:hover { border-color: var(--accent); }
-  .ask-choice .tk { flex: none; width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--field-line); display: grid; place-items: center; }
-  .ask-choice .tk svg.i { width: 11px; height: 11px; stroke-width: 3.2; color: transparent; }
-  .ask-choice .nm { flex: 1; min-width: 0; }
-  .ask-choice[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
-  .ask-choice[aria-pressed="true"] .tk { background: var(--accent); border-color: var(--accent); }
-  .ask-choice[aria-pressed="true"] .tk svg.i { color: var(--on-accent); }
-  .ask-choice[disabled] { cursor: not-allowed; opacity: .6; }
+  .btn.page-ask-choice:hover { border-color: var(--accent); }
+  .btn.page-ask-choice .tk { flex: none; width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--field-line); display: grid; place-items: center; }
+  .btn.page-ask-choice .tk svg.i { width: 11px; height: 11px; stroke-width: 3.2; color: transparent; }
+  .btn.page-ask-choice .nm { flex: 1; min-width: 0; }
+  .btn.page-ask-choice[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+  .btn.page-ask-choice[aria-pressed="true"] .tk { background: var(--accent); border-color: var(--accent); }
+  .btn.page-ask-choice[aria-pressed="true"] .tk svg.i { color: var(--on-accent); }
+  .btn.page-ask-choice[disabled] { cursor: not-allowed; opacity: .6; }
   .suggested { flex: none; font: 700 11px/1.6 var(--font); color: var(--accent-ink); border: 1px solid currentColor; border-radius: 99px; padding: 0 7px; }
   .own { margin-top: 6px; }
   .own .btn.quiet { padding: 0 6px; margin-left: -6px; font-weight: 600; color: var(--muted); }
   .own .btn.quiet:hover { color: var(--ink); background: var(--surface-2); }
-  .ask-words { display: grid; gap: 6px; margin-top: 8px; }
-  .ask-words label { font-size: 13px; color: var(--muted); }
-  .ask-words textarea { min-height: 70px; }
-  .asks-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
-  .asks-foot .status { margin-right: auto; font-size: 13px; color: var(--muted); }
-  .asks-foot .btn.primary { min-height: 40px; padding: 0 18px; }
-  .ask-given { display: flex; align-items: flex-start; gap: 8px; clear: both; font-size: 14.5px; overflow-wrap: anywhere; }
-  .ask-given svg.i { margin-top: 3px; color: var(--green); }
-  .ask-given .own-words { color: var(--muted); }
-  .asks-sent { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding: 8px 12px; border-radius: var(--radius-s); background: var(--green-soft); color: var(--green); font-weight: 600; font-size: 14px; }
-  .asks-sent svg.i { stroke-width: 2.6; }
+  .page-ask-words { clear: both; display: grid; gap: 6px; margin-top: 8px; }
+  .page-ask-words label { font-size: 13px; color: var(--muted); }
+  .page-ask-words textarea { min-height: 70px; }
+  .page-asks-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  .page-asks-foot .status { margin-right: auto; font-size: 13px; color: var(--muted); }
+  .page-asks-foot .btn.primary { min-height: 40px; padding: 0 18px; }
+  .page-ask-given { display: flex; align-items: flex-start; gap: 8px; clear: both; font-size: 14.5px; overflow-wrap: anywhere; }
+  .page-ask-given svg.i { margin-top: 3px; color: var(--green); }
+  .page-ask-given .own-words { color: var(--muted); }
+  .page-asks-sent { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding: 8px 12px; border-radius: var(--radius-s); background: var(--green-soft); color: var(--green); font-weight: 600; font-size: 14px; }
+  .page-asks-sent svg.i { stroke-width: 2.6; }
 
   /* Ready to start? */
   .ready { padding: 16px; border-radius: var(--radius-l); background: var(--amber-soft); box-shadow: inset 0 0 0 1px var(--amber-line); }
@@ -105,7 +105,7 @@
   .summary-text { margin-top: 10px; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .issues { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; color: var(--muted); }
   .issues li + li { margin-top: 4px; }
-  .check .links { margin-top: 12px; }
+  .check-result .links { margin-top: 12px; }
   .say textarea { min-height: 76px; }
   .say .row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
   .say .row .hint { flex: 1; }
@@ -181,6 +181,7 @@
   const POLL_MS = 5000;
   const m = /^\/pages\/(\d+)\/(\d+)\/?$/.exec(location.pathname);
   const G = m ? Number(m[1]) : NaN, P = m ? Number(m[2]) : NaN;
+  const fromGoal = new URLSearchParams(location.search).get("from") === "goal";
   const CLOSED = new Set(["done", "stopped"]);
   const KIND = { plan: "Visual plan", check: "As built" };
   const REVIEW = {
@@ -247,17 +248,18 @@
   //   draft      a Map kept by the caller, so a refresh keeps what was picked or typed
   //   blocked    words saying why it can't be sent yet, or ""
   //   onSend     (answers) => Promise
-  // Class names (asks, ask, ask-choices, ask-choice, ask-words) are shared with
-  // the board's own "The agent asks" look.
+  // Page questions are answered with choices, a suggestion and words, which
+  // D.askBox (thread messages) does not do; its choice buttons are reused so
+  // both look alike. Class names start with page- so they never clash with it.
   const complete = (q, d) => d && (d.choice != null || ((d.open || !q.choices.length) && d.other.trim() !== ""));
   function asksBlock(o) {
     const qs = o.questions;
-    const box = el("section", { className: `asks${o.answers ? " answered" : ""}`, "aria-labelledby": `${o.id}-h` },
+    const box = el("section", { className: `page-asks${o.answers ? " answered" : ""}`, "aria-labelledby": `${o.id}-h` },
       el("h2", { id: `${o.id}-h` }, o.title, !o.answers ? el("span", { className: "n" }, D.plural(qs.length, "question")) : null));
-    if (o.say) box.append(el("p", { className: "asks-say" }, o.say));
+    if (o.say) box.append(el("p", { className: "page-asks-say" }, o.say));
     if (o.answers) {
       for (const q of qs) box.append(askGiven(q, o.answers.find((a) => a.question_id === q.id)));
-      box.append(el("p", { className: "asks-sent" }, icon("done"), o.sentWords ?? "Sent to your project lead"));
+      box.append(el("p", { className: "page-asks-sent" }, icon("done"), o.sentWords ?? "Sent to your project lead"));
       return box;
     }
     const draft = o.draft;
@@ -278,7 +280,7 @@
         return a;
       }));
     };
-    box.append(el("div", { className: "asks-foot" }, status, send), el("p", { className: "field-error", role: "alert" }, o.err || ""));
+    box.append(el("div", { className: "page-asks-foot" }, status, send), el("p", { className: "field-error", role: "alert" }, o.err || ""));
     sync();
     return box;
   }
@@ -287,18 +289,18 @@
     if (!draft.has(q.id)) draft.set(q.id, { choice: null, other: "", open: false });
     const d = draft.get(q.id);
     const qid = `${o.id}-q${qi}`;
-    const set = el("fieldset", { className: "ask", "aria-labelledby": `${qid}-t` }, el("legend", { id: `${qid}-t` }, q.text));
+    const set = el("fieldset", { className: "page-ask", "aria-labelledby": `${qid}-t` }, el("legend", { id: `${qid}-t` }, q.text));
     const wordsId = `${qid}-w`;
     const area = el("textarea", { id: wordsId, rows: 2, maxLength: 1000, disabled: o.sending, dataset: { key: wordsId },
       placeholder: q.choices.length ? "Say it your way" : "Type your answer" });
     area.value = d.other;
     area.oninput = () => { d.other = area.value; sync(); };
-    const words = el("div", { className: "ask-words", hidden: q.choices.length > 0 && !d.open },
+    const words = el("div", { className: "page-ask-words", hidden: q.choices.length > 0 && !d.open },
       el("label", { for: wordsId }, q.choices.length ? "In your own words" : "Your answer"), area);
     if (q.choices.length) {
       const short = q.choices.every((c) => c.length <= 14);
       const btns = q.choices.map((c, ci) => {
-        const b = el("button", { type: "button", className: "ask-choice", "aria-pressed": String(d.choice === ci), disabled: o.sending, dataset: { key: `${qid}-c${ci}` } },
+        const b = el("button", { type: "button", className: "btn choice page-ask-choice", "aria-pressed": String(d.choice === ci), disabled: o.sending, dataset: { key: `${qid}-c${ci}` } },
           el("span", { className: "tk", "aria-hidden": "true" }, icon("done")),
           el("span", { className: "nm" }, c),
           q.recommended === ci ? el("span", { className: "suggested" }, "Suggested") : null);
@@ -320,7 +322,7 @@
         sync();
         if (d.open) area.focus();
       };
-      set.append(el("div", { className: `ask-choices${short ? " short" : ""}` }, ...btns), el("div", { className: "own" }, toggle));
+      set.append(el("div", { className: `page-ask-choices${short ? " short" : ""}` }, ...btns), el("div", { className: "own" }, toggle));
     }
     set.append(words);
     return set;
@@ -328,9 +330,9 @@
 
   function askGiven(q, a) {
     const picked = a?.choice != null ? q.choices[a.choice] ?? `Choice ${a.choice + 1}` : null;
-    return el("div", { className: "ask" },
+    return el("div", { className: "page-ask" },
       el("p", { className: "q" }, q.text),
-      el("p", { className: "ask-given" }, icon("done"),
+      el("p", { className: "page-ask-given" }, icon("done"),
         el("span", {}, picked ?? "", picked && a?.other ? " · " : "", a?.other ? el("span", { className: picked ? "own-words" : "" }, a.other) : null,
           !picked && !a?.other ? "No answer" : null)));
   }
@@ -391,7 +393,10 @@
     let plan = null;
     if (kind === "plan" && info?.message_id != null) {
       if (!latestPlan || info.message_id !== latestPlan.id) plan = "replaced";
-      else if (g.state === "talking" || g.state === "plan_ready") plan = g.busy ? "waiting" : "approvable";
+      else if (g.busy && (g.state === "talking" || g.state === "plan_ready")) plan = "waiting";
+      // Questions asked after the plan come first: the plan may change with the answers.
+      else if (leadQ && leadQ.id > latestPlan.id) plan = "asking";
+      else if (g.state === "talking" || g.state === "plan_ready") plan = "approvable";
       else if (g.state === "stopped") plan = "stopped";
       else plan = "approved";
     }
@@ -470,7 +475,8 @@
       goalTitle ? el("a", { href: `/goals#goal-${G}` }, goalTitle) : null,
       kind ? el("span", { className: `kind${goalTitle ? " dot-sep" : ""}` }, page?.piece_title ? `${kind}: ${page.piece_title}` : kind) : null);
     const app = c?.g.app_id ?? page?.app_id;
-    const back = app != null ? `/plan#app=${app}&tab=pages` : "/plan";
+    // Opened from a goal (?from=goal), Back with no history returns to it; otherwise to the plan's pages.
+    const back = fromGoal ? `/goals#goal-${G}` : app != null ? `/plan#app=${app}&tab=pages` : "/plan";
     $("back").href = back;
     $("mark").href = app != null ? `/plan#app=${app}` : "/plan";
   }
@@ -515,6 +521,7 @@
       el("h2", { id: "plan-h" }, "The plan"),
       el("div", { className: "state-line" }, el("span", { className: `mk2 ${cls}` }, icon(ic)), el("span", {}, words)),
       more ?? null);
+    if (c.plan === "asking") return line("you", "question", "Your project lead has a few questions first. Your answers may change this plan.");
     if (c.plan === "waiting") return line("work", "running", "Your project lead is still thinking. You can approve once it has finished.");
     if (c.plan === "replaced") return line("calm", "retry", "A newer plan replaced this one.",
       el("p", { className: "hint", style: "margin-top:8px" }, el("a", { href: `/goals#goal-${G}` }, "See the latest plan on the goal")));
@@ -524,7 +531,7 @@
 
   function checkBlock(c) {
     const p = c.piece;
-    const sec = el("section", { className: "check", "aria-labelledby": "check-h" }, el("h2", { id: "check-h" }, "How the check went"));
+    const sec = el("section", { className: "check-result", "aria-labelledby": "check-h" }, el("h2", { id: "check-h" }, "How the check went"));
     if (!p) { sec.append(el("p", { className: "hint" }, "The check for this piece isn't listed on the goal any more.")); return sec; }
     const [words, cls, ic] = REVIEW[p.review] ?? [p.review, "work", "running"];
     sec.append(el("div", { className: "state-line" }, el("span", { className: `mk2 ${cls}` }, icon(ic)),

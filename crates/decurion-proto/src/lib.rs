@@ -1,6 +1,7 @@
 //! Types shared by the hub, the runner and the web board.
 
 pub mod browser;
+pub mod context;
 pub mod goal;
 pub mod plan;
 pub mod sites;
@@ -13,7 +14,7 @@ use std::str::FromStr;
 /// built and how work is handed between computers. The hub refuses a runner
 /// built with a different number, so a PC and a cloud worker can never run
 /// the same work under different rules. Bump it whenever either changes.
-pub const RULES_VERSION: u32 = 5;
+pub const RULES_VERSION: u32 = 6;
 
 /// Where a piece of work is. A thread is in exactly one state at a time, and
 /// only the moves in [`ThreadState::can_move_to`] are allowed.
@@ -563,6 +564,11 @@ pub struct Claim {
     /// them from the vault on this PC; the hub never holds them.
     #[serde(default)]
     pub sign_ins: Vec<SignInRef>,
+    /// Files the owner attached for this work: the app's, and its goal's.
+    /// The runner fetches them from the hub and copies them into the box at
+    /// [`context::BOX_DIR`] before the agent starts.
+    #[serde(default)]
+    pub context: Vec<context::ContextRef>,
 }
 
 /// A saved website sign-in named in a claim: which one to open from the

@@ -1,5 +1,6 @@
 use anyhow::{bail, Context};
 use decurion_proto::browser::{FromBrowser, SiteState};
+use decurion_proto::context::ContextRef;
 use decurion_proto::goal::{HelperClaim, HelperResult, HelperSource};
 use decurion_proto::{
     sites, App, Claim, HelloReply, JoinReply, JoinRequest, Live, MoveRequest, NewCheckpoint, Place,
@@ -7,8 +8,9 @@ use decurion_proto::{
 };
 use decurion_runner::gatekeeper::{Gatekeeper, Grant, ANTHROPIC_API};
 use decurion_runner::handover::{
-    bundle_spec, host_git_args, host_git_env, is_sha, move_note, reuse_workspace, save_edits_args,
-    session_export_args, session_import_args, tool_container_name, CODE_CAP, SESSION_CAP,
+    bundle_spec, context_import_args, host_git_args, host_git_env, is_sha, move_note,
+    reuse_workspace, save_edits_args, session_export_args, session_import_args,
+    tool_container_name, CODE_CAP, CONTEXT_CAP, SESSION_CAP,
 };
 use decurion_runner::identity::{
     hub_url, place_from_env, write_atomic, CloudRunner, PC_HUB, PC_NAME,
@@ -17,12 +19,12 @@ use decurion_runner::sign_ins::{self, HubAccess};
 mod browser_box;
 
 use decurion_runner::{
-    backoff, browser_container_name, check_home_volume, container_name, design_home_volume,
-    goal_home_volume, helper_container_name, helper_run_args, hide, hide_cut, home_volume,
-    is_interrupted_turn, is_turn_start, parse_line_hiding, parse_result, part_done, pi_run_args,
-    prompt_for, read_page, redact, retriable, run_args, sibling, valid_branch, Acks, Action,
-    Conversation, Credential, FirstResult, LeakScanner, PiRun, Sandbox, Start, Step, BUDGET_STOP,
-    DOCKER_CLI_ENV, LIMIT_STOP,
+    backoff, browser_container_name, check_home_volume, container_name, context_prompt,
+    design_home_volume, goal_home_volume, helper_container_name, helper_run_args,
+    helper_tool_container_name, hide, hide_cut, home_volume, is_interrupted_turn, is_turn_start,
+    parse_line_hiding, parse_result, part_done, pi_run_args, prompt_for, read_page, redact,
+    retriable, run_args, sibling, valid_branch, Acks, Action, Conversation, Credential,
+    FirstResult, LeakScanner, PiRun, Sandbox, Start, Step, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
 };
 use decurion_runner::{gate_args, parse_gate_line, BoxNet, GateLine, GATE_IMAGE, RELAY_URL};
 use decurion_vault::{check_name, Vault};
@@ -683,8 +685,13 @@ async fn count_since(bare: &Path, base: &str, branch: &str) -> anyhow::Result<u6
     Ok(n.parse()?)
 }
 
-/// Runs a throwaway container to the end, within [`TOOL_TIMEOUT`].
-async fn run_tool(id: i64, args: &[String], stdin: Stdio) -> anyhow::Result<std::process::Output> {
+/// Runs a throwaway container to the end, within [`TOOL_TIMEOUT`]. `name` is
+/// the container's name in `args`, removed if it takes too long.
+async fn run_tool(
+    name: &str,
+    args: &[String],
+    stdin: Stdio,
+) -> anyhow::Result<std::process::Output> {
     let child = docker()
         .args(args)
         .stdin(stdin)
@@ -696,10 +703,7 @@ async fn run_tool(id: i64, args: &[String], stdin: Stdio) -> anyhow::Result<std:
     match tokio::time::timeout(TOOL_TIMEOUT, child.wait_with_output()).await {
         Ok(out) => Ok(out?),
         Err(_) => {
-            let _ = docker()
-                .args(["rm", "-f", &tool_container_name(id)])
-                .output()
-                .await;
+            let _ = docker().args(["rm", "-f", name]).output().await;
             bail!("throwaway container took too long")
         }
     }
@@ -709,14 +713,15 @@ async fn run_tool(id: i64, args: &[String], stdin: Stdio) -> anyhow::Result<std:
 /// container, so they travel with the work.
 async fn save_edits(id: i64, wt: &Path) -> anyhow::Result<()> {
     let [add, commit] = save_edits_args(id, wt)?;
-    let out = run_tool(id, &add, Stdio::null()).await?;
+    let tool = tool_container_name(id);
+    let out = run_tool(&tool, &add, Stdio::null()).await?;
     if !out.status.success() {
         bail!(
             "git add in the agent's copy failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    let out = run_tool(id, &commit, Stdio::null()).await?;
+    let out = run_tool(&tool, &commit, Stdio::null()).await?;
     if !out.status.success() {
         // Usually: nothing was left to commit.
         tracing::info!(
@@ -732,7 +737,12 @@ async fn save_edits(id: i64, wt: &Path) -> anyhow::Result<()> {
 /// throwaway container.
 async fn import_session(id: i64, tar: &Path) -> anyhow::Result<()> {
     let f = std::fs::File::open(tar)?;
-    let out = run_tool(id, &session_import_args(id), Stdio::from(f)).await?;
+    let out = run_tool(
+        &tool_container_name(id),
+        &session_import_args(id),
+        Stdio::from(f),
+    )
+    .await?;
     if !out.status.success() {
         bail!(
             "could not restore the agent's session: {}",
@@ -792,6 +802,64 @@ async fn export_session(id: i64, dest: &Path) -> anyhow::Result<()> {
 
 /// An empty tar archive: two zero blocks, padded to a full record.
 const EMPTY_TAR: [u8; 10240] = [0; 10240];
+
+/// Puts the owner's attached files in a fresh `/home/agent/context` in
+/// `home_volume`, before the agent's box starts: downloaded from the hub's
+/// `download` path into `xfer` (the job's own empty transfer folder) and
+/// unpacked in a sealed throwaway box named `tool`, which also adds PDF text
+/// versions. With no files nothing is downloaded, but the folder is still
+/// replaced (from an empty archive), so a file the owner removed is gone
+/// from the box too. The download is deleted afterwards.
+///
+/// The error is for the owner: the run does not start without the files the
+/// owner gave it, so a failure here is shown rather than skipped.
+async fn put_context(
+    hub: &Hub,
+    files: &[ContextRef],
+    download: &str,
+    xfer: &Path,
+    tool: &str,
+    home_volume: &str,
+) -> anyhow::Result<()> {
+    let tar = xfer.join("context.tar");
+    let r = async {
+        if files.is_empty() {
+            std::fs::write(&tar, EMPTY_TAR)?;
+        } else {
+            // Not `with_retry`: helper jobs run this too, on a task its
+            // async closures cannot be sent to.
+            download_retrying(hub, download, &tar, CONTEXT_CAP).await?;
+        }
+        // A box left by a runner that died.
+        let _ = docker_out(&["rm", "-f", tool]).await;
+        let f = std::fs::File::open(&tar)?;
+        let out = run_tool(
+            tool,
+            &context_import_args(tool, home_volume),
+            Stdio::from(f),
+        )
+        .await?;
+        if !out.status.success() {
+            bail!(
+                "unpacking box exited with {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        anyhow::Ok(())
+    }
+    .await;
+    let _ = remove_all(&tar);
+    if let Err(err) = r {
+        tracing::warn!(err = %format!("{err:#}"), %home_volume, "could not put the attached files in place");
+        bail!(
+            "Could not give the agent the files attached to this app, so the work did not start. \
+Try again in a moment."
+        );
+    }
+    tracing::info!(files = files.len(), %home_volume, "attached files in place");
+    Ok(())
+}
 
 /// Saves the work to the hub so any computer can continue it: the branch as a
 /// git bundle and the agent's sessions as a tar archive. Records the
@@ -1683,6 +1751,19 @@ make sure Docker Desktop is running and delete that container there",
     let _ = docker_out(&["rm", "-f", &tool_container_name(id)]).await;
 
     let (wt, rebuilt) = workspace(hub, data, &c, &branch).await?;
+    // The home volume is ready (sessions restored); the owner's files go in
+    // fresh on every start.
+    let xfer = transfer_dir(data, id)?;
+    put_context(
+        hub,
+        &c.context,
+        &format!("/runner/threads/{id}/context"),
+        &xfer,
+        &tool_container_name(id),
+        &home_volume(id),
+    )
+    .await?;
+    let _ = remove_all(&xfer);
     let start = Start::pick(c.resume, rebuilt, c.checkpoint.is_some());
     let cred = Credential::for_account(c.account);
     let pi = cred.pi_model().is_some();
@@ -1738,8 +1819,13 @@ make sure Docker Desktop is running and delete that container there",
         &c.messages,
         c.interrupted.as_ref(),
     );
+    if let Some(more) = context_prompt(&c.context) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&more);
+    }
     if !pi {
         if let Some(more) = sign_ins::sign_ins_prompt(&c.sign_ins, &states) {
+            prompt.push_str("\n\n");
             prompt.push_str(&more);
         }
     }
@@ -2247,6 +2333,7 @@ async fn sync_review_copy(
             hub,
             &format!("/runner/threads/{thread_id}/base"),
             &base_bundle,
+            CODE_CAP,
         )
         .await?;
         let base = headers
@@ -2260,6 +2347,7 @@ async fn sync_review_copy(
             hub,
             &format!("/runner/threads/{thread_id}/checkpoint/{checkpoint}/code"),
             &code,
+            CODE_CAP,
         )
         .await?;
         if !bare.exists() {
@@ -2296,14 +2384,20 @@ async fn sync_review_copy(
     r
 }
 
-/// A code download for a check, tried again over a short hiccup. A plain
-/// loop rather than [`with_retry`]: the helper loop runs on its own task,
-/// which the async closures there cannot be sent to.
-async fn download_retrying(hub: &Hub, path: &str, dest: &Path) -> anyhow::Result<HeaderMap> {
+/// A download for a helper job (a check's code, a job's attached files),
+/// tried again over a short hiccup. A plain loop rather than [`with_retry`]:
+/// the helper loop runs on its own task, which the async closures there
+/// cannot be sent to.
+async fn download_retrying(
+    hub: &Hub,
+    path: &str,
+    dest: &Path,
+    cap: u64,
+) -> anyhow::Result<HeaderMap> {
     let start = Instant::now();
     let mut attempt = 0;
     loop {
-        let err = match hub.download(path, dest, CODE_CAP).await {
+        let err = match hub.download(path, dest, cap).await {
             Ok(h) => return Ok(h),
             Err(e) => e,
         };
@@ -2400,6 +2494,7 @@ async fn run_helper(
     let hb = HelperBox::for_job(data, job);
     // A job handed out again after a runner restart starts from scratch.
     let _ = docker_out(&["rm", "-f", &name]).await;
+    let _ = docker_out(&["rm", "-f", &helper_tool_container_name(job.job_id)]).await;
     hb.clean().await;
     let net = BoxNet::helper(job.job_id);
     let relay = gate.relay(if job.budget_usd.is_some() {
@@ -2469,6 +2564,22 @@ async fn helper_container(
     if let Some(out) = &hb.out {
         std::fs::create_dir_all(out)?;
     }
+    // Into the helper's own home, before it starts. The coordinator has no
+    // shell, but it can still read these with its Read tool.
+    let xfer = data.join("transfer").join(format!("helper-{}", job.job_id));
+    remove_all(&xfer)?;
+    std::fs::create_dir_all(&xfer)?;
+    let put = put_context(
+        hub,
+        &job.context,
+        &format!("/runner/helper/{}/context", job.job_id),
+        &xfer,
+        &helper_tool_container_name(job.job_id),
+        &hb.home_volume,
+    )
+    .await;
+    let _ = remove_all(&xfer);
+    put?;
     let cred = if job.budget_usd.is_some() {
         Credential::PayPerUse
     } else {
@@ -2509,7 +2620,11 @@ async fn helper_container(
         .spawn()
         .context("could not start docker")?;
     let mut stdin = child.stdin.take().context("no stdin")?;
-    let prompt = job.prompt.clone();
+    let mut prompt = job.prompt.clone();
+    if let Some(more) = context_prompt(&job.context) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&more);
+    }
     // Written from its own task, so stdout and stderr are read meanwhile: a
     // big prompt and a chatty container could otherwise each wait on the
     // other's full pipe.

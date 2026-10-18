@@ -33,21 +33,7 @@
   .ghost { display: inline-grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 6px; background: none; color: var(--faint); cursor: pointer; }
   .ghost:hover { background: var(--surface-2); color: var(--ink); }
 
-  .usage { margin-top: auto; display: grid; gap: 7px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--ink); text-decoration: none; font-size: 13px; transition: border-color .12s var(--ease); }
-  .usage:hover { border-color: var(--field-line); }
-  .usage .lbl { color: var(--muted); font-size: 12px; font-weight: 600; }
-  .usage .num { font-variant-numeric: tabular-nums; }
-  .usage .num b { font-size: 15px; }
-  .usage .num span { color: var(--muted); }
-  .usage .hint { font-size: 12px; }
-  .meter { height: 6px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
-  .meter > span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--steel); transition: width .4s var(--ease); }
-  .meter.near > span { background: var(--amber-line); }
-  .usage.near .num b { color: var(--amber); }
-  /* One line per Claude Max plan under the pay-per-use total. */
-  .usage .plan { display: flex; justify-content: space-between; gap: 8px; margin-top: 3px; font-size: 12px; }
-  .usage .plan span:last-child { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .usage .plan.near span:last-child { color: var(--amber); font-weight: 600; }
+  .side .usage { margin-top: auto; }
 
   main.main { min-width: 0; display: flex; flex-direction: column; }
   .topbar {
@@ -71,35 +57,7 @@
   .needs-btn svg.i { width: 15px; height: 15px; }
   .content { padding: 4px 28px 40px; display: grid; gap: 22px; align-content: start; }
 
-  /* ---------- Composer ---------- */
-  .composer {
-    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l);
-    box-shadow: 0 1px 2px rgba(15, 18, 24, 0.04), 0 6px 24px -12px rgba(15, 18, 24, 0.18);
-    transition: border-color .15s var(--ease), box-shadow .15s var(--ease);
-  }
-  .composer:focus-within { border-color: var(--field-line); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent), 0 6px 24px -12px rgba(15, 18, 24, 0.25); }
-  .composer label.lead { display: block; padding: 16px 18px 0; font: 600 15px/1.3 var(--font-display); color: var(--ink); }
-  .composer textarea#prompt {
-    display: block; border: 0; background: transparent; box-shadow: none; resize: none;
-    min-height: 76px; max-height: 300px; padding: 8px 18px 6px; font-size: 16px; line-height: 1.5;
-  }
-  .composer textarea#prompt:focus { box-shadow: none; }
-  .composer textarea#prompt::placeholder { color: var(--faint); }
-  .composer .bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px 10px 12px; flex-wrap: wrap; }
-  .composer .bar select { width: auto; min-width: 150px; max-width: 220px; min-height: 34px; font-size: 14px; background-color: var(--surface-2); border-color: transparent; font-weight: 500; }
-  .composer .bar input#title { flex: 1 1 200px; max-width: 360px; min-height: 34px; font-size: 14px; border-color: transparent; background: transparent; }
-  .composer .bar input#title:hover { background: var(--surface-2); }
-  .composer .bar input#title:focus { background: var(--surface); border-color: var(--focus); }
-  .composer .bar .grow { flex: 1; }
-  .composer .bar select#parent { max-width: 260px; }
-  .composer .bar select#ai { min-width: 120px; }
-  .composer .bar input#title { flex-basis: 150px; }
-  .composer .bar .check { font-size: 13px; color: var(--muted); }
-  .kbd-hint { font-size: 12px; color: var(--faint); white-space: nowrap; }
-  kbd { font: 600 11px/1 var(--font); padding: 3px 5px; border-radius: 5px; border: 1px solid var(--line); background: var(--surface-2); color: var(--muted); }
-  .composer .field-error { padding: 0 18px 12px; }
-  .composer .empty-state { padding: 34px 16px; }
-  .composer .empty-state p { max-width: 420px; }
+  /* The new-work form's look is shared with the phone: see ui.css (D.composer). */
 
   /* ---------- Board ---------- */
   .board-wrap { margin: 0 -28px; padding: 0 28px 8px; overflow-x: auto; scrollbar-width: thin; }
@@ -174,72 +132,6 @@
   .board-empty { border: 1px dashed var(--line); border-radius: var(--radius-l); }
   .board:has(.board-empty)::after { display: none; }
 
-  /* ---------- Settings ---------- */
-  .settings { display: grid; gap: 18px; grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 1080px; align-items: start; }
-  .settings .wide { grid-column: 1 / -1; }
-  .scard { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l); padding: 20px; display: grid; gap: 16px; scroll-margin-top: 80px; }
-  .scard > header { display: flex; gap: 12px; align-items: flex-start; }
-  .scard > header .ic { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--surface-2); color: var(--muted); flex: none; }
-  .scard > header h2 { font-size: 17px; }
-  .scard > header p { color: var(--muted); font-size: 14px; margin-top: 2px; }
-  .scard h3 { font-size: 14px; }
-  .rows { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); }
-  .rows li { display: flex; align-items: center; gap: 12px; padding: 12px 14px; flex-wrap: wrap; }
-  .rows li + li { border-top: 1px solid var(--line); }
-  .rows .ic { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; background: var(--surface-2); color: var(--muted); flex: none; }
-  .rows .who { flex: 1; min-width: 160px; display: grid; gap: 2px; }
-  .rows .who b { font-weight: 600; overflow-wrap: anywhere; }
-  .rows .who .mono, .rows .who .hint { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
-  .rows .empty { color: var(--muted); font-size: 14px; justify-content: center; padding: 18px; }
-  /* Websites an app's agents may use, under each app's row. */
-  .rows .sites { flex: 1 1 100%; display: grid; gap: 8px; margin-left: 44px; min-width: 0; }
-  .sites-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
-  .sites-h svg.i { width: 14px; height: 14px; color: var(--muted); }
-  .sites-h .hint { font-size: 13px; }
-  .rows .chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
-  .rows .chips > li { display: inline-flex; align-items: center; gap: 2px; flex-wrap: nowrap; min-height: 30px; padding: 0 1px 0 10px; border: 1px solid var(--line); border-radius: 99px; background: var(--surface-2); font: 13px/1.2 var(--mono); overflow-wrap: anywhere; }
-  .rows .chips > li .btn { border-radius: 99px; color: var(--muted); }
-  .rows .chips > li .btn:hover { color: var(--ink); background: var(--surface-3); }
-  .site-add { display: flex; gap: 8px; max-width: 440px; }
-  .site-add input { flex: 1; min-width: 0; font-size: 14px; }
-  .sites .field-error:empty { display: none; }
-  .sites-note { display: grid; gap: 6px; }
-  .sites-note summary { color: var(--muted); font-size: 13px; width: fit-content; }
-  .sites-note .builtin { list-style: none; margin: 6px 0 0 22px; padding: 0; display: flex; flex-wrap: wrap; gap: 2px 14px; font: 12.5px/1.6 var(--mono); color: var(--muted); }
-  .acct { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); padding: 4px 10px; border-radius: 99px; background: var(--surface-2); white-space: nowrap; }
-  .acct svg.i { width: 14px; height: 14px; }
-  .acct .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
-  .acct.on .dot { background: var(--green); }
-  .form-grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); padding-top: 16px; border-top: 1px solid var(--line); }
-  .form-grid .full { grid-column: 1 / -1; }
-  .form-grid .actions { display: flex; gap: 10px; align-items: center; }
-  .field .field-error:empty { display: none; }
-  .money-in { position: relative; max-width: 180px; }
-  .money-in span { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
-  .money-in input { padding-left: 24px; font-variant-numeric: tabular-nums; }
-  .cap-row { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
-  .spend-big { display: grid; gap: 10px; padding: 16px; border-radius: var(--radius); background: var(--surface-2); }
-  .spend-big .num { font: 650 26px/1 var(--font-display); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
-  .spend-big .num span { font: 400 14px var(--font); color: var(--muted); letter-spacing: 0; margin-left: 6px; }
-  .spend-big.near .num { color: var(--amber); }
-  .spend-big .meter { height: 8px; background: var(--surface-3); }
-  /* Accounts: Max plan allowances and pay-per-use caps. */
-  .acct-meters { flex: 1 1 260px; min-width: 0; display: grid; gap: 10px; }
-  .acct-meter { display: grid; gap: 5px; font-size: 13px; }
-  .acct-meter .line { display: flex; justify-content: space-between; gap: 2px 12px; flex-wrap: wrap; }
-  .acct-meter .line > span:first-child { color: var(--muted); }
-  .acct-meter .line b { font-weight: 600; font-variant-numeric: tabular-nums; }
-  .acct-meter .meter { height: 8px; }
-  .acct-out { display: flex; align-items: center; gap: 6px; color: var(--amber); font-size: 13px; font-weight: 600; }
-  .row-cap { flex-basis: 100%; display: grid; gap: 6px; padding-left: 44px; }
-  .row-cap .cap-row { align-items: center; }
-  .row-cap .money-in { width: 140px; }
-  .row-cap .field-error:empty { display: none; }
-  .qr { display: grid; gap: 12px; justify-items: start; }
-  .qr-box { background: #fff; padding: 14px; border-radius: var(--radius-l); box-shadow: 0 0 0 1px var(--line); line-height: 0; }
-  .qr-box svg { width: 196px; height: 196px; display: block; }
-  .qr a { font-size: 13px; overflow-wrap: anywhere; }
-
   dialog:focus-visible { outline: none; }
 
   /* ---------- Signed out ---------- */
@@ -285,25 +177,12 @@
     .strip .vt { writing-mode: horizontal-tb; }
     .strip .ct { margin-left: auto; }
     .col-h .ghost svg.i { transform: rotate(90deg); }
-    .settings { grid-template-columns: 1fr; }
-    .rows .sites { margin-left: 0; }
   }
   @media (max-width: 640px) {
     .side .brand span { font-size: 15px; }
     .topbar h1 { font-size: 22px; }
     #new-work { display: none; }
     .topbar .right { width: 100%; justify-content: space-between; }
-    .composer label.lead { padding: 14px 14px 0; }
-    .composer textarea#prompt { padding: 8px 14px 6px; }
-    .composer .bar { padding: 8px 10px 10px; }
-    .composer .bar select, .composer .bar input#title { max-width: none; flex: 1 1 100%; }
-    .composer .bar select#parent { max-width: none; }
-    .composer .bar .grow, .kbd-hint { display: none; }
-    .composer .bar .btn.primary { flex: 1 1 100%; }
-    .form-grid { grid-template-columns: 1fr; }
-    .scard { padding: 16px; }
-    .row-cap { padding-left: 0; }
-    .row-cap .money-in { flex: 1 1 120px; width: auto; max-width: none; }
     .wcard .t { font-size: 15.5px; }
   }
 
@@ -351,112 +230,22 @@
 
     <div class="content" id="view-board">
       <div class="limits live" id="limits" hidden></div>
-      <section class="composer live" id="composer" aria-label="New work">
-        <form id="add-thread" novalidate>
-          <label class="lead" for="prompt">Describe what you want built</label>
-          <textarea id="prompt" rows="3" placeholder="For example: add a page where clients book a treatment, pick a time and get a confirmation email" aria-describedby="add-err"></textarea>
-          <div class="bar">
-            <select id="app" aria-label="App"></select>
-            <select id="ai" aria-label="Which AI does the work"><option value="claude">Claude</option><option value="chatgpt">ChatGPT</option><option value="grok">Grok</option></select>
-            <select id="place" aria-label="Where it runs" hidden><option value="pc">On your PC</option><option value="cloud">In the cloud</option></select>
-            <input id="title" type="text" placeholder="Title (optional)" aria-label="Title (optional)" maxlength="120" autocomplete="off">
-            <select id="parent" aria-label="Part of other work" hidden></select>
-            <label class="check" id="bg-wrap" hidden><input type="checkbox" id="background"> Keep going if the parent stops</label>
-            <span class="grow"></span>
-            <span class="kbd-hint" id="kbd-hint"></span>
-            <button class="btn primary" id="start" type="submit"></button>
-          </div>
-          <div class="field-error" id="add-err" role="alert"></div>
-        </form>
-        <div class="empty-state" id="no-apps" hidden></div>
-      </section>
+      <!-- The new-work form, drawn by compose.js (D.composer), the same as on the phone. -->
+      <section class="composer live" id="composer" aria-label="New work"></section>
       <div id="board-note" class="board-note" hidden></div>
       <div class="board-wrap live" id="board-wrap"><div class="board" id="board" aria-label="Work by status"></div></div>
     </div>
 
-    <div class="content" id="view-settings" hidden>
-      <div class="settings">
-        <section class="scard wide live" id="set-apps" aria-labelledby="h-apps">
-          <header><span class="ic" data-icon="app"></span><div><h2 id="h-apps">Apps</h2><p>Each app is a git checkout on this PC. Agents work on their own copy and never touch yours. An app can also have its own monthly cap on pay-per-use money, across Claude, ChatGPT and Grok.</p></div></header>
-          <ul class="rows" id="app-rows"></ul>
-          <div class="sites-note" id="sites-note" hidden>
-            <p class="hint" id="sites-hint">Claude and the package stores (npm, PyPI, crates.io) are always allowed. An entry like stripe.com also covers its subdomains. Changes apply to the next piece of work.</p>
-            <details class="fold" id="sites-builtin" hidden><summary></summary><ul class="builtin" aria-label="Always allowed websites"></ul></details>
-          </div>
-          <form id="add-app" class="form-grid" novalidate>
-            <h3 class="full">Add an app</h3>
-            <div class="field">
-              <label for="app-name">Name</label>
-              <input id="app-name" type="text" autocomplete="off" aria-describedby="app-name-hint app-name-err" placeholder="pv-medispa">
-              <span class="hint" id="app-name-hint">1 to 40 letters, digits, - or _. No spaces.</span>
-              <span class="field-error" id="app-name-err"></span>
-            </div>
-            <div class="field">
-              <label for="app-path">Repo path</label>
-              <input id="app-path" type="text" autocomplete="off" spellcheck="false" aria-describedby="app-path-hint app-path-err" placeholder="C:\path\to\repo">
-              <span class="hint" id="app-path-hint">The full path to the app's git folder on this PC.</span>
-              <span class="field-error" id="app-path-err"></span>
-            </div>
-            <div class="field">
-              <label for="app-profile">Claude account</label>
-              <select id="app-profile" aria-describedby="app-profile-hint"><option value="A">Max plan A</option><option value="B">Max plan B</option></select>
-              <span class="hint" id="app-profile-hint">Which signed-in Claude Max plan the agents use.</span>
-            </div>
-            <div class="field">
-              <span class="label">Billing</span>
-              <label class="check"><input type="checkbox" id="app-ppu"> Pay-per-use instead of a Max plan</label>
-              <span class="hint">Billed by use, under the Claude pay-per-use cap. Switch any time.</span>
-            </div>
-            <div class="full actions">
-              <button class="btn primary" type="submit" id="add-app-btn">Add app</button>
-              <span class="field-error" id="app-err" role="alert"></span>
-            </div>
-          </form>
-        </section>
-
-        <section class="scard wide live" id="set-computers" aria-labelledby="h-computers">
-          <header><span class="ic" data-icon="cloud"></span><div><h2 id="h-computers">Computers</h2><p>Where agents work. Each piece of work runs on your PC or on a cloud worker, under the same rules, and can move between them at any time.</p></div></header>
-          <ul class="rows" id="worker-rows"><li class="empty">Loading…</li></ul>
-          <div><a class="btn" id="add-cloud" href="/cloud"></a></div>
-        </section>
-
-        <section class="scard wide live" id="set-accounts" aria-labelledby="h-accounts">
-          <header><span class="ic" data-icon="money"></span><div><h2 id="h-accounts">Accounts</h2><p>Claude A and Claude B are flat-rate Max plans. Their bars show how much of this week's allowance and of the current five-hour allowance is used, as Claude last said while working. The other accounts are billed by use: work on them stops and asks you when the month's total reaches that account's cap. Each run can spend at most $10 of what is left.</p></div></header>
-          <div class="spend-big" id="spend-big"></div>
-          <ul class="rows" id="account-rows"><li class="empty">Loading…</li></ul>
-        </section>
-
-        <section class="scard wide live" id="set-keys" aria-labelledby="h-keys">
-          <header><span class="ic" data-icon="key"></span><div><h2 id="h-keys">Test keys</h2><p>Test keys reach this app's agents while they work. They are kept in Windows' secure store and shown again only as their last four characters. Live keys are refused.</p></div></header>
-          <div id="key-apps"><p class="hint">Loading…</p></div>
-        </section>
-
-        <section class="scard wide live" id="set-github" aria-labelledby="h-github">
-          <header><span class="ic" data-icon="branch"></span><div><h2 id="h-github">GitHub</h2><p>When you accept work, Decurion sends it to the app's GitHub page as a new branch, using this PC's own GitHub sign-in. With a GitHub token saved here, it also opens the pull request for you. Without one, you get a button that opens it in one tap. Decurion never merges: you do that on GitHub.</p></div></header>
-          <div id="github-token"><p class="hint">Loading…</p></div>
-        </section>
-
-        <section class="scard wide live" id="set-sign-ins" aria-labelledby="h-sign-ins">
-          <header><span class="ic" data-icon="key"></span><div><h2 id="h-sign-ins">Website sign-ins</h2><p>Let this app's agents check pages that need a sign-in. You sign in once, in a browser window from your PC; the sign-in is kept on your PC and your password is never saved. Use test accounts only: an agent may be able to read part of what a website keeps.</p></div></header>
-          <div id="sign-in-apps"><p class="hint">Loading…</p></div>
-        </section>
-
-        <section class="scard live" id="set-phones" aria-labelledby="h-phones">
-          <header><span class="ic" data-icon="phone"></span><div><h2 id="h-phones">Phones</h2><p>Pair your phone to get the inbox there. The code works once, for a few minutes.</p></div></header>
-          <div><button type="button" class="btn" id="pair"></button></div>
-          <div class="qr" id="qr" hidden></div>
-          <div>
-            <h3 style="margin-bottom:8px">Paired phones and browsers</h3>
-            <ul class="rows" id="devices"><li class="empty">Loading…</li></ul>
-          </div>
-        </section>
-      </div>
-    </div>
+    <!-- Settings: drawn by settings.js, shared with the phone. -->
+    <div class="content" id="view-settings" hidden></div>
   </main>
 </div>
 <div class="so" id="signed-out" hidden></div>
 
 <script src="/ui.js"></script>
+<script src="/files.js"></script>
+<script src="/compose.js"></script>
+<script src="/settings.js"></script>
 <script>
 "use strict";
 (() => {
@@ -468,14 +257,10 @@
     needs_you: "All clear. Nothing needs you.", running: "No agents working right now.", in_review: "Nothing to review.",
     queued: "Nothing waiting.", done: "Finished work shows here.", failed: "Nothing failed.",
   };
-  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
-  let apps = [], threads = [], spend = null, devices = null, limits = [], workers = [];
-  let accounts = null;          // /accounts: Max plan meters and pay-per-use caps
+  // Settings (settings.js) keeps its own copy of spend, accounts and workers.
+  let apps = [], threads = [], limits = [];
   let hasCloud = false;
-  const siteDraft = {}, siteErr = {}, siteBusy = {}; // app id -> typed text, error, saving
-  const sitesSaved = new Map();  // app id -> list the hub just stored
-  let sitesSeq = 0, builtIn = null;
   const limitErr = {};          // profile -> message from a failed "Continue on pay-per-use"
   let loaded = false, loadErr = null, busy = false, timer = 0;
   const tails = new Map();      // thread id -> { key, ev }
@@ -495,27 +280,6 @@
   const claudeAcct = (app) => (!app ? "" : app.pay_per_use ? "pay-per-use" : `Max plan ${app.profile}`);
   // Who does a piece of work. Claude names its account in Pro view.
   const aiOf = (t, app, full = D.pro) => AI_NAMES[t.ai] ?? (full && app ? `Claude ${claudeAcct(app)}` : "Claude");
-  const isMax = (a) => a.account === "A" || a.account === "B";
-  const pct = (n) => `${Math.round(n)}%`;
-  // Nothing in a list is redrawn while the owner is typing in it.
-  const typingIn = (id) => { const a = document.activeElement; return a?.tagName === "INPUT" && $(id).contains(a); };
-  function meterEl(frac, near, label, now, max) {
-    return el("div", { className: `meter${near ? " near" : ""}`, role: "meter", "aria-valuemin": "0", "aria-valuemax": String(max), "aria-valuenow": String(now), "aria-label": label },
-      el("span", { style: `width:${(Math.max(0, Math.min(1, frac)) * 100).toFixed(1)}%` }));
-  }
-  // Pay-per-use money across Claude, ChatGPT and Grok.
-  function paidTotals() {
-    const paid = (accounts ?? []).filter((a) => !isMax(a));
-    const spent = paid.reduce((s, a) => s + (a.spent_usd ?? 0), 0);
-    const cap = paid.reduce((s, a) => s + (a.cap_usd ?? 0), 0);
-    const near = paid.filter((a) => (a.cap_usd > 0 ? a.spent_usd >= 0.8 * a.cap_usd : a.spent_usd > 0));
-    return { paid, spent, cap, near };
-  }
-  // A Max plan's fullest allowance, 0 to 100, or null before any reading.
-  const planUsed = (a) => (a.week_pct == null && a.five_hour_pct == null ? null : Math.max(a.week_pct ?? 0, a.five_hour_pct ?? 0));
-  const planNear = (a) => a.limited || (planUsed(a) ?? 0) >= 80;
-  const appsOn = (a) => apps.filter((x) => !x.pay_per_use && x.profile === a.account).map((x) => x.name);
-
   // Re-renders without losing keyboard focus: focus is restored by data-key.
   function keepFocus(fn) {
     const was = document.activeElement;
@@ -529,7 +293,6 @@
       if (caret && now?.tagName === "INPUT") try { now.setSelectionRange(...caret); } catch (_) { /* no caret */ }
     }
   }
-  const focusKey = (key) => document.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
   function changed(name, value) {
     const s = JSON.stringify(value);
     if (sigs[name] === s) return false;
@@ -542,18 +305,15 @@
   document.querySelector('[data-route="board"]').append(icon("board"), el("span", { className: "nm" }, "Board"));
   document.querySelector('[data-route="settings"]').append(icon("settings"), el("span", { className: "nm" }, "Settings"));
   $("nav-goals").append(icon("send"), el("span", { className: "nm" }, "Goals"));
-  for (const s of document.querySelectorAll("[data-icon]")) s.append(icon(s.dataset.icon, "l"));
   $("new-work").append(icon("plus"), "New work");
-  $("start").append("Start work", icon("send"));
-  $("pair").append(icon("phone"), "Pair a phone");
-  $("kbd-hint").append(el("kbd", {}, isMac ? "Cmd" : "Ctrl"), " ", el("kbd", {}, "Enter"), " to start");
   $("pro-slot").append(D.switchEl("Pro view", () => D.pro, (v) => D.setPro(v)));
   $("offline-banner").append(icon("offline"), el("span", {}, "Your PC's hub isn't answering. Showing the last known board."));
-  $("no-apps").append(
-    el("div", { className: "mark" }, icon("app", "l")),
-    el("h3", {}, "Add your first app to start"),
-    el("p", {}, "An app is a git folder on this PC. Once it's added, describe what you want built and an agent gets to work."),
-    el("a", { className: "btn primary", href: "#settings/apps" }, icon("plus"), "Add an app"));
+  // The one place to ask for work: the project lead plans it, or "Just do it" starts one piece.
+  const composer = D.composer({
+    root: $("composer"), prefix: "",
+    noApps: { text: "An app is a git folder on this PC. Once it's added, say what you want: your project lead plans it with you, or one agent just does a small change.", href: "#settings/apps" },
+    onStarted: () => refresh(),
+  });
   window.addEventListener("scroll", () => $("topbar").classList.toggle("scrolled", window.scrollY > 4), { passive: true });
 
   // ---------- Routes: #board and #settings ----------
@@ -569,16 +329,10 @@
     $("page-title").textContent = view === "settings" ? "Settings" : "Board";
     document.title = view === "settings" ? "Settings · Decurion" : "Decurion";
     if (view === "settings") {
-      renderSettings();
-      loadDevices();
-      loadKeys();
-      loadGitHub();
-      loadSignIns();
-      const part = h.split("/")[1];
-      const target = part && $(`set-${part === "spending" ? "accounts" : part}`); // Spending became Accounts
+      const target = D.settings.show(h.split("/")[1]);
       if (target) requestAnimationFrame(() => target.scrollIntoView({ block: "start" }));
       else window.scrollTo(0, 0);
-    }
+    } else D.settings.hide();
     renderTop();
   }
   window.addEventListener("hashchange", route);
@@ -599,18 +353,15 @@
     if (busy) return;
     busy = true;
     try {
-      const seq = sitesSeq;
+      const seq = D.settings.seq();
       const [a, th, sp, lim, wk, ac] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/spend"),
         D.api("/limits").catch(() => []), // older hubs have no /limits
         D.api("/workers").catch(() => []),
         D.api("/accounts").catch(() => null)]);
-      // A website list saved while this was loading is newer than what came back.
-      if (seq !== sitesSeq) for (const x of a) { if (sitesSaved.has(x.id)) x.sites = sitesSaved.get(x.id); }
-      else sitesSaved.clear();
-      apps = a; threads = th; spend = sp; limits = Array.isArray(lim) ? lim : [];
-      accounts = Array.isArray(ac) ? ac : null;
-      workers = Array.isArray(wk) ? wk : [];
-      hasCloud = workers.some((w) => w.place === "cloud");
+      // Settings keeps a website list saved while this was loading, which is newer.
+      D.settings.update({ apps: a, spend: sp, accounts: ac, workers: wk, seq });
+      apps = a; threads = th; limits = Array.isArray(lim) ? lim : [];
+      hasCloud = Array.isArray(wk) && wk.some((w) => w.place === "cloud");
       D.setApps(a);
       D.setCloud(hasCloud);
       D.setThreads(th);
@@ -639,14 +390,13 @@
     renderLimits();
     renderComposer();
     renderBoard();
-    if (view === "settings") renderSettings();
   }
 
   // ---------- Sidebar ----------
   function setFilter(v, rerender = true) {
     filter = v;
     D.store.set("decurion.board.app", v);
-    if (v !== "all") $("app").value = v;
+    composer.setApp(v);
     if (rerender) render();
   }
 
@@ -675,41 +425,7 @@
           ...apps.map((a) => item(String(a.id), a.name, counts[a.id] ?? 0, needs[a.id] ?? 0, "app")));
       });
     }
-    if (spend && changed("usage", [spend, accounts, apps.map((a) => [a.profile, a.pay_per_use]), Math.floor(Date.now() / 60000)])) {
-      const u = $("usage");
-      u.hidden = false;
-      if (!accounts) {
-        // No account figures: the Claude pay-per-use total alone.
-        const { pay_per_use_usd: used, cap_usd: cap, max_equivalent_usd: max } = spend;
-        const near = cap > 0 ? used >= 0.8 * cap : used > 0;
-        u.classList.toggle("near", near);
-        u.removeAttribute("title");
-        u.replaceChildren(
-          el("span", { className: "lbl" }, "Pay-per-use this month"),
-          el("span", { className: "num" }, el("b", {}, D.money(used)), el("span", {}, ` of ${D.money(cap)}`)),
-          meterEl(cap > 0 ? used / cap : (used > 0 ? 1 : 0), near, "Pay-per-use spent this month", used, cap),
-          el("span", { className: "hint" }, `Max plans used ${D.money(max)} worth`));
-        return;
-      }
-      const { paid, spent, cap, near } = paidTotals();
-      u.classList.toggle("near", near.length > 0);
-      u.title = paid.map((a) => `${a.label}: ${D.money(a.spent_usd)} of ${D.money(a.cap_usd)}`).join("\n");
-      // Each Max plan in use or with a reading, under the money.
-      const plans = accounts.filter((a) => isMax(a) && (a.seen_at || appsOn(a).length));
-      u.replaceChildren(
-        el("span", { className: "lbl" }, "Pay-per-use this month"),
-        el("span", { className: "num" }, el("b", {}, D.money(spent)), el("span", {}, ` of ${D.money(cap)}`)),
-        meterEl(cap > 0 ? spent / cap : (spent > 0 ? 1 : 0), near.length > 0, "Pay-per-use spent this month", spent, cap),
-        near.length ? el("span", { className: "hint" }, `${near.map((a) => a.label).join(" and ")} near ${near.length === 1 ? "its" : "their"} cap`) : null,
-        ...plans.flatMap((a) => {
-          const used = planUsed(a);
-          // The fuller allowance is the one that runs out first.
-          const text = a.limited ? "used up" : used == null ? "no reading yet"
-            : (a.five_hour_pct ?? -1) > (a.week_pct ?? -1) ? `${pct(a.five_hour_pct)} of 5 hours` : `${pct(a.week_pct)} of week`;
-          const line = el("span", { className: `plan${planNear(a) ? " near" : ""}` }, el("span", {}, a.label), el("span", {}, text));
-          return used == null ? [line] : [line, meterEl(used / 100, planNear(a), `${a.label} allowance used`, Math.round(used), 100)];
-        }));
-    }
+    D.settings.usage($("usage"));
   }
 
   // ---------- Top bar ----------
@@ -736,12 +452,13 @@
   function focusComposer() {
     if (view !== "board") location.hash = "#board";
     requestAnimationFrame(() => {
-      const target = apps.length ? $("prompt") : $("no-apps").querySelector(".btn");
       $("composer").scrollIntoView({ block: "nearest", behavior: "smooth" });
-      target?.focus({ preventScroll: true });
+      composer.focus();
     });
   }
   $("new-work").onclick = focusComposer;
+  // Other screens (such as "Fix these" on finished work) open the same box, filled in.
+  D.setNewWork((fill) => { composer.fill(fill); focusComposer(); });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "n" && e.key !== "N") return;
     if (e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]")) return;
@@ -790,105 +507,10 @@
   }
 
   // ---------- Composer ----------
+  // The form itself lives in compose.js; the board only tells it what changed.
   function renderComposer() {
-    const has = apps.length > 0;
-    $("add-thread").hidden = loaded && !has;
-    $("no-apps").hidden = !loaded || has;
-    if (changed("appsel", apps.map((a) => [a.id, a.name]))) {
-      const sel = $("app");
-      const keep = sel.value || (filter !== "all" ? filter : D.store.get("decurion.board.lastApp"));
-      sel.replaceChildren(...apps.map((a) => el("option", { value: String(a.id) }, a.name)));
-      if (keep && apps.some((a) => String(a.id) === keep)) sel.value = keep;
-    }
-    // The choice of computer only shows once there is a cloud worker.
-    $("place").hidden = !hasCloud;
-    if (!hasCloud) $("place").value = "pc";
-    fillParents();
-    showClaudeChoice();
-    $("start").disabled = D.offline;
+    composer.update({ apps, threads, hasCloud, filter, loaded });
   }
-
-  // The Claude choice names the account the chosen app's Claude work runs on.
-  function showClaudeChoice() {
-    const app = appById(+$("app").value);
-    $("ai").options[0].textContent = app ? `Claude (${claudeAcct(app)})` : "Claude";
-  }
-  {
-    const last = D.store.get("decurion.board.ai");
-    if (last && [...$("ai").options].some((o) => o.value === last)) $("ai").value = last;
-  }
-  $("ai").onchange = () => D.store.set("decurion.board.ai", $("ai").value);
-
-  // "Part of": open work in the same app. Kept while the owner is choosing.
-  function fillParents() {
-    const sel = $("parent");
-    const app = +$("app").value;
-    const open = threads.filter((t) => t.app_id === app && ACTIVE.has(t.state));
-    if (document.activeElement !== sel && changed("parents", [app, open.map((t) => [t.id, t.title])])) {
-      const keep = sel.value;
-      sel.replaceChildren(el("option", { value: "" }, "Not part of other work"),
-        ...open.map((t) => el("option", { value: String(t.id) }, `Part of: ${t.title}`)));
-      sel.value = open.some((t) => String(t.id) === keep) ? keep : "";
-    }
-    sel.hidden = !open.length && !sel.value;
-    $("bg-wrap").hidden = !sel.value;
-    if (!sel.value) $("background").checked = false;
-  }
-  $("parent").onchange = fillParents;
-
-  function deriveTitle(prompt) {
-    const first = (prompt.split(/\r?\n/).find((l) => l.trim()) ?? "").trim().replace(/\s+/g, " ");
-    if (first.length <= 60) return first.replace(/[.\s]+$/, "") || first;
-    const cut = first.slice(0, 60);
-    const sp = cut.lastIndexOf(" ");
-    return (sp > 30 ? cut.slice(0, sp) : cut).replace(/[\s,.;:-]+$/, "") + "…";
-  }
-
-  const prompt = $("prompt");
-  function grow() { prompt.style.height = "auto"; prompt.style.height = Math.min(prompt.scrollHeight + 2, 300) + "px"; }
-  prompt.addEventListener("input", () => {
-    grow();
-    $("title").placeholder = prompt.value.trim() ? `Title: ${deriveTitle(prompt.value)}` : "Title (optional)";
-    if (prompt.value.trim()) $("add-err").textContent = "";
-  });
-  for (const f of [prompt, $("title")]) {
-    f.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("add-thread").requestSubmit(); }
-    });
-  }
-  $("app").onchange = () => { D.store.set("decurion.board.lastApp", $("app").value); fillParents(); showClaudeChoice(); };
-
-  $("add-thread").onsubmit = async (e) => {
-    e.preventDefault();
-    const err = $("add-err");
-    err.textContent = "";
-    if (D.offline) { err.textContent = "Your PC isn't answering. Try again when it's back."; return; }
-    const text = prompt.value.trim();
-    if (!text) { err.textContent = "Describe the work first."; prompt.focus(); return; }
-    const app_id = +$("app").value;
-    if (!app_id) { err.textContent = "Pick an app."; $("app").focus(); return; }
-    const title = $("title").value.trim() || deriveTitle(text);
-    const btn = $("start");
-    btn.disabled = true;
-    btn.replaceChildren(icon("running"), "Starting");
-    try {
-      const parent = $("parent").value;
-      const ai = $("ai").value;
-      await D.send("/threads", { app_id, title, prompt: text, ai, place: $("place").value,
-        parent_id: parent ? +parent : null, background: !!parent && $("background").checked });
-      prompt.value = ""; $("title").value = ""; $("title").placeholder = "Title (optional)"; grow();
-      $("background").checked = false;
-      D.store.set("decurion.board.lastApp", String(app_id));
-      D.store.set("decurion.board.ai", ai);
-      D.toast(`Started "${title}". ${AI_NAMES[ai] ?? "Claude"} will pick it up.`);
-      refresh();
-    } catch (x) {
-      err.textContent = `Couldn't start the work. ${x.message}`;
-    } finally {
-      btn.replaceChildren("Start work", icon("send"));
-      btn.disabled = D.offline;
-    }
-  };
 
   // ---------- Board ----------
   // Done is history, so it starts folded; Queued and Failed fold while empty.
@@ -976,7 +598,7 @@
         board.replaceChildren(el("div", { className: "empty-state board-empty", style: "flex:1" },
           el("div", { className: "mark" }, icon(all ? "board" : "app", "l")),
           el("h3", {}, all ? "Nothing running yet" : `Nothing for ${D.appName(+filter)} yet`),
-          el("p", {}, all ? "Describe what you want built above." : "Describe what you want built above, or look at every app."),
+          el("p", {}, all ? "Say what you want above. Your project lead plans it with you, or pick Just do it for a small change." : "Say what you want above, or look at every app."),
           btn));
         return;
       }
@@ -1027,525 +649,6 @@
     if (next) { next.focus({ preventScroll: true }); next.closest(".wcard").scrollIntoView({ block: "nearest", inline: "nearest" }); }
   });
 
-  // ---------- Settings ----------
-  function renderSettings() {
-    if (!loaded) return;
-    if (!builtIn) loadBuiltIn();
-    $("sites-note").hidden = !apps.length;
-    const appSpend = Object.fromEntries((spend?.apps ?? []).map((x) => [x.app_id, x]));
-    // A half-typed cap would be lost on redraw; a website being typed is kept
-    // in siteDraft and its field gets focus back.
-    const typingCap = typingIn("app-rows") && !document.activeElement.dataset.key?.startsWith("site-");
-    if (!typingCap && changed("set-apps", [apps, spend?.apps, D.offline, siteErr, siteBusy])) {
-      keepFocus(() => {
-        $("app-rows").replaceChildren(...(apps.length ? apps.map((a) => {
-          const b = el("button", { type: "button", className: "btn sm", dataset: { key: `ppu-${a.id}` } },
-            a.pay_per_use ? `Switch to Max plan ${a.profile}` : "Switch to pay-per-use");
-          b.onclick = async () => {
-            b.disabled = true;
-            try {
-              await D.api(`/apps/${a.id}/pay-per-use`, { method: "POST", body: JSON.stringify({ on: !a.pay_per_use }) });
-              D.toast(a.pay_per_use ? `${a.name} now uses Max plan ${a.profile}.` : `${a.name} now uses pay-per-use.`);
-              await refresh();
-            } catch (e) { D.toast(`Couldn't switch ${a.name}. ${e.message}`, "alert"); b.disabled = false; }
-          };
-          const sp = appSpend[a.id];
-          const spent = sp && (sp.spent_usd > 0 || sp.cap_usd != null)
-            ? `Pay-per-use this month: ${D.money(sp.spent_usd)}${sp.cap_usd != null ? ` of its own ${D.money(sp.cap_usd)} cap` : ""}` : "";
-          return el("li", {},
-            el("span", { className: "ic" }, icon("app")),
-            el("div", { className: "who" }, el("b", {}, a.name), el("span", { className: "mono" }, a.repo_path),
-              spent ? el("span", { className: "hint" }, spent) : null),
-            el("span", { className: "acct" }, icon(a.pay_per_use ? "money" : "ai"), a.pay_per_use ? "Claude pay-per-use" : `Claude Max plan ${a.profile}`),
-            b,
-            appCap(a),
-            sitesBlock(a));
-        }) : [el("li", { className: "empty" }, "No apps yet. Add one below.")]));
-      });
-    }
-    if (changed("set-computers", [workers, D.offline])) {
-      $("add-cloud").replaceChildren(icon("cloud"), hasCloud ? "Add another cloud worker" : "Add cloud worker");
-      keepFocus(() => {
-        $("worker-rows").replaceChildren(...workers.map((w) => {
-          const cloudOne = w.place === "cloud";
-          let b = null;
-          if (cloudOne && w.id != null) {
-            b = el("button", { type: "button", className: "btn quiet danger-text sm", dataset: { key: `worker-${w.id}` } }, icon("trash"), "Remove");
-            b.disabled = D.offline;
-            b.onclick = async () => {
-              const ok = await D.confirm([`Remove the cloud worker "${w.name}"?`,
-                "Its work comes back to your PC and carries on there. To use the cloud again, add a new cloud worker.", "Remove worker", "Keep it"]);
-              if (!ok) return;
-              try { await D.api(`/workers/${w.id}/remove`, { method: "POST" }); D.toast(`Removed ${w.name}. Its work is back on your PC.`); await refresh(); }
-              catch (x) { D.toast(`Couldn't remove ${w.name}. ${x.message}`, "alert"); }
-            };
-          }
-          return el("li", {},
-            el("span", { className: "ic" }, icon(cloudOne ? "cloud" : "pc")),
-            el("div", { className: "who" }, el("b", {}, cloudOne ? `Cloud worker ${w.name}` : "Your PC"),
-              el("span", { className: "hint" }, w.online ? (cloudOne ? "Runs work set to the cloud" : "Runs work set to your PC") : w.seconds_ago != null ? `Offline, last heard from ${D.ago(new Date(Date.now() - w.seconds_ago * 1000).toISOString())}` : "Offline, not heard from yet")),
-            el("span", { className: `acct${w.online ? " on" : ""}` }, el("span", { className: "dot" }), w.online ? "Online" : "Offline"),
-            b);
-        }));
-      });
-    }
-    if (spend && !typingIn("account-rows") && changed("set-accounts", [spend, accounts, apps.map((a) => [a.name, a.profile, a.pay_per_use]), D.offline, Math.floor(Date.now() / 60000)])) {
-      const { spent, cap, near } = paidTotals();
-      const max = spend.max_equivalent_usd;
-      const box = $("spend-big");
-      box.classList.toggle("near", near.length > 0);
-      box.replaceChildren(
-        el("span", { className: "hint" }, "Pay-per-use this month, all accounts"),
-        el("div", { className: "num" }, D.money(spent), el("span", {}, `of ${D.money(cap)} in caps`)),
-        meterEl(cap > 0 ? spent / cap : (spent > 0 ? 1 : 0), near.length > 0, "Pay-per-use spent this month", spent, cap),
-        el("span", { className: "hint" }, near.length
-          ? `${near.map((a) => a.label).join(" and ")} ${near.length === 1 ? "is" : "are"} near the cap. Raise it below if you need more.`
-          : `This month's work on the Max plans would have cost ${D.money(max)} on pay-per-use. You aren't billed for it.`));
-      keepFocus(() => $("account-rows").replaceChildren(...(accounts
-        ? accounts.map((a) => (isMax(a) ? maxRow(a) : paidRow(a)))
-        : [el("li", { className: "empty" }, "Couldn't load the accounts. They show up again on the next refresh.")])));
-    }
-  }
-
-  // ---------- Websites an app's agents may use ----------
-  // Every name goes in as text, never as HTML.
-  async function loadBuiltIn() {
-    builtIn = [];
-    let list;
-    try { list = await D.api("/sites/built-in"); } catch (_) { builtIn = null; return; }
-    if (!Array.isArray(list) || !list.length) return;
-    builtIn = list;
-    const det = $("sites-builtin");
-    det.querySelector("summary").replaceChildren(icon("right"), `See the ${D.plural(list.length, "website")} always allowed`);
-    det.querySelector("ul").replaceChildren(...list.map((h) => el("li", {}, String(h))));
-    det.hidden = false;
-  }
-
-  // Saves the whole list and shows what the hub stored, which is cleaned up:
-  // "https://Stripe.com/docs" comes back as stripe.com, built-in sites drop out.
-  async function saveSites(a, next, { added, removed }) {
-    siteBusy[a.id] = true;
-    delete siteErr[a.id];
-    renderSettings();
-    const before = a.sites ?? [];
-    try {
-      const stored = await D.api(`/apps/${a.id}/sites`, { method: "POST", body: JSON.stringify({ sites: next }) });
-      const list = Array.isArray(stored) ? stored : next;
-      sitesSeq++;
-      sitesSaved.set(a.id, list);
-      for (const x of apps) if (x.id === a.id) x.sites = list;
-      if (added) {
-        siteDraft[a.id] = "";
-        const fresh = list.filter((h) => !before.includes(h));
-        if (fresh.length) D.toast(`${a.name} can now use ${fresh.join(", ")}. This applies to its next piece of work.`);
-        else D.toast(`${added.join(", ")} ${added.length === 1 ? "is" : "are"} already allowed, so nothing changed.`);
-      } else {
-        D.toast(`${a.name} can no longer use ${removed}. This applies to its next piece of work.`);
-      }
-    } catch (e) {
-      if (e.signedOut) { signedOut(); return; }
-      if (added) siteErr[a.id] = e.message;
-      else D.toast(`Couldn't remove ${removed}. ${e.message}`, "alert");
-    } finally {
-      siteBusy[a.id] = false;
-      renderSettings();
-    }
-  }
-
-  function sitesBlock(a) {
-    const sites = a.sites ?? [];
-    const busy = !!siteBusy[a.id] || D.offline;
-    const inKey = `site-in-${a.id}`, errId = `site-err-${a.id}`;
-    const err = el("span", { className: "field-error", id: errId, role: "alert" }, siteErr[a.id] ?? "");
-    const input = el("input", { type: "text", id: inKey, autocomplete: "off", autocapitalize: "off", inputMode: "url", maxLength: 300,
-      placeholder: "Add a website, like stripe.com", value: siteDraft[a.id] ?? "", dataset: { key: inKey },
-      "aria-describedby": `sites-hint ${errId}`, "aria-invalid": siteErr[a.id] ? "true" : null });
-    input.spellcheck = false;
-    input.oninput = () => {
-      siteDraft[a.id] = input.value;
-      if (siteErr[a.id]) { delete siteErr[a.id]; err.textContent = ""; input.removeAttribute("aria-invalid"); }
-    };
-    const add = el("button", { type: "submit", className: "btn", dataset: { key: `site-add-${a.id}` }, disabled: busy }, icon("plus"), "Add");
-    const form = el("form", { className: "site-add", noValidate: true },
-      el("label", { className: "sr-only", for: inKey }, `Add a website for ${a.name}`), input, add);
-    const fail = (msg) => { siteErr[a.id] = msg; renderSettings(); focusKey(inKey); };
-    form.onsubmit = async (ev) => {
-      ev.preventDefault();
-      if (siteBusy[a.id]) return;
-      if (D.offline) return fail("Your PC isn't answering. Try again when it's back.");
-      // Several can go in at once, split by spaces or commas.
-      const entries = input.value.split(/[\s,]+/).filter(Boolean);
-      if (!entries.length) return fail("Type a website name, like stripe.com.");
-      const fresh = entries.filter((h) => !sites.includes(h.toLowerCase()));
-      if (!fresh.length) return fail(`${entries.join(", ")} ${entries.length === 1 ? "is" : "are"} already on the list.`);
-      siteDraft[a.id] = input.value;
-      await saveSites(a, [...sites, ...fresh], { added: fresh });
-      focusKey(inKey);
-    };
-    const list = sites.length ? el("ul", { className: "chips", "aria-label": `Websites ${a.name} can use` }, ...sites.map((h) => {
-      const x = el("button", { type: "button", className: "btn icon sm quiet", "aria-label": `Remove ${h} from ${a.name}`, title: "Remove",
-        dataset: { key: `site-rm-${a.id}-${h}` }, disabled: busy }, icon("close"));
-      x.onclick = async () => {
-        if (siteBusy[a.id] || D.offline) return;
-        await saveSites(a, sites.filter((s) => s !== h), { removed: h });
-        focusKey(inKey);
-      };
-      return el("li", {}, el("span", {}, h), x);
-    })) : null;
-    return el("div", { className: "sites", role: "group", "aria-label": `Websites for ${a.name}` },
-      el("div", { className: "sites-h" }, icon("globe"), el("span", { className: "label" }, "Websites"),
-        el("span", { className: "hint" }, sites.length ? "Built-in, plus these:" : "Built-in only")),
-      list, form, err);
-  }
-
-  // A Claude Max plan: this week's and the current five hours' allowance.
-  function maxRow(a) {
-    const users = appsOn(a);
-    const about = [`Max plan ${a.account}, flat rate`, users.length ? `used by ${users.join(", ")}` : "no app uses it now"];
-    if (a.seen_at) about.push(`last reported ${D.ago(a.seen_at)}`);
-    const meters = el("div", { className: "acct-meters" });
-    if (!a.seen_at) meters.append(el("span", { className: "hint" }, "No reading yet. It shows up after work runs on this plan."));
-    for (const [name, used, renews] of [["This week", a.week_pct, a.week_resets_at], ["Current five hours", a.five_hour_pct, a.five_hour_resets_at]]) {
-      if (used == null) continue;
-      meters.append(el("div", { className: "acct-meter" },
-        el("div", { className: "line" }, el("span", {}, name),
-          el("span", {}, el("b", {}, `${pct(used)} used`), renews ? ` · renews ${untilText(renews)}` : "")),
-        meterEl(used / 100, used >= 80 || (a.limited && used >= 100), `${a.label}, ${name.toLowerCase()}, used`, Math.round(used), 100)));
-    }
-    if (a.limited) meters.append(el("p", { className: "acct-out" }, icon("alert"), `Used up for now${a.resets_at ? `, back ${untilText(a.resets_at)}` : ""}.`));
-    return el("li", {},
-      el("span", { className: "ic" }, icon("ai")),
-      el("div", { className: "who" }, el("b", {}, a.label), el("span", { className: "hint" }, about.join(" · "))),
-      meters);
-  }
-
-  // A pay-per-use account: this month's money against its cap, which the owner can change.
-  function paidRow(a) {
-    const used = a.spent_usd ?? 0, cap = a.cap_usd ?? 0;
-    const near = cap > 0 ? used >= 0.8 * cap : used > 0;
-    const id = `acct-cap-${a.account}`;
-    const input = el("input", { id, type: "number", min: "0", step: "1", inputMode: "decimal", value: String(cap), dataset: { key: id }, "aria-describedby": `${id}-err` });
-    const err = el("span", { className: "field-error", id: `${id}-err`, role: "alert" });
-    const save = el("button", { type: "button", className: "btn sm", dataset: { key: `${id}-save` } }, "Save cap");
-    save.disabled = D.offline;
-    save.onclick = async () => {
-      const v = input.value.trim();
-      if (v === "" || !(+v >= 0)) { err.textContent = `Enter a monthly cap in dollars for ${a.label}, 0 or more.`; input.setAttribute("aria-invalid", "true"); input.focus(); return; }
-      save.disabled = true;
-      try {
-        await D.api("/spend/cap", { method: "POST", body: JSON.stringify({ account: a.account, cap_usd: +v }) });
-        input.blur();
-        D.toast(`${a.label} cap set to ${D.money(+v)} a month.`);
-        await refresh();
-      } catch (x) { err.textContent = `Couldn't save the cap. ${x.message}`; save.disabled = false; }
-    };
-    input.addEventListener("input", () => { err.textContent = ""; input.removeAttribute("aria-invalid"); });
-    input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); save.click(); } });
-    const about = cap > 0 ? "Billed by use" : "Billed by use · the cap is $0, so set one to use it";
-    return el("li", {},
-      el("span", { className: "ic" }, icon("money")),
-      el("div", { className: "who" }, el("b", {}, a.label), el("span", { className: "hint" }, about)),
-      el("div", { className: "acct-meters" },
-        el("div", { className: "acct-meter" },
-          el("div", { className: "line" }, el("span", {}, "This month"), el("span", {}, el("b", {}, D.money(used)), ` of ${D.money(cap)}`)),
-          meterEl(cap > 0 ? used / cap : (used > 0 ? 1 : 0), near, `${a.label} spent this month`, used, cap))),
-      el("div", { className: "row-cap" },
-        el("label", { className: "label", htmlFor: id }, "Monthly cap"),
-        el("div", { className: "cap-row" }, el("div", { className: "money-in" }, el("span", {}, "$"), input), save),
-        err));
-  }
-
-  // An app's own monthly cap on pay-per-use money, across every AI. Empty means none.
-  function appCap(a) {
-    const id = `app-cap-${a.id}`;
-    const input = el("input", { id, type: "number", min: "0", step: "1", inputMode: "decimal", placeholder: "No cap",
-      value: a.monthly_cap_usd == null ? "" : String(a.monthly_cap_usd), dataset: { key: id }, "aria-describedby": `${id}-err` });
-    const err = el("span", { className: "field-error", id: `${id}-err`, role: "alert" });
-    const setCap = async (cap_usd, btn) => {
-      btn.disabled = true;
-      err.textContent = "";
-      try {
-        await D.api(`/apps/${a.id}/cap`, { method: "POST", body: JSON.stringify({ cap_usd }) });
-        input.blur();
-        D.toast(cap_usd == null ? `${a.name} has no cap of its own now.` : `${a.name} can spend up to ${D.money(cap_usd)} a month.`);
-        await refresh();
-      } catch (x) { err.textContent = `Couldn't save the cap. ${x.message}`; btn.disabled = false; }
-    };
-    const save = el("button", { type: "button", className: "btn sm", dataset: { key: `${id}-save` } }, "Save cap");
-    save.disabled = D.offline;
-    save.onclick = () => {
-      const v = input.value.trim();
-      if (v === "") return setCap(null, save);
-      if (!(+v >= 0)) { err.textContent = "Enter dollars, 0 or more, or leave it empty for no cap."; input.setAttribute("aria-invalid", "true"); input.focus(); return; }
-      setCap(+v, save);
-    };
-    input.addEventListener("input", () => { err.textContent = ""; input.removeAttribute("aria-invalid"); });
-    input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); save.click(); } });
-    let clear = null;
-    if (a.monthly_cap_usd != null) {
-      clear = el("button", { type: "button", className: "btn quiet sm", dataset: { key: `${id}-clear` } }, "Remove cap");
-      clear.disabled = D.offline;
-      clear.onclick = () => setCap(null, clear);
-    }
-    return el("div", { className: "row-cap" },
-      el("label", { className: "label", htmlFor: id }, "Own monthly cap"),
-      el("div", { className: "cap-row" }, el("div", { className: "money-in" }, el("span", {}, "$"), input), save, clear),
-      err);
-  }
-
-  function fieldErr(input, errEl, msg) {
-    $(errEl).textContent = msg || "";
-    if (msg) $(input).setAttribute("aria-invalid", "true"); else $(input).removeAttribute("aria-invalid");
-  }
-  for (const [i, e] of [["app-name", "app-name-err"], ["app-path", "app-path-err"]]) $(i).addEventListener("input", () => fieldErr(i, e, ""));
-
-  $("add-app").onsubmit = async (e) => {
-    e.preventDefault();
-    const name = $("app-name").value.trim(), path = $("app-path").value.trim();
-    $("app-err").textContent = "";
-    let bad = false;
-    if (!/^[A-Za-z0-9_-]{1,40}$/.test(name)) { fieldErr("app-name", "app-name-err", name ? "Use only letters, digits, - or _, up to 40." : "Give the app a name."); bad = true; } else fieldErr("app-name", "app-name-err", "");
-    if (!/^([A-Za-z]:[\\/]|\/)/.test(path) || /[,"]/.test(path)) { fieldErr("app-path", "app-path-err", path ? "Use the full path, like C:\\path\\to\\repo, without commas or quotes." : "Enter the repo path."); bad = true; } else fieldErr("app-path", "app-path-err", "");
-    if (bad) { e.target.querySelector("[aria-invalid]")?.focus(); return; }
-    const btn = $("add-app-btn");
-    btn.disabled = true;
-    try {
-      await D.api("/apps", { method: "POST", body: JSON.stringify({ name, repo_path: path, profile: $("app-profile").value, pay_per_use: $("app-ppu").checked }) });
-      e.target.reset();
-      D.toast(`Added ${name}. You can start work on it now.`);
-      await refresh();
-    } catch (x) {
-      if (/name/i.test(x.message)) fieldErr("app-name", "app-name-err", x.message.replace(/^an app/, "An app").replace(/^app name/, "The name"));
-      else if (/repo_path/.test(x.message)) fieldErr("app-path", "app-path-err", "Use the full path, without commas or quotes.");
-      else $("app-err").textContent = `Couldn't add the app. ${x.message}`;
-    } finally { btn.disabled = false; }
-  };
-
-  async function loadDevices() {
-    try { devices = await D.api("/devices"); } catch (e) {
-      if (!devices) $("devices").replaceChildren(el("li", { className: "empty" }, `Couldn't load phones. ${e.message}`));
-      return;
-    }
-    if (!changed("devices", [devices, D.offline])) return;
-    const when = (iso) => new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-    keepFocus(() => {
-      $("devices").replaceChildren(...(devices.length ? devices.map((d) => {
-        const b = el("button", { type: "button", className: "btn quiet danger-text sm", dataset: { key: `dev-${d.id}` } }, icon("trash"), "Remove");
-        b.onclick = async () => {
-          const ok = await D.confirm([`Remove "${d.name}"?`, "It is signed out and will need a new pairing code to get back in.", "Remove phone", "Keep it"]);
-          if (!ok) return;
-          try { await D.api(`/devices/${d.id}/remove`, { method: "POST" }); D.toast(`Removed ${d.name}.`); loadDevices(); }
-          catch (x) { D.toast(`Couldn't remove ${d.name}. ${x.message}`, "alert"); }
-        };
-        return el("li", {},
-          el("span", { className: "ic" }, icon("phone")),
-          el("div", { className: "who" }, el("b", {}, d.name),
-            el("span", { className: "hint" }, [d.has_push ? "Notifications on" : "Notifications off", d.last_seen ? `Last used ${when(d.last_seen)}` : "Not used yet"].join(" · "))),
-          b);
-      }) : [el("li", { className: "empty" }, "No phones paired yet.")]));
-    });
-  }
-
-  // Drawn when Settings opens and after each change, not on the timer, so a
-  // half-typed key is never wiped. Values go to the hub once and never come back.
-  async function loadKeys() {
-    let sections;
-    try {
-      const list = await D.api("/apps");
-      sections = await Promise.all(list.map(keySection));
-    } catch (e) {
-      $("key-apps").replaceChildren(el("p", { className: "field-error" }, `Couldn't load test keys. ${e.message}`));
-      return;
-    }
-    $("key-apps").replaceChildren(...(sections.length ? sections : [el("p", { className: "hint" }, "Add an app first.")]));
-  }
-  async function keySection(a) {
-    const keys = await D.api(`/apps/${a.id}/test-keys`);
-    const id = (s) => `key-${a.id}-${s}`;
-    const rows = el("ul", { className: "rows" }, ...(keys.length ? keys.map((k) => {
-      const b = el("button", { type: "button", className: "btn quiet danger-text sm" }, icon("trash"), "Remove");
-      b.onclick = async () => {
-        const ok = await D.confirm([`Remove ${k.name} from ${a.name}?`, "Its agents stop getting it from their next run.", "Remove key", "Keep it"]);
-        if (!ok) return;
-        try { await D.api(`/apps/${a.id}/test-keys/${encodeURIComponent(k.name)}/remove`, { method: "POST" }); D.toast(`Removed ${k.name}.`); await loadKeys(); }
-        catch (x) { D.toast(`Couldn't remove ${k.name}. ${x.message}`, "alert"); }
-      };
-      return el("li", {},
-        el("span", { className: "ic" }, icon("key")),
-        el("div", { className: "who" }, el("b", {}, k.name), el("span", { className: "hint" }, `••••${k.last_four}`)),
-        b);
-    }) : [el("li", { className: "empty" }, "No test keys yet.")]));
-    const name = el("input", { id: id("name"), type: "text", placeholder: "STRIPE_SECRET_KEY", autocomplete: "off", spellcheck: false });
-    const value = el("input", { id: id("value"), type: "password", placeholder: "sk_test_…", autocomplete: "off", spellcheck: false });
-    const err = el("span", { className: "field-error", id: id("err"), role: "alert" });
-    value.setAttribute("aria-describedby", id("err"));
-    const show = el("button", { type: "button", className: "btn quiet sm" }, "Show");
-    show.onclick = () => { const hidden = value.type === "password"; value.type = hidden ? "text" : "password"; show.textContent = hidden ? "Hide" : "Show"; };
-    const form = el("form", { className: "form-grid", noValidate: true },
-      el("div", { className: "field" }, el("label", { htmlFor: id("name") }, "Name"), name,
-        el("span", { className: "hint" }, "The setting your app reads it from.")),
-      el("div", { className: "field" }, el("label", { htmlFor: id("value") }, "Key"), value, show),
-      el("div", { className: "full actions" }, el("button", { className: "btn primary", type: "submit" }, "Save key"), err));
-    form.onsubmit = async (e) => {
-      e.preventDefault();
-      err.textContent = "";
-      try {
-        await D.api(`/apps/${a.id}/test-keys`, { method: "POST", body: JSON.stringify({ name: name.value.trim(), value: value.value }) });
-        value.value = "";
-        D.toast(`Saved ${name.value.trim()} for ${a.name}.`);
-        await loadKeys();
-      } catch (x) { err.textContent = x.message; }
-    };
-    return el("div", {}, el("h3", { style: "margin:8px 0" }, a.name), rows, form);
-  }
-
-  // The owner's GitHub token, for opening pull requests. Like test keys, it
-  // goes to the hub once and only its last four characters come back.
-  async function loadGitHub() {
-    let s;
-    try { s = await D.api("/github"); } catch (e) {
-      $("github-token").replaceChildren(el("p", { className: "field-error" }, `Couldn't load the GitHub settings. ${e.message}`));
-      return;
-    }
-    const rows = el("ul", { className: "rows" });
-    if (s.token) {
-      const b = el("button", { type: "button", className: "btn quiet danger-text sm" }, icon("trash"), "Remove");
-      b.onclick = async () => {
-        const ok = await D.confirm(["Remove the GitHub token?", "Accepted work still goes to GitHub, and you open each pull request with one tap.", "Remove token", "Keep it"]);
-        if (!ok) return;
-        try { await D.api("/github/token/remove", { method: "POST" }); D.toast("Removed the GitHub token."); await loadGitHub(); }
-        catch (x) { D.toast(`Couldn't remove the GitHub token. ${x.message}`, "alert"); }
-      };
-      rows.append(el("li", {}, el("span", { className: "ic" }, icon("key")),
-        el("div", { className: "who" }, el("b", {}, "GitHub token"), el("span", { className: "hint" }, `••••${s.token.last_four} · Decurion opens pull requests for you`)), b));
-    } else {
-      rows.append(el("li", { className: "empty" }, "No token saved. You open each pull request yourself, with one tap."));
-    }
-    const value = el("input", { id: "gh-token", type: "password", placeholder: "github_pat_…", autocomplete: "off", spellcheck: false, "aria-describedby": "gh-token-hint gh-token-err" });
-    const err = el("span", { className: "field-error", id: "gh-token-err", role: "alert" });
-    const show = el("button", { type: "button", className: "btn quiet sm" }, "Show");
-    show.onclick = () => { const hidden = value.type === "password"; value.type = hidden ? "text" : "password"; show.textContent = hidden ? "Hide" : "Show"; };
-    const form = el("form", { className: "form-grid", noValidate: true },
-      el("div", { className: "field" }, el("label", { htmlFor: "gh-token" }, s.token ? "Replace the token" : "GitHub token"), value, show),
-      el("p", { className: "hint", id: "gh-token-hint", style: "align-self:center" }, "Make a fine-grained token on GitHub with Pull requests: Read and write for your apps' repos. See Help, Review and merge work."),
-      el("div", { className: "full actions" }, el("button", { className: "btn primary", type: "submit" }, "Save token"), err));
-    form.onsubmit = async (e) => {
-      e.preventDefault();
-      err.textContent = "";
-      if (!value.value.trim()) { err.textContent = "Paste the token first."; value.focus(); return; }
-      try {
-        await D.api("/github/token", { method: "POST", body: JSON.stringify({ value: value.value.trim() }) });
-        value.value = "";
-        D.toast("Saved the GitHub token. Decurion opens pull requests for you from now on.");
-        await loadGitHub();
-      } catch (x) { err.textContent = x.message.replace(/^a GitHub/, "A GitHub").replace(/^this does/, "This does"); }
-    };
-    $("github-token").replaceChildren(rows, form);
-  }
-
-  // ---------- Website sign-ins ----------
-  // Drawn like test keys: when Settings opens and after each change, so a
-  // half-typed address is never wiped.
-  const day = (iso) => new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
-  function signInState(s) {
-    if (s.status === "none") return "Not signed in yet";
-    if (s.status === "expired") return "Stopped working. Sign in again.";
-    if (s.status === "expiring") return s.expires_at ? `Runs out ${day(s.expires_at)}. Sign in again soon.` : "Runs out soon. Sign in again soon.";
-    return s.expires_at ? `Signed in, until ${day(s.expires_at)}` : "Signed in";
-  }
-  async function loadSignIns() {
-    let sections;
-    try {
-      const list = await D.api("/apps");
-      sections = await Promise.all(list.map(signInSection));
-    } catch (e) {
-      $("sign-in-apps").replaceChildren(el("p", { className: "field-error" }, `Couldn't load website sign-ins. ${e.message}`));
-      return;
-    }
-    $("sign-in-apps").replaceChildren(...(sections.length ? sections : [el("p", { className: "hint" }, "Add an app first.")]));
-  }
-  // Opens the sign-in window: a fresh browser on the PC, streamed here.
-  async function startSignIn(s, btn) {
-    btn.disabled = true;
-    try {
-      const { session_id } = await D.api(`/sign-ins/${s.id}/sign-in`, { method: "POST" });
-      if (D.openBrowserViewer) {
-        const shown = D.openBrowserViewer(session_id, { saveButton: true });
-        if (shown && typeof shown.then === "function") shown.then(loadSignIns, loadSignIns);
-      } else {
-        D.toast("The sign-in window is not available on this hub yet.", "alert");
-      }
-    } catch (x) { D.toast(`Couldn't open the sign-in window. ${x.message}`, "alert"); }
-    finally { btn.disabled = false; }
-  }
-  async function signInSection(a) {
-    const list = await D.api(`/apps/${a.id}/sign-ins`);
-    const id = (s) => `signin-${a.id}-${s}`;
-    const rows = el("ul", { className: "rows" }, ...(list.length ? list.map((s) => {
-      const go = el("button", { type: "button", className: `btn sm${s.status === "ok" ? "" : " primary"}` }, s.status === "none" ? "Sign in" : "Sign in again");
-      go.disabled = D.offline;
-      go.onclick = () => startSignIn(s, go);
-      const rm = el("button", { type: "button", className: "btn quiet danger-text sm" }, icon("trash"), "Remove");
-      rm.onclick = async () => {
-        const ok = await D.confirm([`Remove the ${s.label} sign-in from ${a.name}?`, "Its agents stop being signed in to that website from their next run, and the saved sign-in is deleted from your PC.", "Remove sign-in", "Keep it"]);
-        if (!ok) return;
-        try { await D.api(`/sign-ins/${s.id}/remove`, { method: "POST" }); D.toast(`Removed ${s.label}.`); await loadSignIns(); }
-        catch (x) { D.toast(`Couldn't remove ${s.label}. ${x.message}`, "alert"); }
-      };
-      const covers = s.domains.length ? `Covers ${s.domains.join(", ")}` : s.start_url;
-      return el("li", {},
-        el("span", { className: "ic" }, icon(s.status === "expired" || s.status === "expiring" ? "alert" : "key")),
-        el("div", { className: "who" }, el("b", {}, s.label),
-          el("span", { className: "hint" }, signInState(s)),
-          el("span", { className: "hint" }, covers)),
-        el("div", { className: "cap-row" }, go, rm));
-    }) : [el("li", { className: "empty" }, "No website sign-ins yet.")]));
-    const label = el("input", { id: id("label"), type: "text", placeholder: "Staging admin", autocomplete: "off", maxLength: 60 });
-    const start = el("input", { id: id("start"), type: "url", placeholder: "https://staging.example.com/login", autocomplete: "off", spellcheck: false, inputMode: "url" });
-    const check = el("input", { id: id("check"), type: "url", placeholder: "https://staging.example.com/account", autocomplete: "off", spellcheck: false, inputMode: "url" });
-    const err = el("span", { className: "field-error", id: id("err"), role: "alert" });
-    for (const i of [label, start, check]) { i.setAttribute("aria-describedby", id("err")); i.addEventListener("input", () => { err.textContent = ""; }); }
-    const form = el("form", { className: "form-grid", noValidate: true },
-      el("div", { className: "field" }, el("label", { htmlFor: id("label") }, "Name"), label,
-        el("span", { className: "hint" }, "Your own name for it, such as the account it signs in as.")),
-      el("div", { className: "field" }, el("label", { htmlFor: id("start") }, "Sign-in page"), start,
-        el("span", { className: "hint" }, "Starts with https://.")),
-      el("div", { className: "field" }, el("label", { htmlFor: id("check") }, "Page to check (optional)"), check,
-        el("span", { className: "hint" }, "A page that only works when signed in. Checked before each run.")),
-      el("div", { className: "full actions" }, el("button", { className: "btn primary", type: "submit" }, "Add sign-in"), err));
-    form.onsubmit = async (e) => {
-      e.preventDefault();
-      err.textContent = "";
-      const name = label.value.trim(), addr = start.value.trim();
-      if (!name) { err.textContent = "Give the sign-in a name."; label.focus(); return; }
-      if (!/^https:\/\//i.test(addr)) { err.textContent = "Enter the sign-in page's address, starting with https://."; start.focus(); return; }
-      try {
-        await D.api(`/apps/${a.id}/sign-ins`, { method: "POST", body: JSON.stringify({ label: name, start_url: addr, check_url: check.value.trim() || null }) });
-        D.toast(`Added ${name} for ${a.name}. Tap Sign in next to it to sign in.`);
-        await loadSignIns();
-      } catch (x) { err.textContent = x.message; }
-    };
-    return el("div", {}, el("h3", { style: "margin:8px 0" }, a.name), rows, form);
-  }
-
-  $("pair").onclick = async () => {
-    const b = $("pair");
-    b.disabled = true;
-    try {
-      const p = await D.api("/pairing", { method: "POST" });
-      const box = el("div", { className: "qr-box" });
-      box.innerHTML = p.qr_svg; // drawn by the hub itself from the pairing link
-      const q = $("qr");
-      q.hidden = false;
-      q.replaceChildren(box,
-        el("p", { className: "hint" }, `Scan it with the phone's camera. It works once, for ${D.plural(p.minutes, "minute")}.`),
-        el("a", { href: p.url }, "Or open this link on the phone"),
-        p.warning ? el("div", { className: "notice warn" }, icon("alert"), el("span", { className: "grow" }, p.warning)) : null);
-      setTimeout(loadDevices, 15000);
-    } catch (e) { D.toast(`Couldn't make a pairing code. ${e.message}`, "alert"); }
-    finally { b.disabled = false; }
-  };
-
   // ---------- Offline and Pro ----------
   D.onOffline((off) => { $("offline-banner").hidden = !off; render(); });
   D.onPro(() => renderBoard());
@@ -1556,10 +659,11 @@
     history.replaceState(null, "", location.pathname + location.search);
     (async () => { try { D.openWork(await D.api(`/threads/${id}`), refresh); } catch (_) { /* gone */ } })();
   }
+  D.settings.mount($("view-settings"), { refresh: () => refresh(), onSignedOut: () => signedOut(), place: "pc" });
   skeleton();
   route();
   refresh();
-  timer = setInterval(() => { refresh(); if (view === "settings") loadDevices(); }, 3000);
+  timer = setInterval(() => { refresh(); D.settings.tick(); }, 3000);
 })();
 </script>
 </body>

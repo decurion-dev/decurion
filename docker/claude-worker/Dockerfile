@@ -3,8 +3,11 @@
 # reaches only the websites its gate lets through.
 FROM node:22-bookworm-slim
 
+# poppler-utils is for pdftotext: a sealed box from this image makes text
+# versions of the owner's attached PDFs before each run (CONTEXT_SCRIPT in
+# crates/decurion-runner/src/handover.rs). Agents can use it too.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates ripgrep \
+ && apt-get install -y --no-install-recommends git ca-certificates ripgrep poppler-utils \
  && rm -rf /var/lib/apt/lists/*
 
 ARG CLAUDE_CODE_VERSION=2.1.289
