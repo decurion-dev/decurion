@@ -182,7 +182,10 @@ pub fn goal_steps(state: GoalState, planned: bool, pieces: &[PieceStep]) -> Vec<
         } else {
             match p.review {
                 ReviewState::Passed => S::Done,
-                ReviewState::NeedsALook | ReviewState::Failed => S::Problem,
+                // The checker handed it to the owner: theirs to look at,
+                // not a failure.
+                ReviewState::NeedsALook => S::You,
+                ReviewState::Failed => S::Problem,
                 ReviewState::Building | ReviewState::Reviewing | ReviewState::Fixing => S::Now,
             }
         };
@@ -1041,7 +1044,7 @@ mod tests {
         ];
         assert_eq!(
             states(&goal_steps(GoalState::Working, true, &pieces)),
-            [Done, Done, Now, Now, Problem, Problem, Done, Later]
+            [Done, Done, Now, Now, You, Problem, Done, Later]
         );
     }
 
