@@ -1326,7 +1326,7 @@ function renderTail(v) {
     // Research changed no code: nothing to try on the board or merge. What it
     // found is on the app's master plan, ready to be built.
     parts.push(el("div", { class: "callout attn" },
-      el("p", null, "The research is done and nothing in the app was changed. Read what it found below. To turn it into real changes, open the master plan, tap the × next to anything you don't want (Take off the plan), and tap Fix all that are left. Or tap Turn into a goal on the report."),
+      el("p", null, "The research is done and nothing in the app was changed. Read what it found below. To turn it into real changes, open the master plan, tap the × next to anything you don't want (Take off the plan), and tap Fix all that are left (or Fix this when only one is left). Or tap Turn into a goal on the report."),
       el("a", { class: "btn primary", href: D.planHref(g.app_id) }, "Fix what it found"),
       el("button", { class: "btn", type: "button", "data-action": "close", onclick: () => goalAction("close", "Mark done") }, "Mark done")));
   } else if (g.state === "for_review") {

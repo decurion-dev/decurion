@@ -27,7 +27,7 @@ Decurion only ever adds a new branch. It never changes your app's main branch, n
 
 The pull request says what was done, what the checker ran and found (each finding marked checked or guessed), and any protected parts that were held for you. It also says that Decurion made it.
 
-A **research** piece changes no code, so it has no Accept. Tap **Fix what it found** to open the app's master plan, where its findings wait as to-dos: tap the **×** next to any you don't want (**Take off the plan**), then **Fix all that are left**. **Mark done** closes it. Nothing goes to GitHub. See [Research, Ask why, and the checker's proof](research-and-ask-why.md).
+A **research** piece changes no code, so it has no Accept. Tap **Fix what it found** to open the app's master plan, where its findings wait as to-dos: tap the **×** next to any you don't want (**Take off the plan**), then **Fix all that are left** (or **Fix this** when only one is left). **Mark done** closes it. Nothing goes to GitHub. See [Research, Ask why, and the checker's proof](research-and-ask-why.md).
 
 ## Someone else reviews: Decurion keeps watch
 
