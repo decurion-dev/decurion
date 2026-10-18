@@ -12,7 +12,7 @@ Download the installer for Windows, or the `.tar.gz` for Mac or Linux, from the 
 1. Build the agent image and its gate: `docker build -t decurion/claude-worker:dev docker/claude-worker` and `docker build -t decurion/gate:dev -f docker/gate/Dockerfile .`
 2. Save a Claude token for profile A: run `claude setup-token`, then `python spike/wincred.py set A` and paste it (hidden input). It is stored in Windows Credential Manager as `decurion/claude-profile-A`.
 3. Start the hub: `cargo run -p decurion-hub`. Open the login link it prints.
-4. Start the runner: `cargo run -p decurion-runner`.
+4. Start the runner: `cargo run -p decurion-runner`. It works on up to 3 pieces at once on the PC (1 on a cloud worker); set `DECURION_MAX_RUNS` (1 to 8) to change that.
 5. On the board, add an app (a local git repo path) and some work.
 
 To run an app on pay-per-use instead of a Max account, save an Anthropic API key with `python spike/wincred.py set api`, set a monthly spend limit on that key's Anthropic Console workspace equal to Decurion's cap, and switch the app under "Add an app". Decurion stops pay-per-use work at its own monthly cap (default $100). The key never enters a container: the runner keeps it in a small proxy on this PC, and each run gets a random token that only works through that proxy and stops working when the run ends. The Console limit stays as the backstop.

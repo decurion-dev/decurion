@@ -530,7 +530,10 @@ impl Store {
     /// holds up work on a Max account.
     ///
     /// A runner only gets work placed on its own kind of computer.
-    pub async fn claim(&self, runner: &str, place: Place) -> Result<ClaimOutcome> {
+    /// `busy` is work the runner is still running or cleaning up after: it
+    /// is never handed back to that runner until it leaves the list, so two
+    /// attempts at one piece never overlap on one computer.
+    pub async fn claim(&self, runner: &str, place: Place, busy: &[i64]) -> Result<ClaimOutcome> {
         let actor = runner_actor(runner)?;
         // IMMEDIATE takes the write lock up front, so a claim never fails
         // halfway because an event was being written at the same moment.
@@ -549,6 +552,7 @@ impl Store {
                             AND {ppu}) AS plan_ppu
                  FROM threads t JOIN apps a ON a.id = t.app_id
                  WHERE t.state = 'queued' AND t.place = ?
+                   AND t.id NOT IN (SELECT value FROM json_each(?))
                    AND (t.ai <> 'claude' OR t.pay_per_use = 1 OR a.pay_per_use = 1 OR NOT EXISTS (
                         SELECT 1 FROM profile_limits l WHERE l.profile = a.profile
                             AND l.until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AND NOT {ppu}))
@@ -558,6 +562,7 @@ impl Store {
                 ppu = crate::limits::PAY_PER_USE_NOW
             ))
             .bind(place.as_str())
+            .bind(serde_json::to_string(busy).expect("a list of ids is JSON"))
             .fetch_optional(&mut *tx)
             .await?
             else {

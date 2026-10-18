@@ -189,6 +189,47 @@ async fn owner_cannot_make_illegal_moves() {
     assert!(s.is_client_error());
 }
 
+/// A runner working on several pieces at once lists the ones it is still
+/// finishing (cleanup included), and the hub does not hand any of them out
+/// to it again until they are gone from that list.
+#[tokio::test]
+async fn claim_skips_work_the_runner_is_still_finishing() {
+    let (r, _) = hub().await;
+    let id = seed(&r).await;
+    let ask = |busy: Value| {
+        call(
+            &r,
+            "POST",
+            "/api/runner/claim",
+            Some(RUNNER),
+            json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION,"busy":busy}),
+        )
+    };
+    let (s, _) = ask(json!([id])).await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "busy work is not handed out");
+    let (s, _) = ask(json!((1..=9).collect::<Vec<i64>>())).await;
+    assert_eq!(
+        s,
+        StatusCode::BAD_REQUEST,
+        "a runner never has more than 8 at once"
+    );
+    let (s, c) = ask(json!([])).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(c["thread"]["id"], id);
+
+    // The hub says it understands the list, so the runner may run several.
+    let (s, hello) = call(
+        &r,
+        "POST",
+        "/api/runner/hello",
+        Some(RUNNER),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(hello["concurrent"], true);
+}
+
 #[tokio::test]
 async fn claim_hands_each_thread_out_once() {
     let (r, _) = hub().await;

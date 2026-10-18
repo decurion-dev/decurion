@@ -1288,6 +1288,10 @@ struct RunnerName {
     /// hub updates never starts new work.
     #[serde(default)]
     rules_version: Option<u32>,
+    /// Work this runner is still running or cleaning up after; a claim
+    /// never hands it any of these again until they leave the list.
+    #[serde(default)]
+    busy: Vec<i64>,
 }
 
 /// The 409 a runner on other rules gets, telling it which rules and commit
@@ -1298,6 +1302,7 @@ fn other_rules(r: &RunnerId, theirs: Option<u32>) -> Response {
         paused: vec![],
         rules_version: RULES_VERSION,
         hub_commit: HUB_COMMIT.to_owned(),
+        concurrent: true,
     };
     (StatusCode::CONFLICT, Json(reply)).into_response()
 }
@@ -1348,6 +1353,7 @@ async fn runner_hello(
         paused,
         rules_version: RULES_VERSION,
         hub_commit: HUB_COMMIT.to_owned(),
+        concurrent: true,
     })
     .into_response()
 }
@@ -1364,7 +1370,14 @@ async fn runner_claim(
     if b.rules_version != Some(RULES_VERSION) {
         return other_rules(&r, b.rules_version);
     }
-    match st.store.claim(&r.name, r.place).await {
+    if b.busy.len() > decurion_proto::MAX_RUNS {
+        return (
+            StatusCode::BAD_REQUEST,
+            "too many pieces of work listed as busy",
+        )
+            .into_response();
+    }
+    match st.store.claim(&r.name, r.place, &b.busy).await {
         Ok(out) => {
             if let (Some(p), Some(first)) = (st.push.clone(), out.capped.first()) {
                 // One alert, however many pieces of work it stopped.

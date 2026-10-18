@@ -57,13 +57,31 @@ pub(crate) fn want(w: &Wants, now: Option<BrowserWant>) {
 /// a fresh browser loaded from the saved copy, not the agent's. This is
 /// where the hub is to be told, so the owner gets a card asking them to
 /// sign in again; until saved sign-ins reach runs it only notes it.
-pub(crate) async fn report_signed_out(hub: &Hub, thread: i64, sign_in_id: i64) {
+/// `given` is the copy of each sign-in this browser attempt was handed, fixed
+/// when it started, so a late message from an old attempt can only speak for
+/// the copy that attempt held.
+pub(crate) async fn report_signed_out(
+    hub: &Hub,
+    thread: i64,
+    sign_in_id: i64,
+    given: &std::collections::BTreeMap<i64, i64>,
+) {
     tracing::info!(thread, sign_in_id, "a saved sign-in no longer works");
+    let Some(version) = given.get(&sign_in_id).copied() else {
+        // Not one this run was given: nothing it may say about it.
+        tracing::warn!(
+            thread,
+            sign_in_id,
+            "the browser named a sign-in this run was not given"
+        );
+        return;
+    };
     // Told in the background: a slow hub must not hold up the browser.
     let hub = hub.clone();
     tokio::spawn(async move {
         if let Err(err) =
-            decurion_runner::sign_ins::report_signed_out(&hub.access(), sign_in_id).await
+            decurion_runner::sign_ins::report_signed_out(&hub.access(), sign_in_id, thread, version)
+                .await
         {
             tracing::warn!(%err, thread, sign_in_id, "could not tell the hub a sign-in stopped working");
         }
@@ -107,12 +125,44 @@ impl Drop for Remover {
         }
         let (id, name) = (self.id, std::mem::take(&mut self.name));
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
-            rt.spawn(async move {
+            let key = name.clone();
+            let task = rt.spawn(async move {
                 if !remove_named(id, std::slice::from_ref(&name)).await {
                     tracing::error!(container = %name, "could not remove the browser box");
                 }
             });
+            // Kept, not let go: the run's piece of work stays busy until this
+            // removal is done ([`settle`]), so it can never remove the box of
+            // a later attempt that has the same name.
+            let mut all = removals();
+            all.retain(|(_, t)| !t.is_finished());
+            all.push((key, task));
         }
+    }
+}
+
+/// Browser box removals started by a [`Remover`] being dropped, by name.
+static REMOVALS: std::sync::Mutex<Vec<(String, JoinHandle<()>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn removals() -> std::sync::MutexGuard<'static, Vec<(String, JoinHandle<()>)>> {
+    REMOVALS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Waits for any removal of `thread`'s browser box that is still going, so
+/// none outlives the run that started it.
+pub(crate) async fn settle(thread: i64) {
+    let name = browser_container_name(thread);
+    let mine: Vec<JoinHandle<()>> = {
+        let mut all = removals();
+        let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *all)
+            .into_iter()
+            .partition(|(n, _)| *n == name);
+        *all = rest;
+        mine.into_iter().map(|(_, t)| t).collect()
+    };
+    for t in mine {
+        let _ = t.await;
     }
 }
 
@@ -219,6 +269,7 @@ pub(crate) async fn start_run(
     hub: &Hub,
     thread: i64,
     states: Vec<SiteState>,
+    given: std::collections::BTreeMap<i64, i64>,
     secrets: &[String],
 ) -> anyhow::Result<RunBrowser> {
     let remover = Remover {
@@ -244,7 +295,7 @@ pub(crate) async fn start_run(
         match msg {
             Some(FromBrowser::Ready { .. }) => break,
             Some(FromBrowser::SignedOut { sign_in_id }) => {
-                report_signed_out(hub, thread, sign_in_id).await
+                report_signed_out(hub, thread, sign_in_id, &given).await
             }
             Some(FromBrowser::Failed { why }) => {
                 bail!("The test browser could not start, so the run did not start: {why}")
@@ -267,7 +318,8 @@ Make sure Docker is running and the worker image is up to date."
     let (wants, wanted) = watch::channel(None);
     let hub = hub.clone();
     let task = tokio::spawn(async move {
-        let (end, relay) = relay_loop(&hub, Some(thread), BrowserMode::Run, io, wanted).await;
+        let (end, relay) =
+            relay_loop(&hub, Some((thread, given)), BrowserMode::Run, io, wanted).await;
         finish(relay, &ended_why(&end)).await;
     });
     Ok(RunBrowser {
@@ -476,9 +528,11 @@ fn unwatched(io: &BoxIo, mode: BrowserMode) {
 /// signed out, and while the hub wants the browser shown (`wanted`), keeps
 /// a relay open and passes the screen up and the owner's input down.
 /// Returns the relay still open, for the caller to [`finish`].
+/// `run` is the work run's thread and the sign-in copies it was given; a
+/// sign-in window has none.
 async fn relay_loop(
     hub: &Hub,
-    thread: Option<i64>,
+    run: Option<(i64, std::collections::BTreeMap<i64, i64>)>,
     mode: BrowserMode,
     mut io: BoxIo,
     mut wanted: watch::Receiver<Option<BrowserWant>>,
@@ -498,8 +552,8 @@ async fn relay_loop(
                     }
                 }
                 Some(FromBrowser::SignedOut { sign_in_id }) => {
-                    if let Some(t) = thread {
-                        report_signed_out(hub, t, sign_in_id).await;
+                    if let Some((t, given)) = &run {
+                        report_signed_out(hub, *t, sign_in_id, given).await;
                     }
                 }
                 Some(f @ FromBrowser::Frame { .. }) => {
@@ -575,6 +629,52 @@ async fn relay_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A browser box removal started by a run ending early is recorded, not
+    /// let go, so the run can wait for it.
+    #[tokio::test]
+    async fn a_dropped_browser_removal_is_recorded() {
+        let thread = 987_654_321;
+        let name = browser_container_name(thread);
+        drop(Remover {
+            id: thread,
+            name: name.clone(),
+            armed: true,
+        });
+        // Taken back before it ever runs: this test starts no Docker command.
+        let mine: Vec<_> = {
+            let mut all = removals();
+            let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *all)
+                .into_iter()
+                .partition(|(n, _)| *n == name);
+            *all = rest;
+            mine
+        };
+        assert_eq!(mine.len(), 1, "the removal is kept, not let go");
+        for (_, t) in mine {
+            t.abort();
+        }
+    }
+
+    /// The piece of work counts as done only once that removal has finished,
+    /// so it can never remove the box of the next attempt, which has the same
+    /// name.
+    #[tokio::test]
+    async fn settle_waits_for_the_removal_to_finish() {
+        let thread = 987_654_322;
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _ = done_rx.await;
+        });
+        removals().push((browser_container_name(thread), task));
+        let waiting = tokio::spawn(settle(thread));
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!waiting.is_finished(), "still waiting for the removal");
+        done_tx.send(()).expect("removal waits");
+        waiting.await.expect("settled");
+    }
 
     #[test]
     fn only_a_change_in_what_the_hub_wants_wakes_the_relay() {
@@ -677,7 +777,8 @@ mod tests {
         let (io, mut lines, prints) = fake_box();
         let (wants, wanted) = watch::channel(Some(BrowserWant { session_id: 7 }));
         let looping = tokio::spawn(async move {
-            let (end, relay) = relay_loop(&hub, Some(3), BrowserMode::Run, io, wanted).await;
+            let run = Some((3, std::collections::BTreeMap::new()));
+            let (end, relay) = relay_loop(&hub, run, BrowserMode::Run, io, wanted).await;
             finish(relay, &ended_why(&end)).await;
             end
         });

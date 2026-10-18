@@ -13,6 +13,7 @@ pub mod handover;
 pub mod identity;
 
 pub mod browser;
+pub mod dispatch;
 pub mod gatekeeper;
 pub mod pricing;
 pub mod sign_ins;
