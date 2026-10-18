@@ -112,6 +112,12 @@ pub struct TodayRow {
     /// "Answer the comments" answers (`POST /api/threads/{id}/pr/fix`).
     pub fix_thread_id: Option<i64>,
     pub last_pr: Option<LastPr>,
+    /// The app's deploy card, when its rules allow deploys and there is one
+    /// to show: ready, running, failed, or live in the last day.
+    pub deploy: Option<crate::deploy::Card>,
+    /// The app's rules allow deploys, so Check for changes can show even
+    /// when there is no card.
+    pub can_deploy: bool,
     pub tone: Tone,
     /// One or two words for the label: "Needs you", "Working", "Done".
     pub status: String,
@@ -162,6 +168,7 @@ struct Facts {
     /// The app's newest pull request has been looked at, whether or not it
     /// became `last_pr`.
     newest_seen: bool,
+    deploy: Option<crate::deploy::Card>,
 }
 
 fn plural(n: i64, one: &str, many: &str) -> String {
@@ -203,6 +210,11 @@ fn words(f: &Facts) -> (Tone, &'static str, String) {
     if f.goals_stuck > 0 {
         asks.push("Your project lead got stuck. Try again".to_owned());
     }
+    match f.deploy.as_ref().map(|d| d.state.as_str()) {
+        Some("waiting") => asks.push("Merged · ready to deploy".to_owned()),
+        Some("failed") => asks.push("Deploy failed. Try again".to_owned()),
+        _ => {}
+    }
     if f.work_needs_you > 0 {
         asks.push(format!(
             "{} you",
@@ -221,6 +233,10 @@ fn words(f: &Facts) -> (Tone, &'static str, String) {
             n => format!("{first} · {} more", n - 1),
         };
         return (Tone::NeedsYou, "Needs you", line);
+    }
+
+    if let Some(d) = f.deploy.as_ref().filter(|d| d.state == "deploying") {
+        return (Tone::Working, "Working", format!("Deploying · {}", d.line));
     }
 
     if f.working_goal || f.running > 0 || f.queued > 0 || f.lead_thinking {
@@ -254,6 +270,10 @@ fn words(f: &Facts) -> (Tone, &'static str, String) {
                 format!("{pr} · yours to merge on GitHub"),
             ),
         };
+    }
+
+    if f.deploy.as_ref().is_some_and(|d| d.state == "live") {
+        return (Tone::Done, "Live", "Live".to_owned());
     }
 
     match &f.last_pr {
@@ -427,6 +447,17 @@ impl Store {
             }
         }
 
+        let can_deploy: std::collections::HashSet<i64> =
+            sqlx::query_scalar::<_, i64>("SELECT id FROM apps WHERE can_deploy = 1")
+                .fetch_all(self.pool())
+                .await?
+                .into_iter()
+                .collect();
+        for d in self.deploy_cards().await? {
+            let app_id = d.app_id;
+            facts.entry(app_id).or_default().deploy = Some(d);
+        }
+
         let mut rows: Vec<TodayRow> = apps
             .into_iter()
             .map(|a| {
@@ -451,6 +482,8 @@ impl Store {
                     open_comments: open_comments.get(&a.id).copied().unwrap_or(0),
                     fix_thread_id: fix_thread.get(&a.id).copied(),
                     last_pr: f.last_pr,
+                    deploy: f.deploy,
+                    can_deploy: can_deploy.contains(&a.id),
                     tone,
                     status: status.to_owned(),
                     line,

@@ -81,6 +81,8 @@ async fn main() -> anyhow::Result<()> {
     decurion_hub::sign_in_lights::watch(state.clone());
     // The pull requests Decurion opened, until each is merged or closed.
     decurion_hub::pr_watch::watch(state.clone());
+    // Apps whose rules allow deploys: a Ready to deploy card after a merge.
+    decurion_hub::deploy::watch(state.clone());
     // Anything accepted but not yet sent when the hub last stopped.
     let resume = state.clone();
     tokio::spawn(async move {

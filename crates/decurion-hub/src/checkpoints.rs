@@ -107,6 +107,11 @@ impl Files {
     }
 
     /// The hub's own bare copy of an app's repo.
+    /// Where deploys keep their own copies of apps' code, and their logs.
+    pub(crate) fn deploy_dir(&self) -> PathBuf {
+        self.dir.join("deploys")
+    }
+
     pub(crate) fn app_cache(&self, app_id: i64) -> PathBuf {
         self.dir.join("repos").join(format!("app-{app_id}.git"))
     }

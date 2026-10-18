@@ -176,6 +176,9 @@
   .today-row .ft .run-btn { margin-left: auto; }
   .today-row .first { font-size: 12px; color: var(--faint); }
   .today .pill svg.i.spin { animation: none; }
+  /* An app with a deploy card: a little wider, with the deploy part under a line. */
+  .today-row:has(.deploy-box) { width: 336px; max-width: calc(100vw - 32px); }
+  .today-row .deploy-box { margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
   .pill.t-merge { color: var(--accent-ink); background: var(--accent-soft); }
   @media (min-width: 900px) and (max-width: 1199px) { .today { margin: 0 -22px; padding: 2px 22px 6px; } }
   @media (max-width: 899px) { .today { margin: 0 -16px; padding: 2px 16px 6px; } }
@@ -651,7 +654,9 @@
       return el("article", { className: "today-row", dataset: { tone: r.tone } },
         hit, el("div", { className: "ln", title: r.line + when }, r.line + when),
         el("div", { className: "ft" }, act, r.first_today ? el("span", { className: "first" }, "First today") : null,
-          runButton(r.app_id, r.name, `today-run-${id}`)));
+          runButton(r.app_id, r.name, `today-run-${id}`)),
+        r.deploy ? D.deployBox(r.deploy, { onChange: loadToday })
+          : r.can_deploy ? D.deployCheck(r.app_id, r.name, { onChange: loadToday }) : null);
     })));
   }
 

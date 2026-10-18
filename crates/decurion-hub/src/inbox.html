@@ -139,6 +139,9 @@
   .today-card .pill.t-merge { color: var(--accent-ink); background: var(--accent-soft); }
   .today-card .more-apps { justify-self: start; margin: 2px 0 6px -6px; }
   .today-card .run-btn { padding: 0 12px; }
+  /* An app's deploy card, under its row. */
+  .today-card .deploy-box { padding: 2px 10px 12px 0; }
+  .today-card .deploy-box + .tr { border-top: 1px solid var(--line); }
   /* A narrow phone keeps the app's name readable: Run it shows its icon only (its label stays for screen readers). */
   @media (max-width: 399px) { .today-card .run-btn .lbl { display: none; } .today-card .run-btn { width: 40px; padding: 0; } }
 
@@ -546,7 +549,7 @@ function renderToday() {
   box.hidden = !rows.length;
   const shown = todayAll ? rows : rows.slice(0, TODAY_ROWS);
   const more = rows.length - shown.length;
-  box.replaceChildren(el("div", { className: "th" }, "Today"), ...shown.map((r) => {
+  box.replaceChildren(el("div", { className: "th" }, "Today"), ...shown.flatMap((r) => {
     const go = el("button", { type: "button", className: "go" },
       el("span", { className: "nm" }, r.name), el("span", { className: "ln" }, r.line));
     go.onclick = () => { setAppFilter(String(r.app_id)); location.hash = "#board"; };
@@ -570,7 +573,10 @@ function renderToday() {
       const [cls, ic] = TONES[r.tone] ?? TONES.quiet;
       act = el("span", { className: `pill ${cls}` }, D.icon(ic), r.status);
     }
-    return el("div", { className: "tr", dataset: { tone: r.tone } }, go, act, runButton(r));
+    const row = el("div", { className: "tr", dataset: { tone: r.tone } }, go, act, runButton(r));
+    const again = () => { todaySig = ""; loadToday(); };
+    if (r.deploy) return [row, D.deployBox(r.deploy, { onChange: again })];
+    return r.can_deploy ? [row, D.deployCheck(r.app_id, r.name, { onChange: again })] : [row];
   }), ...(more > 0 ? [Object.assign(el("button", { type: "button", className: "btn quiet sm more-apps" }, `and ${D.plural(more, "more app")}`),
     { onclick: () => { todayAll = true; renderToday(); } })] : []));
 }

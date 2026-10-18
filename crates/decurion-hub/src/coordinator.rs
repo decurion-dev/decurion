@@ -1216,6 +1216,7 @@ impl Store {
                 None => false,
             };
         tx.commit().await?;
+        let live = self.goal_live(id).await?;
         Ok(GoalView {
             goal,
             app_name,
@@ -1223,6 +1224,7 @@ impl Store {
             pieces,
             pages,
             drawing,
+            live,
         })
     }
 

@@ -26,6 +26,10 @@
 //!   `Lib.rs` and `lib.rs` as the same file.
 //! - There is no `!` to make exceptions: such a line is an ordinary pattern,
 //!   so nothing in the list can unprotect a file.
+//!
+//! For an app whose rules allow deploys, the files its deploy steps run
+//! (such as `scripts/deploy-prod.mjs`, see [`crate::deploy::named_files`])
+//! are protected too, whether the list names them or not.
 
 use crate::checkpoints::{git, is_commit, Files};
 use crate::store::{Result, Store, StoreError};
@@ -334,9 +338,18 @@ async fn check(store: &Store, files: &Files, job_id: i64) -> Result<Hold> {
         .base
         .filter(|b| is_commit(b))
         .ok_or_else(|| StoreError::Invalid("no starting commit is known for this work".into()))?;
-    let Some(list) = files.protected_list(t.app_id, &t.repo_path, &base).await? else {
+    let list = files.protected_list(t.app_id, &t.repo_path, &base).await?;
+    // Files an app's deploy steps run are protected for every app that
+    // deploys, listed or not: a Deploy tap runs them on the owner's PC.
+    let deploy_files = store
+        .deploy_rule(t.app_id)
+        .await?
+        .map(|r| crate::deploy::named_files(&r.steps))
+        .unwrap_or_default();
+    if list.is_none() && deploy_files.is_empty() {
         return Ok(Hold::Clear);
-    };
+    }
+    let list = format!("{}\n{}", list.unwrap_or_default(), deploy_files.join("\n"));
     let checkpoint = t
         .checkpoint
         .ok_or_else(|| StoreError::Invalid("the hub has no saved copy of this work".into()))?;
