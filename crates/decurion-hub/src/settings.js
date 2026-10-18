@@ -205,7 +205,7 @@
         `When you accept work, Decurion sends it to the app's GitHub page as a new branch, using ${here()}'s own GitHub sign-in. With a GitHub token saved here, it also opens the pull request for you. Without one, you get a button that opens it in one tap. Decurion never merges: you do that on GitHub.`,
         parts.github),
       card("sign-ins", "key", "Website sign-ins",
-        "Let this app's agents check pages that need a sign-in. You sign in once, in a browser window from your PC; the sign-in is kept on your PC and your password is never saved. Use test accounts only: an agent may be able to read part of what a website keeps.",
+        "Let this app's agents check pages that need a sign-in. You sign in once, in a sign-in window on your PC or phone; the sign-in is kept on your PC and your password is never saved. Use test accounts only: an agent may be able to read part of what a website keeps.",
         parts.signIns),
       phones);
   }
