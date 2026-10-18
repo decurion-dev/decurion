@@ -1381,7 +1381,7 @@ async function approve(msgId, btn, err) {
 function renderTail(v) {
   const g = v.goal;
   const prs = (v.pieces ?? []).map(p => [p.thread_id, p.github?.state, p.github?.url, p.merged, p.review, p.thread_state]);
-  const sig = JSON.stringify([g.busy, g.stuck, g.state, g.dismissed_at, boardHref(), prs]);
+  const sig = JSON.stringify([g.busy, g.stuck, g.state, g.dismissed_at, boardHref(), prs, v.live]);
   if (sig === S.tailSig) return false;
   S.tailSig = sig;
   const parts = [];
@@ -1414,6 +1414,9 @@ function renderTail(v) {
   } else if (CLOSED.has(g.state)) {
     const merged = (v.pieces ?? []).some(p => p.merged);
     const words = g.state === "stopped" ? "This goal was stopped."
+      // An app that deploys: merged is not live until a deploy finishes.
+      : v.live === false ? "Merged · ready to deploy. Tap Deploy on Today to put it live."
+      : v.live === true ? "Live. Every pull request is merged and deployed."
       : merged ? "Every pull request is merged, so this goal is done." : "You marked this goal done.";
     // Dismiss takes it off the goal list; it is kept under Dismissed.
     const back = !!g.dismissed_at;

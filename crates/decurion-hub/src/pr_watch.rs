@@ -191,6 +191,8 @@ fn comment_from(
 /// What one look at a pull request found.
 struct Look {
     state: PrState,
+    /// The commit GitHub made on the base branch, once merged.
+    merge_commit: Option<String>,
     author: Option<String>,
     comments: Vec<NewComment>,
 }
@@ -227,6 +229,11 @@ async fn look(s: &Sender, t: &Token, r: &Repo, n: i64) -> std::result::Result<Lo
     } else {
         PrState::Open
     };
+    let merge_commit = pr["merge_commit_sha"]
+        .as_str()
+        .filter(|c| (40..=64).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_hexdigit()))
+        .filter(|_| state == PrState::Merged)
+        .map(str::to_owned);
     let mut comments = Vec::new();
     // Comments only matter while there is still something to fix.
     if state == PrState::Open {
@@ -253,6 +260,7 @@ async fn look(s: &Sender, t: &Token, r: &Repo, n: i64) -> std::result::Result<Lo
     }
     Ok(Look {
         state,
+        merge_commit,
         author,
         comments,
     })
@@ -447,6 +455,7 @@ impl Store {
         };
         sqlx::query(
             "UPDATE pr_watches SET state = ?, author = COALESCE(?, author),
+                 merge_commit = COALESCE(?, merge_commit),
                  checked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                  event = COALESCE(?, event),
                  event_at = CASE WHEN ? IS NULL THEN event_at
@@ -455,6 +464,7 @@ impl Store {
         )
         .bind(l.state.as_str())
         .bind(&l.author)
+        .bind(&l.merge_commit)
         .bind(&event)
         .bind(&event)
         .bind(thread_id)

@@ -51,7 +51,7 @@ use axum::Json;
 use decurion_proto::deploy::{check_site, parse_steps, Step};
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, Sqlite, Transaction};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -861,6 +861,76 @@ impl Store {
         Ok(ids.len())
     }
 
+    /// Whether each goal of apps that deploy is live, by goal: true once
+    /// every merged pull request of the goal is in a release from Decurion,
+    /// false while one is merged but not released. Goals of apps that do not
+    /// deploy, and goals with nothing merged, are left out. `app_id` limits
+    /// it to one app.
+    pub async fn goals_live(&self, app_id: Option<i64>) -> Result<HashMap<i64, bool>> {
+        let rows: Vec<(i64, i64, i64)> = sqlx::query_as(
+            "SELECT p.goal_id, COUNT(*), SUM(w.live_at IS NOT NULL)
+             FROM goal_pieces p JOIN pr_watches w ON w.thread_id = p.thread_id
+             JOIN goals g ON g.id = p.goal_id JOIN apps a ON a.id = g.app_id
+             WHERE a.can_deploy = 1 AND p.merged_at IS NOT NULL
+               AND (?1 IS NULL OR g.app_id = ?1)
+             GROUP BY p.goal_id",
+        )
+        .bind(app_id)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(goal, merged, live)| (goal, live >= merged))
+            .collect())
+    }
+
+    /// [`Store::goals_live`] for one goal.
+    pub async fn goal_live(&self, goal_id: i64) -> Result<Option<bool>> {
+        let app: Option<i64> = sqlx::query_scalar("SELECT app_id FROM goals WHERE id = ?")
+            .bind(goal_id)
+            .fetch_optional(self.pool())
+            .await?;
+        let Some(app) = app else { return Ok(None) };
+        Ok(self.goals_live(Some(app)).await?.get(&goal_id).copied())
+    }
+
+    /// Merged pull requests of app `app_id` not yet known to be live.
+    async fn not_yet_live(
+        &self,
+        app_id: i64,
+    ) -> Result<Vec<(i64, Option<String>, Option<String>)>> {
+        Ok(sqlx::query_as(
+            "SELECT thread_id, merge_commit, event_at FROM pr_watches
+             WHERE app_id = ? AND state = 'merged' AND live_at IS NULL",
+        )
+        .bind(app_id)
+        .fetch_all(self.pool())
+        .await?)
+    }
+
+    /// When app `app_id`'s last release from Decurion started.
+    async fn last_live_start(&self, app_id: i64) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT started_at FROM deploys WHERE app_id = ? AND state = 'live'
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(app_id)
+        .fetch_optional(self.pool())
+        .await?
+        .flatten())
+    }
+
+    async fn set_pr_live(&self, thread_id: i64) -> Result<()> {
+        sqlx::query(
+            "UPDATE pr_watches SET live_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE thread_id = ? AND live_at IS NULL",
+        )
+        .bind(thread_id)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
     /// What happened to deploy `id`, oldest first: (actor, what).
     pub async fn deploy_history(&self, id: i64) -> Result<Vec<(String, String)>> {
         Ok(
@@ -993,6 +1063,35 @@ impl Deployer {
         out
     }
 
+    /// Marks merged pull requests of app `app_id` live once its last release
+    /// holds their merge commit. A pull request merged before Decurion kept
+    /// merge commits counts as live when that release started after the merge
+    /// was seen (a release always fetches the newest main line first).
+    async fn mark_live(&self, app_id: i64, dir: &Path) {
+        let (Ok(Some(live)), Ok(start)) = (
+            self.store.last_live(app_id).await,
+            self.store.last_live_start(app_id).await,
+        ) else {
+            return;
+        };
+        let Ok(waiting) = self.store.not_yet_live(app_id).await else {
+            return;
+        };
+        for (thread_id, merge, seen) in waiting {
+            let held = match merge.filter(|m| is_sha(m)) {
+                Some(m) => run_git(dir, &["merge-base", "--is-ancestor", &m, &live])
+                    .await
+                    .is_ok(),
+                None => matches!((&seen, &start), (Some(seen), Some(start)) if seen <= start),
+            };
+            if held {
+                if let Err(e) = self.store.set_pr_live(thread_id).await {
+                    tracing::warn!(error = %e, thread = thread_id, "could not mark a pull request live");
+                }
+            }
+        }
+    }
+
     /// Looks at app `app_id`'s main line once and updates its card. Skipped
     /// while that app is deploying.
     pub async fn look(&self, app_id: i64) -> std::result::Result<Option<i64>, String> {
@@ -1053,6 +1152,7 @@ impl Deployer {
             .note_head(app_id, &head)
             .await
             .map_err(|e| e.to_string())?;
+        self.mark_live(app_id, &dir).await;
         if let Some(id) = moved {
             if let Ok(c) = self.store.deploy_card(id).await {
                 self.tell(notice(&c, "ready to deploy", &c.line)).await;
@@ -1096,6 +1196,9 @@ impl Deployer {
         }
         tracing::info!(deploy = id, live = ok, "deploy finished");
         if let Ok(c) = self.store.deploy_card(id).await {
+            if ok {
+                self.mark_live(c.app_id, &self.copy_dir(c.app_id)).await;
+            }
             let n = if ok {
                 notice(&c, "live", &format!("{} is live", c.short))
             } else {

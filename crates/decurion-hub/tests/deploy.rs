@@ -218,7 +218,7 @@ async fn a_merge_shows_one_card_and_one_tap_runs_the_steps_on_that_commit() {
     let today = ok(&h.r, OWNER, "GET", "/api/today", json!({})).await;
     assert_eq!(today[0]["deploy"]["id"], card["id"]);
     assert_eq!(today[0]["tone"], "needs_you");
-    assert_eq!(today[0]["line"], "Ready to deploy");
+    assert_eq!(today[0]["line"], "Merged · ready to deploy");
 
     let (s, started) = tap(&h, &card, "tap-deploy-0001").await;
     assert_eq!(s, StatusCode::OK, "{started}");
@@ -259,7 +259,8 @@ async fn a_merge_shows_one_card_and_one_tap_runs_the_steps_on_that_commit() {
     let card = check(&h).await;
     assert_eq!(card["state"], "live");
     let today = ok(&h.r, OWNER, "GET", "/api/today", json!({})).await;
-    assert_eq!(today[0]["line"], "Live now");
+    assert_eq!(today[0]["line"], "Live");
+    assert_eq!(today[0]["status"], "Live");
 
     // The next merge makes a new card that lists only what is new.
     let next = merge(&h, "README.md", "hello again\n", "Fix login");

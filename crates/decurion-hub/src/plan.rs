@@ -213,6 +213,35 @@ pub fn goal_steps(state: GoalState, planned: bool, pieces: &[PieceStep]) -> Vec<
     steps
 }
 
+/// Adds the last step for an app that deploys: "Done" is not "live". A goal
+/// whose merged pull requests are all in a release from Decurion ends with
+/// "Live"; one with a merge not released yet ends with "Merged · ready to
+/// deploy", the owner's to tap; an open goal shows "Live" still to come.
+/// Apps that do not deploy, stopped goals, and goals closed with nothing
+/// merged are left as they are. `live` comes from `Store::goals_live`.
+pub fn with_live(
+    mut steps: Vec<PlanStep>,
+    state: GoalState,
+    can_deploy: bool,
+    live: Option<bool>,
+) -> Vec<PlanStep> {
+    let step = |title: &str, state| PlanStep {
+        title: title.to_owned(),
+        state,
+        thread_id: None,
+    };
+    if !can_deploy || state == GoalState::Stopped {
+        return steps;
+    }
+    match live {
+        Some(true) => steps.push(step("Live", StepState::Done)),
+        Some(false) => steps.push(step("Merged · ready to deploy", StepState::You)),
+        None if state == GoalState::Done => {}
+        None => steps.push(step("Live", StepState::Later)),
+    }
+    steps
+}
+
 /// A goal row's state: done when the goal was closed as done, dropped when
 /// it was stopped.
 fn goal_item_state(g: GoalState) -> ItemState {
@@ -515,6 +544,8 @@ impl Store {
     /// with its steps, what it found and its pages.
     pub async fn plan_view(&self, app_id: i64) -> Result<PlanView> {
         let app = self.app(app_id).await?;
+        // Read before the transaction, which holds this task's one connection.
+        let live = self.goals_live(Some(app_id)).await?;
         let mut tx = self.pool().begin().await?; // read-only: a reader never waits on writers
         let rows = sqlx::query(&format!(
             "SELECT {ITEM_COLS} FROM plan_items WHERE app_id = ? ORDER BY position, id"
@@ -544,6 +575,11 @@ impl Store {
         .await?
         .into_iter()
         .collect();
+        let can_deploy: bool = sqlx::query_scalar("SELECT can_deploy FROM apps WHERE id = ?")
+            .bind(app_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .unwrap_or(false);
         let mut pieces: HashMap<i64, Vec<PieceStep>> = HashMap::new();
         for r in &sqlx::query(
             "SELECT p.goal_id, p.thread_id, p.title, p.review, t.state
@@ -625,10 +661,15 @@ impl Store {
                 source: row.source,
                 state: goal_item_state(g.goal.state),
                 goal: Some(g.goal.clone()),
-                steps: goal_steps(
+                steps: with_live(
+                    goal_steps(
+                        g.goal.state,
+                        planned.contains(&id),
+                        &pieces.remove(&id).unwrap_or_default(),
+                    ),
                     g.goal.state,
-                    planned.contains(&id),
-                    &pieces.remove(&id).unwrap_or_default(),
+                    can_deploy,
+                    live.get(&id).copied(),
                 ),
                 found: children.remove(&row.id).unwrap_or_default(),
                 pages: pages.remove(&id).unwrap_or_default(),
@@ -1045,6 +1086,35 @@ mod tests {
         assert_eq!(
             states(&goal_steps(GoalState::Working, true, &pieces)),
             [Done, Done, Now, Now, You, Problem, Done, Later]
+        );
+    }
+
+    #[test]
+    fn an_app_that_deploys_ends_its_goals_with_live() {
+        let base = || goal_steps(GoalState::Done, true, &[]);
+        let last = |v: Vec<PlanStep>| v.last().map(|s| (s.title.clone(), s.state));
+        assert_eq!(
+            base(),
+            with_live(base(), GoalState::Done, false, Some(false))
+        );
+        assert_eq!(
+            last(with_live(base(), GoalState::Done, true, Some(false))),
+            Some(("Merged · ready to deploy".into(), You))
+        );
+        assert_eq!(
+            last(with_live(base(), GoalState::Done, true, Some(true))),
+            Some(("Live".into(), Done))
+        );
+        assert_eq!(base(), with_live(base(), GoalState::Done, true, None));
+        let open = goal_steps(GoalState::Working, true, &[]);
+        assert_eq!(
+            last(with_live(open.clone(), GoalState::Working, true, None)),
+            Some(("Live".into(), Later))
+        );
+        let stopped = goal_steps(GoalState::Stopped, true, &[]);
+        assert_eq!(
+            stopped,
+            with_live(stopped.clone(), GoalState::Stopped, true, None)
         );
     }
 

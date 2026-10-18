@@ -549,6 +549,11 @@ pub struct GoalView {
     pub pages: Vec<PageInfo>,
     /// The plan page for the latest plan is being drawn.
     pub drawing: bool,
+    /// For an app that deploys: whether every merged pull request of the goal
+    /// is in a release yet ("Live") or not ("Merged · ready to deploy").
+    /// Absent for apps that do not deploy and goals with nothing merged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<bool>,
 }
 
 /// What the reviewer returns, as the JSON object at the end of its answer.

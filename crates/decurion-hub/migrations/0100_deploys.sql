@@ -40,3 +40,9 @@ CREATE TABLE deploy_audit (
     note       TEXT,
     at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+-- "Done" is not "live": for an app that deploys, a merged pull request shows
+-- "Merged · ready to deploy" until a release from Decurion holds its merge
+-- commit, then "Live". GitHub's merge commit is kept when the merge is seen.
+ALTER TABLE pr_watches ADD COLUMN merge_commit TEXT;
+ALTER TABLE pr_watches ADD COLUMN live_at TEXT;

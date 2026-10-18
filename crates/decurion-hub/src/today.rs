@@ -211,7 +211,7 @@ fn words(f: &Facts) -> (Tone, &'static str, String) {
         asks.push("Your project lead got stuck. Try again".to_owned());
     }
     match f.deploy.as_ref().map(|d| d.state.as_str()) {
-        Some("waiting") => asks.push("Ready to deploy".to_owned()),
+        Some("waiting") => asks.push("Merged · ready to deploy".to_owned()),
         Some("failed") => asks.push("Deploy failed. Try again".to_owned()),
         _ => {}
     }
@@ -273,7 +273,7 @@ fn words(f: &Facts) -> (Tone, &'static str, String) {
     }
 
     if f.deploy.as_ref().is_some_and(|d| d.state == "live") {
-        return (Tone::Done, "Done", "Live now".to_owned());
+        return (Tone::Done, "Live", "Live".to_owned());
     }
 
     match &f.last_pr {
