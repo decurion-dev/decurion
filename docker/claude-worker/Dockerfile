@@ -161,7 +161,7 @@ ENV CARGO_HOME=/home/agent/.cargo \
 # start sets up afresh; then a setup like docker-compose's (POSTGRES_USER,
 # POSTGRES_DB, init scripts) and a query as the app's own role.
 RUN mkdir -p /tmp/pg-init \
- && printf "CREATE ROLE app_user LOGIN PASSWORD 'x';\nCREATE DATABASE app_test;\n" > /tmp/pg-init/01-init.sql \
+ && printf "CREATE ROLE app_user LOGIN;\nCREATE DATABASE app_test;\n" > /tmp/pg-init/01-init.sql \
  && printf "SELECT broken;\n" > /tmp/pg-init/02-broken.sql \
  && if decurion-postgres start --port 5499 --user app --init /tmp/pg-init 2>/dev/null; then \
       echo "a failed setup was reported as success" >&2; exit 1; \
