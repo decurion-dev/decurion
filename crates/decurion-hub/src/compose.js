@@ -1,5 +1,5 @@
-// The new-work form, shared by the board and the phone inbox: the one place
-// the owner asks for something. One box says what they want; by default it
+// The new-work form, shared by the board, the phone inbox and the Goals page:
+// the one place the owner asks for something. One box says what they want; by default it
 // goes to the project lead as a goal, which asks, plans and waits for the
 // owner's approval before anything starts. "Just do it" is the owner's own
 // explicit choice to skip the plan for a small change: one agent, one piece,

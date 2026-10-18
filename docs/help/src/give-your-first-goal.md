@@ -10,7 +10,8 @@ you talk to, turns it into finished, checked work.
 There is one box for asking for anything: **What do you want?**
 
 1. Open the board at <http://decurion.localhost:7420>. The box is at the top.
-   On your phone, open the inbox, tap **Board**, then **New work**.
+   On your phone, open the inbox, tap **Board**, then **New work**. On the
+   **Goals** page, press **New work** to open the same box above your goals.
 2. Choose the app.
 3. Type what you want, such as "Add a password reset page to the portal." Say
    what you want, not how to code it.

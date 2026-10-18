@@ -86,14 +86,49 @@
   .dis-toggle[aria-expanded="true"] svg.i { transform:rotate(90deg); }
   .goal-list.dismissed { margin-top:6px; opacity:.75; }
 
-  /* New goal */
-  .new-goal { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:14px; margin:0 0 8px; box-shadow:var(--shadow); }
-  .new-goal label { display:block; font-size:13.5px; font-weight:600; margin:0 0 6px; }
-  .new-goal select, .new-goal textarea { width:100%; font:inherit; font-size:16px; color:var(--ink); background:var(--bg); border:1px solid var(--line-strong); border-radius:10px; padding:10px 12px; margin-bottom:12px; }
-  .new-goal select { min-height:44px; }
-  .new-goal textarea { resize:vertical; min-height:110px; }
-  .new-goal .row { display:flex; gap:8px; }
-  .new-goal p { margin:0; }
+  /* New work: the one "What do you want?" box (D.composer in compose.js), the same box as on the
+     board and the phone. This page has no ui.css, so the box's look (ui.css, "New-work form") is
+     copied here in this page's colors and stacked to fit the list's width. Every rule starts with
+     #new-goal so the message box's own .composer rules further down never reach it. */
+  .side-head .btn svg.i, .pane-empty .btn svg.i, #new-goal svg.i { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  #new-goal svg.i.l { width:20px; height:20px; }
+  #new-goal.composer { flex:none; margin:0 0 8px; padding:0; background:var(--card); border:1px solid var(--line); border-top:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow);
+    transition:border-color .15s, box-shadow .15s; }
+  #new-goal.composer:focus-within { border-color:var(--line-strong); box-shadow:0 0 0 3px var(--accent-soft), var(--shadow); }
+  #new-goal label.lead { display:block; padding:14px 14px 0; font-size:15px; font-weight:600; line-height:1.3; }
+  #new-goal textarea.c-prompt { display:block; flex:none; width:100%; min-height:76px; max-height:300px; padding:8px 14px 6px; border:0; background:transparent; resize:none; outline:none;
+    font:inherit; font-size:16px; line-height:1.5; color:var(--ink); }
+  #new-goal textarea.c-prompt::placeholder { color:var(--muted); white-space:normal; }
+  #new-goal .c-modes { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; padding:6px 10px 0; }
+  #new-goal .c-mode { flex:1 1 100%; display:flex; gap:2px; padding:2px; border-radius:8px; background:var(--neutral-soft); }
+  #new-goal .c-mode .seg { flex:1 1 0; min-height:30px; padding:0 12px; border:0; border-radius:6px; background:none; cursor:pointer; font:inherit; font-size:13px; font-weight:600; color:var(--muted); white-space:nowrap; }
+  #new-goal .c-mode .seg:hover { color:var(--ink); }
+  #new-goal .c-mode .seg[aria-checked="true"] { background:var(--card); color:var(--accent-ink); box-shadow:0 0 0 1px var(--line), 0 1px 2px rgba(0,0,0,.08); }
+  #new-goal .c-mode-line { display:block; flex:1 1 160px; min-width:0; margin:0; padding:0 4px; text-align:left; font-size:13px; }
+  #new-goal .bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px 10px 10px; }
+  #new-goal .bar select, #new-goal .bar input.c-title { flex:1 1 100%; width:100%; min-width:0; min-height:36px; padding:7px 10px; font:inherit; font-size:14px; color:var(--ink);
+    border:1px solid transparent; border-radius:8px; }
+  #new-goal .bar select { appearance:none; padding-right:32px; cursor:pointer; font-weight:500; background-color:var(--neutral-soft); background-repeat:no-repeat; background-position:right 10px center;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%237d8695' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
+  #new-goal .bar input.c-title { background:transparent; }
+  #new-goal .bar input.c-title:hover { background:var(--neutral-soft); }
+  #new-goal .bar select:focus, #new-goal .bar input.c-title:focus { outline:none; background-color:var(--card); border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+  #new-goal .bar .grow { display:none; }
+  #new-goal .bar .btn.c-start { flex:1 1 100%; }
+  #new-goal .check { display:inline-flex; align-items:center; gap:8px; min-height:24px; cursor:pointer; font-size:13px; color:var(--muted); }
+  #new-goal .check input { width:18px; height:18px; margin:0; accent-color:var(--accent); }
+  #new-goal .field-error { padding:0 14px 12px; color:var(--bad-ink); font-size:13.5px; overflow-wrap:anywhere; }
+  #new-goal .field-error:empty { display:none; }
+  #new-goal .empty-state { display:grid; justify-items:center; gap:10px; padding:24px 14px; text-align:center; color:var(--muted); }
+  #new-goal .empty-state .mark { width:44px; height:44px; display:grid; place-items:center; background:none; box-shadow:none; border-radius:0; color:var(--muted); }
+  #new-goal .empty-state h3 { margin:0; font-size:17px; color:var(--ink); }
+  #new-goal .empty-state p { margin:0; }
+  /* Fingers: bigger choices, and 16px fields so a phone does not zoom in on them. */
+  @media (pointer: coarse), (max-width: 759px) {
+    #new-goal .c-mode .seg { min-height:40px; font-size:14.5px; }
+    #new-goal .bar select, #new-goal .bar input.c-title { min-height:44px; font-size:16px; }
+    #new-goal .check { min-height:44px; }
+  }
   .hint { color:var(--muted); font-size:13px; }
 
   /* Buttons and pills */
@@ -410,7 +445,6 @@
   .composer-box:has(textarea.voice-live) { border-color:var(--bad); box-shadow:0 0 0 3px var(--bad-soft); }
   .talk-note { text-align:center; font-size:13px; font-weight:600; color:var(--bad-ink); }
   .who .voice-speak { margin-left:8px; }
-  .new-goal .voice-slot { margin-left:auto; display:flex; }
   @media (max-width: 759px) {
     .choices .other-toggle:has(+ .voice-mic:not([hidden])) { width:auto; flex:1; }
   }
@@ -447,24 +481,10 @@
   <aside class="side" aria-label="Goals">
     <div class="side-head">
       <h1>Goals</h1>
-      <button class="btn primary" id="new-toggle" type="button" aria-expanded="false" aria-controls="new-goal">New goal</button>
+      <button class="btn primary" id="new-toggle" type="button" aria-expanded="false" aria-controls="new-goal">New work</button>
     </div>
-    <section class="new-goal" id="new-goal" aria-label="New goal" hidden>
-      <form id="new-form" novalidate>
-        <label for="new-app">App</label>
-        <select id="new-app"></select>
-        <label for="new-text">What do you want built?</label>
-        <textarea id="new-text" rows="4" placeholder="Say it in your own words, the way you'd tell a person." data-voice></textarea>
-        <div class="row">
-          <button class="btn primary" id="new-start" type="submit">Start</button>
-          <button class="btn ghost" id="new-cancel" type="button">Cancel</button>
-          <span class="voice-slot" data-voice-slot="new-text"></span>
-        </div>
-        <p class="hint" style="margin-top:10px">Your project lead reads the app, asks a few questions, then shows you a plan to approve.</p>
-        <p class="err-line" id="new-err" role="alert"></p>
-      </form>
-      <p id="no-apps" hidden><span id="no-apps-text">Add an app on the board first.</span> <a id="no-apps-link" href="/">Open the board</a></p>
-    </section>
+    <!-- The one "What do you want?" box, drawn by compose.js (D.composer), the same as on the board and the phone. -->
+    <section class="new-goal" id="new-goal" aria-label="New work" hidden></section>
     <div id="goal-groups"><p class="empty">Loading your goals…</p></div>
   </aside>
 
@@ -472,8 +492,8 @@
     <div class="pane-empty" id="pane-empty">
       <div>
         <h2>What should we build next?</h2>
-        <p>Pick a goal on the left, or start a new one. Your project lead will talk it through with you and come back with a plan.</p>
-        <button class="btn primary" id="empty-new" type="button">Start a new goal</button>
+        <p>Pick a goal on the left, or press New work and say what you want. Your project lead will talk it through with you and come back with a plan.</p>
+        <button class="btn primary" id="empty-new" type="button">New work</button>
       </div>
     </div>
 
@@ -538,6 +558,8 @@
 <!-- For the phone's bottom tabs (D.phoneTabs). This page keeps its own look and helpers. -->
 <script src="/ui.js"></script>
 <script src="/files.js"></script>
+<!-- The one "What do you want?" box, shared with the board and the phone. -->
+<script src="/compose.js"></script>
 <script src="/voice.js"></script>
 <script>
 "use strict";
@@ -701,7 +723,7 @@ async function tick() {
   ticking = true; clearTimeout(timer);
   try {
     const jobs = [loadGoals()];
-    if (S.appsSig === null || Date.now() - S.appsAt > 30000) jobs.push(loadApps());
+    if (S.appsSig === null || D.offline || Date.now() - S.appsAt > 30000) jobs.push(loadApps());
     if (S.id != null) jobs.push(loadGoal(S.id));
     await Promise.all(jobs);
     setError("");
@@ -717,18 +739,24 @@ async function tick() {
 }
 function setError(msg) { $("err").textContent = msg; $("err").hidden = !msg; }
 
+/**
+ * Apps, and whether work can run in the cloud, for the list and the new-work box. Asked
+ * through D.api, the box's own way to the hub, so once the PC answers again after a
+ * dropped connection the box knows it and lets the owner press Start (tick asks every
+ * time until then).
+ */
 async function loadApps() {
-  const apps = await api("/apps") ?? [];
+  let apps, workers;
+  try { [apps, workers] = await Promise.all([D.api("/apps"), D.api("/workers").catch(() => null)]); }
+  catch (e) { throw new ApiError(e.signedOut ? SIGNED_OUT : e.message, e.signedOut ? 401 : 0); }
+  apps = apps ?? [];
   S.appsAt = Date.now();
   S.apps = apps; S.appsById = new Map(apps.map(a => [a.id, a]));
+  if (Array.isArray(workers)) S.hasCloud = workers.some(w => w.place === "cloud");
+  drawNewWork();
   const sig = JSON.stringify(apps.map(a => [a.id, a.name]));
   if (sig === S.appsSig) return;
   S.appsSig = sig;
-  const sel = $("new-app"), keep = sel.value;
-  sel.replaceChildren(...apps.map(a => el("option", { value: a.id }, a.name)));
-  if (keep && apps.some(a => String(a.id) === keep)) sel.value = keep;
-  $("new-form").hidden = !apps.length;
-  $("no-apps").hidden = apps.length > 0;
   renderList();
   if (S.view) renderHead(S.view);
 }
@@ -780,7 +808,7 @@ function renderList() {
   const focused = document.activeElement?.closest?.("[data-goal]")?.dataset.goal;
   const box = $("goal-groups");
   if (!rows.length) {
-    box.replaceChildren(el("p", { class: "empty" }, "No goals yet. Tap New goal and say what you want built."));
+    box.replaceChildren(el("p", { class: "empty" }, "No goals yet. Tap New work and say what you want."));
     return;
   }
   const item = r => {
@@ -825,44 +853,52 @@ async function dismissGoals(rows, dismissed) {
   renderList();
 }
 
-// ---------- new goal ----------
+// ---------- new work: the one "What do you want?" box ----------
+// The same box as on the board and the phone (D.composer, compose.js), so there
+// is one way to start everywhere. The project lead is chosen unless the owner
+// picks Just do it; its goal opens here and still waits for the owner's own
+// Approve plan. Just do it work lives on the Board, so the owner goes there to
+// see it. Nothing here approves a plan.
+const newWork = D.composer({
+  root: $("new-goal"), prefix: "ng-", keyHint: false, draftKey: "decurion.goals.draft",
+  onGoal: goal => {
+    closeNewGoal();
+    S.listSig = "";
+    if (goal?.id != null) location.hash = `#goal-${goal.id}`;
+    S.forceStick = true;
+    tick();
+  },
+  onStarted: () => { closeNewGoal(); location.href = boardHref(); },
+});
+/** Tells the box the apps and computers; only once they have loaded, so it never shows "Add your first app" too soon. */
+function drawNewWork() {
+  if (S.appsAt) newWork.update({ apps: S.apps, hasCloud: !!S.hasCloud, loaded: true });
+}
+D.onOffline(drawNewWork);
 function openNewGoal(focus = true) {
   $("new-goal").hidden = false;
   $("new-toggle").setAttribute("aria-expanded", "true");
   if (location.hash.startsWith("#goal-") && !wide.matches) location.hash = "#goals";
-  if (focus) setTimeout(() => (S.apps.length ? $("new-text") : $("no-apps").querySelector("a"))?.focus(), 0);
+  if (focus) setTimeout(() => { $("new-goal").scrollIntoView({ block: "nearest" }); newWork.focus(); }, 0);
 }
 function closeNewGoal() {
   $("new-goal").hidden = true;
   $("new-toggle").setAttribute("aria-expanded", "false");
-  $("new-err").textContent = "";
 }
+$("new-toggle").prepend(D.icon("plus"));
+$("empty-new").prepend(D.icon("plus"));
 $("new-toggle").addEventListener("click", () => ($("new-goal").hidden ? openNewGoal() : closeNewGoal()));
-$("new-cancel").addEventListener("click", () => { closeNewGoal(); $("new-toggle").focus(); });
 $("empty-new").addEventListener("click", () => openNewGoal());
-$("new-text").addEventListener("keydown", e => {
-  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("new-form").requestSubmit(); }
+// Escape puts the box away; what was typed stays for next time.
+$("new-goal").addEventListener("keydown", e => {
+  if (e.key !== "Escape" || e.defaultPrevented) return;
+  closeNewGoal(); $("new-toggle").focus();
 });
-$("new-form").addEventListener("submit", async e => {
-  e.preventDefault();
-  const text = $("new-text").value.trim(), appId = Number($("new-app").value);
-  if (!appId) { $("new-err").textContent = "Pick an app first."; return; }
-  if (!text) { $("new-err").textContent = "Say what you want built."; $("new-text").focus(); return; }
-  const btn = $("new-start");
-  btn.disabled = true; btn.textContent = "Starting…"; $("new-err").textContent = "";
-  try {
-    const r = await post("/goals", { app_id: appId, text });
-    $("new-text").value = "";
-    closeNewGoal();
-    const id = r?.id ?? r?.goal?.id;
-    if (id != null) location.hash = `#goal-${id}`;
-    else { S.listSig = ""; await loadGoals().catch(() => {}); if (S.goals?.length) location.hash = `#goal-${S.goals[0].id}`; }
-    S.forceStick = true;
-    tick();
-  } catch (x) {
-    $("new-err").textContent = `Couldn't start the goal: ${x.message}`;
-  } finally { btn.disabled = false; btn.textContent = "Start"; }
-});
+// Other screens' "fill in the box for me" opens this box, filled in, here.
+D.setNewWork(fill => { openNewGoal(); newWork.fill(fill); });
+// Words left in the box from last time: show them rather than hide them (on a
+// phone, only on the list, so an open goal stays open).
+if ($("ng-prompt").value.trim() && (wide.matches || !location.hash.startsWith("#goal-"))) openNewGoal(false);
 
 // ---------- selection ----------
 function selectFromHash() {
@@ -1628,9 +1664,9 @@ $("tab-goals").addEventListener("click", e => {
 function placeLinks() {
   document.querySelectorAll("a[data-board]").forEach(a => { a.href = boardHref(); });
   // On a phone, apps are added in Settings.
-  $("no-apps-text").textContent = inApp() ? "Add an app in Settings first." : "Add an app on the board first.";
-  $("no-apps-link").textContent = inApp() ? "Open Settings" : "Open the board";
-  $("no-apps-link").href = inApp() ? "/inbox#settings" : "/";
+  // The new-work box's "Add an app" goes to Settings on the board, or in the phone's inbox.
+  $("ng-no-apps").querySelector("p").textContent = `An app is a git folder on ${inApp() ? "your" : "this"} PC. Add one in Settings, then say what you want here.`;
+  $("ng-no-apps").querySelector("a").href = inApp() ? "/inbox#settings/apps" : "/#settings/apps";
 }
 placeLinks();
 for (const m of [phone, installed]) m.addEventListener("change", () => { placeLinks(); if (S.view) renderGoal(S.view); });
