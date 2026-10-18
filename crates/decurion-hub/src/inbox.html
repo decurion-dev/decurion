@@ -139,8 +139,66 @@
   .wcard .foot { margin-top: 10px; }
   .wcard .foot .acts { margin-left: auto; color: var(--faint); }
   .wcard .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--steel); animation: breathe 1.8s ease-in-out infinite; }
-  .board-more { text-align: center; font-size: 13px; color: var(--faint); padding: 4px 0; }
+  .board-more { width: 100%; min-height: 48px; border-radius: var(--radius); }
   @keyframes breathe { 50% { opacity: .3; } }
+  /* Which app the board shows, like the app list on the PC's board. Scrolls with the cards. */
+  .app-chips { display: flex; gap: 8px; overflow-x: auto; margin: 0 calc(-1 * var(--side)); padding: 2px var(--side) 2px; scrollbar-width: none; }
+  .app-chips::-webkit-scrollbar { display: none; }
+  .app-chips .chip { height: 44px; }
+  .app-chips .chip svg.i { width: 15px; height: 15px; color: var(--muted); }
+  .app-chips .chip[aria-pressed="true"] { background: var(--accent-soft); border-color: transparent; color: var(--accent-ink); }
+  .app-chips .chip[aria-pressed="true"] svg.i { color: inherit; }
+  .app-chips .chip:last-child { margin-right: 0; }
+  #view-board { padding-bottom: 72px; }
+
+  /* ---------- New work: the button and the sheet with the shared form (compose.js) ---------- */
+  .fab {
+    position: fixed; z-index: 25; right: max(var(--side), env(safe-area-inset-right));
+    bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 16px);
+    min-height: 56px; padding: 0 20px 0 16px; border-radius: 18px; font-size: 16px; box-shadow: var(--shadow-pop);
+  }
+  .fab svg.i { width: 20px; height: 20px; }
+  body.signed-out .fab { display: none; }
+  dialog.sheet {
+    width: 100%; max-width: 100%; margin: auto 0 var(--kb, 0px);
+    max-height: calc(100dvh - 24px - env(safe-area-inset-top) - var(--kb, 0px));
+    border: 0; border-radius: 20px 20px 0 0; box-shadow: var(--shadow-pop);
+  }
+  dialog.sheet[open] { display: flex; flex-direction: column; animation: sheet-up .24s var(--ease); }
+  @keyframes sheet-up { from { transform: translateY(32px); opacity: 0; } to { transform: none; opacity: 1; } }
+  .sheet-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 6px 2px var(--side); }
+  .sheet-head h2 { flex: 1; font-size: 19px; font-weight: 700; }
+  .sheet-head .btn.icon { width: 44px; min-height: 44px; color: var(--muted); }
+  .sheet-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: env(safe-area-inset-bottom); }
+  /* In the sheet, the form is one column with labels and a Start button that stays in reach. */
+  .sheet .composer, .sheet .composer:focus-within { border: 0; border-radius: 0; box-shadow: none; background: none; }
+  .sheet .composer form { display: flex; flex-direction: column; gap: 12px; padding-bottom: 12px; }
+  .sheet .composer .bar, .sheet .composer .c-modes { display: contents; }
+  .sheet .composer .c-mode, .sheet .composer .c-mode-line { flex: none; }
+  .sheet .composer .bar .grow { display: none; }
+  .sheet .composer label.lead { order: 1; padding: 4px var(--side) 0; margin-bottom: -6px; font-size: 14px; }
+  .sheet .composer textarea.c-prompt {
+    order: 2; width: calc(100% - 2 * var(--side)); margin: 0 var(--side); min-height: 112px; max-height: 40dvh;
+    padding: 10px 12px; border: 1px solid var(--field-line); border-radius: var(--radius); background: var(--surface);
+  }
+  .sheet .composer textarea.c-prompt:focus { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
+  .sheet .composer .c-field { order: 3; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin: 0 var(--side); }
+  .sheet .composer .c-mode { order: 4; margin: 0 var(--side); padding: 3px; }
+  .sheet .composer .c-mode .seg { min-height: 42px; font-size: 15px; }
+  .sheet .composer .c-mode-line { order: 5; padding: 0 var(--side); margin-top: -4px; }
+  .sheet .composer .c-field.c-direct { order: 6; }
+  .sheet .composer .c-bg { order: 7; margin: 0 var(--side); min-height: 44px; font-size: 15px; color: var(--ink); }
+  .sheet .composer .field-error { order: 8; padding: 0 var(--side); }
+  .sheet .composer .bar select, .sheet .composer .bar input.c-title {
+    width: 100%; max-width: none; min-height: 44px; font-size: 16px;
+    background-color: var(--surface); border-color: var(--field-line);
+  }
+  .sheet .composer .bar .btn.c-start {
+    order: 9; position: sticky; bottom: 0; margin: 4px var(--side) 0; min-height: 48px; font-size: 16px;
+    border-radius: var(--radius); box-shadow: 0 0 0 10px var(--surface);
+  }
+  .sheet .composer .empty-state { padding: 20px var(--side) 28px; }
+  @media (min-width: 641px) { dialog.sheet { max-width: 640px; margin: auto auto var(--kb, 0px); } }
 
   /* ---------- Loading, empty, error, signed out ---------- */
   .sk { cursor: default; animation: none; box-shadow: none; }
@@ -242,7 +300,9 @@
     <div class="list live" id="inbox"></div>
   </section>
   <section class="view" id="view-board" aria-labelledby="title" hidden>
+    <div class="app-chips" id="app-chips" role="group" aria-label="Show work for one app" hidden></div>
     <div class="list live" id="board"></div>
+    <button type="button" class="btn primary fab live" id="new-fab"></button>
   </section>
   <!-- Settings: the same settings as the board's, drawn by settings.js. -->
   <section class="view" id="view-settings" aria-labelledby="title" hidden>
@@ -282,11 +342,14 @@ const BOARD_EMPTY = {
   failed: "Nothing has failed.",
 };
 const EMPTY_ICON = { running: "pc", in_review: "in_review", needs_you: "done", queued: "queued", done: "done", failed: "done" };
+// Cards drawn at a time on the board tab; "Show more" adds this many again.
 const BOARD_LIMIT = 40;
 
 const S = {
-  tab: "inbox", threads: null, apps: {}, limits: [], signIns: [], err: null, signedOut: false, updated: null,
+  tab: "inbox", threads: null, apps: {}, appList: [], limits: [], signIns: [], err: null, signedOut: false, updated: null,
   chip: null, actErr: null, open: new Set(), notifyOn: false,
+  // The board tab's app filter, remembered like the PC board's; how many cards it shows; whether a cloud worker exists.
+  app: D.store.get("decurion.board.app") || "all", limit: BOARD_LIMIT, hasCloud: false,
 };
 const scrollMem = {};
 
@@ -312,19 +375,22 @@ const URGENCY = { needs_you: 0, failed: 1, done: 1, in_review: 2 };
 // Accepted work is done, unless it could not be sent to GitHub.
 const needsYou = (t) => t.state === "done" ? t.github?.state === "failed" : t.state in MEANS;
 const inboxItems = () => (S.threads ?? []).filter(needsYou).sort((a, b) => URGENCY[a.state] - URGENCY[b.state] || byNewest(a, b));
-const counts = () => {
+const counts = (list = S.threads ?? []) => {
   const c = Object.fromEntries(CHIPS.map((s) => [s, 0]));
-  for (const t of S.threads ?? []) if (t.state in c) c[t.state]++;
+  for (const t of list) if (t.state in c) c[t.state]++;
   return c;
 };
+// The app the board tab shows, or "all". Only offered with two apps or more.
+const appFilter = () => (S.appList.length >= 2 && S.app !== "all" && S.apps[S.app] ? S.app : "all");
+const boardThreads = () => (S.threads ?? []).filter((t) => appFilter() === "all" || String(t.app_id) === appFilter());
 const chipNow = () => {
   if (S.chip) return S.chip;
-  const c = counts();
+  const c = counts(boardThreads());
   return D.ORDER.find((s) => c[s] > 0) ?? "running";
 };
-const boardItems = () => (S.threads ?? []).filter((t) => t.state === chipNow()).sort(byNewest);
+const boardItems = () => boardThreads().filter((t) => t.state === chipNow()).sort(byNewest);
 const wantsTail = (s) => s === "running" || s === "needs_you" || s === "in_review" || s === "failed";
-const boardTails = () => boardItems().slice(0, BOARD_LIMIT).filter((t) => wantsTail(t.state))
+const boardTails = () => boardItems().slice(0, S.limit).filter((t) => wantsTail(t.state))
   .map((t) => loadTail(t, 5, t.state === "running"));
 
 // ---------- Loading ----------
@@ -346,13 +412,16 @@ async function refresh() {
   goalsBadge();
   try {
     // Hubs without the limits endpoint answer 404; that just means no limits.
-    // Money, accounts and computers only matter on the Settings tab.
+    // Money and accounts only matter on the Settings tab. Computers also say
+    // whether work can run in the cloud, which the new-work box needs.
     const forSettings = S.tab === "settings";
     const seq = D.settings.seq();
-    const [apps, list, limits, signIns, more] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/limits").catch(() => []),
-      D.api("/sign-ins").catch(() => []),
-      forSettings ? Promise.all([D.api("/spend"), D.api("/accounts").catch(() => null), D.api("/workers").catch(() => [])]) : null]);
-    if (more) D.settings.update({ apps, spend: more[0], accounts: more[1], workers: more[2], seq });
+    const [apps, list, limits, signIns, workers, more] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/limits").catch(() => []),
+      D.api("/sign-ins").catch(() => []), D.api("/workers").catch(() => null),
+      forSettings ? Promise.all([D.api("/spend"), D.api("/accounts").catch(() => null)]) : null]);
+    // Work can run in the cloud only once a cloud worker is set up.
+    if (Array.isArray(workers)) { S.hasCloud = workers.some((w) => w.place === "cloud"); D.setCloud(S.hasCloud); }
+    if (more) D.settings.update({ apps, spend: more[0], accounts: more[1], workers: Array.isArray(workers) ? workers : [], seq });
     else D.settings.update({ apps, seq });
     S.limits = Array.isArray(limits) ? limits : [];
     // Website sign-ins that stopped working or are about to.
@@ -360,6 +429,9 @@ async function refresh() {
       .sort((a, b) => (a.status === "expired" ? 0 : 1) - (b.status === "expired" ? 0 : 1) || a.id - b.id);
     D.setApps(apps);
     S.apps = Object.fromEntries(apps.map((a) => [a.id, a]));
+    S.appList = apps;
+    // An app that was removed is no longer a filter.
+    if (S.app !== "all" && !S.apps[S.app]) setAppFilter("all");
     S.threads = list; S.err = null; S.signedOut = false; S.updated = new Date();
     D.setThreads(list);
     const jobs = inboxItems().map((t) => loadTail(t, 20));
@@ -438,6 +510,7 @@ function renderShell() {
     $("view-" + t).hidden = !on;
   }
   $("chips").hidden = S.tab !== "board" || S.signedOut || !S.threads;
+  $("new-fab").hidden = S.tab !== "board" || S.signedOut;
   $("updated").textContent = S.updated && !S.signedOut ? `Updated ${D.clock(S.updated.toISOString())}` : "";
   $("signed-out").hidden = !S.signedOut;
   $("notify").hidden = !S.notifyOn || S.signedOut;
@@ -599,7 +672,8 @@ function renderInbox() {
         el("div", { className: "halo" }, D.icon("done")),
         el("h3", {}, "Nothing needs you right now."),
         el("p", {}, granted ? "We'll notify you when an agent needs a decision." : "When an agent needs a decision, it shows up here."),
-        busyLine && el("a", { className: "glance", href: "#board" }, `${busyLine} on the board`, D.icon("right")));
+        busyLine && el("a", { className: "glance", href: "#board" }, `${busyLine} on the board`, D.icon("right")),
+        newWorkButton("btn"));
     });
   } else {
     reconcile(box, [...S.limits.map((l) => ({
@@ -645,7 +719,7 @@ $("inbox").addEventListener("click", (e) => {
 }, true);
 
 function renderChips() {
-  const c = counts(), sel = chipNow();
+  const c = counts(boardThreads()), sel = chipNow();
   const sig = JSON.stringify([c, sel]);
   const box = $("chips");
   if (box.dataset.sig === sig) return;
@@ -657,6 +731,7 @@ function renderChips() {
     b.onclick = async () => {
       if (S.chip === s && s === sel) return;
       S.chip = s;
+      S.limit = BOARD_LIMIT;
       render();
       window.scrollTo({ top: 0 });
       await Promise.all(boardTails());
@@ -698,13 +773,17 @@ function renderBoard() {
     return;
   }
   renderChips();
-  const sel = chipNow(), all = boardItems(), items = all.slice(0, BOARD_LIMIT);
+  renderAppChips();
+  const sel = chipNow(), all = boardItems(), items = all.slice(0, S.limit);
   if (!items.length) {
-    const none = !S.threads.length;
-    setMode(box, "empty", `${sel}|${none}`, () => el("div", { className: "empty-state calm" },
+    // No work at all (or none for this app): the way to start some, right here.
+    const one = appFilter() !== "all" ? D.appName(+appFilter()) : "";
+    const none = !boardThreads().length;
+    setMode(box, "empty", `${sel}|${none}|${one}|${S.appList.length}`, () => el("div", { className: "empty-state calm" },
       el("div", { className: "halo" }, D.icon(none ? "board" : EMPTY_ICON[sel])),
-      el("h3", {}, none ? "No work yet." : BOARD_EMPTY[sel]),
-      none && el("p", {}, "Start work from the board on your PC.")));
+      el("h3", {}, none ? (one ? `No work for ${one} yet.` : "No work yet.") : BOARD_EMPTY[sel]),
+      none && el("p", {}, S.appList.length ? "Say what you want. Your project lead plans it with you, or one agent just does a small change." : "Add an app in Settings first."),
+      none && newWorkButton("btn primary")));
     return;
   }
   box.querySelector(".board-more")?.remove();
@@ -717,8 +796,151 @@ function renderBoard() {
     };
   }));
   const extra = all.length - items.length;
-  if (extra > 0) box.append(el("p", { className: "board-more", dataset: { key: "more" } }, `Showing the ${BOARD_LIMIT} most recent. ${D.plural(extra, "more is", "more are")} on your PC's board.`));
+  if (extra > 0) {
+    const more = el("button", { type: "button", className: "btn board-more", dataset: { key: "more" } },
+      extra > BOARD_LIMIT ? `Show ${BOARD_LIMIT} more (${extra} not shown)` : `Show ${D.plural(extra, "more card", "more cards")}`);
+    more.onclick = async () => {
+      more.disabled = true;
+      S.limit += BOARD_LIMIT;
+      render();
+      await Promise.all(boardTails());
+      render();
+    };
+    box.append(more);
+  }
 }
+
+// The app filter: All apps, then each app with its open work, a dot when one needs you.
+function setAppFilter(v) {
+  S.app = v;
+  S.limit = BOARD_LIMIT;
+  D.store.set("decurion.board.app", v);
+}
+function renderAppChips() {
+  const box = $("app-chips");
+  const show = S.appList.length >= 2;
+  box.hidden = !show;
+  if (!show) return;
+  const open = {}, needs = {};
+  for (const t of S.threads ?? []) {
+    if (t.state !== "done" && t.state !== "failed") open[t.app_id] = (open[t.app_id] ?? 0) + 1;
+    if (t.state === "needs_you") needs[t.app_id] = (needs[t.app_id] ?? 0) + 1;
+  }
+  const sel = appFilter();
+  const sig = JSON.stringify([S.appList.map((a) => [a.id, a.name]), open, needs, sel]);
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  const total = Object.values(open).reduce((a, b) => a + b, 0);
+  const anyNeeds = Object.values(needs).reduce((a, b) => a + b, 0);
+  const chip = (key, name, n, need, ic) => {
+    const b = el("button", { type: "button", className: "chip" + (n ? "" : " zero"), "aria-pressed": key === sel ? "true" : "false", title: name },
+      D.icon(ic), name, need && key !== sel ? el("span", { className: "dot", "aria-hidden": "true" }) : null,
+      el("span", { className: "n", "aria-label": `${n} open` }, n),
+      need ? el("span", { className: "sr-only" }, `, ${need} ${need === 1 ? "needs" : "need"} you`) : null);
+    b.onclick = async () => {
+      if (key === sel) return;
+      setAppFilter(key);
+      S.chip = null;
+      render();
+      window.scrollTo({ top: 0 });
+      await Promise.all(boardTails());
+      render();
+    };
+    return b;
+  };
+  box.replaceChildren(chip("all", "All apps", total, anyNeeds, "board"),
+    ...S.appList.map((a) => chip(String(a.id), a.name, open[a.id] ?? 0, needs[a.id] ?? 0, "app")));
+  const on = box.querySelector('[aria-pressed="true"]');
+  if (on) box.scrollLeft = Math.max(0, on.offsetLeft - (box.clientWidth - on.offsetWidth) / 2);
+}
+
+// ---------- New work: the sheet with the shared form ----------
+// Opens over any tab. The back button closes it, like the work panel. Work
+// started with "Just do it" shows on the Board; a goal opens on Goals, where
+// the project lead asks its questions and shows the plan to approve.
+let sheet = null, composer = null;
+const vv = window.visualViewport;
+function fitKeyboard() {
+  if (!sheet?.open || !vv) return;
+  // The on-screen keyboard covers the bottom of the page; lift the sheet above it.
+  const kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+  sheet.style.setProperty("--kb", `${kb}px`);
+}
+vv?.addEventListener("resize", fitKeyboard);
+vv?.addEventListener("scroll", fitKeyboard);
+// Leaves the sheet for one of this page's tabs, without a step in the back history.
+function leaveSheetTo(hash) {
+  history.replaceState(null, "", hash);
+  sheet?.close();
+  window.dispatchEvent(new HashChangeEvent("hashchange"));
+}
+function composerState() {
+  return { apps: S.appList, threads: S.threads ?? [], hasCloud: S.hasCloud, filter: appFilter(), loaded: !!S.threads };
+}
+function ensureSheet() {
+  if (sheet) return sheet;
+  composer = D.composer({
+    prefix: "nw-", labels: true, keyHint: false, draftKey: "decurion.inbox.draft",
+    noApps: { text: "An app is a git folder on your PC. Add one in Settings, then say what you want here.", href: "#settings/apps" },
+    onStarted: (t) => {
+      // Show the new card: its app (or all apps), its state, at the top of the Board.
+      if (t && appFilter() !== "all" && String(t.app_id) !== appFilter()) setAppFilter("all");
+      if (t && S.threads && !S.threads.some((x) => x.id === t.id)) S.threads = [t, ...S.threads];
+      S.chip = t?.state ?? "queued";
+      S.limit = BOARD_LIMIT;
+      if (S.tab === "board") { sheet.close(); render(); } else leaveSheetTo("#board");
+      window.scrollTo({ top: 0 });
+      refresh();
+    },
+    onGoal: (g) => {
+      history.replaceState(null, "", location.href);
+      sheet.close();
+      if (g?.id != null) location.href = `/goals#goal-${g.id}`;
+    },
+  });
+  const x = el("button", { type: "button", className: "btn icon quiet", "aria-label": "Close" }, D.icon("close"));
+  sheet = el("dialog", { className: "sheet", "aria-labelledby": "nw-h" },
+    el("div", { className: "sheet-head" }, el("h2", { id: "nw-h" }, "New work"), x),
+    el("div", { className: "sheet-body" }, composer.el));
+  x.onclick = () => sheet.close();
+  document.body.append(sheet);
+  sheet.addEventListener("close", () => {
+    sheet.style.removeProperty("--kb");
+    if (history.state?.sheet) history.back();
+  });
+  sheet.addEventListener("click", (e) => {
+    if (e.target === sheet) { sheet.close(); return; }
+    // "Add an app" goes to the Settings tab, closing the sheet on the way.
+    const a = e.target.closest('a[href^="#"]');
+    if (a) { e.preventDefault(); leaveSheetTo(a.getAttribute("href")); }
+  });
+  // A field the keyboard would cover scrolls into sight once the keyboard is up.
+  sheet.addEventListener("focusin", (e) => {
+    if (e.target.matches("textarea, input, select")) setTimeout(() => e.target.scrollIntoView({ block: "nearest" }), 300);
+  });
+  window.addEventListener("popstate", () => { if (sheet.open && !history.state?.sheet) sheet.close(); });
+  return sheet;
+}
+function openSheet(fill) {
+  ensureSheet();
+  composer.update(composerState());
+  if (fill) composer.fill(fill);
+  if (!sheet.open) {
+    if (!history.state?.sheet) history.pushState({ sheet: true }, "");
+    sheet.showModal();
+    fitKeyboard();
+  }
+  composer.focus();
+}
+// Other screens (such as "Fix these" on finished work) open the same box, filled in.
+D.setNewWork((fill) => openSheet(fill));
+const newWorkButton = (cls) => {
+  const b = el("button", { type: "button", className: cls }, D.icon("plus"), "New work");
+  b.onclick = () => openSheet();
+  return b;
+};
+$("new-fab").append(D.icon("plus"), "New work");
+$("new-fab").onclick = () => openSheet();
 
 // ---------- Settings tab ----------
 // The board's own settings (settings.js), with a usage summary and the Pro
@@ -746,6 +968,7 @@ function showSettings() {
 
 function render() {
   renderShell();
+  if (sheet?.open) composer.update(composerState());
   if (!S.signedOut) {
     if (S.tab === "inbox") renderInbox(); else if (S.tab === "board") renderBoard(); else renderSettings();
   }

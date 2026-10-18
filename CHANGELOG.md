@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **One box for new work, on the board and the phone.** "What do you want?" sends it to your project lead, who asks, plans and waits for your approval; or choose **Just do it** for a small change that one agent starts right away. On the phone, tap **New work** on the Board tab. The phone's Board tab also gains an app filter (with two apps or more) and **Show more** in place of the 40-card limit.
 - **What next, and the agent's questions first.** Finished work now opens with what the agent asks you, each answer one tap (it goes back to the agent with your answer), then its summary laid out readably (lists and bold, no stray stars), then a "What next?" list saying what Accept, answering and Reject each do. "Fix these" starts new work from what an audit found. Agents are told to end with their questions in a fixed shape so the board and phone can show them as buttons.
 - Installers and a release workflow that builds them into a draft GitHub release.
 - Built-in help pages that explain each part of Decurion in plain language.

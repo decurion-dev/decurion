@@ -600,3 +600,60 @@ dialog.fp[open] { display: flex; flex-direction: column; animation: pop .16s var
   .fp-foot { padding-left: 16px; padding-right: 16px; }
   .fp-foot .btn { flex: 1 1 0; }
 }
+
+/* ---------- New-work form (D.composer in compose.js), on the board and the phone ---------- */
+.composer {
+  min-width: 0;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l);
+  box-shadow: 0 1px 2px rgba(15, 18, 24, 0.04), 0 6px 24px -12px rgba(15, 18, 24, 0.18);
+  transition: border-color .15s var(--ease), box-shadow .15s var(--ease);
+}
+.composer:focus-within { border-color: var(--field-line); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent), 0 6px 24px -12px rgba(15, 18, 24, 0.25); }
+.composer label.lead { display: block; padding: 16px 18px 0; font: 600 15px/1.3 var(--font-display); color: var(--ink); }
+.composer textarea.c-prompt {
+  display: block; border: 0; background: transparent; box-shadow: none; resize: none;
+  min-height: 76px; max-height: 300px; padding: 8px 18px 6px; font-size: 16px; line-height: 1.5;
+}
+.composer textarea.c-prompt:focus { box-shadow: none; }
+.composer textarea.c-prompt::placeholder { color: var(--faint); }
+.composer .bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px 10px 12px; flex-wrap: wrap; }
+.composer .bar select { width: auto; min-width: 150px; max-width: 220px; min-height: 34px; font-size: 14px; background-color: var(--surface-2); border-color: transparent; font-weight: 500; }
+.composer .bar input.c-title { flex: 1 1 150px; max-width: 360px; min-height: 34px; font-size: 14px; border-color: transparent; background: transparent; }
+.composer .bar input.c-title:hover { background: var(--surface-2); }
+.composer .bar input.c-title:focus { background: var(--surface); border-color: var(--focus); }
+.composer .bar .grow { flex: 1; }
+.composer .bar select.c-parent { max-width: 260px; }
+.composer .bar select.c-ai { min-width: 120px; }
+.composer .bar .check { font-size: 13px; color: var(--muted); }
+/* Who does it: the project lead (plans first) or one agent straight away. */
+.composer .c-modes { display: flex; align-items: center; gap: 6px 12px; flex-wrap: wrap; padding: 6px 12px 0; }
+.composer .c-mode { flex: none; display: inline-flex; padding: 2px; gap: 2px; border-radius: var(--radius-s); background: var(--surface-2); }
+.composer .c-mode .seg {
+  min-height: 30px; padding: 0 12px; border: 0; border-radius: 6px; background: none; cursor: pointer;
+  font: 600 13px/1 var(--font); color: var(--muted); white-space: nowrap;
+  transition: background-color .12s var(--ease), color .12s var(--ease);
+}
+.composer .c-mode .seg:hover { color: var(--ink); }
+.composer .c-mode .seg[aria-checked="true"] { background: var(--surface); color: var(--accent-ink); box-shadow: 0 0 0 1px var(--line), 0 1px 2px rgba(15, 18, 24, 0.08); }
+.composer .c-mode-line { flex: 1 1 260px; min-width: 0; }
+.kbd-hint { font-size: 12px; color: var(--faint); white-space: nowrap; }
+kbd { font: 600 11px/1 var(--font); padding: 3px 5px; border-radius: 5px; border: 1px solid var(--line); background: var(--surface-2); color: var(--muted); }
+.composer .field-error { padding: 0 18px 12px; }
+.composer .field-error:empty { display: none; }
+.composer .empty-state { padding: 34px 16px; }
+.composer .empty-state p { max-width: 420px; }
+@media (max-width: 640px) {
+  .composer label.lead { padding: 14px 14px 0; }
+  .composer textarea.c-prompt { padding: 8px 14px 6px; }
+  .composer .bar { padding: 8px 10px 10px; }
+  /* min-width 0: a long "Part of" title must not widen the form past the screen. */
+  .composer .bar select, .composer .bar input.c-title { max-width: none; min-width: 0; flex: 1 1 100%; }
+  .composer .bar select.c-parent { max-width: none; }
+  .composer .c-modes { padding: 6px 10px 0; }
+  .composer .c-mode { flex: 1 1 100%; }
+  .composer .c-mode .seg { flex: 1 1 0; }
+  .composer .c-mode-line { padding: 0 4px; }
+  .composer .bar .grow, .kbd-hint { display: none; }
+  .composer .bar .btn.primary { flex: 1 1 100%; }
+  .composer .field-error { padding-left: 14px; padding-right: 14px; }
+}

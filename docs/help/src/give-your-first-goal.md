@@ -7,12 +7,31 @@ you talk to, turns it into finished, checked work.
 
 ## Start a goal
 
-1. Open the board at <http://decurion.localhost:7420> and choose **Goals**. On
-   your phone, open the inbox and tap **Goals**.
+There is one box for asking for anything: **What do you want?**
+
+1. Open the board at <http://decurion.localhost:7420>. The box is at the top.
+   On your phone, open the inbox, tap **Board**, then **New work**.
 2. Choose the app.
 3. Type what you want, such as "Add a password reset page to the portal." Say
    what you want, not how to code it.
-4. Press **Start**.
+4. Leave **Project lead** chosen and press **Send to the project lead**.
+   Decurion opens the goal on the **Goals** page.
+
+### Project lead or Just do it
+
+The box offers two ways to get it done:
+
+- **Project lead** (the usual choice). The project lead asks what it needs,
+  shows you a plan, and starts after you approve. A checker reviews each
+  piece.
+- **Just do it**. One agent does it right away. No plan and no checker. Best
+  for small changes, such as "Make the footer text bigger." Only this choice
+  shows the extra options: which AI does it, your PC or the cloud, a title,
+  and whether it is part of other work. The new card shows on the board, under
+  **Queued**, until an agent picks it up.
+
+Nothing starts without you: a goal waits for your **Approve plan**, and
+**Just do it** starts only when you press **Start work**.
 
 ## Answer a few questions
 
@@ -55,8 +74,8 @@ then review and merge it as usual. See [Review and merge work](review-and-merge.
 
 - Say how you will know it works, such as "Users get an email with a link."
 - One goal per change you would describe in one sentence.
-- You can still add a single piece of work yourself on the board with
-  **New work**.
+- For a small change you can skip the plan: choose **Just do it** in the
+  same box.
 
 ## If something goes wrong
 

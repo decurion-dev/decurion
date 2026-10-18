@@ -57,35 +57,7 @@
   .needs-btn svg.i { width: 15px; height: 15px; }
   .content { padding: 4px 28px 40px; display: grid; gap: 22px; align-content: start; }
 
-  /* ---------- Composer ---------- */
-  .composer {
-    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l);
-    box-shadow: 0 1px 2px rgba(15, 18, 24, 0.04), 0 6px 24px -12px rgba(15, 18, 24, 0.18);
-    transition: border-color .15s var(--ease), box-shadow .15s var(--ease);
-  }
-  .composer:focus-within { border-color: var(--field-line); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent), 0 6px 24px -12px rgba(15, 18, 24, 0.25); }
-  .composer label.lead { display: block; padding: 16px 18px 0; font: 600 15px/1.3 var(--font-display); color: var(--ink); }
-  .composer textarea#prompt {
-    display: block; border: 0; background: transparent; box-shadow: none; resize: none;
-    min-height: 76px; max-height: 300px; padding: 8px 18px 6px; font-size: 16px; line-height: 1.5;
-  }
-  .composer textarea#prompt:focus { box-shadow: none; }
-  .composer textarea#prompt::placeholder { color: var(--faint); }
-  .composer .bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px 10px 12px; flex-wrap: wrap; }
-  .composer .bar select { width: auto; min-width: 150px; max-width: 220px; min-height: 34px; font-size: 14px; background-color: var(--surface-2); border-color: transparent; font-weight: 500; }
-  .composer .bar input#title { flex: 1 1 200px; max-width: 360px; min-height: 34px; font-size: 14px; border-color: transparent; background: transparent; }
-  .composer .bar input#title:hover { background: var(--surface-2); }
-  .composer .bar input#title:focus { background: var(--surface); border-color: var(--focus); }
-  .composer .bar .grow { flex: 1; }
-  .composer .bar select#parent { max-width: 260px; }
-  .composer .bar select#ai { min-width: 120px; }
-  .composer .bar input#title { flex-basis: 150px; }
-  .composer .bar .check { font-size: 13px; color: var(--muted); }
-  .kbd-hint { font-size: 12px; color: var(--faint); white-space: nowrap; }
-  kbd { font: 600 11px/1 var(--font); padding: 3px 5px; border-radius: 5px; border: 1px solid var(--line); background: var(--surface-2); color: var(--muted); }
-  .composer .field-error { padding: 0 18px 12px; }
-  .composer .empty-state { padding: 34px 16px; }
-  .composer .empty-state p { max-width: 420px; }
+  /* The new-work form's look is shared with the phone: see ui.css (D.composer). */
 
   /* ---------- Board ---------- */
   .board-wrap { margin: 0 -28px; padding: 0 28px 8px; overflow-x: auto; scrollbar-width: thin; }
@@ -211,13 +183,6 @@
     .topbar h1 { font-size: 22px; }
     #new-work { display: none; }
     .topbar .right { width: 100%; justify-content: space-between; }
-    .composer label.lead { padding: 14px 14px 0; }
-    .composer textarea#prompt { padding: 8px 14px 6px; }
-    .composer .bar { padding: 8px 10px 10px; }
-    .composer .bar select, .composer .bar input#title { max-width: none; flex: 1 1 100%; }
-    .composer .bar select#parent { max-width: none; }
-    .composer .bar .grow, .kbd-hint { display: none; }
-    .composer .bar .btn.primary { flex: 1 1 100%; }
     .wcard .t { font-size: 15.5px; }
   }
 
@@ -265,25 +230,8 @@
 
     <div class="content" id="view-board">
       <div class="limits live" id="limits" hidden></div>
-      <section class="composer live" id="composer" aria-label="New work">
-        <form id="add-thread" novalidate>
-          <label class="lead" for="prompt">Describe what you want built</label>
-          <textarea id="prompt" rows="3" placeholder="For example: add a page where clients book a treatment, pick a time and get a confirmation email" aria-describedby="add-err"></textarea>
-          <div class="bar">
-            <select id="app" aria-label="App"></select>
-            <select id="ai" aria-label="Which AI does the work"><option value="claude">Claude</option><option value="chatgpt">ChatGPT</option><option value="grok">Grok</option></select>
-            <select id="place" aria-label="Where it runs" hidden><option value="pc">On your PC</option><option value="cloud">In the cloud</option></select>
-            <input id="title" type="text" placeholder="Title (optional)" aria-label="Title (optional)" maxlength="120" autocomplete="off">
-            <select id="parent" aria-label="Part of other work" hidden></select>
-            <label class="check" id="bg-wrap" hidden><input type="checkbox" id="background"> Keep going if the parent stops</label>
-            <span class="grow"></span>
-            <span class="kbd-hint" id="kbd-hint"></span>
-            <button class="btn primary" id="start" type="submit"></button>
-          </div>
-          <div class="field-error" id="add-err" role="alert"></div>
-        </form>
-        <div class="empty-state" id="no-apps" hidden></div>
-      </section>
+      <!-- The new-work form, drawn by compose.js (D.composer), the same as on the phone. -->
+      <section class="composer live" id="composer" aria-label="New work"></section>
       <div id="board-note" class="board-note" hidden></div>
       <div class="board-wrap live" id="board-wrap"><div class="board" id="board" aria-label="Work by status"></div></div>
     </div>
@@ -308,7 +256,6 @@
     needs_you: "All clear. Nothing needs you.", running: "No agents working right now.", in_review: "Nothing to review.",
     queued: "Nothing waiting.", done: "Finished work shows here.", failed: "Nothing failed.",
   };
-  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
   // Settings (settings.js) keeps its own copy of spend, accounts and workers.
   let apps = [], threads = [], limits = [];
@@ -358,15 +305,14 @@
   document.querySelector('[data-route="settings"]').append(icon("settings"), el("span", { className: "nm" }, "Settings"));
   $("nav-goals").append(icon("send"), el("span", { className: "nm" }, "Goals"));
   $("new-work").append(icon("plus"), "New work");
-  $("start").append("Start work", icon("send"));
-  $("kbd-hint").append(el("kbd", {}, isMac ? "Cmd" : "Ctrl"), " ", el("kbd", {}, "Enter"), " to start");
   $("pro-slot").append(D.switchEl("Pro view", () => D.pro, (v) => D.setPro(v)));
   $("offline-banner").append(icon("offline"), el("span", {}, "Your PC's hub isn't answering. Showing the last known board."));
-  $("no-apps").append(
-    el("div", { className: "mark" }, icon("app", "l")),
-    el("h3", {}, "Add your first app to start"),
-    el("p", {}, "An app is a git folder on this PC. Once it's added, describe what you want built and an agent gets to work."),
-    el("a", { className: "btn primary", href: "#settings/apps" }, icon("plus"), "Add an app"));
+  // The one place to ask for work: the project lead plans it, or "Just do it" starts one piece.
+  const composer = D.composer({
+    root: $("composer"), prefix: "",
+    noApps: { text: "An app is a git folder on this PC. Once it's added, say what you want: your project lead plans it with you, or one agent just does a small change.", href: "#settings/apps" },
+    onStarted: () => refresh(),
+  });
   window.addEventListener("scroll", () => $("topbar").classList.toggle("scrolled", window.scrollY > 4), { passive: true });
 
   // ---------- Routes: #board and #settings ----------
@@ -449,7 +395,7 @@
   function setFilter(v, rerender = true) {
     filter = v;
     D.store.set("decurion.board.app", v);
-    if (v !== "all") $("app").value = v;
+    composer.setApp(v);
     if (rerender) render();
   }
 
@@ -505,12 +451,13 @@
   function focusComposer() {
     if (view !== "board") location.hash = "#board";
     requestAnimationFrame(() => {
-      const target = apps.length ? $("prompt") : $("no-apps").querySelector(".btn");
       $("composer").scrollIntoView({ block: "nearest", behavior: "smooth" });
-      target?.focus({ preventScroll: true });
+      composer.focus();
     });
   }
   $("new-work").onclick = focusComposer;
+  // Other screens (such as "Fix these" on finished work) open the same box, filled in.
+  D.setNewWork((fill) => { composer.fill(fill); focusComposer(); });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "n" && e.key !== "N") return;
     if (e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]")) return;
@@ -559,105 +506,10 @@
   }
 
   // ---------- Composer ----------
+  // The form itself lives in compose.js; the board only tells it what changed.
   function renderComposer() {
-    const has = apps.length > 0;
-    $("add-thread").hidden = loaded && !has;
-    $("no-apps").hidden = !loaded || has;
-    if (changed("appsel", apps.map((a) => [a.id, a.name]))) {
-      const sel = $("app");
-      const keep = sel.value || (filter !== "all" ? filter : D.store.get("decurion.board.lastApp"));
-      sel.replaceChildren(...apps.map((a) => el("option", { value: String(a.id) }, a.name)));
-      if (keep && apps.some((a) => String(a.id) === keep)) sel.value = keep;
-    }
-    // The choice of computer only shows once there is a cloud worker.
-    $("place").hidden = !hasCloud;
-    if (!hasCloud) $("place").value = "pc";
-    fillParents();
-    showClaudeChoice();
-    $("start").disabled = D.offline;
+    composer.update({ apps, threads, hasCloud, filter, loaded });
   }
-
-  // The Claude choice names the account the chosen app's Claude work runs on.
-  function showClaudeChoice() {
-    const app = appById(+$("app").value);
-    $("ai").options[0].textContent = app ? `Claude (${claudeAcct(app)})` : "Claude";
-  }
-  {
-    const last = D.store.get("decurion.board.ai");
-    if (last && [...$("ai").options].some((o) => o.value === last)) $("ai").value = last;
-  }
-  $("ai").onchange = () => D.store.set("decurion.board.ai", $("ai").value);
-
-  // "Part of": open work in the same app. Kept while the owner is choosing.
-  function fillParents() {
-    const sel = $("parent");
-    const app = +$("app").value;
-    const open = threads.filter((t) => t.app_id === app && ACTIVE.has(t.state));
-    if (document.activeElement !== sel && changed("parents", [app, open.map((t) => [t.id, t.title])])) {
-      const keep = sel.value;
-      sel.replaceChildren(el("option", { value: "" }, "Not part of other work"),
-        ...open.map((t) => el("option", { value: String(t.id) }, `Part of: ${t.title}`)));
-      sel.value = open.some((t) => String(t.id) === keep) ? keep : "";
-    }
-    sel.hidden = !open.length && !sel.value;
-    $("bg-wrap").hidden = !sel.value;
-    if (!sel.value) $("background").checked = false;
-  }
-  $("parent").onchange = fillParents;
-
-  function deriveTitle(prompt) {
-    const first = (prompt.split(/\r?\n/).find((l) => l.trim()) ?? "").trim().replace(/\s+/g, " ");
-    if (first.length <= 60) return first.replace(/[.\s]+$/, "") || first;
-    const cut = first.slice(0, 60);
-    const sp = cut.lastIndexOf(" ");
-    return (sp > 30 ? cut.slice(0, sp) : cut).replace(/[\s,.;:-]+$/, "") + "…";
-  }
-
-  const prompt = $("prompt");
-  function grow() { prompt.style.height = "auto"; prompt.style.height = Math.min(prompt.scrollHeight + 2, 300) + "px"; }
-  prompt.addEventListener("input", () => {
-    grow();
-    $("title").placeholder = prompt.value.trim() ? `Title: ${deriveTitle(prompt.value)}` : "Title (optional)";
-    if (prompt.value.trim()) $("add-err").textContent = "";
-  });
-  for (const f of [prompt, $("title")]) {
-    f.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("add-thread").requestSubmit(); }
-    });
-  }
-  $("app").onchange = () => { D.store.set("decurion.board.lastApp", $("app").value); fillParents(); showClaudeChoice(); };
-
-  $("add-thread").onsubmit = async (e) => {
-    e.preventDefault();
-    const err = $("add-err");
-    err.textContent = "";
-    if (D.offline) { err.textContent = "Your PC isn't answering. Try again when it's back."; return; }
-    const text = prompt.value.trim();
-    if (!text) { err.textContent = "Describe the work first."; prompt.focus(); return; }
-    const app_id = +$("app").value;
-    if (!app_id) { err.textContent = "Pick an app."; $("app").focus(); return; }
-    const title = $("title").value.trim() || deriveTitle(text);
-    const btn = $("start");
-    btn.disabled = true;
-    btn.replaceChildren(icon("running"), "Starting");
-    try {
-      const parent = $("parent").value;
-      const ai = $("ai").value;
-      await D.send("/threads", { app_id, title, prompt: text, ai, place: $("place").value,
-        parent_id: parent ? +parent : null, background: !!parent && $("background").checked });
-      prompt.value = ""; $("title").value = ""; $("title").placeholder = "Title (optional)"; grow();
-      $("background").checked = false;
-      D.store.set("decurion.board.lastApp", String(app_id));
-      D.store.set("decurion.board.ai", ai);
-      D.toast(`Started "${title}". ${AI_NAMES[ai] ?? "Claude"} will pick it up.`);
-      refresh();
-    } catch (x) {
-      err.textContent = `Couldn't start the work. ${x.message}`;
-    } finally {
-      btn.replaceChildren("Start work", icon("send"));
-      btn.disabled = D.offline;
-    }
-  };
 
   // ---------- Board ----------
   // Done is history, so it starts folded; Queued and Failed fold while empty.
@@ -745,7 +597,7 @@
         board.replaceChildren(el("div", { className: "empty-state board-empty", style: "flex:1" },
           el("div", { className: "mark" }, icon(all ? "board" : "app", "l")),
           el("h3", {}, all ? "Nothing running yet" : `Nothing for ${D.appName(+filter)} yet`),
-          el("p", {}, all ? "Describe what you want built above." : "Describe what you want built above, or look at every app."),
+          el("p", {}, all ? "Say what you want above. Your project lead plans it with you, or pick Just do it for a small change." : "Say what you want above, or look at every app."),
           btn));
         return;
       }
