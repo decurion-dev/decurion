@@ -817,14 +817,14 @@ mod tests {
     #[tokio::test]
     async fn no_login_in_the_folders_address_is_ever_in_an_argument() {
         let r = Repos::new();
-        let secret = "ghp_secret123";
+        let made_up = "ghp_secret123";
         sh(
             &r.folder,
             &[
                 "remote",
                 "set-url",
                 "origin",
-                &format!("https://{}@github.com/acme/shop.git", login("me", secret)),
+                &format!("https://{}@github.com/acme/shop.git", login("me", made_up)),
             ],
         );
         let up = r.root.join("up.git");
@@ -842,7 +842,7 @@ mod tests {
                 .collect();
             assert!(
                 args.iter()
-                    .all(|a| !a.contains(secret) && !a.contains("me:") && !a.contains("://")),
+                    .all(|a| !a.contains(made_up) && !a.contains("me:") && !a.contains("://")),
                 "{args:?}"
             );
             assert!(args.contains(&"origin".to_owned()), "{args:?}");
@@ -863,7 +863,7 @@ mod tests {
         assert_eq!(
             credential_free(&format!(
                 "https://{}@github.com/acme/shop.git",
-                login("me", secret)
+                login("me", made_up)
             )),
             "https://me@github.com/acme/shop.git"
         );
