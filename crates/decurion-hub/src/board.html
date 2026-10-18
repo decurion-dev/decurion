@@ -6,6 +6,7 @@
 <title>Decurion</title>
 <link rel="icon" href="/icon.svg">
 <link rel="stylesheet" href="/ui.css">
+<link rel="stylesheet" href="/menu.css">
 <style>
   /* ---------- Shell: sidebar and main area ---------- */
   .shell { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: 100dvh; }
@@ -14,8 +15,7 @@
     display: flex; flex-direction: column; gap: 22px;
     padding: 16px 12px 14px; border-right: 1px solid var(--line);
   }
-  .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px; font: 650 16px/1 var(--font-display); letter-spacing: -0.01em; color: var(--ink); text-decoration: none; }
-  .brand svg { flex: none; border-radius: 8px; }
+  /* The logo and the page links are the shared PC menu (D.pcNav, menu.css); the apps list below is the board's own. */
   .nav { display: grid; gap: 2px; }
   .nav-h { display: flex; align-items: center; justify-content: space-between; padding: 0 4px 6px 10px; font-size: 12px; font-weight: 600; color: var(--faint); }
   .nav-item {
@@ -205,9 +205,10 @@
       padding: 10px 16px; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(10px);
       border-right: 0; border-bottom: 1px solid var(--line);
     }
-    .brand { padding: 4px 0; }
-    .nav.main-nav { display: flex; justify-content: flex-end; gap: 4px; }
-    .nav.main-nav .nav-item { width: auto; }
+    /* The shared menu lies flat: the logo on the left, the page links on the right. */
+    .side .pcnav { grid-column: 1 / -1; flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+    .side .pcnav-brand { padding: 4px 0; }
+    .side .pcnav-items { display: flex; gap: 4px; }
     .nav.apps { grid-column: 1 / -1; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px 2px; }
     .nav.apps::-webkit-scrollbar { display: none; }
     .nav.apps .nav-h { display: none; }
@@ -230,7 +231,7 @@
     .col-h .ghost svg.i { transform: rotate(90deg); }
   }
   @media (max-width: 640px) {
-    .side .brand span { font-size: 15px; }
+    .side .pcnav-brand .nm { font-size: 15px; }
     .topbar h1 { font-size: 22px; }
     #new-work { display: none; }
     .topbar .right { width: 100%; justify-content: space-between; }
@@ -256,13 +257,7 @@
 <body>
 <div class="shell" id="shell">
   <aside class="side" aria-label="Decurion">
-    <a class="brand" href="#board" id="brand"><span id="mark"></span><span>Decurion</span></a>
-    <nav class="nav main-nav" aria-label="Pages">
-      <a class="nav-item" href="#board" data-route="board" data-key="nav-board"></a>
-      <a class="nav-item" href="/goals" id="nav-goals"></a>
-      <a class="nav-item" href="/plan" id="nav-plan"></a>
-      <a class="nav-item" href="#settings" data-route="settings" data-key="nav-settings"></a>
-    </nav>
+    <div id="pcnav"></div>
     <nav class="nav apps" aria-label="Filter by app" id="app-nav"></nav>
     <a class="usage" href="#settings/accounts" id="usage" hidden></a>
   </aside>
@@ -362,11 +357,7 @@
   }
 
   // ---------- Static pieces ----------
-  $("mark").append(D.mark(28));
-  document.querySelector('[data-route="board"]').append(icon("board"), el("span", { className: "nm" }, "Board"));
-  document.querySelector('[data-route="settings"]').append(icon("settings"), el("span", { className: "nm" }, "Settings"));
-  $("nav-goals").append(icon("send"), el("span", { className: "nm" }, "Goals"));
-  $("nav-plan").append(icon("plan"), el("span", { className: "nm" }, "Master plan"));
+  $("pcnav").replaceWith(D.pcNav("board"));
   $("new-work").append(icon("plus"), "New work");
   $("pro-slot").append(D.switchEl("Pro view", () => D.pro, (v) => D.setPro(v)));
   $("offline-banner").append(icon("offline"), el("span", {}, "Your PC's hub isn't answering. Showing the last known board."));
