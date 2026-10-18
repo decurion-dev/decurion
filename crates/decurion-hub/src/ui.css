@@ -290,6 +290,9 @@ dialog.panel[open] { display: flex; flex-direction: column; animation: slide .22
 .work-head .meta { display: flex; gap: 6px 0; flex-wrap: wrap; align-items: center; font-size: 13px; color: var(--muted); }
 .work-head .close { color: var(--muted); }
 .work-head .close:hover { color: var(--ink); background: var(--surface-2); }
+/* The panel's tabs sit on the header's bottom line. */
+.work-head .ptabs { border-bottom: 0; margin: 0 -14px -13px; }
+.work-body > .tab-part[hidden] { display: none; }
 .work-body { flex: 1; overflow: auto; padding: 16px 20px 24px; display: grid; gap: 18px; align-content: start; }
 .work-foot { border-top: 1px solid var(--line); padding: 12px 20px calc(12px + env(safe-area-inset-bottom)); display: flex; gap: 8px; flex-wrap: wrap; background: var(--surface); }
 .work-foot .btn { flex: 1 1 auto; }
@@ -426,6 +429,22 @@ details.fold[open] > summary svg.i { transform: rotate(90deg); }
 
 /* The sign-in window (D.openBrowserViewer). */
 .si-body { padding: 16px 20px calc(16px + env(safe-area-inset-bottom)); overflow-y: auto; display: grid; gap: 12px; }
+
+/* ---------- Tabs (D.tabs): views of one thing, one shown at a time ---------- */
+.ptabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+.ptabs::-webkit-scrollbar { display: none; }
+.ptab {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px; margin-bottom: -1px; flex: none;
+  border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer;
+  color: var(--muted); font: 600 15px/1 var(--font); white-space: nowrap;
+}
+.ptab:hover { color: var(--ink); }
+.ptab[aria-selected="true"] { color: var(--accent-ink); border-bottom-color: var(--accent); }
+.ptab:focus-visible { outline-offset: -3px; }
+.ptab .ct { font: 600 12px/20px var(--font); min-width: 22px; padding: 0 7px; border-radius: 99px; background: var(--surface-2); color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
+.ptab .ct:empty { display: none; }
+.ptab .ct.wait { background: var(--amber-soft); color: var(--amber); box-shadow: inset 0 0 0 1px var(--amber-line); }
+[role="tabpanel"][hidden] { display: none; }
 
 /* ---------- Settings (settings.js), on the board and the phone ---------- */
 .usage { display: grid; gap: 7px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--ink); text-decoration: none; font-size: 13px; transition: border-color .12s var(--ease); }
