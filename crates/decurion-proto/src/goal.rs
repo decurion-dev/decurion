@@ -722,4 +722,47 @@ mod tests {
             assert_eq!(s.as_str().parse::<GoalState>().ok(), Some(s));
         }
     }
+
+    #[test]
+    fn checker_receipts_round_trip_and_are_checked() {
+        let text = r#"Done. {"pass": true, "summary": "Works.", "issues": [],
+            "evidence": [{"ran": "the app's tests", "result": "42 of 42 passed"}],
+            "claims": [{"text": "The form saves.", "how": "checked"},
+                       {"text": "It should be fast enough.", "how": "guessed"}]}"#;
+        let v: ReviewVerdict = last_json_object(text).expect("a verdict with receipts reads");
+        assert_eq!(v.validate(), Ok(()));
+        assert_eq!(v.evidence[0].result, "42 of 42 passed");
+        assert_eq!(v.claims[0].how, Basis::Checked);
+        assert_eq!(v.claims[1].how, Basis::Guessed);
+        let json = serde_json::to_string(&v).expect("a verdict serializes");
+        let back: ReviewVerdict = serde_json::from_str(&json).expect("and reads back");
+        assert_eq!(back, v);
+
+        // An older checker that leaves receipts out still reads, and the
+        // empty lists are not written out.
+        let old: ReviewVerdict =
+            last_json_object(r#"{"pass": false, "summary": "Broken.", "issues": ["Fix it"]}"#)
+                .expect("an old verdict reads");
+        assert_eq!(old.validate(), Ok(()));
+        assert!(old.evidence.is_empty() && old.claims.is_empty());
+        let json = serde_json::to_string(&old).expect("serializes");
+        assert!(
+            !json.contains("evidence") && !json.contains("claims"),
+            "{json}"
+        );
+
+        let mut many = v.clone();
+        many.evidence = vec![v.evidence[0].clone(); MAX_EVIDENCE + 1];
+        assert!(many.validate().is_err(), "11 evidence entries");
+        let mut blank = v.clone();
+        blank.evidence[0].ran = "  ".into();
+        assert!(blank.validate().is_err(), "nothing said about what ran");
+        let mut long = v.clone();
+        long.claims[0].text = "x".repeat(501);
+        assert!(long.validate().is_err(), "a claim over 500 characters");
+        let unknown: Result<ReviewVerdict, _> = last_json_object(
+            r#"{"pass": true, "summary": "x", "claims": [{"text": "y", "how": "felt"}]}"#,
+        );
+        assert!(unknown.is_err(), "only checked or guessed");
+    }
 }
