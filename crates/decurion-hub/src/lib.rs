@@ -1756,8 +1756,14 @@ async fn runner_base(
         let t = st.store.thread(id).await?;
         let app = st.store.app(t.app_id).await?;
         let base = st.store.base_commit(id).await?;
+        let merge_from = st.store.merge_from(id).await?;
         let bundled = files
-            .base_bundle(app.id, &app.repo_path, base.as_deref())
+            .base_bundle_with(
+                app.id,
+                &app.repo_path,
+                base.as_deref(),
+                merge_from.as_deref(),
+            )
             .await?;
         files
             .settle_base(&st.store, id, app.id, &app.repo_path, bundled)
