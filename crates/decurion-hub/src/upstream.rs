@@ -26,7 +26,9 @@
 //!   command line. Every git message is passed through [`scrub`] before it
 //!   is logged.
 //! - **Never waits on a question, never for long.** Both network steps run
-//!   through [`netgit`], each with a time limit of [`NET_SECS`].
+//!   through [`netgit`], each with a time limit of [`NET_SECS`]. The
+//!   server's own answer is used again for [`REUSE_SECS`] for the same
+//!   folder and address, so requests that come together wait on it once.
 //! - **Network work holds no lock other work needs.** It runs outside
 //!   `git_lock`, under a lock of the app's own ([`Locks`]), so two requests
 //!   for one app do not ask the server twice. Reading the folder, importing
@@ -62,9 +64,23 @@ use tokio::io::AsyncWriteExt;
 /// the folder does not already have.
 pub(crate) const NET_SECS: u64 = 120;
 
-/// One app's lock for asking its git server, holding the last answer and
-/// when it was ready.
-type AppLock = Arc<tokio::sync::Mutex<Option<(Instant, String)>>>;
+/// How long the server's own answer is used again for the same folder and
+/// address, without asking: a goal, its approval and new work started
+/// together wait on the network once, not each time.
+pub(crate) const REUSE_SECS: u64 = 60;
+
+/// An app's last start, and when it was ready.
+struct Last {
+    ready: Instant,
+    sha: String,
+    /// The folder and address ([`identity`]) the server itself gave this
+    /// start for. `None` for a fallback, which is never reused past the
+    /// requests that waited for it.
+    server: Option<String>,
+}
+
+/// One app's lock for asking its git server, holding its last start.
+type AppLock = Arc<tokio::sync::Mutex<Option<Last>>>;
 
 /// One lock per app for asking its git server, so a request that waited
 /// behind another one asking at the same moment takes that answer instead
@@ -73,9 +89,20 @@ type AppLock = Arc<tokio::sync::Mutex<Option<(Instant, String)>>>;
 pub(crate) struct Locks {
     apps: Mutex<HashMap<i64, AppLock>>,
     warned: Mutex<HashSet<String>>,
+    /// Added to the clock; only tests move it.
+    skew: Mutex<Duration>,
 }
 
 impl Locks {
+    fn now(&self) -> Instant {
+        Instant::now() + *self.skew.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Moves this hub's clock for reusing answers forward by `d`.
+    pub(crate) fn pass(&self, d: Duration) {
+        *self.skew.lock().unwrap_or_else(|e| e.into_inner()) += d;
+    }
+
     fn for_app(&self, app_id: i64) -> AppLock {
         // A poisoned map only means another request panicked; the locks in
         // it are still good.
@@ -100,16 +127,35 @@ impl Locks {
 /// The commit new work in this app starts from, pinned in the hub's copy.
 /// Fails only when even the folder's own current commit cannot be read.
 pub(crate) async fn start_commit(files: &Files, app_id: i64, repo_path: &str) -> Result<String> {
-    let asked_at = Instant::now();
-    let lock = files.upstream.for_app(app_id);
+    let clock = &files.upstream;
+    let asked_at = clock.now();
+    let lock = clock.for_app(app_id);
     let mut last = lock.lock().await;
-    if let Some((ready, sha)) = last.as_ref() {
-        if *ready >= asked_at {
-            return Ok(sha.clone());
+    if let Some(l) = last.as_ref() {
+        if l.ready >= asked_at {
+            return Ok(l.sha.clone());
         }
     }
-    let sha = resolve(files, app_id, repo_path).await?;
-    *last = Some((Instant::now(), sha.clone()));
+    let url = git(Path::new(repo_path), &["remote", "get-url", "origin"])
+        .await
+        .ok()
+        .filter(|u| !u.is_empty());
+    let id = identity(
+        repo_path,
+        &url.as_deref().map(credential_free).unwrap_or_default(),
+    );
+    if let Some(l) = last.as_ref() {
+        let age = clock.now().saturating_duration_since(l.ready);
+        if age < Duration::from_secs(REUSE_SECS) && l.server.as_deref() == Some(id.as_str()) {
+            return Ok(l.sha.clone());
+        }
+    }
+    let (sha, from_server) = resolve(files, app_id, repo_path, url.is_some(), &id).await?;
+    *last = Some(Last {
+        ready: clock.now(),
+        sha: sha.clone(),
+        server: from_server.then_some(id),
+    });
     Ok(sha)
 }
 
@@ -167,7 +213,15 @@ impl std::fmt::Display for NotAsked {
     }
 }
 
-async fn resolve(files: &Files, app_id: i64, repo_path: &str) -> Result<String> {
+/// The start, and whether the server itself gave it. `id` is the folder
+/// and its `origin` address ([`identity`]); `has_origin` says there is one.
+async fn resolve(
+    files: &Files,
+    app_id: i64,
+    repo_path: &str,
+    has_origin: bool,
+    id: &str,
+) -> Result<(String, bool)> {
     let folder = Path::new(repo_path);
     let cache = files.app_cache(app_id);
     // The folder's own branches first, locally, so the fallbacks below have
@@ -176,32 +230,25 @@ async fn resolve(files: &Files, app_id: i64, repo_path: &str) -> Result<String> 
         let _held = files.git_lock.lock().await;
         files.fetch_app(&cache, repo_path).await
     };
-    let url = git(folder, &["remote", "get-url", "origin"])
-        .await
-        .ok()
-        .filter(|u| !u.is_empty());
-    let id = identity(
-        repo_path,
-        &url.as_deref().map(credential_free).unwrap_or_default(),
-    );
-    let asked = match (&url, &read_folder) {
-        (None, _) => Err(NotAsked::NoOrigin),
-        (Some(_), Err(e)) => Err(failed(e)),
-        (Some(_), Ok(())) => ask_server(files, app_id, folder, &id).await,
+    let asked = match (has_origin, &read_folder) {
+        (false, _) => Err(NotAsked::NoOrigin),
+        (true, Err(e)) => Err(failed(e)),
+        (true, Ok(())) => ask_server(files, app_id, folder, id).await,
     };
     let _held = files.git_lock.lock().await;
     // A server that answered but whose answer could not be taken in is
     // treated like one that did not answer: the fallbacks still give work a
     // start.
     let from_server = match asked {
-        Ok(branch) => take_default(files, app_id, &cache, &id, &branch)
+        Ok(branch) => take_default(files, app_id, &cache, id, &branch)
             .await
             .map_err(|e| failed(&e)),
         Err(why) => Err(why),
     };
+    let answered = from_server.is_ok();
     let sha = match from_server {
         Ok(sha) => {
-            files.upstream.answered(&id);
+            files.upstream.answered(id);
             sha
         }
         Err(why) => {
@@ -209,8 +256,8 @@ async fn resolve(files: &Files, app_id: i64, repo_path: &str) -> Result<String> 
             // the server took, and only what the hub's copy holds can be
             // pinned.
             files.fetch_app(&cache, repo_path).await?;
-            let (sha, used) = fall_back(&cache, folder, &id).await?;
-            if files.upstream.first_fallback(&id) {
+            let (sha, used) = fall_back(&cache, folder, id).await?;
+            if files.upstream.first_fallback(id) {
                 tracing::warn!(
                     app = app_id,
                     reason = %scrub(&why.to_string()),
@@ -229,7 +276,7 @@ async fn resolve(files: &Files, app_id: i64, repo_path: &str) -> Result<String> 
         &["update-ref", &format!("refs/decurion/start/{sha}"), &sha],
     )
     .await?;
-    Ok(sha)
+    Ok((sha, answered))
 }
 
 /// A failed local step, as a reason to fall back, scrubbed.
@@ -582,6 +629,13 @@ pub(crate) fn identity(repo_path: &str, url: &str) -> String {
 }
 
 impl Files {
+    /// As if long enough had passed that the next start asks the git
+    /// server again rather than use its last answer (for tests).
+    #[doc(hidden)]
+    pub fn age_answers(&self) {
+        self.upstream.pass(Duration::from_secs(REUSE_SECS + 1));
+    }
+
     /// The bare repo that only takes fetches from the app's git server.
     pub(crate) fn upstream_cache(&self, app_id: i64) -> PathBuf {
         self.app_cache(app_id)
@@ -813,6 +867,21 @@ mod tests {
             credential_free("git@github.com:acme/shop.git"),
             "git@github.com:acme/shop.git"
         );
+    }
+
+    /// The server's answer is used again for a minute, so requests that
+    /// come together wait on the network once; after that it is asked again.
+    #[tokio::test]
+    async fn the_servers_answer_is_used_again_for_a_minute() {
+        let r = Repos::new();
+        let files = r.files();
+        let b = sh(&r.origin, &["rev-parse", "trunk"]);
+        assert_eq!(start_commit(&files, 1, &r.path()).await.expect("start"), b);
+        let b2 = r.advance("b2");
+        files.upstream.pass(Duration::from_secs(REUSE_SECS - 1));
+        assert_eq!(start_commit(&files, 1, &r.path()).await.expect("start"), b);
+        files.upstream.pass(Duration::from_secs(2));
+        assert_eq!(start_commit(&files, 1, &r.path()).await.expect("start"), b2);
     }
 
     #[test]

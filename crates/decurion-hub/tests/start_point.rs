@@ -17,7 +17,16 @@ const RUNNER: &str = "runner-test-key";
 struct Hub {
     r: axum::Router,
     store: Store,
+    files: std::sync::Arc<Files>,
     dir: PathBuf,
+}
+
+impl Hub {
+    /// Long enough later that the hub asks the git server again rather
+    /// than use its last answer.
+    fn later(&self) {
+        self.files.age_answers();
+    }
 }
 
 impl Drop for Hub {
@@ -30,19 +39,24 @@ async fn hub() -> Hub {
     let dir = std::env::temp_dir().join(format!("decurion-start-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let store = Store::open("sqlite::memory:").await.expect("open store");
-    let r = router(
-        AppState::new(
-            store.clone(),
-            Keys {
-                owner: OWNER.into(),
-                runner: RUNNER.into(),
-            },
-            "abc123".into(),
-            Some("https://pc.tail.ts.net:8443".into()),
-        )
-        .with_files(dir.join("saved")),
-    );
-    Hub { r, store, dir }
+    let state = AppState::new(
+        store.clone(),
+        Keys {
+            owner: OWNER.into(),
+            runner: RUNNER.into(),
+        },
+        "abc123".into(),
+        Some("https://pc.tail.ts.net:8443".into()),
+    )
+    .with_files(dir.join("saved"));
+    let files = state.files().expect("files");
+    let r = router(state);
+    Hub {
+        r,
+        store,
+        files,
+        dir,
+    }
 }
 
 struct Resp {
@@ -306,8 +320,11 @@ async fn new_work_starts_from_the_default_branch_on_the_apps_git_server() {
     )
     .contains(&s.b));
 
-    // The server moves on: so does the next new piece.
+    // The server moves on: so does the next new piece, once the hub's
+    // last answer is old.
     let b2 = s.advance("b2");
+    assert_eq!(start_of(&h, new_work(&h, app).await).await, s.b);
+    h.later();
     assert_eq!(start_of(&h, new_work(&h, app).await).await, b2);
 
     // The server cannot be reached: the last default it gave.
@@ -558,6 +575,7 @@ async fn a_later_round_of_a_goal_starts_from_the_default_branch_as_it_is_then() 
 
     // The owner wants more; meanwhile the app's main branch moved on.
     let b2 = s.advance("b2");
+    h.later();
     ok(
         &h.r,
         "POST",
@@ -830,6 +848,7 @@ async fn the_server_is_reached_the_way_the_owners_own_folder_reaches_it() {
         s.c
     );
     let b2 = s.advance("b2");
+    h.later();
     assert_eq!(start_of(&h, new_work(&h, app).await).await, b2);
 }
 

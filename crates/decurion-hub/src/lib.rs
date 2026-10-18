@@ -231,6 +231,11 @@ impl AppState {
         self
     }
 
+    #[doc(hidden)]
+    pub fn files(&self) -> Option<Arc<Files>> {
+        self.files.clone()
+    }
+
     /// Turns on phone notifications.
     pub fn with_push(mut self, p: push::Pusher) -> Self {
         self.push = Some(p);
