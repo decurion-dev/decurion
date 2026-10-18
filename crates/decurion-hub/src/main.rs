@@ -60,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
         .with_push(pusher)
         .with_vault(decurion_vault::Vault::system(&dir))
         .with_files(dir.join("saved-work"));
+    decurion_hub::sign_ins::watch_dates(state.clone());
     axum::serve(listener, router(state))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;

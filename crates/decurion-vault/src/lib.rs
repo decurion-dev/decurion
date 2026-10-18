@@ -5,8 +5,14 @@
 //! The hub saves keys here when the owner adds them on the board and keeps
 //! only their names and last four characters. The runner reads them here at
 //! the start of each run and hands them to that run's container.
+//!
+//! Saved website sign-ins are kept here too (see [`sealed`]): a random key
+//! per site in the same key store, and the sign-in itself sealed with it in
+//! a private file.
 
 use std::path::{Path, PathBuf};
+
+pub mod sealed;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VaultError {
@@ -180,30 +186,38 @@ enum Backend {
 #[derive(Debug, Clone)]
 pub struct Vault {
     backend: Backend,
+    /// Where sealed website sign-ins are kept. Their keys are in `backend`.
+    sign_ins: PathBuf,
 }
 
 impl Vault {
     /// The machine's own key store: Credential Manager on Windows, otherwise
     /// the `vault` folder inside Decurion's data folder, readable only by
-    /// this user.
+    /// this user. Sealed sign-ins go in the `sign-ins` folder beside it.
     pub fn system(data_dir: &Path) -> Self {
         #[cfg(windows)]
         {
-            let _ = data_dir;
             Self {
                 backend: Backend::CredentialManager,
+                sign_ins: data_dir.join("sign-ins"),
             }
         }
         #[cfg(not(windows))]
         {
-            Self::in_folder(data_dir.join("vault"))
+            Self {
+                sign_ins: data_dir.join("sign-ins"),
+                ..Self::in_folder(data_dir.join("vault"))
+            }
         }
     }
 
-    /// A folder-backed vault, used off Windows and by tests.
+    /// A folder-backed vault, used off Windows and by tests. Sealed sign-ins
+    /// go in its `sign-ins` folder.
     pub fn in_folder(dir: impl Into<PathBuf>) -> Self {
+        let dir = dir.into();
         Self {
-            backend: Backend::Folder(dir.into()),
+            sign_ins: dir.join("sign-ins"),
+            backend: Backend::Folder(dir),
         }
     }
 

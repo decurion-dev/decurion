@@ -411,6 +411,11 @@
           <div id="key-apps"><p class="hint">Loading…</p></div>
         </section>
 
+        <section class="scard wide live" id="set-sign-ins" aria-labelledby="h-sign-ins">
+          <header><span class="ic" data-icon="key"></span><div><h2 id="h-sign-ins">Website sign-ins</h2><p>Let this app's agents check pages that need a sign-in. You sign in once, in a browser window from your PC; the sign-in is kept on your PC and your password is never saved. Use test accounts only: an agent may be able to read part of what a website keeps.</p></div></header>
+          <div id="sign-in-apps"><p class="hint">Loading…</p></div>
+        </section>
+
         <section class="scard live" id="set-phones" aria-labelledby="h-phones">
           <header><span class="ic" data-icon="phone"></span><div><h2 id="h-phones">Phones</h2><p>Pair your phone to get the inbox there. The code works once, for a few minutes.</p></div></header>
           <div><button type="button" class="btn" id="pair"></button></div>
@@ -531,6 +536,7 @@
       renderSettings();
       loadDevices();
       loadKeys();
+      loadSignIns();
       const part = h.split("/")[1];
       const target = part && $(`set-${part === "spending" ? "accounts" : part}`); // Spending became Accounts
       if (target) requestAnimationFrame(() => target.scrollIntoView({ block: "start" }));
@@ -1249,6 +1255,91 @@
         value.value = "";
         D.toast(`Saved ${name.value.trim()} for ${a.name}.`);
         await loadKeys();
+      } catch (x) { err.textContent = x.message; }
+    };
+    return el("div", {}, el("h3", { style: "margin:8px 0" }, a.name), rows, form);
+  }
+
+  // ---------- Website sign-ins ----------
+  // Drawn like test keys: when Settings opens and after each change, so a
+  // half-typed address is never wiped.
+  const day = (iso) => new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
+  function signInState(s) {
+    if (s.status === "none") return "Not signed in yet";
+    if (s.status === "expired") return "Stopped working. Sign in again.";
+    if (s.status === "expiring") return s.expires_at ? `Runs out ${day(s.expires_at)}. Sign in again soon.` : "Runs out soon. Sign in again soon.";
+    return s.expires_at ? `Signed in, until ${day(s.expires_at)}` : "Signed in";
+  }
+  async function loadSignIns() {
+    let sections;
+    try {
+      const list = await D.api("/apps");
+      sections = await Promise.all(list.map(signInSection));
+    } catch (e) {
+      $("sign-in-apps").replaceChildren(el("p", { className: "field-error" }, `Couldn't load website sign-ins. ${e.message}`));
+      return;
+    }
+    $("sign-in-apps").replaceChildren(...(sections.length ? sections : [el("p", { className: "hint" }, "Add an app first.")]));
+  }
+  // Opens the sign-in window: a fresh browser on the PC, streamed here.
+  async function startSignIn(s, btn) {
+    btn.disabled = true;
+    try {
+      const { session_id } = await D.api(`/sign-ins/${s.id}/sign-in`, { method: "POST" });
+      if (D.openBrowserViewer) {
+        const shown = D.openBrowserViewer(session_id, { saveButton: true });
+        if (shown && typeof shown.then === "function") shown.then(loadSignIns, loadSignIns);
+      } else {
+        D.toast("The sign-in window is not available on this hub yet.", "alert");
+      }
+    } catch (x) { D.toast(`Couldn't open the sign-in window. ${x.message}`, "alert"); }
+    finally { btn.disabled = false; }
+  }
+  async function signInSection(a) {
+    const list = await D.api(`/apps/${a.id}/sign-ins`);
+    const id = (s) => `signin-${a.id}-${s}`;
+    const rows = el("ul", { className: "rows" }, ...(list.length ? list.map((s) => {
+      const go = el("button", { type: "button", className: `btn sm${s.status === "ok" ? "" : " primary"}` }, s.status === "none" ? "Sign in" : "Sign in again");
+      go.disabled = D.offline;
+      go.onclick = () => startSignIn(s, go);
+      const rm = el("button", { type: "button", className: "btn quiet danger-text sm" }, icon("trash"), "Remove");
+      rm.onclick = async () => {
+        const ok = await D.confirm([`Remove the ${s.label} sign-in from ${a.name}?`, "Its agents stop being signed in to that website from their next run, and the saved sign-in is deleted from your PC.", "Remove sign-in", "Keep it"]);
+        if (!ok) return;
+        try { await D.api(`/sign-ins/${s.id}/remove`, { method: "POST" }); D.toast(`Removed ${s.label}.`); await loadSignIns(); }
+        catch (x) { D.toast(`Couldn't remove ${s.label}. ${x.message}`, "alert"); }
+      };
+      const covers = s.domains.length ? `Covers ${s.domains.join(", ")}` : s.start_url;
+      return el("li", {},
+        el("span", { className: "ic" }, icon(s.status === "expired" || s.status === "expiring" ? "alert" : "key")),
+        el("div", { className: "who" }, el("b", {}, s.label),
+          el("span", { className: "hint" }, signInState(s)),
+          el("span", { className: "hint" }, covers)),
+        el("div", { className: "cap-row" }, go, rm));
+    }) : [el("li", { className: "empty" }, "No website sign-ins yet.")]));
+    const label = el("input", { id: id("label"), type: "text", placeholder: "Staging admin", autocomplete: "off", maxLength: 60 });
+    const start = el("input", { id: id("start"), type: "url", placeholder: "https://staging.example.com/login", autocomplete: "off", spellcheck: false, inputMode: "url" });
+    const check = el("input", { id: id("check"), type: "url", placeholder: "https://staging.example.com/account", autocomplete: "off", spellcheck: false, inputMode: "url" });
+    const err = el("span", { className: "field-error", id: id("err"), role: "alert" });
+    for (const i of [label, start, check]) { i.setAttribute("aria-describedby", id("err")); i.addEventListener("input", () => { err.textContent = ""; }); }
+    const form = el("form", { className: "form-grid", noValidate: true },
+      el("div", { className: "field" }, el("label", { htmlFor: id("label") }, "Name"), label,
+        el("span", { className: "hint" }, "Your own name for it, such as the account it signs in as.")),
+      el("div", { className: "field" }, el("label", { htmlFor: id("start") }, "Sign-in page"), start,
+        el("span", { className: "hint" }, "Starts with https://, or http://localhost for an app on this PC.")),
+      el("div", { className: "field" }, el("label", { htmlFor: id("check") }, "Page to check (optional)"), check,
+        el("span", { className: "hint" }, "A page that only works when signed in. Checked before each run.")),
+      el("div", { className: "full actions" }, el("button", { className: "btn primary", type: "submit" }, "Add sign-in"), err));
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      err.textContent = "";
+      const name = label.value.trim(), addr = start.value.trim();
+      if (!name) { err.textContent = "Give the sign-in a name."; label.focus(); return; }
+      if (!/^(https:\/\/|http:\/\/localhost(:\d+)?(\/|$))/i.test(addr)) { err.textContent = "Enter the sign-in page's address, starting with https://."; start.focus(); return; }
+      try {
+        await D.api(`/apps/${a.id}/sign-ins`, { method: "POST", body: JSON.stringify({ label: name, start_url: addr, check_url: check.value.trim() || null }) });
+        D.toast(`Added ${name} for ${a.name}. Tap Sign in next to it to sign in.`);
+        await loadSignIns();
       } catch (x) { err.textContent = x.message; }
     };
     return el("div", {}, el("h3", { style: "margin:8px 0" }, a.name), rows, form);

@@ -13,6 +13,7 @@ pub mod identity;
 
 pub mod gatekeeper;
 pub mod pricing;
+pub mod sign_ins;
 
 pub const IMAGE: &str = "decurion/claude-worker:dev";
 /// The image for ChatGPT and Grok work: pi, an open-source coding agent that
