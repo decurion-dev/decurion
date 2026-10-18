@@ -47,7 +47,7 @@ pub struct Store {
 
 const THREAD_COLS: &str =
     "id, app_id, title, prompt, state, ai, session_id, branch, place, updated_at, parent_id, background,
-     gh_state, gh_branch, gh_url, gh_pr, gh_error";
+     gh_state, gh_branch, gh_url, gh_pr, gh_error, research";
 
 /// The actor recorded for the owner's own moves.
 pub const OWNER: &str = "owner";
@@ -79,6 +79,7 @@ fn thread_from(row: &SqliteRow) -> Result<Thread> {
         parent_id: row.try_get("parent_id")?,
         background: row.try_get("background")?,
         github: crate::github::send_from(row)?,
+        research: row.try_get("research")?,
     })
 }
 
@@ -375,7 +376,7 @@ impl Store {
             let Some(row) = sqlx::query(
                 "SELECT t.id, t.app_id, t.title, t.prompt, t.state, t.ai, t.session_id, t.branch,
                         t.place, t.updated_at, t.parent_id, t.background, t.pay_per_use AS thread_ppu,
-                        t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error
+                        t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, t.research
                  FROM threads t JOIN apps a ON a.id = t.app_id
                  WHERE t.state = 'queued' AND t.place = ?
                    AND (t.ai <> 'claude' OR t.pay_per_use = 1 OR a.pay_per_use = 1 OR NOT EXISTS (

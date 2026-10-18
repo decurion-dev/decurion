@@ -116,6 +116,10 @@ pub struct PlanPiece {
     pub brief: String,
     /// How the owner will know it works, in plain words.
     pub done_when: String,
+    /// A research piece: its agent finds things out and writes a report
+    /// page instead of changing code. Nothing from it goes to GitHub.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub research: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -337,6 +341,81 @@ pub struct Piece {
     pub review_issues: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// A research piece: it writes a report and changes no code.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub research: bool,
+    /// A research piece's report page is ready, at
+    /// `/api/goals/{goal_id}/reports/{thread_id}`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub report: bool,
+    /// What the building (or researching) agent said when it last finished
+    /// well, in its own words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_summary: Option<String>,
+    /// What the checker ran in its last check, and what came of it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_evidence: Vec<Evidence>,
+    /// The checker's claims in its last check, each marked checked or
+    /// guessed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_claims: Vec<ReviewClaim>,
+}
+
+/// One thing the checker actually did, such as running the tests or opening
+/// a screen, and what came of it, in plain words.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Evidence {
+    /// What it ran or looked at, such as "the app's tests".
+    pub ran: String,
+    /// What came of it, such as "42 of 42 passed".
+    pub result: String,
+}
+
+/// How the checker knows a claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Basis {
+    /// It saw it happen: a test, a command, a screen, the code itself.
+    Checked,
+    /// It reasoned its way there without seeing it.
+    Guessed,
+}
+
+impl Basis {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Checked => "checked",
+            Self::Guessed => "guessed",
+        }
+    }
+}
+
+/// One thing the checker says about the work, and how it knows.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReviewClaim {
+    pub text: String,
+    pub how: Basis,
+}
+
+/// The report a research piece's agent left, posted by the runner before it
+/// moves the work to review. Without a page of its own the hub makes one
+/// from the agent's final summary.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ResearchReport {
+    /// A self-contained HTML page, no bigger than [`MAX_PAGE_BYTES`], with
+    /// test keys already hidden by the runner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html: Option<String>,
+}
+
+/// The owner asks the project lead why a piece of work was done the way it
+/// was. The lead answers from the piece's real change and its agent's log.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskWhy {
+    /// The piece's thread.
+    pub thread_id: i64,
+    /// The owner's question, in their own words.
+    pub text: String,
 }
 
 /// What a visual page shows.
@@ -395,7 +474,16 @@ pub struct ReviewVerdict {
     /// Problems the building agent must fix. Empty when `pass`.
     #[serde(default)]
     pub issues: Vec<String>,
+    /// What the checker actually ran or looked at, and what came of it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<Evidence>,
+    /// What it claims about the work, each marked checked or guessed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub claims: Vec<ReviewClaim>,
 }
+
+pub const MAX_EVIDENCE: usize = 10;
+pub const MAX_CLAIMS: usize = 10;
 
 impl ReviewVerdict {
     pub fn validate(&self) -> Result<(), String> {
@@ -408,6 +496,19 @@ impl ReviewVerdict {
         }
         for i in &self.issues {
             check_len("issue", i, 1000)?;
+        }
+        if self.evidence.len() > MAX_EVIDENCE {
+            return Err(format!("list at most {MAX_EVIDENCE} evidence entries"));
+        }
+        for e in &self.evidence {
+            check_len("evidence ran", &e.ran, 300)?;
+            check_len("evidence result", &e.result, 500)?;
+        }
+        if self.claims.len() > MAX_CLAIMS {
+            return Err(format!("list at most {MAX_CLAIMS} claims"));
+        }
+        for c in &self.claims {
+            check_len("claim", &c.text, 500)?;
         }
         Ok(())
     }
@@ -553,6 +654,7 @@ mod tests {
                     title: "Reset link".into(),
                     brief: "Build it".into(),
                     done_when: "The link works".into(),
+                    research: false,
                 }],
             }),
             remember: vec![],
@@ -591,6 +693,8 @@ mod tests {
             pass: false,
             summary: String::new(),
             issues: vec![],
+            evidence: vec![],
+            claims: vec![],
         });
         assert!(v.pass);
         assert_eq!(v.summary, "Looks good");

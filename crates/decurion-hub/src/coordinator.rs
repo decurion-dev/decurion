@@ -725,7 +725,13 @@ impl Store {
         let messages = messages_in(&mut tx, id).await?;
         let rows = sqlx::query(
             "SELECT p.thread_id, p.goal_id, p.title, p.done_when, p.review, p.rounds,
-                    p.review_summary, p.review_issues, t.state, t.branch
+                    p.review_summary, p.review_issues, p.review_evidence, p.review_claims,
+                    t.state, t.branch, t.research,
+                    EXISTS (SELECT 1 FROM piece_reports r WHERE r.thread_id = p.thread_id) AS report,
+                    (SELECT json_extract(e.body, '$.summary') FROM events e
+                     WHERE e.thread_id = p.thread_id AND json_extract(e.body, '$.kind') = 'finished'
+                       AND json_extract(e.body, '$.ok') = 1
+                     ORDER BY e.id DESC LIMIT 1) AS agent_summary
              FROM goal_pieces p JOIN threads t ON t.id = p.thread_id
              WHERE p.goal_id = ? ORDER BY p.thread_id",
         )
@@ -750,6 +756,13 @@ impl Store {
                 review_issues: serde_json::from_str(&r.try_get::<String, _>("review_issues")?)
                     .unwrap_or_default(),
                 branch: r.try_get("branch")?,
+                research: r.try_get("research")?,
+                report: r.try_get("report")?,
+                agent_summary: r.try_get("agent_summary")?,
+                review_evidence: serde_json::from_str(&r.try_get::<String, _>("review_evidence")?)
+                    .unwrap_or_default(),
+                review_claims: serde_json::from_str(&r.try_get::<String, _>("review_claims")?)
+                    .unwrap_or_default(),
             });
         }
         let page_rows = sqlx::query(
@@ -1939,6 +1952,7 @@ mod tests {
             title: "Reset link".into(),
             brief: "Add a reset flow.".into(),
             done_when: "It resets.".into(),
+            research: false,
         };
         let plan = Plan {
             summary: "A reset link.".into(),
