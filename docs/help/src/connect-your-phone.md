@@ -6,24 +6,26 @@ Your phone reaches your PC through **Tailscale**, a free app that makes a privat
 
 ## Set up Tailscale (once)
 
-1. Install Tailscale on your PC and on your phone. Sign in to the same Tailscale account on both.
-2. On your PC, open Command Prompt. Type `tailscale serve --bg 7420` and press Enter.
-3. If Tailscale asks you to turn on HTTPS for your network, follow the link it shows and turn it on. Then run the command again.
-4. Tailscale shows an address that starts with `https://` and ends with `.ts.net`. Copy it.
-5. Tell Decurion this address. In Command Prompt, type `setx DECURION_PUBLIC_URL ` followed by the address, then press Enter. For example: `setx DECURION_PUBLIC_URL https://my-pc.example.ts.net`
-6. Close Decurion and start it again, so it uses the new address.
+1. Install Tailscale on your PC and on your phone. Get it from [tailscale.com/download](https://tailscale.com/download).
+2. Sign in to the same Tailscale account on both.
 
-On a Mac or Linux, set `DECURION_PUBLIC_URL` in the terminal before you run `decurion-start`, for example `export DECURION_PUBLIC_URL=https://my-pc.example.ts.net`.
+That is all you do outside Decurion. Decurion sets up the rest itself.
 
 ## Pair your phone
 
 1. On the board on your PC, open **Settings** and go to **Phones**.
-2. Click **Pair a phone**. A square code (QR code) appears.
-3. On your phone, open the camera and point it at the code. Tap the link that appears.
-4. A page called **Pair this phone** opens. Tap **Pair this phone**.
-5. Your phone shows the **Needs you** inbox.
+2. Click **Connect your phone**. Decurion asks Tailscale for your PC's private `https://` address and remembers it.
+3. The first time, Decurion may say **Tailscale needs HTTPS turned on once**. Open the link it shows, turn HTTPS on, then click **Connect your phone** again.
+4. A square code (QR code) appears.
+5. On your phone, open the camera and point it at the code. Tap the link that appears.
+6. A page called **Pair this phone** opens. Tap **Pair this phone**.
+7. Your phone shows the **Needs you** inbox.
 
 The code works once, for 30 minutes. If you make a new code, the older unused one stops working.
+
+Once Decurion has the address, the button reads **Pair a phone**. Click it to pair another phone. You never need to connect again, even after a restart.
+
+On a Mac or Linux, `decurion-start` works the same way. On Linux, run `sudo tailscale set --operator=$USER` once first, so Decurion may set up Tailscale. If you set `DECURION_PUBLIC_URL` yourself, Decurion uses that address instead.
 
 ## What you can do on your phone
 
@@ -62,7 +64,12 @@ The notice then changes to say what happened, such as "Refill tracker: plan appr
 
 ## If something goes wrong
 
-- **The board says "This address is not https."** Decurion does not know your Tailscale address. Do the Tailscale steps above, then restart Decurion.
+- **"Tailscale is not on this PC."** Install Tailscale from the link Decurion shows, sign in, then click **Connect your phone** again.
+- **"Tailscale is not signed in on this PC."** Open Tailscale on your PC and sign in. Then click **Connect your phone** again.
+- **"Tailscale needs HTTPS turned on once."** Open the link Decurion shows, turn HTTPS on, then click **Connect your phone** again.
+- **"Tailscale has no name for this PC yet."** Open the link Decurion shows and turn on MagicDNS. Then click **Connect your phone** again.
+- **"Tailscale took too long to answer."** Check that Tailscale is on, on your PC. Then try again.
+- **The board says "This address is not https."** Decurion does not know your Tailscale address yet. Click **Connect your phone**.
 - **The phone cannot open the link.** Check that Tailscale is on, on both the phone and the PC.
 - **"This pairing code is used or expired."** Click **Pair a phone** on the board again and scan the new code.
 - **"This phone is signed out."** The phone was removed from the board. Pair it again.

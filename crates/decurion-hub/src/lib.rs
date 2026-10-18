@@ -19,6 +19,7 @@
 
 pub mod browser;
 pub mod checkpoints;
+pub mod claude_sign_in;
 pub mod context;
 pub mod coordinator;
 pub mod devices;
@@ -32,9 +33,11 @@ pub mod protected;
 pub mod push;
 pub mod research;
 pub mod secrets;
+pub mod sign_in_lights;
 pub mod sign_ins;
 pub mod spend;
 pub mod store;
+pub mod tailscale;
 pub mod test_keys;
 pub mod usage;
 pub mod why;
@@ -56,7 +59,7 @@ use decurion_proto::{
 };
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use store::{Store, StoreError};
 use workers::RunnerId;
@@ -108,8 +111,17 @@ pub struct AppState {
     pub store: Store,
     pub keys: Keys,
     login_code: Arc<str>,
-    /// Address phones use to reach the hub, e.g. the Tailscale https name.
-    public_url: Option<Arc<str>>,
+    /// Address phones and cloud workers use to reach the hub, e.g. its
+    /// Tailscale https name. "Connect your phone" changes it while the hub
+    /// runs (tailscale.rs), so it is read through [`AppState::public_url`].
+    public_url: Arc<RwLock<Option<Arc<str>>>>,
+    /// The port the hub listens on, which Tailscale shares as https.
+    port: u16,
+    /// Tailscale's program. Without one, it is looked for when needed
+    /// ([`tailscale::find`]).
+    tailscale: Option<Arc<std::path::Path>>,
+    /// Lets one "Connect your phone" run at a time.
+    connecting: Arc<tokio::sync::Mutex<()>>,
     pub(crate) push: Option<push::Pusher>,
     /// Where apps' test keys are kept. Without one, the key endpoints refuse.
     vault: Option<decurion_vault::Vault>,
@@ -122,17 +134,25 @@ pub struct AppState {
     pub(crate) browser: browser::Relays,
     /// Where the folder picker may look. Without it, the picker refuses.
     pub(crate) folders: Option<Arc<folders::Places>>,
+    /// The "Sign in on this PC" for a Max plan going on now, if any.
+    pub(crate) claude: claude_sign_in::SignIns,
+    /// GitHub's last answer about the token, for the Sign-ins page.
+    pub(crate) github_check: sign_in_lights::GitHubCache,
 }
 
 impl AppState {
     /// `login_code` is printed for the owner at start and signs in browsers
-    /// until the hub restarts. `public_url` goes into pairing QR codes.
+    /// until the hub restarts. `public_url` goes into pairing QR codes;
+    /// without one, [`AppState::use_saved_public_url`] takes the saved one.
     pub fn new(store: Store, keys: Keys, login_code: String, public_url: Option<String>) -> Self {
         Self {
             store,
             keys,
             login_code: login_code.into(),
-            public_url: public_url.map(|u| u.trim_end_matches('/').into()),
+            public_url: Arc::new(RwLock::new(public_url.map(|u| clean_url(&u)))),
+            port: DEFAULT_PORT,
+            tailscale: None,
+            connecting: Arc::default(),
             push: None,
             vault: None,
             files: None,
@@ -140,7 +160,50 @@ impl AppState {
             seen: Arc::default(),
             browser: browser::Relays::default(),
             folders: None,
+            claude: claude_sign_in::SignIns::default(),
+            github_check: sign_in_lights::GitHubCache::default(),
         }
+    }
+
+    /// Runs `program` in place of Claude Code for "Sign in on this PC" (tests).
+    pub fn with_claude_program(mut self, program: std::path::PathBuf) -> Self {
+        self.claude = claude_sign_in::SignIns::with_program(program);
+        self
+    }
+
+    /// The address phones and cloud workers use to reach the hub now.
+    pub fn public_url(&self) -> Option<Arc<str>> {
+        self.public_url
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn set_public_url(&self, url: Option<Arc<str>>) {
+        *self.public_url.write().unwrap_or_else(|e| e.into_inner()) = url;
+    }
+
+    /// Uses the address "Connect your phone" saved, when none was given at
+    /// start: `DECURION_PUBLIC_URL` always wins.
+    pub async fn use_saved_public_url(self) -> store::Result<Self> {
+        if self.public_url().is_none() {
+            if let Some(u) = self.store.saved_public_url().await? {
+                self.set_public_url(Some(clean_url(&u)));
+            }
+        }
+        Ok(self)
+    }
+
+    /// The port the hub listens on, for Tailscale to share.
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
+    }
+
+    /// Where Tailscale's program is. Tests point it at a stand-in.
+    pub fn with_tailscale(mut self, program: std::path::PathBuf) -> Self {
+        self.tailscale = Some(program.into());
+        self
     }
 
     /// Turns on the folder picker, limited to the places in `p`.
@@ -188,6 +251,14 @@ impl AppState {
 
 const COOKIE: &str = "decurion_device";
 
+/// The hub's port unless `DECURION_ADDR` says otherwise.
+pub const DEFAULT_PORT: u16 = 7420;
+
+/// An address without the trailing slash, so paths join on cleanly.
+fn clean_url(u: &str) -> Arc<str> {
+    u.trim().trim_end_matches('/').into()
+}
+
 /// Writes a file so that a crash mid-write never leaves a half-written one.
 pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
@@ -223,6 +294,9 @@ pub fn router(state: AppState) -> Router {
         .route("/runner/claim", post(runner_claim))
         .route("/pairing", post(new_pairing))
         .route("/devices", get(list_devices))
+        // "Connect your phone": owner only, never cloud workers (tailscale.rs).
+        .route("/phone/connect", post(tailscale::connect_route))
+        .route("/phone/connection", get(tailscale::connection_route))
         .route("/devices/{id}/remove", post(remove_device))
         .route("/push/key", get(push_key))
         .route("/spend", get(get_spend))
@@ -319,6 +393,8 @@ pub fn router(state: AppState) -> Router {
         .route("/runner/helper/{id}/context", get(context::runner_helper))
         // Saved website sign-ins: owner and runner routes (sign_ins.rs).
         .merge(sign_ins::routes())
+        .merge(claude_sign_in::routes())
+        .merge(sign_in_lights::routes())
         .layer(middleware::from_fn_with_state(state.clone(), require_key));
     Router::new()
         .route("/", get(board))
@@ -429,6 +505,9 @@ fn same_origin_write(req: &Request) -> bool {
 }
 
 async fn require_key(State(st): State<AppState>, mut req: Request, next: Next) -> Response {
+    // A device's cookie, sent again with a fresh lifetime when this call
+    // marked it as used, so a phone or browser in use never signs out.
+    let mut renew = None;
     let (caller, device) = match (bearer(req.headers()), device_cookie(req.headers())) {
         (Some(k), _) if same(k, &st.keys.owner) => (Caller::Owner, None),
         (Some(k), _) if same(k, &st.keys.runner) => {
@@ -453,7 +532,12 @@ async fn require_key(State(st): State<AppState>, mut req: Request, next: Next) -
             return (StatusCode::FORBIDDEN, "cross-site request refused").into_response()
         }
         (None, Some(t)) => match st.store.device_for_token(&t).await {
-            Ok(Some(id)) => (Caller::Owner, Some(id)),
+            Ok(Some(d)) => {
+                if d.seen_now {
+                    renew = Some(device_set_cookie(req.headers(), &t));
+                }
+                (Caller::Owner, Some(d.id))
+            }
             Ok(None) => return (StatusCode::UNAUTHORIZED, "signed out").into_response(),
             Err(e) => return ApiError(e).into_response(),
         },
@@ -461,7 +545,13 @@ async fn require_key(State(st): State<AppState>, mut req: Request, next: Next) -
     };
     req.extensions_mut().insert(caller);
     req.extensions_mut().insert(DeviceId(device));
-    next.run(req).await
+    let mut resp = next.run(req).await;
+    if let Some(cookie) = renew.and_then(|c| header::HeaderValue::from_str(&c).ok()) {
+        if !resp.headers().contains_key(header::SET_COOKIE) {
+            resp.headers_mut().insert(header::SET_COOKIE, cookie);
+        }
+    }
+    resp
 }
 
 /// What a cloud worker's call reaches.
@@ -649,17 +739,41 @@ async fn view_page() -> Response {
     page(include_str!("view.html"))
 }
 
-/// Sets the device cookie. `Secure` whenever the hub is reached over https
-/// (Tailscale serve sets `X-Forwarded-Proto`).
-fn sign_in(headers: &HeaderMap, token: &str, to: &str) -> Response {
+/// The device cookie, good for a year from now. Browsers keep a cookie at
+/// most 400 days, so a device in use gets it again (see `require_key`).
+/// `Secure` whenever the hub is reached over https (Tailscale serve sets
+/// `X-Forwarded-Proto`).
+fn device_set_cookie(headers: &HeaderMap, token: &str) -> String {
     let https = headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.eq_ignore_ascii_case("https"));
     let secure = if https { "; Secure" } else { "" };
-    let cookie =
-        format!("{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000{secure}");
-    ([(header::SET_COOKIE, cookie)], Redirect::to(to)).into_response()
+    format!("{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000{secure}")
+}
+
+/// Sets the device cookie and goes on to `to`.
+fn sign_in(headers: &HeaderMap, token: &str, to: &str) -> Response {
+    (
+        [(header::SET_COOKIE, device_set_cookie(headers, token))],
+        Redirect::to(to),
+    )
+        .into_response()
+}
+
+/// The token of a device that is still signed in on this browser. Looking
+/// it up counts as using the device. A lookup that fails counts as signed
+/// out, which only shows the sign-in page again.
+async fn signed_in_device(st: &AppState, headers: &HeaderMap) -> Option<String> {
+    let token = device_cookie(headers)?;
+    match st.store.device_for_token(&token).await {
+        Ok(Some(_)) => Some(token),
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!("could not look up a signed-in device: {e}");
+            None
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -667,7 +781,16 @@ struct CodeQuery {
     code: String,
 }
 
-async fn login_page(Query(q): Query<CodeQuery>) -> Response {
+/// The link Decurion opens at start. A browser that is already signed in
+/// goes straight to the board, so the owner confirms only the first time.
+async fn login_page(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<CodeQuery>,
+) -> Response {
+    if let Some(token) = signed_in_device(&st, &headers).await {
+        return sign_in(&headers, &token, "/");
+    }
     confirm_page(
         "/login",
         &q.code,
@@ -679,6 +802,8 @@ async fn login_page(Query(q): Query<CodeQuery>) -> Response {
 
 /// The "Sign in" button on the link printed by the hub at start. Signs this
 /// browser in as a device; the owner key itself never reaches the browser.
+/// A browser that is still signed in keeps its device rather than adding
+/// another to the list.
 async fn login(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -686,6 +811,9 @@ async fn login(
 ) -> Response {
     if !same(&q.code, &st.login_code) {
         return (StatusCode::UNAUTHORIZED, "wrong or expired login code").into_response();
+    }
+    if let Some(token) = signed_in_device(&st, &headers).await {
+        return sign_in(&headers, &token, "/");
     }
     match st.store.add_device("Browser on this PC").await {
         Ok((_, token)) => sign_in(&headers, &token, "/"),
@@ -755,7 +883,7 @@ async fn new_pairing(
     if c != Caller::Owner {
         return forbidden("pairing a phone");
     }
-    let base = match &st.public_url {
+    let base = match st.public_url() {
         Some(u) => u.to_string(),
         None => {
             let host = headers
@@ -778,7 +906,7 @@ async fn new_pairing(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let warning = (!url.starts_with("https://")).then_some(
-        "This address is not https, so the phone cannot get notifications and may not reach it at all. Start the hub with DECURION_PUBLIC_URL set to its Tailscale https address.",
+        "This address is not https, so the phone cannot get notifications and may not reach it at all. Click Connect your phone to use Tailscale's https address instead.",
     );
     Json(Pairing {
         url,
@@ -1445,7 +1573,7 @@ async fn new_join_code(
             "code": code,
             "name": name,
             "minutes": workers::JOIN_HOURS * 60,
-            "hub_url": st.public_url.as_deref(),
+            "hub_url": st.public_url().as_deref(),
             "hub_commit": HUB_COMMIT,
             "rules_version": RULES_VERSION,
             "repo": REPO_URL,
@@ -1642,7 +1770,7 @@ async fn runner_credential(
         Ok(None) => return (StatusCode::CONFLICT, "that work has no open run").into_response(),
         Err(e) => return ApiError(e).into_response(),
     };
-    match secrets::read(&account) {
+    match secrets::read(st.vault.as_ref(), &account) {
         Some(c) => Json(c).into_response(),
         None => (
             StatusCode::NOT_FOUND,
@@ -1763,8 +1891,10 @@ async fn get_limits(State(st): State<AppState>) -> ApiResult<Vec<decurion_proto:
     Ok(Json(st.store.limits().await?))
 }
 
-/// The one tap that moves work waiting on an exhausted Max account to
-/// pay-per-use (still under the monthly cap).
+/// The one tap that runs an exhausted Max account's Claude work on
+/// pay-per-use until the account resets (still under the monthly cap).
+/// Answers with the account's limit as it now stands, or `null` when the
+/// account is not out (nothing changed).
 async fn overflow(
     State(st): State<AppState>,
     axum::Extension(c): axum::Extension<Caller>,
@@ -1777,7 +1907,7 @@ async fn overflow(
         return (StatusCode::BAD_REQUEST, "unknown account").into_response();
     };
     match st.store.overflow_to_pay_per_use(p).await {
-        Ok(n) => Json(serde_json::json!({ "moved": n })).into_response(),
+        Ok(limit) => Json(limit).into_response(),
         Err(e) => ApiError(e).into_response(),
     }
 }

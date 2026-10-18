@@ -433,6 +433,20 @@ async fn gh_cli_token() -> Option<Token> {
     ((20..=255).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_graphic())).then_some(Token(t))
 }
 
+/// What GitHub said about the token that opens pull requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TokenCheck {
+    /// No token saved, and the GitHub CLI is not signed in.
+    NoToken,
+    /// GitHub takes it. `expires` is GitHub's own date text, when the token
+    /// runs out at all.
+    Works { expires: Option<String> },
+    /// GitHub no longer takes it.
+    Refused,
+    /// GitHub could not be asked just now.
+    Unknown,
+}
+
 // ---------- GitHub ----------
 
 /// The hub's way to GitHub: its API address, where tokens come from, and
@@ -467,6 +481,32 @@ impl GitHub {
             .bearer_auth(&t.0)
             .header("accept", "application/vnd.github+json")
             .header("x-github-api-version", "2022-11-28")
+    }
+
+    /// Asks GitHub about the token that opens pull requests, for the
+    /// Sign-ins page: whether GitHub still takes it and when it runs out
+    /// (GitHub says so in a header for tokens that expire). The token
+    /// itself never leaves this function.
+    pub(crate) async fn check_token(&self) -> TokenCheck {
+        let Some(t) = self.tokens.get().await else {
+            return TokenCheck::NoToken;
+        };
+        let Ok(resp) = self.req(reqwest::Method::GET, "/user", &t).send().await else {
+            return TokenCheck::Unknown;
+        };
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return TokenCheck::Refused;
+        }
+        if !resp.status().is_success() {
+            return TokenCheck::Unknown;
+        }
+        TokenCheck::Works {
+            expires: resp
+                .headers()
+                .get("github-authentication-token-expiration")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned),
+        }
     }
 
     /// A pull request already open (or closed) for `branch`, so a resend
@@ -989,7 +1029,7 @@ impl Store {
     }
 
     /// The owner's saved GitHub token, as the board shows it.
-    async fn github_token_info(&self) -> Result<Option<(String, String)>> {
+    pub(crate) async fn github_token_info(&self) -> Result<Option<(String, String)>> {
         Ok(
             sqlx::query_as("SELECT last_four, added_at FROM owner_keys WHERE name = 'github'")
                 .fetch_optional(self.pool())
