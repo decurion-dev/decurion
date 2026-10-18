@@ -53,17 +53,58 @@ pub(crate) fn want(w: &Wants, now: Option<BrowserWant>) {
     });
 }
 
+/// Which copy of each saved sign-in each running piece of work was given,
+/// by (thread, sign-in). With several pieces running at once, a report must
+/// name the copy its own piece holds, and the browser box only knows the
+/// sign-in. Set when a run starts, cleared when it ends.
+static GIVEN: std::sync::Mutex<std::collections::BTreeMap<(i64, i64), i64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn given() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<(i64, i64), i64>> {
+    // Only plain inserts and lookups happen under the lock; a poisoned one
+    // still holds a usable map.
+    GIVEN.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Records the copies a run of `thread` was given.
+pub(crate) fn remember_given(thread: i64, refs: &[decurion_proto::SignInRef]) {
+    let mut g = given();
+    g.retain(|(t, _), _| *t != thread);
+    for r in refs {
+        g.insert((thread, r.id), r.version);
+    }
+}
+
+/// Forgets what a run of `thread` was given, once it has ended.
+pub(crate) fn forget_given(thread: i64) {
+    given().retain(|(t, _), _| *t != thread);
+}
+
+fn given_version(thread: i64, sign_in_id: i64) -> Option<i64> {
+    given().get(&(thread, sign_in_id)).copied()
+}
+
 /// A saved sign-in stopped working: the browser box found it signed out in
 /// a fresh browser loaded from the saved copy, not the agent's. This is
 /// where the hub is to be told, so the owner gets a card asking them to
 /// sign in again; until saved sign-ins reach runs it only notes it.
 pub(crate) async fn report_signed_out(hub: &Hub, thread: i64, sign_in_id: i64) {
     tracing::info!(thread, sign_in_id, "a saved sign-in no longer works");
+    let Some(version) = given_version(thread, sign_in_id) else {
+        // Not one this run was given: nothing it may say about it.
+        tracing::warn!(
+            thread,
+            sign_in_id,
+            "the browser named a sign-in this run was not given"
+        );
+        return;
+    };
     // Told in the background: a slow hub must not hold up the browser.
     let hub = hub.clone();
     tokio::spawn(async move {
         if let Err(err) =
-            decurion_runner::sign_ins::report_signed_out(&hub.access(), sign_in_id).await
+            decurion_runner::sign_ins::report_signed_out(&hub.access(), sign_in_id, thread, version)
+                .await
         {
             tracing::warn!(%err, thread, sign_in_id, "could not tell the hub a sign-in stopped working");
         }

@@ -3516,7 +3516,9 @@ async fn main() -> anyhow::Result<()> {
                 };
                 // One that could not be opened needs the owner to sign in again.
                 for r in sign_ins::missing(&claim, &states) {
-                    if let Err(err) = sign_ins::report_signed_out(&hub.access(), r.id).await {
+                    if let Err(err) =
+                        sign_ins::report_signed_out(&hub.access(), r.id, id, r.version).await
+                    {
                         tracing::warn!(%err, id, sign_in = r.id, "could not report a missing sign-in");
                     }
                 }

@@ -285,9 +285,18 @@ password; say so in your summary, and the owner will sign in again.",
 /// Tells the hub a sign-in this run was given no longer works (the browser
 /// box confirmed it in a fresh browser). The hub asks the owner to sign in
 /// again. Saying so twice is harmless.
-pub async fn report_signed_out(hub: &HubAccess<'_>, sign_in_id: i64) -> anyhow::Result<()> {
+///
+/// `thread` and `version` name the piece of work and the copy it was given,
+/// so with several pieces running at once only that copy can be expired.
+pub async fn report_signed_out(
+    hub: &HubAccess<'_>,
+    sign_in_id: i64,
+    thread: i64,
+    version: i64,
+) -> anyhow::Result<()> {
     let path = format!("/runner/sign-ins/{sign_in_id}/expired");
-    let r = hub.post(&path, &serde_json::json!({})).await?;
+    let body = serde_json::json!({ "thread": thread, "version": version });
+    let r = hub.post(&path, &body).await?;
     if !r.status().is_success() {
         let s = r.status();
         bail!("hub {path}: {s} {}", r.text().await.unwrap_or_default());
