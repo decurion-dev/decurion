@@ -281,6 +281,10 @@
   // as typed in the address; fromApps is true when the owner tapped into it
   // from the list, so its way back steps back in history.
   let tabList = [], current = null, fromList = false, appOpen = null, fromApps = false;
+  // From an app's page back to the list it was opened from, past the tabs
+  // stepped through on the way (pickTab counts them), or from a tab back to
+  // Settings' list on the phone.
+  const backToList = () => history.go(-1 - (appOpen != null ? history.state?.appDepth ?? 0 : 0));
   const tabIds = () => tabList.map((t) => t.id);
 
   function tabs(cards) {
@@ -303,7 +307,7 @@
     // in history, so the back button and this link agree.
     // Inside an app's page it leads back to the list of apps instead.
     const back = phone() ? el("a", { className: "set-back", href: "#settings" }, icon("left"), el("span", {}, "Settings")) : null;
-    if (back) back.onclick = (e) => { if (appOpen != null ? fromApps : fromList) { e.preventDefault(); history.back(); } };
+    if (back) back.onclick = (e) => { if (appOpen != null ? fromApps : fromList) { e.preventDefault(); backToList(); } };
     parts.back = back;
     parts.panel = el("div", { className: "set-panel" }, back, ...tabList.map((t) => cards[t.id]));
     const box = el("div", { className: `settings${phone() ? " on-phone" : ""}` }, parts.index, parts.panel);
@@ -314,13 +318,18 @@
   // Opens one tab, or on the phone the list when id is null. The PC always
   // has a tab open: the first one when none is asked for. stepped is true
   // when the owner moved here from inside Settings, not from a link elsewhere.
-  // want is what follows "#settings/": a tab's id, or "apps/<id>" for one
-  // app's page.
+  // want is what follows "#settings/": a tab's id, "apps/<id>" for one
+  // app's page, or "apps/<id>/<tab>" for one tab of it.
   function select(want, stepped = false) {
-    let [id, sub] = typeof want === "string" ? want.split("/") : [want];
+    let [id, sub, part] = typeof want === "string" ? want.split("/") : [want];
     id = OLD_NAMES[id] ?? id;
     if (!tabIds().includes(id)) { id = phone() ? null : tabList[0]?.id ?? null; sub = null; }
     const app = id === "apps" && sub ? sub : null;
+    // Its tab: #settings/apps/<id> opens Rules.
+    if (app != null) {
+      appTab = appTabOf(part);
+      if (page && String(page.id) === app) page.tabs.select(appTab);
+    }
     const wasApp = appOpen;
     if (id !== current) fromList = stepped && phone() && current === null && id !== null;
     if (app !== appOpen) fromApps = stepped && current === "apps" && appOpen === null && app !== null;
@@ -509,7 +518,7 @@
     };
     const save = el("button", { type: "submit", className: "btn primary", disabled: busy, dataset: { key: key("save") } }, busy && !D.offline ? "Saving…" : "Save");
     const cancel = el("button", { type: "button", className: "btn", dataset: { key: key("cancel") } }, "Cancel");
-    cancel.onclick = () => { delete editing[a.id]; delete editErr[a.id]; sigs["set-app-page"] = ""; render(); focusKey(key("name")); };
+    cancel.onclick = () => { delete editing[a.id]; delete editErr[a.id]; sigs["app-name"] = ""; render(); focusKey(key("name")); };
 
     const form = el("form", { className: "form-grid", id: `app-edit-${a.id}`, noValidate: true, "aria-label": `Change ${a.name}'s name and folder` },
       field(el("label", { htmlFor: key("name") }, "Name"), name, hint("name", "1 to 40 letters, digits, - or _. No spaces."), nameErr),
@@ -786,8 +795,8 @@
         ? `${a.name} is marked as holding no patient data.`
         : `${a.name}'s agents are told to use made-up data only.`)));
 
-    return pcard("rules", "shield", "Rules", "What Decurion may do for this app. Agents can never change these.",
-      top, merge, deploy, steps, sent, data, reviewerField(a));
+    return tabCard("What Decurion may do for this app. Agents can never change these.",
+      top, merge, deploy, steps, sent, data, reviewerField(a), alwaysOn());
   }
 
   // Who reviews the app's pull requests: asked to review each one.
@@ -827,14 +836,49 @@
   }
 
   // ---------- An app's page ----------
-  // One card for each part, in the order the owner looks for them. Each is
-  // a section of its own, headed by an h3 under the app's name.
-  function pcard(id, iconName, title, about, ...body) {
-    const h = `h-app-${id}`;
-    return el("section", { className: "scard live", id: `app-${id}`, "aria-labelledby": h },
-      el("header", {}, el("span", { className: "ic" }, icon(iconName, "l")),
-        el("div", {}, el("h3", { id: h }, title), about ? el("p", {}, about) : null)),
-      ...body);
+  // The style guide's rule: one thing at a time. Under the app's name sits a
+  // row of tabs (D.tabs), one per part, Rules first; each tab has its own
+  // link, #settings/apps/<id>/<tab>. The page is built once while the app is
+  // open: switching tabs only hides and shows panels, and new data redraws
+  // only the panel it changes, so nothing the owner typed is lost.
+  const APP_TABS = [
+    { id: "rules", label: "Rules" },
+    { id: "money", label: "Plan and money" },
+    { id: "websites", label: "Websites" },
+    { id: "files", label: "Files" },
+    { id: "name", label: "Name and folder" },
+  ];
+  const appTabOf = (t) => (APP_TABS.some((x) => x.id === t) ? t : "rules");
+  let page = null;        // the open app's { id, head, panels, tabs }
+  let appTab = "rules";   // the open tab, as the address says
+
+  // One tab's box, with a line saying what it holds.
+  function tabCard(about, ...body) {
+    return el("section", { className: "scard live tab-card" }, about ? el("p", { className: "tab-about" }, about) : null, ...body);
+  }
+
+  function pageFor(id) {
+    if (page?.id === id) return page;
+    const panels = Object.fromEntries(APP_TABS.map((t) => [t.id, el("div", { className: "app-tab" })]));
+    const head = el("div", { className: "app-head-box" });
+    const tabs = D.tabs(APP_TABS.map((t) => ({ id: t.id, label: t.label, panel: panels[t.id] })),
+      { label: "Parts of this app", selected: appTab, onPick: pickTab });
+    page = { id, head, panels, tabs };
+    for (const k of Object.keys(sigs)) if (k.startsWith("app-")) delete sigs[k];
+    fill(parts.appPage, head, tabs.el, ...Object.values(panels));
+    return page;
+  }
+
+  // The owner tapped a tab: give it its own address, so the back button
+  // comes back to it. appDepth counts the tabs stepped through since the
+  // app's page opened, so "‹ Apps" can step back past them to the list.
+  function pickTab(tab) {
+    if (tab === appTab) return;
+    appTab = tab;
+    const at = `#settings/apps/${appOpen}/${tab}`;
+    try { history.pushState({ appDepth: (history.state?.appDepth ?? 0) + 1 }, "", at); } catch (_) { location.hash = at; }
+    // A tab opens at its top.
+    window.scrollTo(0, 0);
   }
 
   function appHead(a) {
@@ -842,7 +886,7 @@
     // The phone has its own way back above the page.
     if (!phone()) {
       back = el("a", { className: "set-back", href: "#settings/apps", dataset: { key: "app-back" } }, icon("left"), "Apps");
-      back.onclick = (e) => { if (fromApps) { e.preventDefault(); history.back(); } };
+      back.onclick = (e) => { if (fromApps) { e.preventDefault(); backToList(); } };
     }
     const r = rulesOf(a);
     return el("header", { className: "app-head" }, back,
@@ -878,7 +922,7 @@
     };
     const spent = sp && (sp.spent_usd > 0 || sp.cap_usd != null)
       ? `Pay-per-use this month: ${D.money(sp.spent_usd)}${sp.cap_usd != null ? ` of its own ${D.money(sp.cap_usd)} cap` : ""}.` : null;
-    return pcard("money", "money", "Plan and money", a.pay_per_use
+    return tabCard(a.pay_per_use
       ? `Uses Claude pay-per-use now, under its caps. An app can have its own monthly cap on pay-per-use money, across Claude, ChatGPT and Grok.`
       : `Uses Max plan ${a.profile} now. An app can have its own monthly cap on pay-per-use money, across Claude, ChatGPT and Grok.`,
       el("div", { className: "plan-grid" },
@@ -895,15 +939,15 @@
 
   function websitesCard(a) {
     parts.sitesNote.hidden = false;
-    return pcard("sites", "globe", "Websites", "Agents on this app reach only the built-in websites and the ones you add here.",
+    return tabCard("Agents on this app reach only the built-in websites and the ones you add here.",
       sitesBlock(a), parts.sitesNote);
   }
 
   // Files for agents, drawn by /files.js when the page loads it. Without it
   // the card is left out. The panel is the same element on every redraw.
   function filesCard(a) {
-    if (!window.DFiles?.panel) return null;
-    return pcard("files", "app", "Files for agents", "Briefs, specs and pictures agents read while they work on this app.",
+    if (!window.DFiles?.panel) return tabCard("Files can't be added from this screen. Open Settings on your PC.");
+    return tabCard("Briefs, specs and pictures agents read while they work on this app.",
       window.DFiles.panel({ appId: a.id }));
   }
 
@@ -916,8 +960,10 @@
     "Nothing is ever pushed straight to your main branch.",
     "Pay-per-use spending stops at your caps.",
   ];
-  function alwaysCard() {
-    return pcard("always", "shield", "Always on, for every app", "These can't be switched off.",
+  function alwaysOn() {
+    return el("div", { className: "always-on", role: "group", "aria-labelledby": "h-always-on" },
+      el("h3", { id: "h-always-on" }, "Always on, for every app"),
+      el("p", { className: "hint" }, "These can't be switched off."),
       el("ul", { className: "locks" }, ...ALWAYS.map((t) => el("li", {}, icon("lock"), el("span", {}, t)))));
   }
 
@@ -938,24 +984,36 @@
   function drawAppPage() {
     const box = parts.appPage;
     const a = apps.find((x) => String(x.id) === appOpen) ?? null;
-    // A cap being typed would be lost on redraw; anything else being typed
-    // is kept in a draft, and its field gets focus back.
-    const typingKey = document.activeElement?.dataset?.key ?? "";
-    if (typingIn(box) && !/^(site-|edit-|rule-)/.test(typingKey)) return;
-    const id = a?.id;
-    const sp = a ? (spend?.apps ?? []).find((x) => x.app_id === a.id) ?? null : null;
-    if (!changed("set-app-page", [appOpen, a, sp, D.offline, siteErr[id], siteBusy[id], !!editing[id], editErr[id], editBusy[id],
-      starBusy[id], rulesErr[id], [...saving], deployOpen[id], !!window.DFiles])) return;
-    keepFocus(() => {
-      if (!a) {
+    if (!a) {
+      page = null;
+      if (changed("app-gone", [appOpen])) {
         fill(box, el("section", { className: "scard wide app-gone" },
           el("h2", { tabIndex: -1 }, "This app isn't here any more."),
           el("p", {}, el("a", { className: "btn", href: "#settings/apps" }, icon("left"), "Back to Apps"))));
-        return;
       }
-      fill(box, appHead(a), rulesCard(a), moneyCard(a, sp), websitesCard(a), filesCard(a),
-        pcard("name", "app", "Name and folder", null, editForm(a)), alwaysCard());
-    });
+      return;
+    }
+    delete sigs["app-gone"];
+    const pg = pageFor(a.id);
+    const id = a.id;
+    const sp = (spend?.apps ?? []).find((x) => x.app_id === id) ?? null;
+    // Each part redraws only when its own data changed. A cap being typed
+    // would be lost on redraw, so its tab waits; anything else being typed
+    // is kept in a draft, and its field gets focus back.
+    const draw = (name, sig, build) => {
+      const box = name === "head" ? pg.head : pg.panels[name];
+      const key = document.activeElement?.dataset?.key ?? "";
+      if (typingIn(box) && !/^(site-|edit-|rule-)/.test(key)) return;
+      if (!changed(`app-${name}`, [id, D.offline, ...sig])) return;
+      keepFocus(() => fill(box, build()));
+    };
+    draw("head", [a.name, a.rules, a.repo_path], () => appHead(a));
+    draw("rules", [a.name, a.rules, a.reviewer, rulesErr[id], [...saving], deployOpen[id]], () => rulesCard(a));
+    draw("money", [a.name, a.profile, a.pay_per_use, a.monthly_cap_usd, a.first_today, sp, starBusy[id], rulesErr[id]?.profile,
+      saving.has(`profile-${id}`)], () => moneyCard(a, sp));
+    draw("websites", [a.name, a.sites, siteErr[id], siteBusy[id]], () => websitesCard(a));
+    draw("files", [!!window.DFiles], () => filesCard(a));
+    draw("name", [a.name, a.repo_path, !!editing[id], editErr[id], editBusy[id]], () => tabCard(null, editForm(a)));
   }
 
   // ---------- Drawing from the page's data ----------

@@ -568,8 +568,16 @@ details.fold[open] > summary svg.i { transform: rotate(90deg); }
 .rule-chips .pill { font-weight: 600; }
 /* Full control is a quiet blue; PR only and Patient data stay steel. */
 .pill.rule-full { color: var(--accent-ink); background: var(--accent-soft); }
-.set-apps, .app-page { display: grid; gap: 18px; min-width: 0; }
-.set-apps > [hidden], .app-page[hidden] { display: none; }
+.set-apps, .app-page { display: grid; gap: 18px; min-width: 0; grid-template-columns: minmax(0, 1fr); }
+.set-apps > [hidden], .app-page[hidden], .app-tab[hidden] { display: none; }
+/* The app's page: its name, then a row of tabs that scrolls inside itself
+   when it does not fit, then the open tab. */
+.app-page .ptabs { margin-bottom: -6px; }
+.app-tab { min-width: 0; }
+.tab-card .tab-about { color: var(--muted); font-size: 14px; }
+.always-on { display: grid; gap: 4px; padding-top: 14px; border-top: 1px solid var(--line); }
+.always-on h3 { font-size: 14.5px; }
+.always-on .locks { margin-top: 6px; }
 .app-head { display: grid; gap: 6px; min-width: 0; }
 .app-head .set-back { margin: -10px 0 -4px; }
 .app-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
@@ -579,7 +587,6 @@ details.fold[open] > summary svg.i { transform: rotate(90deg); }
 .app-gone { justify-items: start; }
 .app-gone h2 { font-size: 17px; }
 .app-gone h2:focus { outline: none; }
-.scard > header h3 { font-size: 16px; }
 .app-page .form-grid { border-top: 0; padding-top: 0; }
 .app-page .row-cap { padding-left: 0; }
 .app-acts { display: flex; flex-wrap: wrap; gap: 8px; }

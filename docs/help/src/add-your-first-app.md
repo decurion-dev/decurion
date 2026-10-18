@@ -23,14 +23,13 @@ Your app now shows in the list of apps above **Add an app**. It also shows in th
 
 ## Each app has its own page
 
-Open **Settings**, then **Apps**. Each app has one row, with its plan and its rules at a glance, such as **Max plan A**, **PR only** and **Patient data**. Tap a row to open the app's page. Everything about that app is there:
+Open **Settings**, then **Apps**. Each app has one row, with its plan and its rules at a glance, such as **Max plan A**, **PR only** and **Patient data**. Tap a row to open the app's page. Everything about that app is there, one tab at a time:
 
-- **Rules**: what Decurion may do for this app. See the next part.
+- **Rules** opens first: what Decurion may do for this app (see the next part), and at the bottom, **Always on, for every app**, the safety walls you can't switch off.
 - **Plan and money**: its Claude Max plan, pay-per-use, its own monthly cap and **Go first today**.
 - **Websites**: the extra websites its agents may use.
-- **Files for agents**: briefs, specs and pictures its agents read.
+- **Files**: briefs, specs and pictures its agents read.
 - **Name and folder**.
-- **Always on, for every app**: the safety walls you can't switch off.
 
 Tap **Apps** at the top of the page to go back to the list.
 
@@ -58,7 +57,7 @@ When you tap **Full control** and no deploy steps are saved yet, Merge turns on 
 You can name one person to review each pull request for an app, such as a teammate.
 
 1. Open **Settings**, **Apps**, then the app.
-2. Under **Rules**, in **Who reviews its pull requests**, type their GitHub name, such as `param-k`.
+2. On the **Rules** tab, in **Who reviews its pull requests**, type their GitHub name, such as `param-k`.
 3. Click **Save**.
 
 They are asked to review each pull request for this app. To stop asking anyone, empty the box and click **Save**.
@@ -66,7 +65,7 @@ They are asked to review each pull request for this app. To stop asking anyone, 
 ## Change how an app is billed
 
 1. Open **Settings**, **Apps**, then the app.
-2. Under **Plan and money**, click **Switch to pay-per-use** or **Switch to Max plan A** (or **B**).
+2. On the **Plan and money** tab, click **Switch to pay-per-use** or **Switch to Max plan A** (or **B**).
 
 The change applies to work that starts or resumes after you click.
 
@@ -75,14 +74,14 @@ To change which Max plan it uses, choose **Max plan A** or **B** under **Claude 
 ## Change an app's name or folder
 
 1. Open **Settings**, **Apps**, then the app.
-2. Under **Name and folder**, change its **Name** or its **Folder** (type it, or click **Choose folder**).
+2. On the **Name and folder** tab, change its **Name** or its **Folder** (type it, or click **Choose folder**).
 3. Click **Save**.
 
 While some of the app's work is running, or paused partway, Decurion keeps the old name and folder, because that work keeps its files under them. Wait until the work finishes (or stop it), then change them. You can change the plan, the reviewer and the rules at any time.
 
 ## Let one app go first today
 
-When one app matters most today, click **Go first today** on its page in **Settings**, under **Plan and money**, or the star next to its name in the board's app list. Its waiting work then starts before other apps' work.
+When one app matters most today, click **Go first today** on its page in **Settings**, on the **Plan and money** tab, or the star next to its name in the board's app list. Its waiting work then starts before other apps' work.
 
 The star ends by itself at the end of the day. To take it off sooner, click it again. It changes only the order: the money caps and plan limits still apply.
 
@@ -97,7 +96,7 @@ Agents work in a closed room with one door to the internet. Through it they can 
 To let an app's agents use another website:
 
 1. Open **Settings**, **Apps**, then the app.
-2. Under **Websites**, type the site, such as `stripe.com`, and click **Add**. An entry like `stripe.com` also covers addresses under it, such as `api.stripe.com`.
+2. On the **Websites** tab, type the site, such as `stripe.com`, and click **Add**. An entry like `stripe.com` also covers addresses under it, such as `api.stripe.com`.
 3. To take a site off the list, click the **×** next to it.
 
 Changes apply to work that starts or resumes after you save.
