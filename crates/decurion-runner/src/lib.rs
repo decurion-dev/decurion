@@ -15,6 +15,7 @@ pub mod identity;
 pub mod browser;
 pub mod dispatch;
 pub mod gatekeeper;
+pub mod preview;
 pub mod pricing;
 pub mod sign_ins;
 
@@ -135,6 +136,23 @@ pub fn sign_in_container_name(session_id: i64) -> String {
     format!("decurion-signin-{session_id}")
 }
 
+/// A preview's box, where the app's dev server runs ("Run it"). Its own
+/// prefix, cleared at start like the others. Its browser box is
+/// [`preview_browser_name`], which starts the same, so the same clean-up
+/// finds both.
+pub fn preview_container_name(session_id: i64) -> String {
+    format!("decurion-preview-{session_id}")
+}
+
+pub fn preview_browser_name(session_id: i64) -> String {
+    format!("{}-browser", preview_container_name(session_id))
+}
+
+/// A preview's home, thrown away with its copy of the code.
+pub fn preview_home_volume(session_id: i64) -> String {
+    format!("decurion-preview-home-{session_id}")
+}
+
 pub fn home_volume(thread_id: i64) -> String {
     format!("decurion-home-{thread_id}")
 }
@@ -218,6 +236,15 @@ impl BoxNet {
         BoxNet {
             network: format!("decurion-net-helper-{job_id}"),
             gate: format!("decurion-gate-helper-{job_id}"),
+        }
+    }
+
+    /// A preview's: named for its browser session, never shared with the
+    /// work it runs, which may be running at the same time.
+    pub fn preview(session_id: i64) -> Self {
+        BoxNet {
+            network: format!("decurion-net-preview-{session_id}"),
+            gate: format!("decurion-gate-preview-{session_id}"),
         }
     }
 }
@@ -305,6 +332,19 @@ blocked site, carry on without it and say so in your final summary."
     };
 }
 
+// The owner's Run it button starts the app from `.decurion/run.json` (see
+// `preview::recipe`); keep this in step with what that file may hold.
+macro_rules! run_it {
+    () => {
+        "If your work changes anything a person sees, start the app and look at it in the browser before you finish. \
+The owner can start the app too, with a Run it button, which reads .decurion/run.json: a JSON object with \
+\"start\" (the command that starts the dev server and keeps running), and optionally \"install\" (the command \
+that installs what it needs), \"port\" (where it listens) and \"path\" (the page to open, like \"/\"). \
+Without that file, Run it can only start a package.json \"dev\", \"start\" or \"serve\" script or a plain \
+index.html, so if the app starts any other way, or you change how it starts, write or update that file and commit it. "
+    };
+}
+
 // The questions block the agent is asked for is read by the work panel and
 // the phone inbox (D.questions in the hub's ui.js), which turn it into answer
 // buttons; keep its shape in step with that reader.
@@ -325,6 +365,7 @@ const RULES: &str = concat!(
     "You are working in your own copy of the code on its own branch. \
 Commit your work to this branch as you go. Do not push and do not open pull requests; \
 Decurion does that after review. ",
+    run_it!(),
     browser_and_sites!(),
     "\n\n",
     questions_block!()
@@ -923,7 +964,7 @@ pub fn run_args(
     // box shares that box's network, so the browser tools are on localhost,
     // and so is any server the agent starts for the browser to test.
     let browser = browser_container_name(thread_id);
-    let mut a = box_args(&sb, cred, test_keys, IMAGE, Some(&browser))?;
+    let mut a = box_args(&sb, Some(cred), test_keys, IMAGE, Some(&browser), None)?;
     a.extend(
         [
             "-p",
@@ -984,7 +1025,7 @@ pub fn pi_run_args(
         network: &network_name(thread_id),
         out: None,
     };
-    let mut a = box_args(&sb, cred, test_keys, PI_IMAGE, None)?;
+    let mut a = box_args(&sb, Some(cred), test_keys, PI_IMAGE, None, None)?;
     a.extend(
         [
             "--mode",
@@ -1048,6 +1089,56 @@ pub fn sign_in_box_args(session_id: i64) -> Vec<String> {
     browser_args(&sign_in_container_name(session_id), None)
 }
 
+/// The browser box of a preview: the same box as a run's, on the preview's
+/// own closed network behind its gate. The owner drives it; there is no agent
+/// and no browser tools (see `preview` mode in browser-host.mjs).
+pub fn preview_browser_box_args(session_id: i64) -> Vec<String> {
+    let mut a = browser_args(
+        &preview_browser_name(session_id),
+        Some(&BoxNet::preview(session_id).network),
+    );
+    a.push("--gate".to_owned());
+    a
+}
+
+/// What a preview's box runs: a shell reading the start script on stdin
+/// (see [`preview::script`]), so nothing from the app's files is ever on a
+/// command line on the PC.
+pub const PREVIEW_SHELL: &str = "sh";
+
+/// Arguments for `docker run` of a preview's box, where the app's dev server
+/// runs: the same sealed box as a work run, beside the preview's browser box,
+/// with the app's test keys by name and no credential at all. Nothing from the
+/// app's files goes on this command line: the script goes in on stdin.
+pub fn preview_box_args(
+    session_id: i64,
+    copy: &Path,
+    test_keys: &[String],
+) -> anyhow::Result<Vec<String>> {
+    let name = preview_container_name(session_id);
+    let home = preview_home_volume(session_id);
+    let net = BoxNet::preview(session_id).network;
+    let sb = Sandbox {
+        name: &name,
+        src: copy,
+        read_only: false,
+        home_volume: &home,
+        network: &net,
+        out: None,
+    };
+    let browser = preview_browser_name(session_id);
+    let mut a = box_args(
+        &sb,
+        None,
+        test_keys,
+        IMAGE,
+        Some(&browser),
+        Some(PREVIEW_SHELL),
+    )?;
+    a.push("-s".to_owned());
+    Ok(a)
+}
+
 fn browser_args(name: &str, network: Option<&str>) -> Vec<String> {
     let mut a: Vec<String> = ["run", "-i", "--rm", "--name", name]
         .iter()
@@ -1094,7 +1185,7 @@ pub fn helper_run_args(
     if let Some(bad) = disallowed_tools.iter().find(|t| !valid_tool_name(t)) {
         anyhow::bail!("refusing odd tool name {bad:?}");
     }
-    let mut a = box_args(sb, cred, &[], IMAGE, None)?;
+    let mut a = box_args(sb, Some(cred), &[], IMAGE, None, None)?;
     a.extend(
         [
             "-p",
@@ -1130,13 +1221,15 @@ pub fn helper_run_args(
 /// The sealed box every agent runs in, up to and including the image name:
 /// no extra privileges, capped memory and processes, and the credential and
 /// test keys by name only. `beside` is the browser box whose network the
-/// box joins, if it has one.
+/// box joins, if it has one. A preview's box has no credential at all, and
+/// runs `entrypoint` instead of the image's own.
 fn box_args(
     sb: &Sandbox<'_>,
-    cred: Credential,
+    cred: Option<Credential>,
     test_keys: &[String],
     image: &str,
     beside: Option<&str>,
+    entrypoint: Option<&str>,
 ) -> anyhow::Result<Vec<String>> {
     let src = mount_src(sb.src)?;
     // A plain name is what keeps `-e` from taking a value (`-e NAME=value`)
@@ -1204,7 +1297,7 @@ fn box_args(
                 .map(|s| s.to_string()),
         ),
     }
-    for v in cred.vars() {
+    for v in cred.map(Credential::vars).unwrap_or_default() {
         a.extend(["-e".to_owned(), (*v).to_owned()]);
     }
     for k in test_keys {
@@ -1212,6 +1305,9 @@ fn box_args(
     }
     for e in GIT_ENV {
         a.extend(["-e".to_owned(), (*e).to_owned()]);
+    }
+    if let Some(e) = entrypoint {
+        a.extend(["--entrypoint".to_owned(), e.to_owned()]);
     }
     a.push(image.to_owned());
     Ok(a)
@@ -3484,6 +3580,94 @@ mod tests {
     }
 
     const SID: &str = "3f2c9a7e-1b2d-4c5e-8f90-123456789abc";
+
+    #[test]
+    fn preview_boxes_are_sealed_and_get_no_credential() {
+        let keys = vec!["STRIPE_TEST_KEY".to_owned()];
+        let a =
+            preview_box_args(9, Path::new("C:\\data\\previews\\shop-9"), &keys).unwrap_or_default();
+        let image = a.iter().position(|x| x == IMAGE).unwrap_or(usize::MAX);
+        assert!(image < a.len());
+        assert_eq!(
+            a[..5],
+            ["run", "-i", "--rm", "--name", "decurion-preview-9"]
+        );
+        for w in SEAL.chunks(2) {
+            let at = a.windows(2).position(|p| p == w).unwrap_or(usize::MAX);
+            assert!(at < image, "{w:?}");
+        }
+        // Exactly the code and its own throwaway home.
+        let mounts: Vec<&String> = a
+            .windows(2)
+            .filter(|w| w[0] == "--mount")
+            .map(|w| &w[1])
+            .collect();
+        assert_eq!(mounts.len(), 2);
+        assert!(mounts[0].contains("dst=/work") && !mounts[0].contains("readonly"));
+        assert_eq!(
+            mounts[1],
+            "type=volume,src=decurion-preview-home-9,dst=/home/agent"
+        );
+        // Beside its own browser box, never the work's.
+        let net = a
+            .iter()
+            .position(|x| x == "--network")
+            .unwrap_or(usize::MAX);
+        assert!(net < image && a[net + 1] == "container:decurion-preview-9-browser");
+        // No credential of any kind; test keys by name only.
+        let joined = a.join(" ");
+        for v in [
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "OPENAI_API_KEY",
+            "XAI_API_KEY",
+        ] {
+            assert!(!joined.contains(v), "{v}");
+        }
+        assert!(a
+            .windows(2)
+            .any(|w| w[0] == "-e" && w[1] == "STRIPE_TEST_KEY"));
+        assert!(!a.iter().any(|x| x.starts_with("STRIPE_TEST_KEY=")));
+        assert!(!a
+            .iter()
+            .any(|x| x == "--privileged" || x.contains("docker.sock")));
+        // A shell reading its script on stdin; nothing of the app's on the line.
+        let ep = a
+            .iter()
+            .position(|x| x == "--entrypoint")
+            .unwrap_or(usize::MAX);
+        assert!(ep < image && a[ep + 1] == PREVIEW_SHELL);
+        assert_eq!(a[image + 1..], ["-s"]);
+        assert!(!a.iter().any(|x| x == "--mcp-config"));
+        // Bad test key names never reach the command line.
+        assert!(preview_box_args(9, Path::new("/tmp/x"), &["A=1".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn a_previews_browser_is_sealed_on_its_own_network_behind_its_gate() {
+        let a = preview_browser_box_args(9);
+        let image = a.iter().position(|x| x == IMAGE).unwrap_or(0);
+        assert_eq!(
+            a[..5],
+            ["run", "-i", "--rm", "--name", "decurion-preview-9-browser"]
+        );
+        for w in SEAL.chunks(2) {
+            let at = a.windows(2).position(|p| p == w).unwrap_or(usize::MAX);
+            assert!(at < image, "{w:?}");
+        }
+        let net = a
+            .iter()
+            .position(|x| x == "--network")
+            .unwrap_or(usize::MAX);
+        assert!(net < image && a[net + 1] == "decurion-net-preview-9");
+        assert_eq!(a.last().map(String::as_str), Some("--gate"));
+        assert!(!a.iter().any(|x| x == "--mount" || x == "-e"));
+        let net = BoxNet::preview(9);
+        assert_eq!(net.gate, "decurion-gate-preview-9");
+        // Never the network or gate of the work it may be running.
+        assert_ne!(net, BoxNet::work(9));
+    }
 
     #[test]
     fn pi_runs_are_sealed_the_same_way_and_get_their_key_by_name() {

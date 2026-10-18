@@ -120,9 +120,12 @@ pub enum ToBrowser {
     /// Sign-in mode: save what the owner signed in to.
     Capture,
     /// Preview mode: a line of progress for the waiting page ("Installing
-    /// what the app needs"). Shown as text, never as HTML.
+    /// what the app needs"), or, with `stopped`, why the app is not running
+    /// (it stopped, or never answered). Shown as text, never as HTML.
     Note {
         text: String,
+        #[serde(default)]
+        stopped: bool,
     },
     /// Preview mode: open this address (on the box's own localhost) once it
     /// answers.

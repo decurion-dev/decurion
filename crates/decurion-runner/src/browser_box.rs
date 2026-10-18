@@ -1,5 +1,5 @@
-//! The test browser in a box of its own: a work run's, and the sign-in
-//! window's. This starts the box, talks to it over its stdin and stdout,
+//! The test browser in a box of its own: a work run's, the sign-in
+//! window's, and a preview's ("Run it"). This starts the box, talks to it over its stdin and stdout,
 //! and relays its screen to the hub, and the owner's clicks and typing back,
 //! over a WebSocket the runner opens itself, only while someone watches.
 //! What may go in and out is checked in `decurion_runner::browser`.
@@ -14,7 +14,8 @@ use decurion_runner::browser::{
     MAX_FROM_LINE, MIN_WIDTH, QUALITY,
 };
 use decurion_runner::{
-    browser_box_args, browser_container_name, sign_in_box_args, sign_in_container_name,
+    browser_box_args, browser_container_name, preview_browser_box_args, preview_browser_name,
+    sign_in_box_args, sign_in_container_name,
 };
 use futures_util::{SinkExt, StreamExt};
 use std::process::Stdio;
@@ -384,6 +385,87 @@ pub(crate) async fn run_sign_in_box(
             finish(relay, &ended_why(&end)).await;
             bail!("The sign-in window closed before the sign-in was saved.")
         }
+    }
+}
+
+/// A preview's browser box: the owner's view of their app. Its relay to the
+/// hub is open from the start, so the owner sees the waiting page while the
+/// app gets ready. Removing it ends the relay; [`PreviewBrowser::stop`] says
+/// why first.
+pub(crate) struct PreviewBrowser {
+    to_box: mpsc::Sender<String>,
+    remover: Remover,
+    task: Option<JoinHandle<(BoxEnd, Option<Relay>)>>,
+    /// The relay, once the box has ended on its own.
+    left: Option<Relay>,
+}
+
+/// Starts a preview's browser box on the preview's network (its gate must be
+/// up), showing a waiting page, and opens the relay to the hub.
+pub(crate) async fn start_preview(hub: &Hub, session_id: i64) -> anyhow::Result<PreviewBrowser> {
+    let first = ToBrowser::Start {
+        mode: BrowserMode::Preview,
+        states: Vec::new(),
+        start_url: None,
+    };
+    let remover = Remover {
+        id: session_id,
+        name: preview_browser_name(session_id),
+        armed: true,
+    };
+    let io = spawn_box(preview_browser_box_args(session_id), &first, Vec::new()).await?;
+    let to_box = io.to_box.clone();
+    let hub = hub.clone();
+    let task = tokio::spawn(async move {
+        // Held for as long as the relay runs: the owner is always shown it.
+        let (_wants, wanted) = watch::channel(Some(BrowserWant { session_id }));
+        relay_loop(&hub, None, BrowserMode::Preview, io, wanted).await
+    });
+    Ok(PreviewBrowser {
+        to_box,
+        remover,
+        task: Some(task),
+        left: None,
+    })
+}
+
+impl PreviewBrowser {
+    /// Sends the box a line without waiting; a full pipe drops it.
+    pub(crate) fn send(&self, msg: ToBrowser) {
+        match encode(&msg) {
+            Ok(line) => {
+                if self.to_box.try_send(line).is_err() {
+                    tracing::debug!("preview browser busy; a line to it was dropped");
+                }
+            }
+            Err(err) => tracing::warn!(%err, "line for the preview browser refused"),
+        }
+    }
+
+    /// Waits until the box ends on its own, and says why. Never returns
+    /// once it has.
+    pub(crate) async fn ended(&mut self) -> String {
+        let Some(task) = self.task.as_mut() else {
+            return std::future::pending().await;
+        };
+        let (end, relay) = task.await.unwrap_or((BoxEnd::Gone, None));
+        self.task = None;
+        self.left = relay;
+        ended_why(&end)
+    }
+
+    /// Removes the box, and tells the owner's screen `why` it ended.
+    pub(crate) async fn stop(mut self, why: &str) {
+        self.remover.remove().await;
+        let relay = match self.task.take() {
+            Some(t) => tokio::time::timeout(Duration::from_secs(10), t)
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .and_then(|(_, r)| r),
+            None => self.left.take(),
+        };
+        finish(relay, why).await;
     }
 }
 
