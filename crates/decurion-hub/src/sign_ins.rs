@@ -490,19 +490,32 @@ impl Store {
     /// A run found a sign-in no longer works. Only a runner still running
     /// work of that sign-in's app that was given it may say so, and only
     /// about the copy it was given: a newer one the owner saved since is
-    /// left alone. Returns the sign-in if this is news.
-    pub async fn sign_in_expired(&self, id: i64, runner: &RunnerId) -> Result<Option<SiteSignIn>> {
+    /// left alone. `run` names the piece of work and the copy it was given;
+    /// with several pieces running on one runner, that is the only way to
+    /// know which copy the report is about. Without it (an older runner),
+    /// the newest copy given to any of this runner's running work counts.
+    /// Returns the sign-in if this is news.
+    pub async fn sign_in_expired(
+        &self,
+        id: i64,
+        runner: &RunnerId,
+        run: Option<(i64, i64)>,
+    ) -> Result<Option<SiteSignIn>> {
         self.site_sign_in(id).await?;
+        let (thread, version) = run.unzip();
         let given: Option<i64> = sqlx::query_scalar(
             "SELECT r.version FROM sign_in_runs r
              JOIN threads t ON t.id = r.thread_id
              JOIN site_sign_ins s ON s.id = r.sign_in_id
              WHERE r.sign_in_id = ? AND t.state = 'running' AND t.runner = ?
                AND t.app_id = s.app_id
+               AND (?3 IS NULL OR (r.thread_id = ?3 AND r.version = ?4))
              ORDER BY r.version DESC LIMIT 1",
         )
         .bind(id)
         .bind(runner.actor())
+        .bind(thread)
+        .bind(version)
         .fetch_optional(self.pool())
         .await?;
         let Some(version) = given else {
@@ -787,16 +800,44 @@ async fn runner_saved(
     reply(st.store.site_sign_in(id).await)
 }
 
+/// Which piece of work found the sign-in no longer works, and the copy it
+/// was given. Older runners send neither.
+#[derive(Deserialize, Default)]
+struct ExpiredReport {
+    #[serde(default)]
+    thread: Option<i64>,
+    #[serde(default)]
+    version: Option<i64>,
+}
+
 async fn runner_expired(
     State(st): State<AppState>,
     runner: Option<Extension<RunnerId>>,
     Path(id): Path<i64>,
+    Json(report): Json<Option<ExpiredReport>>,
 ) -> Response {
     let r = match pc_runner(runner) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    match st.store.sign_in_expired(id, &r).await {
+    let given = match report.unwrap_or_default() {
+        ExpiredReport {
+            thread: Some(t),
+            version: Some(v),
+        } => Some((t, v)),
+        ExpiredReport {
+            thread: None,
+            version: None,
+        } => None,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "send the thread and the version together",
+            )
+                .into_response()
+        }
+    };
+    match st.store.sign_in_expired(id, &r, given).await {
         Ok(news) => {
             tell_expired(&st, news.into_iter().collect());
             StatusCode::NO_CONTENT.into_response()

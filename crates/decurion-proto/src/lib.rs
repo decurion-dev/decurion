@@ -666,7 +666,16 @@ pub struct HelloReply {
     pub rules_version: u32,
     /// The git commit the hub was built from, or "unknown".
     pub hub_commit: String,
+    /// The hub honours a claim's `busy` list and a sign-in report's thread
+    /// and version, so a runner may work on several pieces at once. An
+    /// older hub leaves it out, and the runner then works on one at a time.
+    #[serde(default)]
+    pub concurrent: bool,
 }
+
+/// Most pieces of work one runner may list as busy in a claim, and so the
+/// most it may run at once.
+pub const MAX_RUNS: usize = 8;
 
 /// A saved copy the runner finished uploading.
 #[derive(Debug, Clone, Serialize, Deserialize)]

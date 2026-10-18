@@ -449,6 +449,44 @@ async fn a_run_cannot_expire_a_copy_saved_after_it_started() {
     assert_eq!(one(&h, a, id).await["status"], "ok");
 }
 
+/// With several pieces running on one runner, a report names the piece and
+/// the copy it was given. A piece still holding the old copy cannot expire
+/// the new one another piece was given, and the right piece can.
+#[tokio::test]
+async fn a_report_expires_only_the_copy_that_piece_was_given() {
+    let h = hub().await;
+    let a = app(&h, "demo").await;
+    let id = signed_in(&h, a, "Staging admin", 30).await;
+    let first = work(&h, a).await;
+    let second = work(&h, a).await;
+    let c1 = claim(&h).await;
+    assert_eq!(c1["thread"]["id"], first);
+    let old = c1["sign_ins"][0]["version"].as_i64().expect("version");
+    let w = open_window(&h, id).await;
+    let (s, _) = saved(&h, id, &w, Some(now() + 30 * 86_400)).await;
+    assert_eq!(s, StatusCode::OK);
+    let c2 = claim(&h).await;
+    assert_eq!(c2["thread"]["id"], second);
+    let new = c2["sign_ins"][0]["version"].as_i64().expect("version");
+    assert_ne!(old, new);
+
+    let report = |thread: i64, version: i64| {
+        let path = format!("/api/runner/sign-ins/{id}/expired");
+        let r = h.r.clone();
+        async move {
+            let body = json!({"thread": thread, "version": version});
+            call(&r, "POST", &path, Some(RUNNER), body).await.0
+        }
+    };
+    assert_eq!(report(first, old).await, StatusCode::NO_CONTENT);
+    assert_eq!(one(&h, a, id).await["status"], "ok", "the new copy stays");
+    // A piece cannot speak for a copy it was not given.
+    assert_eq!(report(first, new).await, StatusCode::CONFLICT);
+    assert_eq!(one(&h, a, id).await["status"], "ok");
+    assert_eq!(report(second, new).await, StatusCode::NO_CONTENT);
+    assert_eq!(one(&h, a, id).await["status"], "expired");
+}
+
 #[tokio::test]
 async fn card_text_comes_only_from_the_owner() {
     let h = hub().await;
