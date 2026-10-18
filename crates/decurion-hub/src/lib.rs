@@ -28,6 +28,7 @@ pub mod limits;
 pub mod messages;
 pub mod protected;
 pub mod push;
+pub mod research;
 pub mod secrets;
 pub mod sign_ins;
 pub mod spend;
@@ -257,6 +258,13 @@ pub fn router(state: AppState) -> Router {
             get(runner_download),
         )
         .route("/runner/threads/{id}/credential", post(runner_credential))
+        // A research piece's report page, escaped inside JSON (research.rs).
+        .route(
+            "/runner/threads/{id}/report",
+            post(goals::save_report).layer(DefaultBodyLimit::max(
+                decurion_proto::goal::MAX_PAGE_BYTES * 2 + (1 << 20),
+            )),
+        )
         .route("/goals", get(goals::list).post(goals::add))
         .route("/goals/{id}", get(goals::view))
         .route("/goals/{id}/say", post(goals::say))
@@ -266,6 +274,7 @@ pub fn router(state: AppState) -> Router {
         .route("/goals/{id}/close", post(goals::close))
         .route("/goals/{id}/stop", post(goals::stop))
         .route("/goals/{id}/pages/{page}", get(goals::page))
+        .route("/goals/{id}/reports/{thread}", get(goals::report))
         .route("/apps/{id}/notes", get(goals::notes))
         .route("/apps/{id}/notes/{note}/remove", post(goals::remove_note))
         .route("/runner/helper/claim", post(goals::helper_claim))

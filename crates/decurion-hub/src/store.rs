@@ -482,7 +482,14 @@ impl Store {
             };
             let messages = crate::messages::list(&mut tx, t.id, true).await?;
             tx.commit().await?;
-            let thread = self.thread(t.id).await?;
+            let mut thread = self.thread(t.id).await?;
+            // What other pieces of the same goal found, for this run only:
+            // the saved brief stays exactly what the owner approved.
+            let mut conn = self.pool.acquire().await?;
+            if let Some(n) = crate::coordinator::earlier_pieces_note(&mut conn, t.id).await? {
+                thread.prompt.push_str(&n);
+            }
+            drop(conn);
             let app = self.app(thread.app_id).await?;
             let checkpoint = self.latest_checkpoint(t.id).await?;
             let test_keys = self.test_key_names(app.id).await?;

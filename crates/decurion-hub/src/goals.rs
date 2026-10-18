@@ -3,12 +3,15 @@
 
 use crate::coordinator::News;
 use crate::protected::Hold;
+use crate::workers::RunnerId;
 use crate::{forbidden, ApiError, AppState, Caller};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
-use decurion_proto::goal::{ApprovePlan, HelperResult, NewGoal, OwnerAnswers, OwnerSays};
+use decurion_proto::goal::{
+    ApprovePlan, HelperResult, NewGoal, OwnerAnswers, OwnerSays, ResearchReport,
+};
 use serde::Deserialize;
 
 /// Pages agents drew are shown as-is but can run nothing and load nothing:
@@ -165,7 +168,14 @@ pub(crate) async fn page(
     if let Some(r) = owner_only(c, "opening a plan page") {
         return r;
     }
-    match st.store.page_html(goal, page).await {
+    sandboxed(goal, st.store.page_html(goal, page).await, &q)
+}
+
+/// An agent's page of goal `goal`, as the owner sees it: in the sandbox, with
+/// the phone's way back when asked for. Every page an agent wrote goes out
+/// through here, so they all get the same headers.
+fn sandboxed(goal: i64, html: crate::store::Result<String>, q: &PageQuery) -> Response {
+    match html {
         Ok(mut html) => {
             if q.back.is_some() {
                 html.push_str(&back_link(goal));
@@ -182,6 +192,37 @@ pub(crate) async fn page(
             )
                 .into_response()
         }
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// A research piece's report, for the owner only, in the same sandbox as the
+/// other pages agents write.
+pub(crate) async fn report(
+    State(st): State<AppState>,
+    Extension(c): Extension<Caller>,
+    Path((goal, thread)): Path<(i64, i64)>,
+    Query(q): Query<PageQuery>,
+) -> Response {
+    if let Some(r) = owner_only(c, "opening a research report") {
+        return r;
+    }
+    sandboxed(goal, st.store.report_html(goal, thread).await, &q)
+}
+
+/// The runner hands in a research piece's report before it moves the work
+/// to review. Only the runner running that piece may.
+pub(crate) async fn save_report(
+    State(st): State<AppState>,
+    runner: Option<Extension<RunnerId>>,
+    Path(id): Path<i64>,
+    Json(report): Json<ResearchReport>,
+) -> Response {
+    let Some(Extension(r)) = runner else {
+        return forbidden("runner calls are runner-only; this");
+    };
+    match st.store.save_report(id, &r.name, &report).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => ApiError(e).into_response(),
     }
 }
