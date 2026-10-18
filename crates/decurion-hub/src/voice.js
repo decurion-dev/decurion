@@ -22,7 +22,7 @@
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const synth = window.speechSynthesis;
   const KEY = "decurion.voice";
-  const DEFAULTS = { voice: "", rate: 1, readNew: false, talk: false, autoSend: false, onDevice: true };
+  const DEFAULTS = { voice: "", rate: 1, readNew: false, talk: false, autoSend: false, localSpeech: false };
 
   const V = {};
   window.Voice = V;
@@ -120,10 +120,12 @@
   };
 
   let voices = [];
-  const loadVoices = () => { voices = V.canSpeak() ? synth.getVoices() : []; };
+  const loadVoices = () => {
+    try { voices = V.canSpeak() ? synth.getVoices() : []; } catch (_) { voices = []; }
+  };
   if (V.canSpeak()) {
     loadVoices();
-    synth.addEventListener?.("voiceschanged", loadVoices);
+    try { synth.addEventListener?.("voiceschanged", loadVoices); } catch (_) { /* voices load on first use instead */ }
   }
   V.voices = () => { if (!voices.length) loadVoices(); return voices; };
   const pickVoice = () => {
@@ -222,15 +224,24 @@
   // ---------- Listening ----------
   // Chrome on a PC (139 and later) can turn speech into words on the PC
   // itself once a language pack is downloaded; elsewhere the browser's own
-  // speech service does it. `local` caches what this device can do.
-  let local = null;
+  // speech service does it.
+  //
+  // `SpeechRecognition.available()` is asked only when the owner taps
+  // "Check this device" in Settings, never as a page loads: in some
+  // Chromium builds without speech services (the test browser) the call
+  // takes the whole page down, and a try/catch cannot stop that. The answer
+  // is kept in `localSpeech`, and the mic uses it from then on.
   V.onDevice = async () => {
     if (!SR?.available) return "unavailable";
     try { return await SR.available({ langs: [lang()], processLocally: true }); } catch (_) { return "unavailable"; }
   };
   V.installOnDevice = async () => {
     if (!SR?.install) return false;
-    try { const ok = await SR.install({ langs: [lang()], processLocally: true }); local = (await V.onDevice()) === "available"; return !!ok; } catch (_) { return false; }
+    try {
+      const ok = await SR.install({ langs: [lang()], processLocally: true });
+      V.save({ localSpeech: (await V.onDevice()) === "available" });
+      return !!ok;
+    } catch (_) { return false; }
   };
 
   const ERRORS = {
@@ -259,7 +270,7 @@
       rec.continuous = continuous;
       rec.interimResults = true;
       rec.maxAlternatives = 1;
-      if (local && V.settings().onDevice && "processLocally" in rec) rec.processLocally = true;
+      if (V.settings().localSpeech && "processLocally" in rec) rec.processLocally = true;
       let heard = "";
       V.listening = handle;
       document.dispatchEvent(new CustomEvent("voice:listening", { detail: { on: true } }));
@@ -274,7 +285,7 @@
       };
       rec.onerror = (e) => {
         if (e.error === "aborted") return;
-        if (e.error === "language-not-supported" && rec.processLocally) local = false;
+        if (e.error === "language-not-supported" && rec.processLocally) V.save({ localSpeech: false });
         if (e.error === "no-speech" && heard) return;
         say(ERRORS[e.error] ?? "Listening stopped. Tap the mic and try again.");
       };
@@ -291,9 +302,6 @@
     });
     return handle;
   };
-  // Learn early whether this device can keep speech on itself, so a tap on
-  // the mic never has to wait for the answer.
-  if (V.canListen() && SR.available) V.onDevice().then((st) => { local = st === "available"; });
 
   // Fields that must never get a mic: anything holding a key or a secret.
   const SECRET = /key|token|secret|pass|pin|otp|code/i;
@@ -448,11 +456,16 @@
         toggle("autoSend", "Send when I stop talking", "Only in Talk mode. Off means you check the words and tap Send."),
       );
       if (SR?.available) {
-        const line = el("small", {}, "Checking…");
+        const line = el("small", {}, V.settings().localSpeech ? "On. Speech turns into words on this device, not online."
+          : "Check whether this browser can turn speech into words on this device.");
+        const check = el("button", { type: "button", className: "btn", textContent: "Check this device" });
         const act = el("button", { type: "button", className: "btn", hidden: true, textContent: "Download speech for this PC" });
-        const row = el("div", { className: "voice-row" }, el("span", {}, el("b", {}, "Keep my voice on this device"), line), act);
+        const row = el("div", { className: "voice-row" }, el("span", {}, el("b", {}, "Keep my voice on this device"), line), check, act);
         const show = async () => {
+          line.textContent = "Checking…";
           const st = await V.onDevice();
+          V.save({ localSpeech: st === "available" });
+          check.hidden = st === "available" || st === "downloadable";
           act.hidden = st !== "downloadable";
           line.textContent = st === "available" ? "On. Speech turns into words on this device, not online."
             : st === "downloading" ? "Downloading the speech pack…"
@@ -467,7 +480,7 @@
           if (!ok) say("The speech pack didn't download. Check the connection and try again.");
           show();
         });
-        show();
+        check.addEventListener("click", show);
         box.append(row);
       }
     }
