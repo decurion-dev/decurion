@@ -426,6 +426,11 @@ pub fn router(state: AppState) -> Router {
             "/ui.css",
             get(|| async { asset("text/css; charset=utf-8", include_str!("ui.css")) }),
         )
+        // The PC menu's look, shared by the board, goals and the master plan.
+        .route(
+            "/menu.css",
+            get(|| async { asset("text/css; charset=utf-8", include_str!("menu.css")) }),
+        )
         .route(
             "/ui.js",
             get(|| async { asset("text/javascript; charset=utf-8", include_str!("ui.js")) }),

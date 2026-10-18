@@ -115,6 +115,27 @@
       D.el("span", { className: "ind" }, D.icon(icon), badge && D.el("span", { className: "badge", id: badge, hidden: true })),
       D.el("span", {}, label)))));
 
+  // The PC menu: the logo and the same four places in the same order on the
+  // Board, Goals and the Master plan, so moving between them feels like one
+  // app. Its look lives once, in menu.css (goals.html has no ui.css). The
+  // board shows it at the top of its sidebar; `rail` is the narrow one for
+  // pages that need the width, each label under its icon. `foot` sits at the
+  // bottom of a rail. Board and Settings are hash routes of the board page,
+  // so on the board they switch without a reload; data-route lets the board
+  // mark the one it shows. Phones use D.phoneTabs instead: each page hides
+  // this menu at its own phone width.
+  D.pcNav = (current, { rail = false, foot = null } = {}) => D.el("div", { className: rail ? "pcnav rail" : "pcnav" },
+    D.el("a", { className: "pcnav-brand", href: "/#board", title: rail ? "Decurion" : null },
+      D.mark(rail ? 32 : 28), D.el("span", { className: "nm" }, "Decurion")),
+    D.el("nav", { className: "pcnav-items", "aria-label": "Pages" }, [
+      ["board", "/#board", "Board", "board"],
+      ["goals", "/goals", "Goals", "send"],
+      ["plan", "/plan", "Master plan", "plan"],
+      ["settings", "/#settings", "Settings", "settings"],
+    ].map(([page, href, label, icon]) => D.el("a", { className: "pcnav-item", href, dataset: { route: page }, "aria-current": page === current ? "page" : null },
+      D.icon(icon), D.el("span", { className: "nm" }, label)))),
+    foot && D.el("div", { className: "pcnav-foot" }, foot));
+
   // ---------- States ----------
   // One word, one symbol and one color per state, everywhere.
   D.STATES = {

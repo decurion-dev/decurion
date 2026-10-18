@@ -4,8 +4,9 @@ This page helps you see, in one place, what each app has done and what is
 left.
 
 Each app has one **master plan**: a list of its goals, in your order, with
-everything they found along the way. Open **Master plan** at the top of the
-Goals page, or go to <http://decurion.localhost:7420/plan>. On your phone, tap
+everything they found along the way. On your PC, click **Master plan** in the
+menu on the left: it is the same menu on the board, the Goals page and the
+master plan. Or go to <http://decurion.localhost:7420/plan>. On your phone, tap
 **Plan** at the bottom. Choose the app at the top right, or at the top on a
 phone.
 
