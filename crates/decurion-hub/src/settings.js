@@ -210,7 +210,7 @@
     return el("div", { className: `settings${phone() ? " on-phone" : ""}` },
       card("sign-ins", "shield", "Sign-ins",
         "Every account Decurion signs in with, in one place. Green is fine, amber needs you soon, red needs you now. You get a reminder on your phone a week before a sign-in runs out.",
-        parts.lightsNote, parts.lights, parts.claude),
+        parts.lightsNote, parts.claude, parts.lights),
       card("apps", "app", "Apps",
         `Each app is a git checkout on ${here()}. Agents work on their own copy and never touch yours. An app can also have its own monthly cap on pay-per-use money, across Claude, ChatGPT and Grok.`,
         parts.appRows, parts.sitesNote, parts.addApp),
@@ -943,7 +943,12 @@
     } catch (e) {
       if (e.signedOut) { signedOut(); return; }
       D.toast(`Couldn't start the Claude sign-in. ${e.message}`, "alert");
+      // One may already be open (from another tab, or before a reload):
+      // show it, with its Cancel button.
+      await pollClaude();
     } finally { b.disabled = D.offline; }
+    // The panel sits above a long list; bring it to the owner.
+    if (!parts.claude.hidden) parts.claude.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
   async function pollClaude() {
     clearTimeout(claudePoll);
