@@ -468,3 +468,108 @@ async fn a_deploy_left_running_by_a_stopped_hub_is_marked_failed_not_run_again()
     assert!(c.error.unwrap_or_default().contains("Check the site"));
     assert_eq!(c.button.as_deref(), Some("Try again"));
 }
+
+#[tokio::test]
+async fn a_merged_goal_is_ready_to_deploy_until_a_deploy_carries_it_live() {
+    let h = hub().await;
+    rule(&h, true, "git rev-parse HEAD").await;
+    let head = merge(&h, "README.md", "fixed\n", "Fix login");
+    // A goal whose one pull request GitHub merged as `head`.
+    let thread = ok(
+        &h.r,
+        OWNER,
+        "POST",
+        "/api/threads",
+        json!({"app_id": h.app, "title": "Fix login", "prompt": "Fix it"}),
+    )
+    .await["id"]
+        .as_i64()
+        .expect("thread id");
+    let goal: i64 = sqlx::query_scalar(
+        "INSERT INTO goals (app_id, title, state, session_id) VALUES (?, 'Fix login', 'done', 's') RETURNING id",
+    )
+    .bind(h.app)
+    .fetch_one(h.store.pool())
+    .await
+    .expect("goal");
+    sqlx::query(
+        "INSERT INTO plan_items (app_id, position, kind, goal_id, title, source)
+         VALUES (?, 1, 'goal', ?, 'Fix login', 'owner')",
+    )
+    .bind(h.app)
+    .bind(goal)
+    .execute(h.store.pool())
+    .await
+    .expect("plan row");
+    sqlx::query(
+        "INSERT INTO goal_pieces (thread_id, goal_id, title, done_when, review, merged_at)
+         VALUES (?, ?, 'Fix login', 'It works', 'passed', '2026-10-18T10:00:00Z')",
+    )
+    .bind(thread)
+    .bind(goal)
+    .execute(h.store.pool())
+    .await
+    .expect("piece");
+    sqlx::query(
+        "INSERT INTO pr_watches (thread_id, app_id, owner, repo, number, url, branch, head, state, event, event_at, merge_commit)
+         VALUES (?, ?, 'me', 'app', 1, 'https://github.com/me/app/pull/1', 'decurion/x', ?, 'merged', 'Merged', '2026-10-18T10:00:00Z', ?)",
+    )
+    .bind(thread)
+    .bind(h.app)
+    .bind(&head)
+    .bind(&head)
+    .execute(h.store.pool())
+    .await
+    .expect("watch");
+
+    let last_step = |plan: &Value| {
+        let row = plan["items"]
+            .as_array()
+            .and_then(|g| {
+                g.iter()
+                    .find(|r| r["kind"] == "goal" && r["goal"]["id"] == goal)
+            })
+            .cloned()
+            .unwrap_or(Value::Null);
+        let steps = row["steps"].as_array().cloned().unwrap_or_default();
+        steps.last().cloned().unwrap_or(Value::Null)
+    };
+    let view = ok(&h.r, OWNER, "GET", &format!("/api/goals/{goal}"), json!({})).await;
+    assert_eq!(view["live"], false, "{view}");
+    let plan = ok(
+        &h.r,
+        OWNER,
+        "GET",
+        &format!("/api/apps/{}/plan", h.app),
+        json!({}),
+    )
+    .await;
+    let step = last_step(&plan);
+    assert_eq!(step["title"], "Merged · ready to deploy", "{plan}");
+    assert_eq!(step["state"], "you");
+
+    let card = check(&h).await;
+    let (s, _) = tap(&h, &card, "tap-deploy-live-01").await;
+    assert_eq!(s, StatusCode::OK);
+    let done = ended(&h, card["id"].as_i64().expect("id")).await;
+    assert_eq!(done.state, "live", "{:?}", done.error);
+
+    let view = ok(&h.r, OWNER, "GET", &format!("/api/goals/{goal}"), json!({})).await;
+    assert_eq!(view["live"], true, "{view}");
+    let plan = ok(
+        &h.r,
+        OWNER,
+        "GET",
+        &format!("/api/apps/{}/plan", h.app),
+        json!({}),
+    )
+    .await;
+    let step = last_step(&plan);
+    assert_eq!(step["title"], "Live");
+    assert_eq!(step["state"], "done");
+
+    // With deploys off, the goal is just done, as before.
+    rule(&h, false, "git rev-parse HEAD").await;
+    let view = ok(&h.r, OWNER, "GET", &format!("/api/goals/{goal}"), json!({})).await;
+    assert!(view.get("live").is_none(), "{view}");
+}

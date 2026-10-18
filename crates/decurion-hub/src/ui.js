@@ -2440,6 +2440,10 @@ Add or fix .decurion/run.json so the app starts in a fresh box: one install comm
     }
     if (c.state === "live") acts.push(btn("quiet", "retry", "Check for changes", "check", (b) => check(c, b, onChange)));
     if (c.state === "waiting" || c.state === "failed") acts.push(btn("quiet", "close", "Not now", "hide", (b) => notNow(c, b, onChange)));
+    // The steps live in the app's rules; a failed step is often fixed there.
+    if (c.state === "waiting" || c.state === "failed") {
+      acts.push(el("a", { className: "btn quiet", href: `#settings/apps/${c.app_id}/rules`, dataset: { key: `deploy-steps-${c.id}` } }, icon("settings"), "Deploy steps"));
+    }
 
     let what = null;
     if (c.state === "waiting" && (c.changes.length || c.site)) {
