@@ -47,6 +47,7 @@
     key: ["m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4", "m21 2-9.6 9.6", "c7.5,15.5,5.5"],
     money: ["M12 2v20", "M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"],
     start: ["m6 3 14 9-14 9z"],
+    stop: ["M7 5h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"],
     tool: ["M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z"],
     retry: ["M3 12a9 9 0 1 0 3-6.7L3 8", "M3 3v5h5"],
     branch: ["M6 3v12", "c18,6,3", "c6,18,3", "M18 9a9 9 0 0 1-9 9"],
@@ -850,6 +851,7 @@
     panel.addEventListener("close", () => {
       clearInterval(timer);
       cur?.view?.close();
+      cur?.runView?.close();
       cur = null;
       if (history.state?.work) history.back();
     });
@@ -1081,8 +1083,10 @@
         talk: talkBox(c),
         // Kept across refreshes, so a live view of the browser stays open.
         browser: el("div", { className: "part" }),
+        // The same for Run it, kept apart so it and Watch never fight.
+        run: el("div", { className: "part" }),
       };
-      p.body = el("div", { className: "work-body live" }, p.err, p.upper, p.browser, p.talk.box, p.lower);
+      p.body = el("div", { className: "work-body live" }, p.err, p.upper, p.browser, p.run, p.talk.box, p.lower);
       panel.replaceChildren(p.head, p.body, p.foot);
     }
     const p = c.parts;
@@ -1126,6 +1130,7 @@
     if (next) upper.push(next);
     p.upper.replaceChildren(...upper);
     browserPart(c);
+    runPart(c);
     c.asked = asks.length > 0;
     p.talk.update(t, waiting);
 
@@ -1247,11 +1252,70 @@
       err));
   }
 
+  // ---------- Run it, for work that is not running ----------
+  // Starts this piece's last saved version on the PC and shows it here
+  // (D.previewView). Research changes no code and running work is still
+  // changing, so neither has it; queued work has it once it has run. The
+  // live view is kept across refreshes like the test browser's; closing
+  // the panel only drops the picture, and the app keeps running until Stop
+  // or 15 minutes with nobody looking.
+  function runPart(c) {
+    const t = c.t, box = c.parts.run;
+    const can = t.state !== "running" && !t.research && (t.state !== "queued" || c.ev.some((r) => r.event.kind === "finished"));
+    if (!can) {
+      c.runView?.close();
+      c.runView = null;
+      c.runShown = false;
+      c.runBtn = null;
+      box.replaceChildren();
+      return;
+    }
+    if (!c.runShown) { c.runShown = true; runButton(c); }
+    if (c.runBtn && !c.runBusy) c.runBtn.disabled = D.offline;
+  }
+
+  function runButton(c, said) {
+    const box = c.parts.run;
+    const err = el("p", { className: "field-error", role: "alert" });
+    const b = el("button", { type: "button", className: "btn", dataset: { key: "wk-run" } }, icon("start"), "Run it");
+    b.disabled = D.offline;
+    c.runBtn = b;
+    b.onclick = async () => {
+      if (D.offline) return;
+      b.disabled = true;
+      c.runBusy = true;
+      err.textContent = "";
+      try {
+        const s = await D.api(`/threads/${c.id}/preview`, { method: "POST" });
+        if (cur !== c) return;
+        c.runBtn = null;
+        const back = (why) => { if (cur !== c) return; c.runView = null; runButton(c, why); };
+        c.runView = D.previewView(s.id, {
+          onEnded: back,
+          onStopped: () => back("Stopped. Tap Run it to start it again."),
+        });
+        box.replaceChildren(el("section", {}, el("div", { className: "section-title" }, "Try it"), c.runView.el));
+      } catch (e) {
+        b.disabled = D.offline;
+        err.textContent = `Couldn't start it. ${e.message}`;
+      } finally {
+        c.runBusy = false;
+      }
+    };
+    box.replaceChildren(el("section", {},
+      el("div", { className: "section-title" }, "Try it"),
+      el("div", { className: "bv-start" },
+        el("p", { className: "hint" }, said || "Start this version of the app on your PC and try it here. Nothing you do in it changes the code."),
+        b),
+      err));
+  }
+
   // D.openWork(thread, changed, { talk: true }) opens the panel; talk puts the cursor in the message box.
   D.openWork = async (t, changed, opts = {}) => {
     ensurePanel();
     clearInterval(timer);
     cur?.view?.close();
+    cur?.runView?.close();
     const c = cur = { id: t.id, t, ev: [], msgs: null, sig: "", parts: null, changed: changed ?? (() => {}) };
     panel.replaceChildren(el("div", { className: "work-head" }, D.pill(t.state), el("h2", { id: "wk-title" }, t.title)),
       el("div", { className: "work-body" }, ...[0, 1, 2].map(() => el("div", { className: "skeleton", style: "height:64px" }))));
@@ -1308,6 +1372,9 @@
   //   opts.takeOver  false for a window you drive from the start (no Take over / Hand back)
   //   opts.extra     { label, kind, onClick(view) }: one more button, e.g. "I'm signed in, save"
   //   opts.hint      the line under the picture, in place of the usual one
+  //   opts.label     what a screen reader calls the picture, e.g. "Live picture of your app"
+  //   opts.status    the line above the picture while you drive (takeOver false only)
+  //   opts.waitingText  what the picture says if nothing has come after 20 seconds
   //   opts.onEnded   called with the reason once the view is over for good
   D.browserView = (sid, opts = {}) => {
     const takeOver = opts.takeOver !== false;
@@ -1320,7 +1387,7 @@
     const backBtn = el("button", { type: "button", className: "btn primary sm" }, "Hand back");
     const bigBtn = el("button", { type: "button", className: "btn quiet sm bv-bigger", "aria-pressed": "false" }, icon("expand"), "Bigger");
     const url = el("span", { className: "addr" }, "Opening…");
-    const canvas = el("canvas", { tabIndex: 0, "aria-label": "Live picture of the test browser" });
+    const canvas = el("canvas", { tabIndex: 0, "aria-label": opts.label ?? "Live picture of the test browser" });
     const ctx = canvas.getContext("2d");
     const overText = el("p", {}, "Connecting to your PC…");
     const again = el("button", { type: "button", className: "btn sm", hidden: true }, "Try again");
@@ -1357,7 +1424,7 @@
       root.dataset.who = who;
       const mine = who === "owner";
       status.textContent = over ? "The live view has ended."
-        : !takeOver ? "You have the browser."
+        : !takeOver ? (opts.status ?? "You have the browser.")
         : mine ? "You have the browser. The agent is waiting."
         : "The agent is using the browser. You're watching.";
       takeBtn.hidden = over || mine;
@@ -1503,7 +1570,7 @@
       ws = new WebSocket(`${proto}://${location.host}/api/browser/${encodeURIComponent(sid)}/ws?max_width=${width}`);
       clearTimeout(slow);
       slow = setTimeout(() => {
-        if (!gotFrame && !over) cover("Still waiting for the test browser. It starts just before the agent does, so it may not be open yet.");
+        if (!gotFrame && !over) cover(opts.waitingText ?? "Still waiting for the test browser. It starts just before the agent does, so it may not be open yet.");
       }, 20000);
       ws.onmessage = (e) => {
         let m;
@@ -1521,7 +1588,11 @@
         ws = null;
         if (closing) return;
         if (ended != null) finish(ended);
-        else cover("Lost the connection to your PC.", true);
+        else {
+          // Keep "Try again" up: the 20-second waiting line must not cover it.
+          clearTimeout(slow);
+          cover("Lost the connection to your PC.", true);
+        }
       };
     }
     again.onclick = () => connect();
@@ -1612,6 +1683,103 @@
     d.addEventListener("close", () => { view.close(); d.remove(); resolve(saved); });
     document.body.append(d);
     d.showModal();
+  });
+})();
+
+// ---------- Run it: the owner's app, running on the PC ----------
+// Run it starts an app's dev server in a sealed box on the PC, with the
+// app's test keys, and shows the browser beside it here to click and type
+// in. Nothing done in it is saved to the code. The hub runs one app at a
+// time (starting another stops the one before) and stops it on Stop or
+// after 15 minutes with nobody looking, so closing a view only drops the
+// picture. Used by the work panel (one piece's last saved version) and by
+// the Today rows (the app as it is in its folder).
+(() => {
+  const { el, icon } = D;
+
+  // D.previewView(sessionId, { onEnded, onStopped }) → the live view of a
+  // running app, with a Stop button under it. onStopped runs once Stop went
+  // through (the view is closed by then); onEnded when the hub ends it.
+  D.previewView = (sid, opts = {}) => {
+    const note = el("p", { className: "hint", role: "status", "aria-live": "polite" });
+    const view = D.browserView(sid, {
+      takeOver: false,
+      label: "Live picture of your app",
+      status: "Your app is running on your PC.",
+      hint: "Tap to click, drag to scroll, and type in the box above the keys. Nothing you do here changes the code.",
+      waitingText: "Starting your app on your PC. The first time can take a few minutes while it installs what it needs.",
+      extra: {
+        label: [icon("stop"), "Stop"],
+        kind: "quiet",
+        onClick: async (v) => {
+          const b = v.el.querySelector(".bv-extra .btn");
+          if (D.offline) { note.textContent = "Your PC isn't answering. Stop it when it's back."; return; }
+          if (b) b.disabled = true;
+          note.textContent = "Stopping…";
+          try {
+            await D.api(`/browser/${encodeURIComponent(sid)}/stop`, { method: "POST" });
+            v.close();
+            note.textContent = "";
+            opts.onStopped?.();
+          } catch (e) {
+            if (b) b.disabled = false;
+            note.textContent = `Couldn't stop it. ${e.message}`;
+          }
+        },
+      },
+      onEnded: opts.onEnded,
+    });
+    view.el.append(note);
+    return view;
+  };
+
+  // D.runApp(app, { sid }) runs a whole app as it is in its folder on the PC
+  // (its current main version) in a panel of its own. With `sid` it shows a
+  // run that is already going instead of asking for one (asking again would
+  // get the same run back). Resolves once the panel closes.
+  D.runApp = (app, opts = {}) => new Promise((resolve) => {
+    let view = null;
+    const close = el("button", { type: "button", className: "btn icon quiet close", "aria-label": "Close" }, icon("close", "l"));
+    const d = el("dialog", { className: "panel", "aria-labelledby": "run-title" });
+    const body = el("div", { className: "si-body" });
+    const again = el("button", { type: "button", className: "btn", dataset: { key: "run-again" } }, icon("start"), "Run it again");
+    d.append(
+      el("header", { className: "work-head" },
+        el("div", { className: "top" }, el("span", { className: "grow" }), close),
+        el("h2", { id: "run-title" }, app.name),
+        el("div", { className: "meta" }, el("span", { className: "tag" }, icon("pc"), "Running on your PC"))),
+      body);
+
+    const show = (sid) => {
+      view = D.previewView(sid, {
+        // The picture stays, saying why it ended, with a way to start again.
+        onEnded: () => { view = null; if (!body.contains(again)) body.append(el("div", { className: "bv-start" }, again)); },
+        onStopped: () => { view = null; D.toast(`${app.name} stopped.`); if (d.open) d.close(); },
+      });
+      body.replaceChildren(view.el);
+    };
+    const failed = (text) => body.replaceChildren(
+      el("div", { className: "notice bad", role: "alert" }, icon("alert"), el("span", { className: "grow" }, text)),
+      el("div", { className: "bv-start" }, again));
+    const start = async () => {
+      if (D.offline) { failed("Your PC isn't answering. Try again when it's back."); return; }
+      again.disabled = true;
+      body.replaceChildren(el("p", { className: "hint", role: "status" }, `Starting ${app.name}…`));
+      try {
+        const s = await D.api(`/apps/${encodeURIComponent(app.id)}/preview`, { method: "POST" });
+        if (d.open) show(s.id);
+      } catch (e) {
+        if (d.open) failed(`Couldn't start it. ${e.message}`);
+      } finally {
+        again.disabled = false;
+      }
+    };
+    again.onclick = start;
+    close.onclick = () => d.close();
+    d.addEventListener("close", () => { view?.close(); d.remove(); resolve(); });
+    document.body.append(d);
+    d.showModal();
+    if (opts.sid != null) show(opts.sid); else start();
   });
 })();
 

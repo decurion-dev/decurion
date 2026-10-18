@@ -30,6 +30,7 @@ pub mod messages;
 pub mod pages;
 pub mod plan;
 pub mod pr_watch;
+pub mod preview;
 pub mod protected;
 pub mod push;
 pub mod research;
@@ -375,6 +376,8 @@ pub fn router(state: AppState) -> Router {
         .route("/runner/helper/{id}/started", post(goals::helper_started))
         // Watching and taking over the test browser: see browser.rs.
         .merge(browser::routes())
+        // "Run it": the owner tries an app in a live browser (preview.rs).
+        .merge(preview::routes())
         .route(
             "/runner/helper/{id}/finish",
             // Room for a page of screenshots and a long answer, escaped inside JSON.

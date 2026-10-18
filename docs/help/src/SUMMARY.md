@@ -23,6 +23,7 @@
 - [Talk to an agent while it works](talk-to-a-running-agent.md)
 - [Talk to Decurion and hear it read aloud](talk-and-listen.md)
 - [Watch and take over the test browser](take-over-the-browser.md)
+- [Run your app and try it](run-your-app.md)
 - [Review and merge work](review-and-merge.md)
 
 # When things go wrong
