@@ -1973,6 +1973,7 @@ mod tests {
                     }],
                     plan: None,
                     remember: vec![],
+                    todo: vec![],
                 }),
             },
             GoalMessage {

@@ -2,6 +2,7 @@
 
 pub mod browser;
 pub mod goal;
+pub mod plan;
 pub mod sites;
 
 use serde::{Deserialize, Serialize};
