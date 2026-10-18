@@ -34,6 +34,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Choose an app's folder from a list.** When you add an app, you can pick its folder from the folders on your PC instead of typing the path, on the board or on your phone. Git app folders are marked. The list shows only folder names, and only inside your usual code folders (such as Projects and Documents) and the folders your apps are in, never Decurion's own data.
 - **Files for agents.** Attach a brief, a spec, a price list or a photo to an app (Settings) or to one goal (its Files tab, or the paperclip by the message box), from the PC or the phone. Agents get copies each time they start; Word, Excel and PowerPoint text is taken out for them, and they read PDFs and pictures directly. Up to 25 MB a file, and 100 files or 250 MB for each app. The originals stay on your PC and reach GitHub only if an agent puts one in the app's code on purpose.
 
+### Changed
+
+- **Stay signed in.** You confirm "Sign in to Decurion" only the first time; after that, starting Decurion opens the board directly. A phone or browser you use stays signed in instead of signing out after a year.
+- **Pay-per-use until the plan resets.** One tap on **Continue on pay-per-use** now keeps that Max plan's Claude work, new work, planning and checking included, on pay-per-use until the plan resets, then goes back to the plan by itself. It still counts toward the monthly cap. The board and phone say "running on pay-per-use until" instead of asking again.
+
 ### Fixed
 
 - **Apps with very long file names.** On Windows, a goal or piece of work on an app with a file whose full path passed 260 characters stopped with "Filename too long" before it started. Decurion now copies those apps whatever the PC's own Git settings say.

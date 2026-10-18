@@ -482,6 +482,9 @@ fn same_origin_write(req: &Request) -> bool {
 }
 
 async fn require_key(State(st): State<AppState>, mut req: Request, next: Next) -> Response {
+    // A device's cookie, sent again with a fresh lifetime when this call
+    // marked it as used, so a phone or browser in use never signs out.
+    let mut renew = None;
     let (caller, device) = match (bearer(req.headers()), device_cookie(req.headers())) {
         (Some(k), _) if same(k, &st.keys.owner) => (Caller::Owner, None),
         (Some(k), _) if same(k, &st.keys.runner) => {
@@ -506,7 +509,12 @@ async fn require_key(State(st): State<AppState>, mut req: Request, next: Next) -
             return (StatusCode::FORBIDDEN, "cross-site request refused").into_response()
         }
         (None, Some(t)) => match st.store.device_for_token(&t).await {
-            Ok(Some(id)) => (Caller::Owner, Some(id)),
+            Ok(Some(d)) => {
+                if d.seen_now {
+                    renew = Some(device_set_cookie(req.headers(), &t));
+                }
+                (Caller::Owner, Some(d.id))
+            }
             Ok(None) => return (StatusCode::UNAUTHORIZED, "signed out").into_response(),
             Err(e) => return ApiError(e).into_response(),
         },
@@ -514,7 +522,13 @@ async fn require_key(State(st): State<AppState>, mut req: Request, next: Next) -
     };
     req.extensions_mut().insert(caller);
     req.extensions_mut().insert(DeviceId(device));
-    next.run(req).await
+    let mut resp = next.run(req).await;
+    if let Some(cookie) = renew.and_then(|c| header::HeaderValue::from_str(&c).ok()) {
+        if !resp.headers().contains_key(header::SET_COOKIE) {
+            resp.headers_mut().insert(header::SET_COOKIE, cookie);
+        }
+    }
+    resp
 }
 
 /// What a cloud worker's call reaches.
@@ -689,17 +703,41 @@ async fn goals_page() -> Response {
     page(include_str!("goals.html"))
 }
 
-/// Sets the device cookie. `Secure` whenever the hub is reached over https
-/// (Tailscale serve sets `X-Forwarded-Proto`).
-fn sign_in(headers: &HeaderMap, token: &str, to: &str) -> Response {
+/// The device cookie, good for a year from now. Browsers keep a cookie at
+/// most 400 days, so a device in use gets it again (see `require_key`).
+/// `Secure` whenever the hub is reached over https (Tailscale serve sets
+/// `X-Forwarded-Proto`).
+fn device_set_cookie(headers: &HeaderMap, token: &str) -> String {
     let https = headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.eq_ignore_ascii_case("https"));
     let secure = if https { "; Secure" } else { "" };
-    let cookie =
-        format!("{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000{secure}");
-    ([(header::SET_COOKIE, cookie)], Redirect::to(to)).into_response()
+    format!("{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000{secure}")
+}
+
+/// Sets the device cookie and goes on to `to`.
+fn sign_in(headers: &HeaderMap, token: &str, to: &str) -> Response {
+    (
+        [(header::SET_COOKIE, device_set_cookie(headers, token))],
+        Redirect::to(to),
+    )
+        .into_response()
+}
+
+/// The token of a device that is still signed in on this browser. Looking
+/// it up counts as using the device. A lookup that fails counts as signed
+/// out, which only shows the sign-in page again.
+async fn signed_in_device(st: &AppState, headers: &HeaderMap) -> Option<String> {
+    let token = device_cookie(headers)?;
+    match st.store.device_for_token(&token).await {
+        Ok(Some(_)) => Some(token),
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!("could not look up a signed-in device: {e}");
+            None
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -707,7 +745,16 @@ struct CodeQuery {
     code: String,
 }
 
-async fn login_page(Query(q): Query<CodeQuery>) -> Response {
+/// The link Decurion opens at start. A browser that is already signed in
+/// goes straight to the board, so the owner confirms only the first time.
+async fn login_page(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<CodeQuery>,
+) -> Response {
+    if let Some(token) = signed_in_device(&st, &headers).await {
+        return sign_in(&headers, &token, "/");
+    }
     confirm_page(
         "/login",
         &q.code,
@@ -719,6 +766,8 @@ async fn login_page(Query(q): Query<CodeQuery>) -> Response {
 
 /// The "Sign in" button on the link printed by the hub at start. Signs this
 /// browser in as a device; the owner key itself never reaches the browser.
+/// A browser that is still signed in keeps its device rather than adding
+/// another to the list.
 async fn login(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -726,6 +775,9 @@ async fn login(
 ) -> Response {
     if !same(&q.code, &st.login_code) {
         return (StatusCode::UNAUTHORIZED, "wrong or expired login code").into_response();
+    }
+    if let Some(token) = signed_in_device(&st, &headers).await {
+        return sign_in(&headers, &token, "/");
     }
     match st.store.add_device("Browser on this PC").await {
         Ok((_, token)) => sign_in(&headers, &token, "/"),
@@ -1731,8 +1783,10 @@ async fn get_limits(State(st): State<AppState>) -> ApiResult<Vec<decurion_proto:
     Ok(Json(st.store.limits().await?))
 }
 
-/// The one tap that moves work waiting on an exhausted Max account to
-/// pay-per-use (still under the monthly cap).
+/// The one tap that runs an exhausted Max account's Claude work on
+/// pay-per-use until the account resets (still under the monthly cap).
+/// Answers with the account's limit as it now stands, or `null` when the
+/// account is not out (nothing changed).
 async fn overflow(
     State(st): State<AppState>,
     axum::Extension(c): axum::Extension<Caller>,
@@ -1745,7 +1799,7 @@ async fn overflow(
         return (StatusCode::BAD_REQUEST, "unknown account").into_response();
     };
     match st.store.overflow_to_pay_per_use(p).await {
-        Ok(n) => Json(serde_json::json!({ "moved": n })).into_response(),
+        Ok(limit) => Json(limit).into_response(),
         Err(e) => ApiError(e).into_response(),
     }
 }

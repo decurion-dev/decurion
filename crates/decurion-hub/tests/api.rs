@@ -882,6 +882,120 @@ async fn opening_the_login_link_signs_nothing_in() {
     assert!(store.devices().await.expect("devices").is_empty());
 }
 
+async fn post_login(r: &axum::Router, cookie: Option<&str>) -> axum::response::Response {
+    let mut b = Request::post("/login")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header("x-forwarded-proto", "https");
+    if let Some(c) = cookie {
+        b = b.header(header::COOKIE, c);
+    }
+    r.clone()
+        .oneshot(b.body(Body::from(format!("code={LOGIN}"))).expect("req"))
+        .await
+        .expect("resp")
+}
+
+#[tokio::test]
+async fn a_signed_in_browser_opening_the_login_link_goes_straight_to_the_board() {
+    let (r, store) = hub().await;
+    let cookie = cookie_pair(&post_login(&r, None).await);
+    assert_eq!(store.devices().await.expect("devices").len(), 1);
+
+    let resp = get(&r, &format!("/login?code={LOGIN}"), Some(&cookie)).await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        resp.headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some("/")
+    );
+    // The same sign-in, good for another year; no new device.
+    let set = resp
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(set.starts_with(&format!("{cookie};")), "{set}");
+    assert!(set.contains("Max-Age=31536000") && set.contains("HttpOnly"));
+    assert!(set.contains("SameSite=Strict"));
+    assert_eq!(store.devices().await.expect("devices").len(), 1);
+
+    // A browser that was signed out sees the sign-in page as before.
+    let id = store.devices().await.expect("devices")[0].id;
+    store.remove_device(id).await.expect("remove");
+    let resp = get(&r, &format!("/login?code={LOGIN}"), Some(&cookie)).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers().get(header::SET_COOKIE).is_none());
+}
+
+#[tokio::test]
+async fn signing_in_again_on_a_signed_in_browser_adds_no_device() {
+    let (r, store) = hub().await;
+    let cookie = cookie_pair(&post_login(&r, None).await);
+    let again = post_login(&r, Some(&cookie)).await;
+    assert_eq!(again.status(), StatusCode::SEE_OTHER);
+    assert_eq!(cookie_pair(&again), cookie);
+    assert_eq!(store.devices().await.expect("devices").len(), 1);
+    // A cookie that no longer signs in gets a new device, as before.
+    let fresh = post_login(&r, Some("decurion_device=forged")).await;
+    assert_ne!(cookie_pair(&fresh), "decurion_device=forged");
+    assert_eq!(store.devices().await.expect("devices").len(), 2);
+}
+
+#[tokio::test]
+async fn a_device_in_use_gets_its_cookie_renewed() {
+    let (r, store) = hub().await;
+    let cookie = cookie_pair(&post_login(&r, None).await);
+    let renewed = |resp: &axum::response::Response| {
+        resp.headers()
+            .get(header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    };
+    // The first use marks it as used, and renews the cookie for a year.
+    let mut b = Request::get("/api/threads")
+        .header(header::COOKIE, cookie.clone())
+        .header("x-forwarded-proto", "https");
+    let resp = r
+        .clone()
+        .oneshot(b.body(Body::empty()).expect("req"))
+        .await
+        .expect("resp");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let set = renewed(&resp).expect("renewed");
+    assert!(set.starts_with(&format!("{cookie};")));
+    assert!(set.contains("Max-Age=31536000") && set.contains("; Secure"));
+    assert!(set.contains("HttpOnly") && set.contains("SameSite=Strict"));
+    // Polling within five minutes writes nothing and renews nothing.
+    let resp = get(&r, "/api/threads", Some(&cookie)).await;
+    assert_eq!(renewed(&resp), None);
+    // Once its "last used" time is older, the next call renews it again.
+    sqlx::query("UPDATE devices SET last_seen = '2000-01-01T00:00:00.000Z'")
+        .execute(store.pool())
+        .await
+        .expect("age");
+    b = Request::get("/api/threads").header(header::COOKIE, cookie.clone());
+    let resp = r
+        .clone()
+        .oneshot(b.body(Body::empty()).expect("req"))
+        .await
+        .expect("resp");
+    let set = renewed(&resp).expect("renewed again");
+    assert!(set.starts_with(&format!("{cookie};")) && !set.contains("Secure"));
+    // Key callers have no cookie to renew.
+    let resp = r
+        .clone()
+        .oneshot(
+            Request::get("/api/threads")
+                .header(header::AUTHORIZATION, format!("Bearer {OWNER}"))
+                .body(Body::empty())
+                .expect("req"),
+        )
+        .await
+        .expect("resp");
+    assert_eq!(renewed(&resp), None);
+}
+
 #[tokio::test]
 async fn cookie_writes_from_other_sites_are_refused() {
     let (r, store) = hub().await;
@@ -1648,7 +1762,9 @@ async fn one_tap_moves_waiting_work_to_pay_per_use() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(moved["moved"], 2);
+    // Nothing waits now: the account runs on pay-per-use until its reset.
+    assert_eq!(moved["waiting"], 0);
+    assert_eq!(moved["pay_per_use_until"], moved["until"]);
 
     // Both now run on pay-per-use, with a budget, under the cap; a1 resumes.
     let (_, c) = call(
@@ -1670,6 +1786,90 @@ async fn one_tap_moves_waiting_work_to_pay_per_use() {
             .expect("run");
     assert_eq!(account, "api");
     assert_eq!(claim_id(&r).await, Some(a2));
+}
+
+#[tokio::test]
+async fn one_tap_keeps_the_plan_on_pay_per_use_until_it_resets() {
+    let (r, store) = hub().await;
+    let a = app_on(&r, "on-a", "A").await;
+    let a1 = add_work(&r, a, "a1").await;
+    assert_eq!(claim_id(&r).await, Some(a1));
+    hit_limit(&r, a1, None).await;
+    let (s, l) = call(
+        &r,
+        "POST",
+        "/api/limits/A/pay-per-use",
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, limits) = call(&r, "GET", "/api/limits", Some(OWNER), Value::Null).await;
+    assert_eq!(limits[0], l, "the board sees the same");
+    assert!(l["pay_per_use_until"].is_string());
+    let c = claim(&r).await;
+    assert_eq!(
+        (c["thread"]["id"].as_i64(), &c["account"]),
+        (Some(a1), &json!("api"))
+    );
+
+    // Work added after the tap runs on pay-per-use too, with its own budget.
+    let a2 = add_work(&r, a, "a2").await;
+    let c = claim(&r).await;
+    assert_eq!(c["thread"]["id"], a2);
+    assert_eq!(c["account"], "api");
+    assert!(c["budget_usd"].as_f64().is_some_and(|b| b > 0.0));
+
+    // After the reset time, work is back on the Max plan by itself.
+    sqlx::query(
+        "UPDATE profile_limits SET until = '2000-01-01T00:00:00.000Z',
+             pay_per_use_until = '2000-01-01T00:00:00.000Z'",
+    )
+    .execute(store.pool())
+    .await
+    .expect("age");
+    let a3 = add_work(&r, a, "a3").await;
+    let c = claim(&r).await;
+    assert_eq!(c["thread"]["id"], a3);
+    assert_eq!(c["account"], "A");
+    assert!(c["budget_usd"].is_null());
+
+    // A later outage waits again until the owner taps again.
+    hit_limit(&r, a3, None).await;
+    let (_, limits) = call(&r, "GET", "/api/limits", Some(OWNER), Value::Null).await;
+    assert_eq!(limits[0]["waiting"], 1);
+    assert!(limits[0]["pay_per_use_until"].is_null());
+    assert_eq!(claim_id(&r).await, None);
+}
+
+#[tokio::test]
+async fn the_pay_per_use_tap_after_the_reset_does_nothing() {
+    let (r, store) = hub().await;
+    let a = app_on(&r, "on-a", "A").await;
+    let a1 = add_work(&r, a, "a1").await;
+    assert_eq!(claim_id(&r).await, Some(a1));
+    hit_limit(&r, a1, None).await;
+    sqlx::query("UPDATE profile_limits SET until = '2000-01-01T00:00:00.000Z'")
+        .execute(store.pool())
+        .await
+        .expect("age");
+    // A stale banner tapped after the reset.
+    let (s, l) = call(
+        &r,
+        "POST",
+        "/api/limits/A/pay-per-use",
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(l.is_null(), "{l}");
+    let set: Option<String> = sqlx::query_scalar("SELECT pay_per_use_until FROM profile_limits")
+        .fetch_one(store.pool())
+        .await
+        .expect("row");
+    assert_eq!(set, None);
+    assert_eq!(claim(&r).await["account"], "A");
 }
 
 #[tokio::test]
@@ -1782,7 +1982,7 @@ async fn the_pay_per_use_tap_does_nothing_when_no_account_is_out() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(moved["moved"], 0);
+    assert!(moved.is_null(), "{moved}");
     let (_, c) = call(
         &r,
         "POST",
@@ -1795,7 +1995,7 @@ async fn the_pay_per_use_tap_does_nothing_when_no_account_is_out() {
 }
 
 #[tokio::test]
-async fn pay_per_use_from_an_outage_lasts_for_that_run_only() {
+async fn pay_per_use_from_an_outage_ends_when_the_account_is_back() {
     let (r, store) = hub().await;
     let a = app_on(&r, "on-a", "A").await;
     let a1 = add_work(&r, a, "a1").await;
@@ -3160,7 +3360,7 @@ async fn a_box_cannot_start_for_work_that_was_stopped() {
 }
 
 #[tokio::test]
-async fn pay_per_use_from_an_outage_ends_with_its_run_even_when_more_was_asked() {
+async fn pay_per_use_from_an_outage_ends_when_the_account_is_back_even_when_more_was_asked() {
     let (r, store) = hub().await;
     let a = app_on(&r, "on-a", "A").await;
     let a1 = add_work(&r, a, "a1").await;
@@ -3612,7 +3812,7 @@ async fn chatgpt_and_grok_work_does_not_wait_on_a_max_outage() {
         Value::Null,
     )
     .await;
-    assert_eq!(moved["moved"], 1);
+    assert_eq!(moved["waiting"], 0);
     let (_, c) = claim_one(&r).await;
     assert_eq!(c["thread"]["id"], a1);
     assert_eq!(c["account"], "api");
