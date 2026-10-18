@@ -473,7 +473,7 @@
     const kind = KIND[c?.kind ?? page?.kind] ?? "";
     sub.replaceChildren(
       goalTitle ? el("a", { href: `/goals#goal-${G}` }, goalTitle) : null,
-      kind ? el("span", { className: `kind${goalTitle ? " dot-sep" : ""}` }, page?.piece_title ? `${kind}: ${page.piece_title}` : kind) : null);
+      kind ? el("span", { className: `kind${goalTitle ? " dot-sep" : ""}` }, page?.piece_title && !title.includes(page.piece_title) ? `${kind}: ${page.piece_title}` : kind) : null);
     const app = c?.g.app_id ?? page?.app_id;
     // Opened from a goal (?from=goal), Back with no history returns to it; otherwise to the plan's pages.
     const back = fromGoal ? `/goals#goal-${G}` : app != null ? `/plan#app=${app}&tab=pages` : "/plan";
