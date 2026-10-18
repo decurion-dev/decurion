@@ -811,6 +811,213 @@ impl Store {
         tx.commit().await?;
         Ok((self.thread(fix).await?, true))
     }
+
+    /// The thread a receipt already started a Bring up to date for, if any.
+    /// Read before anything is fetched, so a resent tap answers at once.
+    async fn update_receipt(&self, receipt: Option<&str>) -> Result<Option<i64>> {
+        let mut tx = self.pool().begin().await?;
+        let done = receipt_result(&mut tx, receipt, "pr_update").await?;
+        tx.commit().await?;
+        Ok(done)
+    }
+
+    /// What Bring up to date needs to know about a watched pull request,
+    /// with the plain refusal when it cannot start. A pure read.
+    async fn update_target(&self, thread_id: i64) -> Result<UpdateTarget> {
+        // read-only
+        let row = sqlx::query(&format!(
+            "SELECT w.state, w.head, w.url, w.base_ref, w.app_id, a.repo_path, t.title, t.ai,
+                    CASE WHEN w.health_head = w.head THEN w.health END AS health,
+                    {FIX_UNDER_WAY} AS fixing
+             FROM pr_watches w JOIN threads t ON t.id = w.thread_id JOIN apps a ON a.id = w.app_id
+             WHERE w.thread_id = ?"
+        ))
+        .bind(thread_id)
+        .fetch_optional(self.pool())
+        .await?
+        .ok_or(StoreError::NotFound)?;
+        let target = UpdateTarget {
+            open: row.try_get::<String, _>("state")? == "open",
+            head: row.try_get("head")?,
+            url: row.try_get("url")?,
+            base_ref: row.try_get("base_ref")?,
+            app_id: row.try_get("app_id")?,
+            repo_path: row.try_get("repo_path")?,
+            title: row.try_get("title")?,
+            ai: row.try_get("ai")?,
+            health: row.try_get("health")?,
+            fixing: row.try_get("fixing")?,
+        };
+        target.check()?;
+        Ok(target)
+    }
+
+    /// Creates the Bring up to date run, in one write transaction that
+    /// checks the receipt and the pull request again: `merge_from` was
+    /// fetched before it opened. The run starts from the last commit
+    /// Decurion pushed to the pull request and stays on the PC.
+    async fn create_update(
+        &self,
+        thread_id: i64,
+        seen: &UpdateTarget,
+        merge_from: &str,
+        receipt: Option<&str>,
+    ) -> Result<(i64, bool)> {
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(id) = receipt_result(&mut tx, receipt, "pr_update").await? {
+            tx.commit().await?;
+            return Ok((id, false));
+        }
+        let row = sqlx::query(&format!(
+            "SELECT w.state, w.head, w.base_ref, {FIX_UNDER_WAY} AS fixing
+             FROM pr_watches w WHERE w.thread_id = ?"
+        ))
+        .bind(thread_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(StoreError::NotFound)?;
+        let now = UpdateTarget {
+            open: row.try_get::<String, _>("state")? == "open",
+            fixing: row.try_get("fixing")?,
+            head: row.try_get("head")?,
+            base_ref: row.try_get("base_ref")?,
+            ..seen.clone()
+        };
+        now.check()?;
+        if now.head != seen.head || now.base_ref != seen.base_ref {
+            return Err(StoreError::Refused(
+                "This pull request changed while Decurion was getting ready. Tap Bring up to date again."
+                    .into(),
+            ));
+        }
+        let base = seen.base_ref.as_deref().unwrap_or("main");
+        let short: String = seen.title.chars().take(80).collect();
+        let id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO threads (app_id, title, prompt, place, ai, fix_of, base_commit, merge_from)
+             VALUES (?, ?, ?, 'pc', ?, ?, ?, ?) RETURNING id",
+        )
+        .bind(seen.app_id)
+        .bind(format!("Bring up to date: {short}"))
+        .bind(update_prompt(&seen.title, &seen.url, base))
+        .bind(&seen.ai)
+        .bind(thread_id)
+        .bind(&seen.head)
+        .bind(merge_from)
+        .fetch_one(&mut *tx)
+        .await?;
+        save_receipt(&mut tx, receipt, "pr_update", id).await?;
+        tx.commit().await?;
+        Ok((id, true))
+    }
+}
+
+/// A watched pull request, as Bring up to date sees it.
+#[derive(Debug, Clone)]
+struct UpdateTarget {
+    open: bool,
+    fixing: bool,
+    /// The last commit Decurion pushed there.
+    head: String,
+    url: String,
+    base_ref: Option<String>,
+    app_id: i64,
+    repo_path: String,
+    title: String,
+    ai: String,
+    /// What GitHub said about `head`, if anything.
+    health: Option<String>,
+}
+
+impl UpdateTarget {
+    fn check(&self) -> Result<()> {
+        if !self.open {
+            return Err(StoreError::Refused(
+                "This pull request was merged or closed, so there is nothing to bring up to date."
+                    .into(),
+            ));
+        }
+        if self.fixing {
+            return Err(StoreError::Refused(
+                "Work on this pull request is already under way. Wait for it to finish, then try again."
+                    .into(),
+            ));
+        }
+        if self.base_ref.is_none() {
+            return Err(StoreError::Refused(
+                "Decurion has not read this pull request from GitHub yet. Try again in a few minutes."
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The brief for a Bring up to date run. The newest commit of the base
+/// branch is in the run's copy as the local branch `decurion-main`; the
+/// run merges it in (never a rebase, so the branch only moves forward and
+/// the hub can send it as a plain fast-forward), fixes conflicts and the
+/// app's own failing checks, and commits. It never pushes.
+pub fn update_prompt(title: &str, url: &str, base: &str) -> String {
+    format!(
+        "Bring the pull request for \"{title}\" ({url}) up to date with {base}. The newest {base} \
+is in this copy as the local branch decurion-main.\n\n\
+1. Merge it into this branch with `git merge --no-ff --no-edit decurion-main`. Never rebase, never \
+reset, and never rewrite or remove earlier commits on this branch.\n\
+2. If the merge stops on conflicts, resolve each one: keep what {base} does now, and add this \
+branch's change on top of it. Then commit the merge.\n\
+3. If the app numbers its database migrations and {base} added new ones, renumber this branch's \
+new ones so they come after {base}'s highest, and update any list of migrations.\n\
+4. Run all of the app's own checks (build, lint, tests) and fix what fails. {db}\n\
+5. Commit the merge and your fixes on this branch. Do not push.\n\n\
+In your summary, say which files had conflicts and how you resolved them, and what else you fixed.\n",
+        db = decurion_proto::local_database!().trim_end(),
+    )
+}
+
+/// The owner's Bring up to date on a watched pull request (`thread_id` is
+/// the work that opened it). In order: a resent receipt answers with the
+/// first run at once; the pull request is checked; the newest commit of its
+/// base branch is fetched from the app's git server and pinned, outside any
+/// write transaction; then the run is created in one, which checks the
+/// receipt and the pull request again. Refused, with nothing created, when
+/// that branch cannot be had or the pull request already has it.
+pub async fn start_update(
+    store: &Store,
+    files: Option<&crate::checkpoints::Files>,
+    thread_id: i64,
+    receipt: Option<&str>,
+) -> Result<(Thread, bool)> {
+    check_receipt(receipt)?;
+    if let Some(id) = store.update_receipt(receipt).await? {
+        return Ok((store.thread(id).await?, false));
+    }
+    let target = store.update_target(thread_id).await?;
+    let files = files.ok_or_else(|| {
+        StoreError::Refused(
+            "This hub keeps no saved work, so it cannot bring pull requests up to date.".into(),
+        )
+    })?;
+    let base = target.base_ref.clone().unwrap_or_else(|| "main".into());
+    let merge_from =
+        crate::upstream::branch_tip(files, target.app_id, &target.repo_path, &base).await?;
+    let has_it = {
+        let _held = files.git_lock.lock().await;
+        crate::checkpoints::git(
+            &files.app_cache(target.app_id),
+            &["merge-base", "--is-ancestor", &merge_from, &target.head],
+        )
+        .await
+        .is_ok()
+    };
+    if has_it && target.health.as_deref() != Some("dirty") {
+        return Err(StoreError::Refused(format!(
+            "Already up to date with {base}. Nothing was started."
+        )));
+    }
+    let (id, fresh) = store
+        .create_update(thread_id, &target, &merge_from, receipt)
+        .await?;
+    Ok((store.thread(id).await?, fresh))
 }
 
 // ---------- Looking ----------
@@ -1007,6 +1214,31 @@ pub(crate) async fn fix(
                     thread = id,
                     fix = t.id,
                     "the owner started a fix of review comments"
+                );
+            }
+            Json(t).into_response()
+        }
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// The owner's "Bring up to date".
+pub(crate) async fn update(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    UrlPath(id): UrlPath<i64>,
+    Json(b): Json<Fix>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("bringing pull requests up to date");
+    }
+    match start_update(&st.store, st.files.as_deref(), id, b.receipt.as_deref()).await {
+        Ok((t, fresh)) => {
+            if fresh {
+                tracing::info!(
+                    thread = id,
+                    update = t.id,
+                    "the owner started bringing a pull request up to date"
                 );
             }
             Json(t).into_response()

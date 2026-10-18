@@ -450,6 +450,7 @@ mod tests {
             sign_ins,
             context: vec![],
             addons: vec![],
+            merge_from: None,
         }
     }
 

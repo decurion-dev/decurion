@@ -357,6 +357,7 @@ pub fn router(state: AppState) -> Router {
         .route("/threads/{id}/github", post(github::retry))
         .route("/threads/{id}/goal", get(goals::piece_of))
         .route("/threads/{id}/pr/fix", post(pr_watch::fix))
+        .route("/threads/{id}/pr/update", post(pr_watch::update))
         .route("/threads/{id}/pr/merge", post(merge::tap))
         .route("/prs", get(pr_watch::list))
         .route("/deploys", get(deploy::list))

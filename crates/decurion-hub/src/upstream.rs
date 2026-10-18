@@ -1147,10 +1147,7 @@ mod tests {
             advertised_branch(&format!("{sha}\trefs/heads/x/refs/heads/main\n"), "main"),
             None
         );
-        assert_eq!(
-            advertised_branch(&format!("HEAD\trefs/heads/main\n"), "main"),
-            None
-        );
+        assert_eq!(advertised_branch("HEAD\trefs/heads/main\n", "main"), None);
         assert_eq!(advertised_branch("", "main"), None);
     }
 

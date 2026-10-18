@@ -2260,3 +2260,206 @@ async fn a_pull_request_that_clashes_with_main_says_so() {
     .await;
     assert_eq!(t["github"]["clash"], false, "{t}");
 }
+
+// ---------- Bring up to date ----------
+
+/// Lets the app's folder fetch from its GitHub address too (the local bare
+/// repo stands in for GitHub), as Bring up to date does.
+fn fetch_from(repo: &Path, bare: &Path) {
+    let bare_s = bare.to_string_lossy().into_owned();
+    git(
+        repo,
+        &["config", &format!("url.{bare_s}.insteadOf"), GITHUB_URL],
+    );
+}
+
+/// Points the app's folder's GitHub address at a server that is not there.
+fn server_gone(h: &Hub, repo: &Path, bare: &Path) {
+    let gone = h.dir.join("gone.git").to_string_lossy().into_owned();
+    git(
+        repo,
+        &[
+            "config",
+            "--unset",
+            &format!("url.{}.insteadOf", bare.to_string_lossy()),
+        ],
+    );
+    git(
+        repo,
+        &["config", &format!("url.{gone}.insteadOf"), GITHUB_URL],
+    );
+}
+
+/// Someone else moves the remote's main on, with `file` changed. The
+/// owner's folder does not have it. Returns the new commit.
+fn main_moves(h: &Hub, bare: &Path, file: &str, text: &str) -> String {
+    let other = h.dir.join(format!("other-{}", uuid::Uuid::new_v4()));
+    git(
+        &h.dir,
+        &[
+            "clone",
+            "--quiet",
+            "-b",
+            "main",
+            &bare.to_string_lossy(),
+            &other.to_string_lossy(),
+        ],
+    );
+    write(&other, file, text);
+    git(&other, &["add", "-A"]);
+    git(&other, &["commit", "--quiet", "-m", "main moves on"]);
+    git(&other, &["push", "--quiet", "origin", "main"]);
+    git(&other, &["rev-parse", "HEAD"])
+}
+
+/// GitHub says the pull request is in `state`, about commit `head`.
+fn github_says(h: &Hub, state: &str, head: &str) {
+    let mut f = h.fake.lock().expect("fake");
+    f.merge_state.insert(1, state.into());
+    f.heads.insert(1, head.into());
+}
+
+async fn bring_up(h: &Hub, thread: i64, receipt: &str) -> (StatusCode, Value) {
+    call(
+        &h.r,
+        OWNER,
+        "POST",
+        &format!("/api/threads/{thread}/pr/update"),
+        json!({ "receipt": receipt }),
+    )
+    .await
+}
+
+async fn thread_count(h: &Hub) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM threads")
+        .fetch_one(h.store.pool())
+        .await
+        .expect("count")
+}
+
+fn refused(s: StatusCode, v: &Value, words: &str) {
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v.as_str().expect("text").contains(words), "{words}: {v}");
+}
+
+#[tokio::test]
+async fn bring_up_to_date_starts_one_run_on_the_pull_request_with_main_pinned() {
+    let h = hub(Tok::Fixed).await;
+    let (repo, bare, thread, head, _branch) = sent_pr(&h).await;
+    fetch_from(&repo, &bare);
+    // Not read from GitHub yet: Decurion does not know the base branch.
+    let (s, v) = bring_up(&h, thread, "update-receipt-0").await;
+    refused(s, &v, "not read this pull request");
+    github_says(&h, "behind", &head);
+    decurion_hub::pr_watch::poll(&h.state).await;
+    let main = main_moves(&h, &bare, "README.md", "hello again\n");
+    assert_ne!(git(&repo, &["rev-parse", "HEAD"]), main);
+
+    let path = format!("/api/threads/{thread}/pr/update");
+    let (s, _) = call(
+        &h.r,
+        RUNNER,
+        "POST",
+        &path,
+        json!({"receipt": "update-receipt-1"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, run) = bring_up(&h, thread, "update-receipt-1").await;
+    assert!(s.is_success(), "{run}");
+    assert_eq!(run["fix_of"], thread);
+    assert_eq!(run["state"], "queued");
+    assert_eq!(run["place"], "pc");
+    assert_eq!(run["title"], "Bring up to date: Fix the login page");
+    let prompt = run["prompt"].as_str().expect("prompt");
+    assert!(
+        prompt.contains("git merge --no-ff --no-edit decurion-main"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("Never rebase"), "{prompt}");
+    assert!(prompt.contains("Do not push"), "{prompt}");
+    let id = run["id"].as_i64().expect("id");
+    let (base, from): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT base_commit, merge_from FROM threads WHERE id = ?")
+            .bind(id)
+            .fetch_one(h.store.pool())
+            .await
+            .expect("row");
+    // It starts from the commit in the pull request and merges the
+    // server's newest main, which the hub pinned.
+    assert_eq!(base.as_deref(), Some(head.as_str()));
+    assert_eq!(from.as_deref(), Some(main.as_str()));
+    let app: i64 = run["app_id"].as_i64().expect("app");
+    let cache = h
+        .dir
+        .join("saved")
+        .join("repos")
+        .join(format!("app-{app}.git"));
+    assert_eq!(
+        git(
+            &cache,
+            &["rev-parse", &format!("refs/decurion/start/{main}")]
+        ),
+        main
+    );
+
+    // The same tap again starts nothing new, even with the server gone.
+    server_gone(&h, &repo, &bare);
+    let (s, again) = bring_up(&h, thread, "update-receipt-1").await;
+    assert!(s.is_success(), "{again}");
+    assert_eq!(again["id"], id);
+    let (s, v) = bring_up(&h, thread, "update-receipt-2").await;
+    refused(s, &v, "already under way");
+    assert_eq!(thread_count(&h).await, 2);
+    let w = watched(&h).await;
+    assert_eq!(w[0]["updating"], true, "{w}");
+    assert_eq!(w[0]["fixing"], true, "{w}");
+    // It stays on the PC.
+    let (s, v) = call(
+        &h.r,
+        OWNER,
+        "POST",
+        &format!("/api/threads/{id}/place"),
+        json!({"place": "cloud"}),
+    )
+    .await;
+    refused(s, &v, "this PC only");
+}
+
+#[tokio::test]
+async fn bring_up_to_date_is_refused_with_nothing_started_when_it_cannot_or_need_not() {
+    let h = hub(Tok::Fixed).await;
+    let (repo, bare, thread, head, _branch) = sent_pr(&h).await;
+    fetch_from(&repo, &bare);
+    github_says(&h, "clean", &head);
+    decurion_hub::pr_watch::poll(&h.state).await;
+    // Main has not moved: the pull request already has it.
+    let (s, v) = bring_up(&h, thread, "update-refused-1").await;
+    refused(s, &v, "Already up to date with main");
+    // The server cannot be reached: nothing is fetched or started.
+    main_moves(&h, &bare, "README.md", "newer\n");
+    server_gone(&h, &repo, &bare);
+    let (s, v) = bring_up(&h, thread, "update-refused-2").await;
+    refused(s, &v, "could not get the newest main");
+    assert_eq!(thread_count(&h).await, 1);
+    // A pull request that ended has nothing to bring up to date.
+    h.fake.lock().expect("fake").merged.push(1);
+    decurion_hub::pr_watch::poll(&h.state).await;
+    let (s, v) = bring_up(&h, thread, "update-refused-3").await;
+    refused(s, &v, "merged or closed");
+    assert_eq!(thread_count(&h).await, 1);
+}
+
+/// GitHub says it conflicts, though the pull request already holds main's
+/// newest commit: the owner can still start it.
+#[tokio::test]
+async fn a_conflicting_pull_request_can_be_brought_up_to_date_whatever_main_is_at() {
+    let h = hub(Tok::Fixed).await;
+    let (repo, bare, thread, head, _branch) = sent_pr(&h).await;
+    fetch_from(&repo, &bare);
+    github_says(&h, "dirty", &head);
+    decurion_hub::pr_watch::poll(&h.state).await;
+    let (s, v) = bring_up(&h, thread, "update-dirty-1").await;
+    assert!(s.is_success(), "{v}");
+    assert_eq!(watched(&h).await[0]["health"], "Conflicts with main");
+}

@@ -796,6 +796,11 @@ impl Store {
             };
             let context = self.thread_context(t.id).await?;
             let addons = self.claim_addons(app.id).await?;
+            let merge_from: Option<String> =
+                sqlx::query_scalar("SELECT merge_from FROM threads WHERE id = ?")
+                    .bind(t.id)
+                    .fetch_one(&self.pool)
+                    .await?;
             return Ok(ClaimOutcome {
                 work: Some(Claim {
                     thread,
@@ -814,6 +819,7 @@ impl Store {
                     interrupted,
                     reserved_micros: account.is_paid().then_some(reserved),
                     prior_micros: prior,
+                    merge_from,
                 }),
                 capped,
             });
