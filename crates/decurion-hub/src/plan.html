@@ -36,17 +36,8 @@
   .app-pick label { font-size: 12px; font-weight: 600; color: var(--muted); }
   .app-pick select { min-width: 220px; font-weight: 600; }
 
-  .ptabs { display: flex; gap: 4px; margin: 22px 0 22px; border-bottom: 1px solid var(--line); }
-  .ptab {
-    display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px; margin-bottom: -1px;
-    border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer;
-    color: var(--muted); font: 600 15px/1 var(--font);
-  }
-  .ptab:hover { color: var(--ink); }
-  .ptab[aria-selected="true"] { color: var(--accent-ink); border-bottom-color: var(--accent); }
-  .ptab .ct { font: 600 12px/20px var(--font); min-width: 22px; padding: 0 7px; border-radius: 99px; background: var(--surface-2); color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
-  .ptab .ct:empty { display: none; }
-  .ptab .ct.wait { background: var(--amber-soft); color: var(--amber); box-shadow: inset 0 0 0 1px var(--amber-line); }
+  /* The tab row's look is shared (.ptabs in ui.css); only its spacing is here. */
+  .ptabs { margin: 22px 0 22px; }
 
   /* ---------- Summary ---------- */
   .summary {

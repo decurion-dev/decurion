@@ -24,6 +24,7 @@ once (commit `793f21c`). Read those pieces first.
 
 ## The screen
 
+- Read [the style guide](style-guide.md) first. Screens show one thing at a time: a new setting goes in its own Settings tab (add it to `TABS` in `settings.js`, with its own `#settings/<id>` link), and views of one thing use `D.tabs`. Never add another box under a long page.
 - Pages are single files in `crates/decurion-hub/src/` (`board.html`, `inbox.html`, `goals.html`, `cloud.html`). Each has its own `<style>` and `<script>` and loads `/ui.css` and `/ui.js`.
 - Call the API with `D.api("/apps/1/sites", { method: "POST", body: JSON.stringify(...) })` (it adds the `/api` prefix itself); it throws with `e.message` set to the hub's plain error text and `e.signedOut` when signed out. Show errors next to the field (`fieldErr`) or with `D.toast(text, "alert")`.
 - Build elements with `D.el(tag, attrs, ...children)`. Never set `innerHTML` from data: names come from the owner and agent text comes from agents.

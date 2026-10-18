@@ -10,7 +10,7 @@ A cloud worker is a small server you rent from a hosting company. It runs the sa
 
 ## Set it up
 
-On the board, open **Settings**. Under **Computers**, click **Add cloud worker**. The page walks you through three steps.
+On the board, open **Settings**. Under **Computers**, click **Add cloud worker**. The page walks you through three steps, one at a time: **1 Key**, **2 Server** and **3 Connect**. Each step ends with a **Next** button, and you can tap a step's name to go back to it.
 
 1. **Make a Tailscale key.** Open your Tailscale keys page, click **Generate auth key**, keep the settings as they are, and paste the key into the page. The key stays on that page: Decurion never sends it anywhere.
 2. **Create a server.** At a hosting company such as Hetzner or DigitalOcean, create a server with **Ubuntu 24.04, 2 CPUs and 4 GB memory**. On the Decurion page, click **Make setup text**, then **Copy**. Paste it into the hosting company's **User data** (or **Cloud config**) box before you create the server. The setup text works once, within 24 hours. Don't share it.
