@@ -30,6 +30,7 @@ pub mod github;
 pub mod limits;
 pub mod merge;
 pub mod messages;
+pub(crate) mod netgit;
 pub mod pages;
 pub mod plan;
 pub mod pr_watch;

@@ -47,6 +47,7 @@
 //! owner's folder and their own remote settings apply.
 
 use crate::checkpoints::{git, Files};
+use crate::netgit;
 use crate::push::{Notice, Pusher};
 use crate::store::{audit, check_receipt, receipt_result, save_receipt, Result, Store, StoreError};
 use crate::{forbidden, ApiError, AppState, Caller};
@@ -739,16 +740,12 @@ fn api_refused(status: reqwest::StatusCode) -> String {
 
 // ---------- The push ----------
 
-/// git's arguments for the push, after `-C <app folder>`. Pure, so a test
+/// git's arguments for the push, after what [`netgit::command`] puts first
+/// (`-C <app folder>`, hooks and file watchers off). Pure, so a test
 /// can check that nothing secret is ever among them: only the commit and
 /// the branch, to the remote by its name.
 pub fn push_args(head: &str, branch: &str) -> Vec<String> {
-    let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
     [
-        "-c",
-        &format!("core.hooksPath={null}"),
-        "-c",
-        "core.fsmonitor=false",
         "-c",
         "push.followTags=false",
         "-c",
@@ -780,43 +777,23 @@ async fn push(
     branch: &str,
     place: &str,
 ) -> std::result::Result<(), String> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C")
-        .arg(repo)
-        .args(push_args(head, branch))
-        .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", cache.join("objects"))
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_NO_LAZY_FETCH", "1")
-        // No helper may ask either: Git Credential Manager, askpass, SSH.
-        .env("GCM_INTERACTIVE", "never")
-        .env("GIT_ASKPASS", "")
-        .env("SSH_ASKPASS_REQUIRE", "never")
-        // git's messages in English, to tell failures apart.
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .kill_on_drop(true);
-    let own_ssh = std::env::var_os("GIT_SSH_COMMAND").is_some()
-        || std::env::var_os("GIT_SSH").is_some()
-        || git(repo, &["config", "--get", "core.sshCommand"])
-            .await
-            .is_ok();
-    if !own_ssh {
-        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
-    }
-    let out = match tokio::time::timeout(Duration::from_secs(PUSH_SECS), cmd.output()).await {
-        Err(_) => {
+    let mut cmd = netgit::command(repo).await;
+    cmd.args(push_args(head, branch))
+        .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", cache.join("objects"));
+    let out = match netgit::output(cmd, Duration::from_secs(PUSH_SECS)).await {
+        Err(netgit::Failed::TooSlow) => {
             return Err(format!(
                 "{place} took too long to answer, so the work was not sent. Tap Try again."
             ))
         }
-        Ok(Err(e)) => {
+        Err(netgit::Failed::NotStarted(e)) => {
             tracing::warn!(error = %e, "could not start git to push");
             return Err(
                 "Decurion could not start git on this PC, so the work was not sent. Tap Try again."
                     .into(),
             );
         }
-        Ok(Ok(out)) => out,
+        Ok(out) => out,
     };
     if out.status.success() {
         return Ok(());
