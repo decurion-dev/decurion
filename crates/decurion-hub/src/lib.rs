@@ -22,6 +22,7 @@ pub mod coordinator;
 pub mod devices;
 pub mod limits;
 pub mod messages;
+pub mod protected;
 pub mod push;
 pub mod secrets;
 pub mod spend;

@@ -27,3 +27,4 @@
 # Going further
 
 - [Add the cloud worker](add-the-cloud-worker.md)
+- [Improve Decurion itself](improve-decurion-itself.md)

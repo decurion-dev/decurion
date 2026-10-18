@@ -9,7 +9,10 @@
 //!
 //! The hub never unpacks what runners upload. It stores the files and hands
 //! them to the next runner, which unpacks the session inside a sealed
-//! container and reads the code with git's own checks.
+//! container and reads the code with git's own checks. The one exception is
+//! the code part of a finished piece of work: the hub reads it into its own
+//! bare copy of the app's repo, with git's checks, only to list the files it
+//! changed (see [`crate::protected`]).
 
 use crate::store::{runner_actor, Result, Store, StoreError};
 use std::path::{Path, PathBuf};
@@ -64,7 +67,7 @@ pub fn is_commit(s: &str) -> bool {
 pub struct Files {
     dir: PathBuf,
     /// Git work in the hub's own repo caches happens one at a time.
-    git_lock: tokio::sync::Mutex<()>,
+    pub(crate) git_lock: tokio::sync::Mutex<()>,
 }
 
 impl Files {
@@ -94,31 +97,22 @@ impl Files {
         std::fs::create_dir_all(self.thread_dir(thread))
     }
 
-    /// The bundle holding a thread's starting commit, made on first request
-    /// from the owner's own checkout. The bundle has one ref,
-    /// `refs/heads/decurion-base`.
-    pub async fn base_bundle(
-        &self,
-        app_id: i64,
-        repo_path: &str,
-        base: Option<&str>,
-    ) -> Result<(String, PathBuf)> {
-        let _held = self.git_lock.lock().await;
-        let cache = self.dir.join("repos").join(format!("app-{app_id}.git"));
-        if let Some(sha) = base {
-            let path = self.bundle_path(sha);
-            if path.exists() {
-                return Ok((sha.to_owned(), path));
-            }
-        }
+    /// The hub's own bare copy of an app's repo.
+    pub(crate) fn app_cache(&self, app_id: i64) -> PathBuf {
+        self.dir.join("repos").join(format!("app-{app_id}.git"))
+    }
+
+    /// Brings the app's cache up to date with the owner's checkout, making
+    /// it first if needed. The caller holds `git_lock`.
+    pub(crate) async fn fetch_app(&self, cache: &Path, repo_path: &str) -> Result<()> {
         if !cache.exists() {
-            std::fs::create_dir_all(&cache).map_err(io)?;
-            git(&cache, &["init", "--quiet", "--bare"]).await?;
+            std::fs::create_dir_all(cache).map_err(io)?;
+            git(cache, &["init", "--quiet", "--bare"]).await?;
         }
         // The owner's repo, not an agent's: still, no hooks and nothing but
         // local files.
         git(
-            &cache,
+            cache,
             &[
                 "-c",
                 "protocol.allow=never",
@@ -134,6 +128,27 @@ impl Files {
             ],
         )
         .await?;
+        Ok(())
+    }
+
+    /// The bundle holding a thread's starting commit, made on first request
+    /// from the owner's own checkout. The bundle has one ref,
+    /// `refs/heads/decurion-base`.
+    pub async fn base_bundle(
+        &self,
+        app_id: i64,
+        repo_path: &str,
+        base: Option<&str>,
+    ) -> Result<(String, PathBuf)> {
+        let _held = self.git_lock.lock().await;
+        let cache = self.app_cache(app_id);
+        if let Some(sha) = base {
+            let path = self.bundle_path(sha);
+            if path.exists() {
+                return Ok((sha.to_owned(), path));
+            }
+        }
+        self.fetch_app(&cache, repo_path).await?;
         let sha = match base {
             Some(s) => s.to_owned(),
             None => git(&cache, &["rev-parse", "refs/heads/decurion-latest"]).await?,
@@ -176,11 +191,12 @@ impl Files {
     }
 }
 
-fn io(e: std::io::Error) -> StoreError {
+pub(crate) fn io(e: std::io::Error) -> StoreError {
     StoreError::Invalid(format!("file error: {e}"))
 }
 
-async fn git(dir: &Path, args: &[&str]) -> Result<String> {
+/// Runs git in `dir` with hooks and file watchers off. Output is trimmed.
+pub(crate) async fn git(dir: &Path, args: &[&str]) -> Result<String> {
     let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
     let out = Command::new("git")
         .env("GIT_TERMINAL_PROMPT", "0")
