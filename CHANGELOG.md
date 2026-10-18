@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Master plan.** Each app has one page that lists its goals in your order, each with its steps, the pages agents drew, and what the project lead found along the way. Tick things off, fix one or all of them as a new goal, or add your own to-dos. A Pages tab lists every page agents drew, with the ones that have questions for you marked. Pages now open beside a panel where you answer the agent's questions, approve the plan or ask for changes, on the PC and the phone.
+
 - **One box for new work, on the board and the phone.** "What do you want?" sends it to your project lead, who asks, plans and waits for your approval; or choose **Just do it** for a small change that one agent starts right away. On the phone, tap **New work** on the Board tab. The phone's Board tab also gains an app filter (with two apps or more) and **Show more** in place of the 40-card limit.
 - **What next, and the agent's questions first.** Finished work now opens with what the agent asks you, each answer one tap (it goes back to the agent with your answer), then its summary laid out readably (lists and bold, no stray stars), then a "What next?" list saying what Accept, answering and Reject each do. "Fix these" starts new work from what an audit found. Agents are told to end with their questions in a fixed shape so the board and phone can show them as buttons.
 - Installers and a release workflow that builds them into a draft GitHub release.

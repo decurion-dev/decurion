@@ -15,6 +15,7 @@
 # Everyday use
 
 - [Give your first goal](give-your-first-goal.md)
+- [Follow your master plan](follow-your-master-plan.md)
 - [Attach files for agents](attach-files.md)
 - [Answer requests](answer-requests.md)
 - [Talk to an agent while it works](talk-to-a-running-agent.md)

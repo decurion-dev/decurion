@@ -315,6 +315,8 @@ pub fn router(state: AppState) -> Router {
         .route("/cloud", get(cloud_page))
         .route("/runner/join", post(runner_join))
         .route("/goals", get(goals_page))
+        .route("/plan", get(plan_page))
+        .route("/pages/{goal}/{page}", get(view_page))
         .route("/login", get(login_page).post(login))
         .route("/pair", get(pair_page).post(pair))
         .route("/sw.js", get(service_worker))
@@ -617,6 +619,19 @@ async fn inbox() -> Response {
 
 async fn goals_page() -> Response {
     page(include_str!("goals.html"))
+}
+
+/// The master plan and the page library. Data comes from `/api/apps/{id}/plan`
+/// and `/api/library`.
+async fn plan_page() -> Response {
+    page(include_str!("plan.html"))
+}
+
+/// One agent page beside the answer panel. The page script reads the goal and
+/// page ids from the address; the agent's page itself loads from the
+/// owner-only `/api/goals/{goal}/pages/{page}` in a frame that runs nothing.
+async fn view_page() -> Response {
+    page(include_str!("view.html"))
 }
 
 /// Sets the device cookie. `Secure` whenever the hub is reached over https

@@ -58,6 +58,7 @@
     shield: ["M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"],
     globe: ["c12,12,10", "M2 12h20", "M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20z"],
     expand: ["M15 3h6v6", "M9 21H3v-6", "M21 3l-7 7", "M3 21l7-7"],
+    plan: ["M11 6h10", "M11 12h10", "M11 18h10", "m3 6 1.5 1.5L7 5", "m3 12 1.5 1.5L7 11", "m3 18 1.5 1.5L7 17"],
   };
   const SVG = "http://www.w3.org/2000/svg";
   D.icon = (name, cls = "") => {
@@ -96,13 +97,15 @@
   // The phone's bottom tabs, the same on the inbox and the goals page so the
   // phone feels like one app. Inbox, Board and Settings are hash routes of
   // /inbox (a link to another hash of the page you are on does not reload
-  // it); Goals is its own page. Each page styles .tabbar in its own look.
+  // it); Goals and Plan (the master plan) are pages of their own. Each page
+  // styles .tabbar in its own look.
   // The badges start hidden; the page fills them in.
   D.phoneTabs = (current) => D.el("nav", { className: "tabbar", "aria-label": "Sections" },
     D.el("div", { className: "tabs" }, [
       ["inbox", "/inbox#inbox", "Inbox", "inbox", "badge"],
       ["board", "/inbox#board", "Board", "board"],
       ["goals", "/goals", "Goals", "send", "goals-badge"],
+      ["plan", "/plan", "Plan", "plan"],
       ["settings", "/inbox#settings", "Settings", "settings"],
     ].map(([tab, href, label, icon, badge]) => D.el("a", { className: "tab", id: `tab-${tab}`, href, "aria-current": tab === current ? "page" : null },
       D.el("span", { className: "ind" }, D.icon(icon), badge && D.el("span", { className: "badge", id: badge, hidden: true })),
