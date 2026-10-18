@@ -1,12 +1,15 @@
 [package]
 name = "decurion-vault"
-description = "Decurion vault: where apps' test keys are kept, outside the agent boxes"
+description = "Decurion vault: where apps' test keys and saved website sign-ins are kept, outside the agent boxes"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 version.workspace = true
 
 [dependencies]
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+decurion-proto = { path = "../decurion-proto" }
+getrandom = "0.2"
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]

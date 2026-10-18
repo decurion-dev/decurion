@@ -270,7 +270,7 @@ const EMPTY_ICON = { running: "pc", in_review: "in_review", needs_you: "done", q
 const BOARD_LIMIT = 40;
 
 const S = {
-  tab: "inbox", threads: null, apps: {}, limits: [], err: null, signedOut: false, updated: null,
+  tab: "inbox", threads: null, apps: {}, limits: [], signIns: [], err: null, signedOut: false, updated: null,
   chip: null, actErr: null, open: new Set(), notifyOn: false,
 };
 const scrollMem = {};
@@ -319,8 +319,12 @@ async function refresh() {
   busy = true;
   try {
     // Hubs without the limits endpoint answer 404; that just means no limits.
-    const [apps, list, limits] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/limits").catch(() => [])]);
+    const [apps, list, limits, signIns] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/limits").catch(() => []),
+      D.api("/sign-ins").catch(() => [])]);
     S.limits = Array.isArray(limits) ? limits : [];
+    // Website sign-ins that stopped working or are about to.
+    S.signIns = (Array.isArray(signIns) ? signIns : []).filter((x) => x.status === "expired" || x.status === "expiring")
+      .sort((a, b) => (a.status === "expired" ? 0 : 1) - (b.status === "expired" ? 0 : 1) || a.id - b.id);
     D.setApps(apps);
     S.apps = Object.fromEntries(apps.map((a) => [a.id, a]));
     S.threads = list; S.err = null; S.signedOut = false; S.updated = new Date();
@@ -386,7 +390,7 @@ function errorState(what) {
 }
 
 function renderShell() {
-  const n = inboxItems().length + S.limits.length;
+  const n = inboxItems().length + S.limits.length + S.signIns.length;
   document.body.classList.toggle("signed-out", S.signedOut);
   $("title").textContent = S.signedOut ? "Decurion" : S.tab === "inbox" ? "Needs you" : "Board";
   $("count").hidden = !(S.tab === "inbox" && n > 0 && !S.signedOut);
@@ -493,6 +497,48 @@ function limitCard(l, anim) {
   card.append(el("div", { className: "iacts" }, b));
   return card;
 }
+// A saved website sign-in that stopped working, or is about to. Its words
+// are fixed, with only the owner's own name for it and the app's name: never
+// anything a website or an agent said. One tap opens the sign-in window.
+function signInCard(s, anim) {
+  const key = `signin-${s.id}`;
+  const gone = s.status === "expired";
+  const card = el("article", { className: "icard limit" + (anim === "still" ? " still" : ""), dataset: { state: "needs_you", key, anim } },
+    el("div", { className: "meta" },
+      el("span", { className: "pill needs_you" }, D.icon("key"), gone ? "Signed out" : "Runs out soon"),
+      el("span", { className: "app" }, s.app_name)));
+  const label = "Sign in again";
+  const go = async (b) => {
+    if (D.offline) return;
+    b.disabled = true;
+    try {
+      const { session_id } = await D.api(`/sign-ins/${s.id}/sign-in`, { method: "POST" });
+      if (D.openBrowserViewer) {
+        const shown = D.openBrowserViewer(session_id, { saveButton: true });
+        if (shown && typeof shown.then === "function") shown.then(refresh, refresh);
+      } else {
+        S.actErr = { id: key, msg: "The sign-in window is not available on this hub yet. Sign in again from the board on your PC." };
+        placeErr();
+      }
+    } catch (e) {
+      S.actErr = { id: key, msg: `"${label}" did not go through. ${e.message}` };
+      placeErr();
+    } finally { b.disabled = D.offline; }
+  };
+  const ttl = el("button", { type: "button", className: "ttl" }, s.card || `Sign in to ${s.label} again`);
+  ttl.onclick = () => go(ttl);
+  const until = s.expires_at ? new Date(s.expires_at).toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" }) : "soon";
+  card.append(
+    el("h2", { className: "h" }, ttl),
+    el("p", { className: "means" }, gone
+      ? `${s.app_name}'s agents are no longer signed in to this website. Sign in once more and they will be from their next run.`
+      : `This sign-in runs out ${until}. Sign in again so ${s.app_name}'s agents stay signed in.`),
+    el("div", { className: "err-slot", role: "alert" }));
+  const b = el("button", { type: "button", className: "btn primary", disabled: D.offline }, D.icon("key"), label);
+  b.onclick = () => go(b);
+  card.append(el("div", { className: "iacts" }, b));
+  return card;
+}
 const errNotice = (msg) => el("div", { className: "notice bad" }, D.icon("alert"), el("span", { className: "grow" }, msg));
 
 function renderInbox() {
@@ -501,7 +547,7 @@ function renderInbox() {
   if (!S.threads) {
     if (S.err) setMode(box, "error", `${D.offline}|${S.err.message}`, () => errorState("inbox"));
     else setMode(box, "loading", "", skeletons);
-  } else if (!items.length && !S.limits.length) {
+  } else if (!items.length && !S.limits.length && !S.signIns.length) {
     const c = counts();
     setMode(box, "empty", `${c.running}|${c.queued}|${S.notifyOn}`, () => {
       const granted = "Notification" in window && Notification.permission === "granted";
@@ -517,6 +563,10 @@ function renderInbox() {
       key: `limit-${l.profile}`,
       sig: JSON.stringify([l.profile, l.until, l.waiting, D.offline]),
       build: (anim) => limitCard(l, anim),
+    })), ...S.signIns.map((x) => ({
+      key: `signin-${x.id}`,
+      sig: JSON.stringify([x.label, x.app_name, x.status, x.expires_at, D.offline]),
+      build: (anim) => signInCard(x, anim),
     })), ...items.map((t) => ({
       key: t.id,
       sig: JSON.stringify([t.state, t.updated_at, t.title, t.github, D.appName(t.app_id), D.lastWords(tailNow(t, 20) ?? []), sinceLines(tailNow(t, 20) ?? []), D.offline]),

@@ -476,6 +476,11 @@ impl Store {
             let app = self.app(thread.app_id).await?;
             let checkpoint = self.latest_checkpoint(t.id).await?;
             let test_keys = self.test_key_names(app.id).await?;
+            // Saved sign-ins never leave the PC; cloud work goes without.
+            let sign_ins = match place {
+                Place::Pc => self.claim_sign_ins(t.id, app.id).await?,
+                Place::Cloud => Vec::new(),
+            };
             return Ok(ClaimOutcome {
                 work: Some(Claim {
                     thread,
@@ -484,6 +489,7 @@ impl Store {
                     account,
                     checkpoint,
                     test_keys,
+                    sign_ins,
                     budget_usd: account
                         .is_paid()
                         .then(|| crate::spend::claude_budget_usd(prior, reserved)),

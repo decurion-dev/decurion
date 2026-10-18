@@ -17,6 +17,7 @@
 //! save or move work it is running itself. A cloud worker's key reaches
 //! nothing else at all: not the board, spending or other work.
 
+pub mod browser;
 pub mod checkpoints;
 pub mod coordinator;
 pub mod devices;
@@ -26,6 +27,7 @@ pub mod messages;
 pub mod protected;
 pub mod push;
 pub mod secrets;
+pub mod sign_ins;
 pub mod spend;
 pub mod store;
 pub mod test_keys;
@@ -110,6 +112,8 @@ pub struct AppState {
     github: Option<Arc<github::GitHub>>,
     /// When each runner was last heard from, by name.
     seen: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Live views of test browsers going on now.
+    pub(crate) browser: browser::Relays,
 }
 
 impl AppState {
@@ -126,6 +130,7 @@ impl AppState {
             files: None,
             github: None,
             seen: Arc::default(),
+            browser: browser::Relays::default(),
         }
     }
 
@@ -252,6 +257,8 @@ pub fn router(state: AppState) -> Router {
         .route("/apps/{id}/notes/{note}/remove", post(goals::remove_note))
         .route("/runner/helper/claim", post(goals::helper_claim))
         .route("/runner/helper/{id}/started", post(goals::helper_started))
+        // Watching and taking over the test browser: see browser.rs.
+        .merge(browser::routes())
         .route(
             "/runner/helper/{id}/finish",
             // Room for a page of screenshots and a long answer, escaped inside JSON.
@@ -259,6 +266,8 @@ pub fn router(state: AppState) -> Router {
                 decurion_proto::goal::MAX_PAGE_BYTES * 2 + (1 << 20),
             )),
         )
+        // Saved website sign-ins: owner and runner routes (sign_ins.rs).
+        .merge(sign_ins::routes())
         .layer(middleware::from_fn_with_state(state.clone(), require_key));
     Router::new()
         .route("/", get(board))
@@ -411,6 +420,8 @@ fn cloud_reach(method: &axum::http::Method, path: &str) -> CloudReach {
             ["threads", id, "events" | "move"] | ["threads", id, "messages", "delivered"],
         ) => thread(id, false),
         (_, ["runner", "threads", id, _, ..]) => thread(id, false),
+        // The relay checks the session is this worker's own.
+        (&Method::GET, ["runner", "browser", _, "ws"]) => CloudReach::Any,
         _ => CloudReach::Refused,
     }
 }
@@ -940,7 +951,11 @@ async fn live(
         return not_runner("checking on a run");
     }
     match st.store.live(id).await {
-        Ok(l) => Json(l).into_response(),
+        Ok(mut l) => {
+            // Whether the owner is watching this run's browser now.
+            l.browser = st.browser.want(id);
+            Json(l).into_response()
+        }
         Err(e) => ApiError(e).into_response(),
     }
 }

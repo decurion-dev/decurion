@@ -70,6 +70,7 @@ async fn main() -> anyhow::Result<()> {
         .with_vault(vault)
         .with_files(dir.join("saved-work"))
         .with_github(github);
+    decurion_hub::sign_ins::watch_dates(state.clone());
     // Anything accepted but not yet sent when the hub last stopped.
     let resume = state.clone();
     tokio::spawn(async move {

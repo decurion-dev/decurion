@@ -23,7 +23,7 @@ Thread states and allowed moves: `ThreadState::can_move_to` in `crates/decurion-
 ## Where state lives
 
 - Hub data folder: `DECURION_DATA`, else `%LOCALAPPDATA%\decurion` or `$HOME/decurion` (`data_dir` in hub `main.rs`). `hub.db` (SQLite), `keys.json` (owner and runner keys), `saved-work/` (bundles and checkpoints), `vault/` off Windows.
-- Schema: `crates/decurion-hub/migrations/*.sql`, applied by `Store::open`. Main tables: `apps`, `threads`, `events`, `audit` (append-only), `runs` (money), `receipts`, `messages`, `goals`, `goal_messages`, `goal_pieces`, `helper_jobs`, `goal_pages`, `app_notes`, `devices`, `runners`, `checkpoints`, `test_keys`, `account_usage`, `owner_keys` (last four of the owner's GitHub token). Sending to GitHub lives in `threads.gh_*` (`0044_github.sql`).
+- Schema: `crates/decurion-hub/migrations/*.sql`, applied by `Store::open`. Main tables: `apps`, `threads`, `events`, `audit` (append-only), `runs` (money), `receipts`, `messages`, `goals`, `goal_messages`, `goal_pieces`, `helper_jobs`, `goal_pages`, `app_notes`, `devices`, `runners`, `checkpoints`, `test_keys`, `account_usage`, `owner_keys` (last four of the owner's GitHub token). Sending to GitHub lives in `threads.gh_*` (`0046_github.sql`).
 - Runner data folder (same rule, `data_dir` in runner `main.rs`): `workspaces/` (each thread's copy, mounted at `/work`), `review/` (runner-owned bare repos).
 - Secrets: Windows Credential Manager (`decurion/claude-profile-A`, `decurion/anthropic-api`, `decurion/openai-api`, `decurion/xai-api`, `decurion/app-<id>/test-key/<NAME>`, and `decurion/github` for the owner's optional GitHub token, read only by the hub), or `DECURION_*` env vars off Windows (`Credential::env_fallback`).
 
