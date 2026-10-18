@@ -1499,8 +1499,13 @@
   // says how it reached GitHub: by the plan's approval, or the owner's own
   // Accept. Work added straight to the board has no line: Accept is always
   // yours.
+  // Bring up to date work held for protected parts (t.hold, protected.rs)
+  // says so, in the hub's words.
   function pieceLine(c) {
     const t = c.t, g = c.goal;
+    if (!g && t.hold && t.state === "in_review") {
+      return el("div", { className: "notice warn" }, icon("shield"), el("span", { className: "grow" }, t.hold, " Look it over, then tap Accept."));
+    }
     if (!g) return null;
     const how = g.by_plan ? " It went to GitHub by itself because you approved the plan."
       : t.state === "done" && !t.research ? " You accepted it yourself." : "";
@@ -1538,7 +1543,7 @@
     const t = c.t, ev = c.ev, app = apps[t.app_id];
     const kids = kidsOf(t.id), parent = t.parent_id != null ? all.find((p) => p.id === t.parent_id) : null;
     const waiting = c.msgs ? c.msgs.filter((m) => m.delivered_at == null).length : 0;
-    const sig = JSON.stringify([t.state, t.place, cloud, t.updated_at, t.title, t.github, c.goal, t.check, ev.length, D.pro, D.offline, waiting, parent?.title,
+    const sig = JSON.stringify([t.state, t.place, cloud, t.updated_at, t.title, t.github, t.hold, c.goal, t.check, ev.length, D.pro, D.offline, waiting, parent?.title,
       kids.map((k) => [k.id, k.state, k.title, k.background])]);
     if (sig === c.sig) return;
     c.sig = sig;

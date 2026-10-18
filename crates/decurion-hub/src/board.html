@@ -174,6 +174,7 @@
   .today-row .hit:focus-visible::after { outline: 2px solid var(--focus); outline-offset: 2px; }
   .today-row:hover { background: var(--surface-2); }
   .today-row .ln { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .today-row .ln.health { color: var(--ink); }
   .today-row .ft { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-top: 4px; min-height: 28px; }
   .today-row .ft .btn { position: relative; z-index: 1; }
   .today-row .ft .run-btn { margin-left: auto; }
@@ -675,12 +676,35 @@
           act.disabled = D.offline;
         };
       } else act = el("span", { className: `pill ${cls}` }, icon(ic), r.status);
+      // Bring up to date: on any open pull request Decurion opened with
+      // nothing under way on it. An agent merges main into it on the same
+      // pull request; nothing changes on GitHub until the owner accepts.
+      let update = null;
+      if (r.last_pr?.state === "open" && r.last_pr.can_update) {
+        const prId = r.last_pr.thread_id;
+        update = el("button", { type: "button", className: "btn quiet sm", dataset: { key: `today-update-${id}` },
+          title: `Merge the newest main into pull request #${r.last_pr.number}` }, icon("branch"), "Bring up to date");
+        update.disabled = D.offline;
+        update.onclick = async () => {
+          update.disabled = true;
+          try {
+            await D.send(`/threads/${prId}/pr/update`, {});
+            D.toast("Started work that brings the pull request up to date.");
+          } catch (e) {
+            D.toast(e.message, "alert");
+          }
+          await refresh();
+          update.disabled = D.offline;
+        };
+      }
+      const health = r.last_pr?.state === "open" && r.last_pr.health
+        ? el("div", { className: "ln health" }, r.last_pr.health) : null;
       return el("article", { className: "today-row", dataset: { tone: r.tone } },
-        hit, el("div", { className: "ln", title: r.line + when }, r.line + when),
+        hit, el("div", { className: "ln", title: r.line + when }, r.line + when), health,
         // How much of the plan the app's agents used today (tokens.rs), once
         // any did: one plain word, the exact figures in Pro view.
         r.used_today ? el("div", { className: "use" }, `${D.usageWords(r.used_today)} today`) : null,
-        el("div", { className: "ft" }, act, r.first_today ? el("span", { className: "first" }, "First today") : null,
+        el("div", { className: "ft" }, act, update, r.first_today ? el("span", { className: "first" }, "First today") : null,
           runButton(r.app_id, r.name, `today-run-${id}`)),
         r.deploy ? D.deployBox(r.deploy, { onChange: loadToday })
           : r.can_deploy ? D.deployCheck(r.app_id, r.name, { onChange: loadToday }) : null);
