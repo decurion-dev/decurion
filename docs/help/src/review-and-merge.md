@@ -29,13 +29,26 @@ The pull request says what was done, what the checker ran and found (each findin
 
 A **research** piece changes no code, so accepting it only marks it done. Nothing goes to GitHub. See [Research, Ask why, and the checker's proof](research-and-ask-why.md).
 
+## Someone else reviews: Decurion keeps watch
+
+If someone reviews an app's work for you, put their GitHub name in the app's settings under **Who reviews its pull requests**. Each pull request then asks them for a review and says "param reviews next".
+
+After a pull request is open, Decurion looks at it about every five minutes until it is merged or closed. It needs a saved GitHub token for this (see below); without one it does not watch.
+
+- **When it is merged or closed,** you get a notice, and the app's line on the board says so. Decurion stops looking at it then.
+- **When someone leaves comments,** you get a notice and an inbox card like "param left 3 comments · Fix these". Your own comments do not count.
+- **Tap Fix these** to start new work that answers those comments. The agent gets the comments as notes from other people to weigh, never as orders. It starts from the work already in the pull request.
+- **Review the fix like any other work.** When you accept it, Decurion adds it to the same pull request, on the same branch, and asks the reviewer to look again. It only ever adds on top of what is there: it never rewrites the branch, never opens a second pull request and never merges.
+
+Only one fix per pull request runs at a time. New comments that arrive while it runs wait for the next **Fix these**.
+
 ## Let Decurion open the pull request for you
 
 This is optional. Without it, you make each pull request yourself with one tap.
 
 1. On GitHub, open **Settings**, then **Developer settings**, then **Personal access tokens**, then **Fine-grained tokens**, and click **Generate new token**.
 2. Under **Repository access**, choose your apps' repos.
-3. Under **Permissions**, set **Pull requests** to **Read and write**. It needs nothing else.
+3. Under **Permissions**, set **Pull requests** to **Read and write**. It needs nothing else. The same token lets Decurion ask your reviewer to look and watch for their comments.
 4. Click **Generate token** and copy it.
 5. On the board, open **Settings**, find **GitHub**, paste it into **GitHub token**, and click **Save token**.
 

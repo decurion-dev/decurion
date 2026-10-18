@@ -404,6 +404,8 @@ mod tests {
             pay_per_use: false,
             monthly_cap_usd: None,
             sites: Vec::new(),
+            reviewer: None,
+            first_today: false,
         };
         let thread = Thread {
             id: 1,
@@ -419,6 +421,7 @@ mod tests {
             parent_id: None,
             background: false,
             github: None,
+            fix_of: None,
             research: false,
         };
         Claim {

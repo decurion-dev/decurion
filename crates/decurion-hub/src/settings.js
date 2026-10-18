@@ -1,6 +1,7 @@
 // Decurion's settings, shared by the board and the phone: one Sign-ins list
 // with a light for every account (and "Sign in on this PC" for Claude), apps
-// and the websites their agents may use, computers, accounts and caps, test keys,
+// (changing one, letting one go first today) and the websites their agents
+// may use, computers, accounts and caps, test keys,
 // the GitHub token, website sign-ins and paired phones, plus the usage
 // summary the board shows in its sidebar.
 //
@@ -16,6 +17,8 @@
 //   field with autofill and spellcheck off, are cleared after saving, and
 //   never come back except as their last four characters. They are never
 //   kept in the page's storage, put in a toast or logged.
+// - An app's Max plan changes only when the owner saves it in Edit; nothing
+//   here switches plans by itself.
 //
 // - Claude's sign-in never reaches this page: "Sign in on this PC" only
 //   starts it, shows Claude's own link if its page did not open, and sends
@@ -26,6 +29,7 @@
 // D.settings.show(part) when the settings view opens, D.settings.hide()
 // when it closes, and D.settings.tick() on the page's timer.
 // D.settings.usage(el) draws the pay-per-use and Max plan summary into el.
+// D.settings.setFirst(app, on) stars an app to go first today, or unstars it.
 "use strict";
 (() => {
   const { el, icon } = D;
@@ -36,6 +40,8 @@
   let apps = [], spend = null, accounts = null, workers = [], hasCloud = false;
   const siteDraft = {}, siteErr = {}, siteBusy = {}; // app id -> typed text, error, saving
   const sitesSaved = new Map();  // app id -> list the hub just stored
+  // An app's open Edit form: app id -> typed values, errors by field, saving.
+  const editing = {}, editErr = {}, editBusy = {}, starBusy = {};
   let sitesSeq = 0, builtIn = null, devices = null;
   let conn = null;                // GET /phone/connection: the address phones use
   const sigs = {};
@@ -308,6 +314,160 @@
     return form;
   }
 
+  // ---------- Go first today ----------
+  // Only orders the queue: caps, plan limits and where work runs still
+  // apply. The star ends by itself when the day does.
+  async function setFirst(a, on) {
+    if (starBusy[a.id]) return false;
+    starBusy[a.id] = true;
+    render();
+    try {
+      await D.send(`/apps/${a.id}/first`, { on });
+      D.toast(on ? `${a.name} goes first today. Its waiting work starts before other apps' work until the day ends.`
+        : `${a.name} takes turns with the other apps again.`);
+      await opts.refresh();
+      return true;
+    } catch (e) {
+      if (e.signedOut) { signedOut(); return false; }
+      D.toast(`Couldn't change which app goes first. ${e.message}`, "alert");
+      return false;
+    } finally {
+      delete starBusy[a.id];
+      render();
+    }
+  }
+
+  function starButton(a) {
+    const on = !!a.first_today;
+    const b = el("button", { type: "button", className: "btn sm star", "aria-pressed": on ? "true" : "false", dataset: { key: `first-${a.id}` },
+      title: on ? "Its waiting work starts before other apps' work today. Tap to let it take turns again." : "Let its waiting work start before other apps' work today" },
+      icon("star"), on ? "Going first today" : "Go first today");
+    b.disabled = D.offline || !!starBusy[a.id];
+    b.onclick = () => setFirst(a, !on);
+    return b;
+  }
+
+  // ---------- Change an app ----------
+  // Only what changed is sent. The hub checks everything again and says in
+  // plain words what to fix; its answer goes next to the field it is about.
+  function editForm(a) {
+    const d = editing[a.id], errs = editErr[a.id] ?? {};
+    const busy = !!editBusy[a.id] || D.offline;
+    const key = (k) => `edit-${k}-${a.id}`;
+    const errEl = (k) => el("span", { className: "field-error", id: `${key(k)}-err`, role: "alert" }, errs[k] ?? "");
+    const cleared = (k, input, err) => () => {
+      d[k] = input.value;
+      if (errs[k]) { delete errs[k]; err.textContent = ""; input.removeAttribute("aria-invalid"); }
+    };
+    const text = (k, attrs) => {
+      const i = el("input", { id: key(k), type: "text", autocomplete: "off", autocapitalize: "off", value: d[k] ?? "",
+        dataset: { key: key(k) }, "aria-describedby": `${key(k)}-hint ${key(k)}-err`, "aria-invalid": errs[k] ? "true" : null, ...attrs });
+      i.spellcheck = false;
+      return i;
+    };
+    const field = (...kids) => el("div", { className: "field" }, ...kids);
+    const hint = (k, words) => el("span", { className: "hint", id: `${key(k)}-hint` }, words);
+
+    const name = text("name", { maxLength: 40 }), nameErr = errEl("name");
+    name.oninput = cleared("name", name, nameErr);
+    const path = text("repo_path", {}), pathErr = errEl("repo_path");
+    path.oninput = cleared("repo_path", path, pathErr);
+    const reviewer = text("reviewer", { maxLength: 40, placeholder: "GitHub name, like param-k" }), reviewerErr = errEl("reviewer");
+    reviewer.oninput = cleared("reviewer", reviewer, reviewerErr);
+    const profile = el("select", { id: key("profile"), dataset: { key: key("profile") }, "aria-describedby": `${key("profile")}-hint` },
+      el("option", { value: "A" }, "Max plan A"), el("option", { value: "B" }, "Max plan B"));
+    profile.value = d.profile;
+    profile.onchange = () => { d.profile = profile.value; };
+    const pick = el("button", { type: "button", className: "btn", dataset: { key: key("pick") }, hidden: typeof D.pickFolder !== "function" }, icon("app"), "Choose folder");
+    pick.onclick = async () => {
+      if (typeof D.pickFolder !== "function") return;
+      pick.disabled = true;
+      try {
+        const chosen = await D.pickFolder({ title: `Choose ${a.name}'s folder`, start: path.value.trim() || undefined });
+        if (chosen) { path.value = chosen; cleared("repo_path", path, pathErr)(); }
+      } catch (x) { errs.repo_path = `Couldn't open the folder picker. ${x.message}`; editErr[a.id] = errs; render(); }
+      finally { pick.disabled = false; focusKey(key("repo_path")); }
+    };
+    const save = el("button", { type: "submit", className: "btn primary", disabled: busy, dataset: { key: key("save") } }, busy && !D.offline ? "Saving…" : "Save");
+    const cancel = el("button", { type: "button", className: "btn", dataset: { key: key("cancel") } }, "Cancel");
+    cancel.onclick = () => { delete editing[a.id]; delete editErr[a.id]; render(); focusKey(`open-edit-${a.id}`); };
+
+    const form = el("form", { className: "form-grid row-edit", id: `app-edit-${a.id}`, noValidate: true, "aria-label": `Change ${a.name}` },
+      field(el("label", { htmlFor: key("name") }, "Name"), name, hint("name", "1 to 40 letters, digits, - or _. No spaces."), nameErr),
+      field(el("label", { htmlFor: key("repo_path") }, "Folder"), el("div", { className: "path-row" }, path, pick),
+        hint("repo_path", `The full path to the app's git folder on ${here()}.`), pathErr),
+      field(el("label", { htmlFor: key("profile") }, "Claude Max plan"), profile,
+        hint("profile", a.pay_per_use
+          ? "This app uses pay-per-use now. This is the plan it goes back to when you switch it."
+          : "New work uses this plan. Work already running keeps its plan.")),
+      field(el("label", { htmlFor: key("reviewer") }, "Who reviews its pull requests"), reviewer,
+        hint("reviewer", "Optional. They are asked to review each pull request. Leave it empty for no one."), reviewerErr),
+      el("div", { className: "full actions" }, save, cancel, errs.all ? el("span", { className: "field-error", role: "alert" }, errs.all) : null));
+
+    form.onsubmit = async (ev) => {
+      ev.preventDefault();
+      if (editBusy[a.id]) return;
+      if (D.offline) { editErr[a.id] = { all: "Your PC isn't answering. Try again when it's back." }; render(); return; }
+      const n = name.value.trim(), p = path.value.trim(), rv = reviewer.value.trim().replace(/^@/, "");
+      const bad = {};
+      if (!/^[A-Za-z0-9_-]{1,40}$/.test(n)) bad.name = n ? "Use only letters, digits, - or _, up to 40." : "Give the app a name.";
+      if (!/^([A-Za-z]:[\\/]|\/)/.test(p) || /[,"]/.test(p)) bad.repo_path = p ? "Use the full path, like C:\\path\\to\\repo, without commas or quotes." : "Enter the folder's full path.";
+      if (rv && !(rv.length <= 39 && /^[A-Za-z0-9](-?[A-Za-z0-9])*$/.test(rv))) bad.reviewer = "Type their GitHub name, like param-k. Only letters, digits and single dashes.";
+      const first = Object.keys(bad)[0];
+      if (first) { editErr[a.id] = bad; render(); focusKey(key(first)); return; }
+      const body = {};
+      if (n !== a.name) body.name = n;
+      if (p !== a.repo_path) body.repo_path = p;
+      if (profile.value !== a.profile) body.profile = profile.value;
+      if (rv !== (a.reviewer ?? "")) body.reviewer = rv || null;
+      if (!Object.keys(body).length) {
+        delete editing[a.id]; delete editErr[a.id]; render();
+        D.toast(`Nothing to save. ${a.name} is as it was.`);
+        return;
+      }
+      editBusy[a.id] = true;
+      delete editErr[a.id];
+      render();
+      try {
+        const saved = await D.send(`/apps/${a.id}/edit`, body);
+        delete editing[a.id];
+        D.toast(savedText(a, saved ?? { ...a, ...body }, body));
+        await opts.refresh();
+        // Test keys and sign-ins list apps by name.
+        if (body.name) { loadKeys(); loadSignIns(); }
+      } catch (e) {
+        if (e.signedOut) { signedOut(); return; }
+        const m = e.message;
+        const k = /already called|rename/i.test(m) ? "name" : /reviewer/i.test(m) ? "reviewer"
+          : /folder|repo_path/i.test(m) ? "repo_path" : /name/i.test(m) ? "name" : "all";
+        const words = k === "all" ? `Couldn't save ${a.name}. ${m}`
+          : k === "repo_path" && /^repo_path/.test(m) ? "Use the full path, without commas or quotes."
+          : m.replace(/^app name/, "The name");
+        editErr[a.id] = { [k]: words };
+      } finally {
+        delete editBusy[a.id];
+        render();
+        const err = editErr[a.id] && Object.keys(editErr[a.id])[0];
+        if (err && err !== "all") focusKey(key(err));
+      }
+    };
+    return form;
+  }
+
+  // What the owner gets from a saved change, in their words.
+  function savedText(before, after, body) {
+    const nm = after.name, said = [];
+    if (body.name) said.push(`${before.name} is now called ${nm}.`);
+    if (body.repo_path) said.push(`${nm} now uses the folder ${after.repo_path}.`);
+    if (body.profile) said.push(before.pay_per_use
+      ? `When ${nm} goes back to a Max plan, it uses Max plan ${after.profile}.`
+      : `New work in ${nm} uses Max plan ${after.profile}. Running work keeps its plan.`);
+    if ("reviewer" in body) said.push(after.reviewer
+      ? `${after.reviewer} is asked to review ${nm}'s pull requests.`
+      : `No one is asked to review ${nm}'s pull requests now.`);
+    return `Saved. ${said.join(" ")}`;
+  }
+
   // ---------- Drawing from the page's data ----------
   function render() {
     if (!root || !shown || !loaded) return;
@@ -315,10 +475,11 @@
     parts.sitesNote.hidden = !apps.length;
     parts.addApp.querySelector("#app-path-pick").hidden = typeof D.pickFolder !== "function";
     const appSpend = Object.fromEntries((spend?.apps ?? []).map((x) => [x.app_id, x]));
-    // A half-typed cap would be lost on redraw; a website being typed is kept
-    // in siteDraft and its field gets focus back.
-    const typingCap = typingIn(parts.appRows) && !document.activeElement.dataset.key?.startsWith("site-");
-    if (!typingCap && changed("set-apps", [apps, spend?.apps, D.offline, siteErr, siteBusy])) {
+    // A half-typed cap would be lost on redraw; a website or an app change
+    // being typed is kept in siteDraft or editing and its field gets focus back.
+    const typingKey = document.activeElement?.dataset?.key ?? "";
+    const typingCap = typingIn(parts.appRows) && !typingKey.startsWith("site-") && !typingKey.startsWith("edit-");
+    if (!typingCap && changed("set-apps", [apps, spend?.apps, D.offline, siteErr, siteBusy, Object.keys(editing), editErr, editBusy, starBusy])) {
       keepFocus(() => {
         parts.appRows.replaceChildren(...(apps.length ? apps.map((a) => {
           const b = el("button", { type: "button", className: "btn sm", dataset: { key: `ppu-${a.id}` } },
@@ -335,12 +496,25 @@
           const sp = appSpend[a.id];
           const spent = sp && (sp.spent_usd > 0 || sp.cap_usd != null)
             ? `Pay-per-use this month: ${D.money(sp.spent_usd)}${sp.cap_usd != null ? ` of its own ${D.money(sp.cap_usd)} cap` : ""}` : "";
+          const open = !!editing[a.id];
+          const edit = el("button", { type: "button", className: "btn quiet sm", "aria-expanded": open ? "true" : "false",
+            "aria-controls": `app-edit-${a.id}`, dataset: { key: `open-edit-${a.id}` } }, open ? "Close" : "Edit");
+          edit.onclick = () => {
+            if (editing[a.id]) { delete editing[a.id]; delete editErr[a.id]; render(); return; }
+            editing[a.id] = { name: a.name, repo_path: a.repo_path, profile: a.profile, reviewer: a.reviewer ?? "" };
+            render();
+            focusKey(`edit-name-${a.id}`);
+          };
           return el("li", {},
             el("span", { className: "ic" }, icon("app")),
             el("div", { className: "who" }, el("b", {}, a.name), el("span", { className: "mono" }, a.repo_path),
+              a.reviewer ? el("span", { className: "hint" }, `${a.reviewer} reviews its pull requests`) : null,
               spent ? el("span", { className: "hint" }, spent) : null),
             el("span", { className: "acct" }, icon(a.pay_per_use ? "money" : "ai"), a.pay_per_use ? "Claude pay-per-use" : `Claude Max plan ${a.profile}`),
             b,
+            starButton(a),
+            edit,
+            open ? editForm(a) : null,
             appCap(a),
             sitesBlock(a),
             filesBlock(a));
@@ -1084,6 +1258,7 @@
     tick() { if (shown) { loadDevices(); loadLights(); } },
     render,
     usage,
+    setFirst,
   };
   D.onOffline(() => { render(); if (shown && devices) { sigs.devices = ""; loadDevices(); } });
 })();
