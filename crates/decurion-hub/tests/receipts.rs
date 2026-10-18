@@ -243,14 +243,31 @@ async fn the_checkers_receipts_reach_the_goal_and_the_write_up() {
 async fn a_research_piece_is_reported_with_its_agents_own_words() {
     let (r, store) = hub().await;
     let (goal, thread) = approved_one_piece(&r).await;
-    // As the research flow marks it; the check itself is not this test's
-    // business, so it passes as usual.
+    // As if the plan had marked it research and its report were in: the
+    // piece settles without a checker (tests/research.rs walks the real flow).
     sqlx::query("UPDATE threads SET research = 1 WHERE id = ?")
         .bind(thread)
         .execute(store.pool())
         .await
         .expect("mark research");
-    helper(&r, "review", r#"{"pass": true, "summary": "Read it."}"#).await;
+    sqlx::query(
+        "INSERT INTO piece_reports (thread_id, goal_id, html) VALUES (?, ?, '<p>found</p>')",
+    )
+    .bind(thread)
+    .bind(goal)
+    .execute(store.pool())
+    .await
+    .expect("a report");
+    sqlx::query("UPDATE helper_jobs SET state = 'cancelled' WHERE kind = 'review'")
+        .execute(store.pool())
+        .await
+        .expect("no check");
+    sqlx::query("UPDATE goal_pieces SET review = 'building' WHERE thread_id = ?")
+        .bind(thread)
+        .execute(store.pool())
+        .await
+        .expect("back to building");
+    // The next claim settles the missed piece (recover_checks), then hands out the write-up.
     let report = claim_any(&r).await;
     let prompt = report["prompt"].as_str().expect("prompt");
     assert!(

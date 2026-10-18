@@ -375,6 +375,9 @@ fn report_request(pieces: &[PieceOutcome]) -> String {
             (true, ThreadState::Failed, _) | (true, _, ReviewState::Failed) => {
                 "the research agent could not finish it"
             }
+            (true, _, ReviewState::NeedsALook) => {
+                "research, but it finished without a report; the owner should look at its activity"
+            }
             (true, _, _) => "research: report ready, no code changed",
             (_, ThreadState::Done, _) => "already approved by the owner",
             (_, _, ReviewState::Passed) => "built and passed the checker's review",
@@ -383,7 +386,8 @@ fn report_request(pieces: &[PieceOutcome]) -> String {
             _ => "stopped",
         };
         let _ = write!(s, "- {}: {how}.", p.title);
-        if let Some(sum) = &p.summary {
+        // A research piece has no checker; its summary line is Decurion's own.
+        if let (Some(sum), false) = (&p.summary, p.research) {
             let _ = write!(s, " Checker: {sum}");
         }
         s.push('\n');
