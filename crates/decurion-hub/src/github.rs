@@ -919,7 +919,13 @@ async fn keep_tracking_readable(repo: &Path, tracking: &str, before: Option<&str
     if before == Some(after.as_str()) || folder_has_commit(repo, &after).await {
         return;
     }
-    let put_back = match before {
+    // An old value the folder cannot read either (left by a push before this
+    // fix) is not worth putting back: the ref is removed instead.
+    let old = match before {
+        Some(old) if folder_has_commit(repo, old).await => Some(old),
+        _ => None,
+    };
+    let put_back = match old {
         Some(old) => git(repo, &["update-ref", tracking, old, &after]).await,
         None => git(repo, &["update-ref", "-d", tracking, &after]).await,
     };
