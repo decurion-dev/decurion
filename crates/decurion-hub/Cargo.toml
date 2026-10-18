@@ -14,7 +14,13 @@ axum = { workspace = true, features = ["ws"] }
 base64 = "0.22"
 decurion-proto = { path = "../decurion-proto" }
 decurion-vault = { path = "../decurion-vault" }
+# Reading Word, Excel and PowerPoint files the owner attaches (context.rs):
+# only plain deflate, with the pure-Rust backend; no other compression, no
+# encryption, no dates.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+http-body-util = "0.1"
+quick-xml = { version = "0.42", default-features = false }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -27,6 +33,7 @@ tracing-subscriber.workspace = true
 url = "2"
 uuid.workspace = true
 web-push-native = "0.5"
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

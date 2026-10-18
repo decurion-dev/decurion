@@ -457,6 +457,7 @@
 <div class="so" id="signed-out" hidden></div>
 
 <script src="/ui.js"></script>
+<script src="/files.js"></script>
 <script>
 "use strict";
 (() => {
@@ -1059,7 +1060,8 @@
             el("span", { className: "acct" }, icon(a.pay_per_use ? "money" : "ai"), a.pay_per_use ? "Claude pay-per-use" : `Claude Max plan ${a.profile}`),
             b,
             appCap(a),
-            sitesBlock(a));
+            sitesBlock(a),
+            filesBlock(a));
         }) : [el("li", { className: "empty" }, "No apps yet. Add one below.")]));
       });
     }
@@ -1197,6 +1199,13 @@
         el("span", { className: "hint" }, sites.length ? "Built-in, plus these:" : "Built-in only")),
       list, form, err);
   }
+
+  // Files for agents (files.js). DFiles keeps one panel per app, so a redraw
+  // gets the same element back and never loses an upload in progress.
+  const filesBlock = (a) => window.DFiles ? el("div", { className: "sites", role: "group", "aria-label": `Files for ${a.name}` },
+    el("div", { className: "sites-h" }, icon("app"), el("span", { className: "label" }, "Files for agents"),
+      el("span", { className: "hint" }, "Agents read these while they work.")),
+    DFiles.panel({ appId: a.id })) : null;
 
   // A Claude Max plan: this week's and the current five hours' allowance.
   function maxRow(a) {

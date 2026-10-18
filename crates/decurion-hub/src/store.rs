@@ -490,6 +490,7 @@ impl Store {
                 Place::Pc => self.claim_sign_ins(t.id, app.id).await?,
                 Place::Cloud => Vec::new(),
             };
+            let context = self.thread_context(t.id).await?;
             return Ok(ClaimOutcome {
                 work: Some(Claim {
                     thread,
@@ -499,6 +500,7 @@ impl Store {
                     checkpoint,
                     test_keys,
                     sign_ins,
+                    context,
                     budget_usd: account
                         .is_paid()
                         .then(|| crate::spend::claude_budget_usd(prior, reserved)),

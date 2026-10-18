@@ -306,6 +306,24 @@
   @media (pointer: coarse), (max-width: 759px) {
     .btn, .top nav a, .goal-item, .brief summary { min-height:44px; }
   }
+  /* Files for agents (files.js): a third tab; on wide screens, under the pieces */
+  .files-panel { min-height:0; overflow-y:auto; padding:16px 20px calc(20px + env(safe-area-inset-bottom)); }
+  .clip { flex:none; width:44px; height:44px; margin-left:-11px; border-radius:50%; border:0; background:transparent; color:var(--muted); display:grid; place-items:center; cursor:pointer; }
+  .clip:hover { color:var(--ink); background:var(--neutral-soft); }
+  .clip:disabled { opacity:.5; cursor:not-allowed; background:transparent; }
+  @media (min-width: 1280px) {
+    .goal-body { grid-template-rows:minmax(0, 1fr) auto; }
+    .goal-body > .convo { grid-row:1 / span 2; }
+    .files-panel { grid-column:2; max-height:45vh; border-left:1px solid var(--line); border-top:1px solid var(--line); background:var(--panel); }
+  }
+  @media (max-width: 1279px) {
+    .goal-body[data-tab="files"] .convo, .goal-body[data-tab="files"] .pieces-panel, .goal-body:not([data-tab="files"]) .files-panel { display:none; }
+  }
+  @media (max-width: 759px) {
+    .files-panel { padding:12px 12px calc(20px + env(safe-area-inset-bottom)); }
+    .tabs { overflow-x:auto; scrollbar-width:none; }
+    .tab { flex:none; padding-left:8px; padding-right:8px; }
+  }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; }
     .dots i { opacity:.7; }
@@ -370,6 +388,7 @@
       <div class="tabs" aria-label="Show">
         <button class="tab" id="tab-chat" type="button" aria-pressed="true" aria-controls="convo">Conversation</button>
         <button class="tab" id="tab-pieces" type="button" aria-pressed="false" aria-controls="pieces">Pieces of work<span class="count" id="pieces-count"></span></button>
+        <button class="tab" id="tab-files" type="button" aria-pressed="false" aria-controls="files">Files<span class="count" id="files-count"></span></button>
       </div>
       <p class="err-line goal-err" id="goal-err" role="alert"></p>
       <div class="goal-body" id="goal-body" data-tab="chat">
@@ -385,6 +404,9 @@
             <div class="column">
               <p class="hint" id="composer-note" hidden></p>
               <div class="composer-box">
+                <button class="clip" id="clip" type="button" aria-label="Add files to this goal" title="Add files to this goal" hidden>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>
+                </button>
                 <label class="sr-only" for="say">Message your project lead</label>
                 <textarea id="say" rows="1" placeholder="Reply to your project lead…"></textarea>
                 <button class="send" id="send" type="submit" aria-label="Send" disabled>
@@ -400,12 +422,17 @@
           <div class="pp-head"><h3 id="pieces-h">Pieces of work</h3><a class="btn ghost" href="/">Open the board</a></div>
           <div id="pieces-body"></div>
         </section>
+        <section class="files-panel" id="files" aria-labelledby="files-h">
+          <div class="pp-head"><h3 id="files-h">Files for agents</h3></div>
+          <div id="files-body"></div>
+        </section>
       </div>
     </div>
   </main>
 </div>
 <div class="sr-only" id="live" aria-live="polite"></div>
 
+<script src="/files.js"></script>
 <script>
 "use strict";
 const POLL_MS = 2500;
@@ -1208,6 +1235,46 @@ document.addEventListener("keydown", e => {
   if (open) { open.open = false; open.querySelector("summary").focus(); }
 });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+
+// ---------- files for agents (files.js) ----------
+// A Files tab with this goal's files and the app's own, and a paperclip by
+// the message box. Kept to this block: it wraps renderGoal rather than
+// changing it. DFiles keeps one panel per goal, so each redraw gets the same
+// element back and an upload in progress is never lost.
+const filesWide = matchMedia("(min-width: 1280px)");
+let filesFor = null; // the goal whose files are shown
+function filesCount({ own, shared }) {
+  const n = own.length + shared.length;
+  $("files-count").textContent = n ? String(n) : "";
+}
+function syncFiles(v) {
+  const g = v?.goal, on = !!(g && window.DFiles);
+  $("tab-files").hidden = !window.DFiles;
+  $("clip").hidden = !on;
+  if (!on) return;
+  $("clip").disabled = CLOSED.has(g.state);
+  if (filesFor !== g.id) { filesFor = g.id; $("files-count").textContent = ""; }
+  const node = DFiles.panel({ appId: g.app_id, goalId: g.id, onChange: filesCount });
+  if ($("files-body").firstChild !== node) $("files-body").replaceChildren(node);
+}
+const renderGoalBeforeFiles = renderGoal;
+renderGoal = function (v) { renderGoalBeforeFiles(v); syncFiles(v); };
+addEventListener("hashchange", () => {
+  if (S.id === filesFor) return;
+  filesFor = null;
+  $("files-body").replaceChildren(); $("files-count").textContent = ""; $("clip").hidden = true;
+});
+function showFiles() { setTab("files"); $("tab-files").setAttribute("aria-pressed", "true"); }
+$("tab-files").addEventListener("click", showFiles);
+for (const t of ["tab-chat", "tab-pieces"]) $(t).addEventListener("click", () => $("tab-files").setAttribute("aria-pressed", "false"));
+$("clip").addEventListener("click", () => {
+  const g = S.view?.goal;
+  if (!g || !window.DFiles) return;
+  if (filesWide.matches) $("files").scrollIntoView({ block: "nearest" }); else showFiles();
+  // Straight from the tap: browsers open a file picker only then.
+  DFiles.pick({ appId: g.app_id, goalId: g.id, onChange: filesCount });
+});
+if (!window.DFiles) $("tab-files").hidden = true;
 
 selectFromHash();
 if (S.id == null) tick();
