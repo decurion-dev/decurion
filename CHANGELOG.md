@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Help in the menu.** A **Help** link sits under Settings in the menu on the PC and next to Settings in the phone's bottom bar. It opens Decurion's help pages in a new tab and leaves Decurion open.
 - **See how much a goal used.** A goal's **Pieces of work** tab says how many tokens the whole goal used and how much Claude read back from its cache, and each piece shows its own share and how long its conversation got. Each app's **Today** row says what its agents used today. Agents also start leaner: no skills, no auto memory and none of the tools a sealed box can't use, about 40% less to read before every turn, and the same in every box so Claude's cache can be shared between pieces.
 - **One app, not three.** The Board, Goals and Master plan now share one menu on the left (Board, Goals, Master plan, Settings) and the same blue logo; the purple logo and the links across the top of Goals and the Master plan are gone. The Goals page starts work with the same **What do you want?** box as the Board and the phone, behind the same **New work** button.
 - **Clearer words.** Everything that waits for you is labelled **Needs you**, with the reason after it ("Needs you · approve the plan"), instead of six different phrases. **Fix these** on reviewer comments is now **Answer the comments**, and starting work from an agent's findings is **Fix what it found**. On the master plan a failed step now says **Failed**.
