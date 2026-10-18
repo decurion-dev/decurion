@@ -68,6 +68,7 @@
     star: ["M12 2.5l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4l-5.9 3.1 1.2-6.5-4.8-4.6 6.6-.9z"],
     deploy: ["M12 13v8", "m8 17 4-4 4 4", "M20 16.6A5 5 0 0 0 18 7h-1.3A8 8 0 1 0 4 15.3"],
     open: ["M15 3h6v6", "M10 14 21 3", "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"],
+    help: ["c12,12,10", "M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.5", "M12 17.5h.01"],
     log: ["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6", "M16 13H8", "M16 17H8", "M10 9H8"],
   };
   const SVG = "http://www.w3.org/2000/svg";
@@ -104,6 +105,11 @@
     return s;
   };
 
+  // Where Decurion's help pages are. The one place this address lives, so
+  // both menus agree. The pages are published online, not served by the hub,
+  // so Help opens them in a new browser tab and leaves Decurion open.
+  D.HELP_URL = "https://github.com/decurion-dev/decurion/tree/main/docs/help/src";
+
   // The phone's bottom tabs, the same on the inbox and the goals page so the
   // phone feels like one app. Inbox, Board and Settings are hash routes of
   // /inbox (a link to another hash of the page you are on does not reload
@@ -119,7 +125,11 @@
       ["settings", "/inbox#settings", "Settings", "settings"],
     ].map(([tab, href, label, icon, badge]) => D.el("a", { className: "tab", id: `tab-${tab}`, href, "aria-current": tab === current ? "page" : null },
       D.el("span", { className: "ind" }, D.icon(icon), badge && D.el("span", { className: "badge", id: badge, hidden: true })),
-      D.el("span", {}, label)))));
+      D.el("span", {}, label))).concat(
+      // Help leaves Decurion: no badge, never the current page.
+      D.el("a", { className: "tab", id: "tab-help", href: D.HELP_URL, target: "_blank", rel: "noopener noreferrer" },
+        D.el("span", { className: "ind" }, D.icon("help")),
+        D.el("span", {}, "Help")))));
 
   // The PC menu: the logo and the same four places in the same order on the
   // Board, Goals and the Master plan, so moving between them feels like one
@@ -139,7 +149,10 @@
       ["plan", "/plan", "Master plan", "plan"],
       ["settings", "/#settings", "Settings", "settings"],
     ].map(([page, href, label, icon]) => D.el("a", { className: "pcnav-item", href, dataset: { route: page }, "aria-current": page === current ? "page" : null },
-      D.icon(icon), D.el("span", { className: "nm" }, label)))),
+      D.icon(icon), D.el("span", { className: "nm" }, label))).concat(
+      // Help leaves Decurion: no data-route, never the current page.
+      D.el("a", { className: "pcnav-item", href: D.HELP_URL, target: "_blank", rel: "noopener noreferrer" },
+        D.icon("help"), D.el("span", { className: "nm" }, "Help")))),
     foot && D.el("div", { className: "pcnav-foot" }, foot));
 
   // ---------- States ----------

@@ -57,4 +57,6 @@ If you are new, follow these pages in order:
 
 ## Get more help
 
+You can open these pages any time from **Help** in Decurion's menu, on your PC and on your phone.
+
 Ask a question or report a problem on [GitHub](https://github.com/decurion-dev/decurion/issues).

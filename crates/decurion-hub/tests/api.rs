@@ -1927,6 +1927,26 @@ async fn a_started_box_without_a_trusted_cost_is_charged_its_budget() {
 }
 
 #[tokio::test]
+async fn the_menus_carry_a_help_link_that_opens_a_new_tab() {
+    let (r, _) = hub().await;
+    let resp = get(&r, "/ui.js", None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+    let ui = String::from_utf8_lossy(&bytes).into_owned();
+    assert!(ui.contains(
+        "D.HELP_URL = \"https://github.com/decurion-dev/decurion/tree/main/docs/help/src\""
+    ));
+    assert!(ui.contains("id: \"tab-help\""), "phone Help tab");
+    assert!(ui.contains("\"Help\""), "Help label");
+    assert_eq!(
+        ui.matches("href: D.HELP_URL, target: \"_blank\", rel: \"noopener noreferrer\"")
+            .count(),
+        2,
+        "both menus open Help in a new tab"
+    );
+}
+
+#[tokio::test]
 async fn pages_load_their_shared_look_without_signing_in() {
     let (r, _) = hub().await;
     for (path, kind) in [
