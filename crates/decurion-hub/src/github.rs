@@ -13,6 +13,12 @@
 //!   default branch or a name like `main`. Pushes are plain, never forced:
 //!   a branch already there with other history is left alone and the send
 //!   fails with a reason.
+//! - **A fix goes forward on its own pull request's branch, nowhere else.**
+//!   Work that fixes review comments (started by the owner's tap, see
+//!   [`crate::pr_watch`]) goes to the same `decurion/` branch as the pull
+//!   request it answers ([`check_fix_branch`]), and only when it builds on
+//!   the last commit Decurion pushed there: a plain fast-forward, checked
+//!   before the push and refused by git otherwise.
 //! - **Only the accepted commit.** The commit is fixed with the accept (the
 //!   work's latest saved copy, which cannot change once it is in review),
 //!   and a saved copy that holds anything else is not sent.
@@ -93,6 +99,8 @@ const PUSH_SECS: u64 = 180;
 const NO_COPY: &str = "Decurion has no saved copy of this work, so it could not send it to GitHub. You can still get it by hand: see Help, Review and merge work.";
 const NO_REMOTE: &str = "This app's folder is not linked to GitHub (it has no remote named origin), so the work was not sent. You can still get it by hand: see Help, Review and merge work.";
 const NOT_READ: &str = "Decurion could not read this work from its saved copy, so it was not sent. Tap Try again. You can still get it by hand: see Help, Review and merge work.";
+const PR_ENDED: &str = "The pull request this fix answers was merged or closed on GitHub, so the fix was not sent. Ask for the change as new work instead.";
+const NOT_FORWARD: &str = "This fix does not build on the work already in its pull request, so Decurion did not send it and nothing on GitHub changed. Start the fix again from the comments.";
 const NOT_READ_APP: &str = "Decurion could not read the app's folder on this PC, so the work was not sent. Check that the folder is still there, then tap Try again.";
 
 // ---------- Names and addresses ----------
@@ -155,6 +163,41 @@ pub fn check_branch(branch: &str, default: Option<&str>) -> std::result::Result<
         );
     }
     Ok(())
+}
+
+/// Whether a fix of review comments may go to `branch`: it must be exactly
+/// the branch of the pull request it answers (`pr_branch`), and that
+/// branch must pass [`check_branch`]. The text is for the owner.
+pub fn check_fix_branch(
+    branch: &str,
+    pr_branch: &str,
+    default: Option<&str>,
+) -> std::result::Result<(), String> {
+    check_branch(branch, default)?;
+    if branch != pr_branch {
+        return Err(format!(
+            "A fix only goes to the branch of the pull request it answers, and {branch:?} is not that branch, so nothing was sent."
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `login` looks like a GitHub user name: 1-39 letters, digits and
+/// single dashes, not starting or ending with a dash.
+pub fn is_login(login: &str) -> bool {
+    (1..=39).contains(&login.len())
+        && login
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && !login.starts_with('-')
+        && !login.ends_with('-')
+        && !login.contains("--")
+}
+
+/// The number at the end of a pull request page's address.
+pub fn pr_number(url: &str) -> Option<i64> {
+    let (_, n) = url.trim_end_matches('/').rsplit_once("/pull/")?;
+    n.parse().ok().filter(|n| *n > 0)
 }
 
 /// A repo on GitHub.
@@ -267,6 +310,8 @@ pub struct Story {
     pub review: Option<String>,
     /// The hub held it for the owner because it changes protected parts.
     pub held: bool,
+    /// The GitHub login who reviews the app's pull requests.
+    pub reviewer: Option<String>,
 }
 
 fn clip(s: &str, max: usize) -> String {
@@ -312,6 +357,9 @@ protected parts of the app (listed in the checker's notes above). You looked at 
     if let Some(g) = s.goal.as_deref().map(str::trim).filter(|g| !g.is_empty()) {
         b.push_str(&format!("Part of the goal: {}\n\n", clip(g, 300)));
     }
+    if let Some(r) = s.reviewer.as_deref().filter(|r| is_login(r)) {
+        b.push_str(&format!("{r} reviews next.\n\n"));
+    }
     b.push_str(
         "Decurion made this pull request when you accepted the work. Decurion never merges: \
 look it over and merge it here when you are ready.",
@@ -344,7 +392,7 @@ pub enum Tokens {
 }
 
 impl Tokens {
-    async fn get(&self) -> Option<Token> {
+    pub(crate) async fn get(&self) -> Option<Token> {
         match self {
             Tokens::None => None,
             Tokens::Fixed(t) => Some(Token(t.clone())),
@@ -392,8 +440,29 @@ async fn gh_cli_token() -> Option<Token> {
 pub struct GitHub {
     api: String,
     http: reqwest::Client,
-    tokens: Tokens,
+    pub(crate) tokens: Tokens,
     sending: tokio::sync::Mutex<()>,
+}
+
+/// A pull request on GitHub: its page and its number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Pr {
+    pub url: String,
+    pub number: i64,
+}
+
+impl Pr {
+    fn from_json(v: &serde_json::Value) -> Option<Self> {
+        let url = v["html_url"].as_str().filter(|u| pr_url_ok(u))?;
+        let number = v["number"]
+            .as_i64()
+            .filter(|n| *n > 0)
+            .or_else(|| pr_number(url))?;
+        Some(Self {
+            url: url.to_owned(),
+            number,
+        })
+    }
 }
 
 impl GitHub {
@@ -413,7 +482,12 @@ impl GitHub {
         })
     }
 
-    fn req(&self, method: reqwest::Method, path: &str, t: &Token) -> reqwest::RequestBuilder {
+    pub(crate) fn req(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        t: &Token,
+    ) -> reqwest::RequestBuilder {
         self.http
             .request(method, format!("{}{path}", self.api))
             .bearer_auth(&t.0)
@@ -428,7 +502,7 @@ impl GitHub {
         t: &Token,
         r: &Repo,
         branch: &str,
-    ) -> std::result::Result<Option<String>, String> {
+    ) -> std::result::Result<Option<Pr>, String> {
         let head = format!("{}:{branch}", r.owner);
         let resp = self
             .req(
@@ -444,11 +518,7 @@ impl GitHub {
             return Err(api_refused(resp.status()));
         }
         let list: Vec<serde_json::Value> = resp.json().await.map_err(|_| unreadable_api())?;
-        Ok(list
-            .iter()
-            .filter_map(|p| p["html_url"].as_str())
-            .find(|u| pr_url_ok(u))
-            .map(str::to_owned))
+        Ok(list.iter().find_map(Pr::from_json))
     }
 
     async fn default_branch(&self, t: &Token, r: &Repo) -> std::result::Result<String, String> {
@@ -479,7 +549,7 @@ impl GitHub {
         branch: &str,
         base: &str,
         s: &Story,
-    ) -> std::result::Result<String, String> {
+    ) -> std::result::Result<Pr, String> {
         let resp = self
             .req(
                 reqwest::Method::POST,
@@ -500,11 +570,37 @@ impl GitHub {
             return Err(api_refused(resp.status()));
         }
         let v: serde_json::Value = resp.json().await.map_err(|_| unreadable_api())?;
-        v["html_url"]
-            .as_str()
-            .filter(|u| pr_url_ok(u))
-            .map(str::to_owned)
-            .ok_or_else(unreadable_api)
+        Pr::from_json(&v).ok_or_else(unreadable_api)
+    }
+
+    /// Asks `login` to review pull request `number`. Asking again is
+    /// harmless, so a resend or a fix asks again.
+    async fn request_review(
+        &self,
+        t: &Token,
+        r: &Repo,
+        number: i64,
+        login: &str,
+    ) -> std::result::Result<(), String> {
+        let resp = self
+            .req(
+                reqwest::Method::POST,
+                &format!("/repos/{}/{}/pulls/{number}/requested_reviewers", r.owner, r.name),
+                t,
+            )
+            .json(&serde_json::json!({ "reviewers": [login] }))
+            .send()
+            .await
+            .map_err(|_| {
+                format!("Could not reach GitHub to ask {login} to review. Ask them on the pull request.")
+            })?;
+        if resp.status().is_success() {
+            return Ok(());
+        }
+        Err(format!(
+            "GitHub would not ask {login} to review (it said {}). They may not have access to this repo, or they opened the pull request. Ask them on the pull request.",
+            resp.status().as_u16()
+        ))
     }
 
     /// Finds or opens the pull request for `branch`. Never on the default
@@ -515,17 +611,17 @@ impl GitHub {
         r: &Repo,
         branch: &str,
         s: &Story,
-    ) -> std::result::Result<String, String> {
-        if let Some(url) = self.find_pr(t, r, branch).await? {
-            return Ok(url);
+    ) -> std::result::Result<Pr, String> {
+        if let Some(pr) = self.find_pr(t, r, branch).await? {
+            return Ok(pr);
         }
         let base = self.default_branch(t, r).await?;
         check_branch(branch, Some(&base))?;
         match self.open_pr(t, r, branch, &base, s).await {
-            Ok(url) => Ok(url),
+            Ok(pr) => Ok(pr),
             // It may have been opened after all (an answer lost on the way).
             Err(why) => match self.find_pr(t, r, branch).await {
-                Ok(Some(url)) => Ok(url),
+                Ok(Some(pr)) => Ok(pr),
                 _ => Err(why),
             },
         }
@@ -704,6 +800,20 @@ struct Job {
     work_branch: String,
     checkpoint: Option<i64>,
     story: Story,
+    /// For a fix of review comments: the pull request it answers.
+    fix: Option<FixOf>,
+}
+
+/// The watched pull request a fix goes to.
+struct FixOf {
+    /// The work that opened the pull request.
+    watch: i64,
+    branch: String,
+    /// The last commit Decurion pushed there. The fix must build on it.
+    head: String,
+    url: String,
+    number: i64,
+    open: bool,
 }
 
 /// What was sent.
@@ -711,6 +821,28 @@ struct Sent {
     url: Option<String>,
     pull_request: bool,
     note: Option<String>,
+    /// The commit now on the branch.
+    head: Option<String>,
+    /// The pull request's repo and number, to watch it.
+    watch: Option<(Repo, i64)>,
+}
+
+impl Sent {
+    fn plain(url: Option<String>, head: &str) -> Self {
+        Self {
+            url,
+            pull_request: false,
+            note: None,
+            head: Some(head.to_owned()),
+            watch: None,
+        }
+    }
+}
+
+/// Where the hub's bare copy keeps the last commit pushed for a pull
+/// request, so a fix can start from it and be checked against it.
+fn pr_ref(watch: i64) -> String {
+    format!("refs/decurion/pr/{watch}")
 }
 
 /// The board's view of a thread's send, from its `gh_*` columns.
@@ -732,13 +864,18 @@ pub(crate) fn send_from(row: &SqliteRow) -> Result<Option<GitHubSend>> {
 /// Records, inside the accept's own transaction, that the hub is to send
 /// thread `id` to GitHub, and the branch it goes to. Work sent before is
 /// left as it is.
+/// A fix of review comments goes to the branch of the pull request it
+/// answers instead of a new one.
 pub(crate) async fn want_send(tx: &mut Transaction<'_, Sqlite>, id: i64) -> Result<()> {
-    let (app, title): (String, String) = sqlx::query_as(
-        "SELECT a.name, t.title FROM threads t JOIN apps a ON a.id = t.app_id WHERE t.id = ?",
+    let (app, title, pr_branch): (String, String, Option<String>) = sqlx::query_as(
+        "SELECT a.name, t.title, w.branch FROM threads t JOIN apps a ON a.id = t.app_id
+         LEFT JOIN pr_watches w ON w.thread_id = t.fix_of
+         WHERE t.id = ?",
     )
     .bind(id)
     .fetch_one(&mut **tx)
     .await?;
+    let branch = pr_branch.unwrap_or_else(|| send_branch(&app, id, &title));
     // The commit sent is the one accepted: the work's latest saved copy,
     // which cannot change once the work is in review.
     sqlx::query(
@@ -747,7 +884,7 @@ pub(crate) async fn want_send(tx: &mut Transaction<'_, Sqlite>, id: i64) -> Resu
                         ORDER BY c.id DESC LIMIT 1)
          WHERE id = ? AND gh_state IS NULL",
     )
-    .bind(send_branch(&app, id, &title))
+    .bind(branch)
     .bind(id)
     .execute(&mut **tx)
     .await?;
@@ -759,10 +896,13 @@ impl Store {
         let row = sqlx::query(
             "SELECT t.app_id, a.repo_path, t.title, t.gh_branch, t.gh_head, t.branch,
                  (SELECT MAX(c.id) FROM checkpoints c WHERE c.thread_id = t.id) AS checkpoint,
-                 p.review, p.review_summary, g.title AS goal
+                 p.review, p.review_summary, g.title AS goal, a.reviewer,
+                 w.thread_id AS watch, w.branch AS w_branch, w.head AS w_head, w.url AS w_url,
+                 w.number AS w_number, w.state AS w_state
              FROM threads t JOIN apps a ON a.id = t.app_id
              LEFT JOIN goal_pieces p ON p.thread_id = t.id
              LEFT JOIN goals g ON g.id = p.goal_id
+             LEFT JOIN pr_watches w ON w.thread_id = t.fix_of
              WHERE t.id = ?",
         )
         .bind(id)
@@ -802,6 +942,18 @@ impl Store {
                 summary,
                 review: review_summary,
                 held,
+                reviewer: row.try_get("reviewer")?,
+            },
+            fix: match row.try_get::<Option<i64>, _>("watch")? {
+                None => None,
+                Some(watch) => Some(FixOf {
+                    watch,
+                    branch: row.try_get("w_branch")?,
+                    head: row.try_get("w_head")?,
+                    url: row.try_get("w_url")?,
+                    number: row.try_get("w_number")?,
+                    open: row.try_get::<String, _>("w_state")? == "open",
+                }),
             },
         })
     }
@@ -861,6 +1013,16 @@ impl Store {
                 Some(note),
             )
             .await?;
+            if let Some(sent) = sent {
+                crate::pr_watch::sent(
+                    &mut tx,
+                    id,
+                    sent.watch.as_ref(),
+                    sent.url.as_deref(),
+                    sent.head.as_deref(),
+                )
+                .await?;
+            }
         }
         tx.commit().await?;
         Ok(())
@@ -1038,6 +1200,9 @@ impl Sender {
         if !plain_branch(&job.work_branch) {
             return Err(NOT_READ.to_owned());
         }
+        if job.fix.as_ref().is_some_and(|f| !f.open) {
+            return Err(PR_ENDED.to_owned());
+        }
         let repo_path = Path::new(&job.repo_path);
         let remote = git(repo_path, &["remote", "get-url", "origin"])
             .await
@@ -1057,10 +1222,13 @@ impl Sender {
         .await
         .ok()
         .and_then(|r| r.strip_prefix("refs/remotes/origin/").map(str::to_owned));
-        check_branch(&job.branch, default.as_deref())?;
+        match &job.fix {
+            Some(f) => check_fix_branch(&job.branch, &f.branch, default.as_deref())?,
+            None => check_branch(&job.branch, default.as_deref())?,
+        }
         tracing::info!(thread = id, remote = %scrub(&remote), branch = %job.branch, "sending accepted work");
         let into = format!("refs/decurion/send/{id}");
-        {
+        let head = {
             let _held = self.files.git_lock.lock().await;
             let cache = self.files.app_cache(job.app_id);
             self.files
@@ -1093,24 +1261,56 @@ impl Sender {
                     }
                 }
             }
+            // A fix only moves its pull request's branch forward from the
+            // last commit Decurion pushed there, never sideways or back.
+            if let Some(f) = &job.fix {
+                let forward = f.head != head
+                    && git(&cache, &["merge-base", "--is-ancestor", &f.head, &head])
+                        .await
+                        .is_ok();
+                if !forward {
+                    let _ = git(&cache, &["update-ref", "-d", &into]).await;
+                    tracing::warn!(thread = id, base = %f.head, got = %head, "the fix does not build on the pull request");
+                    return Err(NOT_FORWARD.to_owned());
+                }
+            }
             let pushed = push(repo_path, &cache, &head, &job.branch, place).await;
+            if pushed.is_ok() {
+                // Kept, so a fix can later start from it and be checked
+                // against it.
+                let watch = job.fix.as_ref().map_or(id, |f| f.watch);
+                let _ = git(&cache, &["update-ref", &pr_ref(watch), &head]).await;
+            }
             let _ = git(&cache, &["update-ref", "-d", &into]).await;
             pushed?;
-        }
-        let Some(repo) = repo else {
-            return Ok(Sent {
-                url: None,
-                pull_request: false,
-                note: None,
-            });
+            head
         };
-        let link = compare_url(&repo, default.as_deref(), &job.branch);
-        let Some(token) = self.gh.tokens.get().await else {
+        let Some(repo) = repo else {
+            return Ok(Sent::plain(None, &head));
+        };
+        let token = self.gh.tokens.get().await;
+        if let Some(f) = &job.fix {
+            // The pull request is already there; its reviewer is asked to
+            // look again.
+            let note = match (&token, job.story.reviewer.as_deref()) {
+                (Some(t), Some(login)) if is_login(login) => self
+                    .gh
+                    .request_review(t, &repo, f.number, login)
+                    .await
+                    .err(),
+                _ => None,
+            };
             return Ok(Sent {
-                url: Some(link),
-                pull_request: false,
-                note: None,
+                url: Some(f.url.clone()),
+                pull_request: true,
+                note,
+                head: Some(head),
+                watch: Some((repo, f.number)),
             });
+        }
+        let link = compare_url(&repo, default.as_deref(), &job.branch);
+        let Some(token) = token else {
+            return Ok(Sent::plain(Some(link), &head));
         };
         Ok(
             match self
@@ -1118,17 +1318,31 @@ impl Sender {
                 .pull_request(&token, &repo, &job.branch, &job.story)
                 .await
             {
-                Ok(url) => Sent {
-                    url: Some(url),
-                    pull_request: true,
-                    note: None,
-                },
+                Ok(pr) => {
+                    let note = match job.story.reviewer.as_deref() {
+                        Some(login) if is_login(login) => self
+                            .gh
+                            .request_review(&token, &repo, pr.number, login)
+                            .await
+                            .err(),
+                        _ => None,
+                    };
+                    if let Some(n) = &note {
+                        tracing::warn!(thread = id, reason = %n, "could not ask for a review");
+                    }
+                    Sent {
+                        url: Some(pr.url),
+                        pull_request: true,
+                        note,
+                        head: Some(head),
+                        watch: Some((repo, pr.number)),
+                    }
+                }
                 Err(why) => {
                     tracing::warn!(thread = id, reason = %why, "no pull request opened; giving the link");
                     Sent {
-                        url: Some(link),
-                        pull_request: false,
                         note: Some(why),
+                        ..Sent::plain(Some(link), &head)
                     }
                 }
             },
@@ -1341,6 +1555,20 @@ mod tests {
     }
 
     #[test]
+    fn logins_and_pull_request_numbers_are_read_strictly() {
+        for ok in ["param", "Param-K", "a", &"a".repeat(39)] {
+            assert!(is_login(ok), "{ok}");
+        }
+        for bad in ["", "-a", "a-", "a--b", "a b", "a_b", &"a".repeat(40), "a@b"] {
+            assert!(!is_login(bad), "{bad}");
+        }
+        assert_eq!(pr_number("https://github.com/acme/shop/pull/42"), Some(42));
+        assert_eq!(pr_number("https://github.com/acme/shop/pull/42/"), Some(42));
+        assert_eq!(pr_number("https://github.com/acme/shop/compare/x"), None);
+        assert_eq!(pr_number("https://github.com/acme/shop/pull/0"), None);
+    }
+
+    #[test]
     fn github_remotes_are_read_in_every_shape() {
         let r = |o: &str, n: &str| {
             Some(Repo {
@@ -1487,8 +1715,10 @@ mod tests {
                     .into(),
             ),
             held: true,
+            reviewer: Some("param".into()),
         };
         let body = pr_body(&s);
+        assert!(body.contains("param reviews next."), "{body}");
         assert!(body.contains("## What was done\n\nFixed the login form."));
         assert!(body.contains("## The checker\n\nHeld for you:"));
         assert!(body.contains("## Protected parts"));
@@ -1503,6 +1733,7 @@ mod tests {
         assert!(plain.contains("did not leave a summary"));
         assert!(plain.contains("No checker looked at this work"));
         assert!(!plain.contains("Protected parts"));
+        assert!(!plain.contains("reviews next"));
         assert_eq!(
             pr_title(&Story {
                 title: "y".repeat(200),

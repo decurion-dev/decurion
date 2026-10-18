@@ -351,7 +351,7 @@ const EMPTY_ICON = { running: "pc", in_review: "in_review", needs_you: "done", q
 const BOARD_LIMIT = 40;
 
 const S = {
-  tab: "inbox", threads: null, apps: {}, appList: [], limits: [], signIns: [], err: null, signedOut: false, updated: null,
+  tab: "inbox", threads: null, apps: {}, appList: [], limits: [], signIns: [], prs: [], err: null, signedOut: false, updated: null,
   chip: null, actErr: null, open: new Set(), notifyOn: false,
   // The board tab's app filter, remembered like the PC board's; how many cards it shows; whether a cloud worker exists.
   app: D.store.get("decurion.board.app") || "all", limit: BOARD_LIMIT, hasCloud: false,
@@ -421,9 +421,12 @@ async function refresh() {
     // whether work can run in the cloud, which the new-work box needs.
     const forSettings = S.tab === "settings";
     const seq = D.settings.seq();
-    const [apps, list, limits, signIns, workers, more] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/limits").catch(() => []),
+    const [apps, list, limits, signIns, workers, more, prs] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/limits").catch(() => []),
       D.api("/sign-ins").catch(() => []), D.api("/workers").catch(() => null),
-      forSettings ? Promise.all([D.api("/spend"), D.api("/accounts").catch(() => null)]) : null]);
+      forSettings ? Promise.all([D.api("/spend"), D.api("/accounts").catch(() => null)]) : null,
+      D.api("/prs").catch(() => [])]);
+    // Pull requests with review comments waiting for a fix.
+    S.prs = (Array.isArray(prs) ? prs : []).filter((p) => p.state === "open" && p.open_comments > 0 && !p.fixing);
     // Work can run in the cloud only once a cloud worker is set up.
     if (Array.isArray(workers)) { S.hasCloud = workers.some((w) => w.place === "cloud"); D.setCloud(S.hasCloud); }
     if (more) D.settings.update({ apps, spend: more[0], accounts: more[1], workers: Array.isArray(workers) ? workers : [], seq });
@@ -500,7 +503,7 @@ function errorState(what) {
 }
 
 function renderShell() {
-  const n = inboxItems().length + S.limits.length + S.signIns.length;
+  const n = inboxItems().length + S.limits.length + S.signIns.length + S.prs.length;
   document.body.classList.toggle("signed-out", S.signedOut);
   $("title").textContent = S.signedOut ? "Decurion" : TITLES[S.tab];
   $("count").hidden = !(S.tab === "inbox" && n > 0 && !S.signedOut);
@@ -661,6 +664,40 @@ function signInCard(s, anim) {
   card.append(el("div", { className: "iacts" }, b));
   return card;
 }
+// Someone left comments on a pull request Decurion opened. The card's words
+// are Decurion's own (who, how many, the work's title): the comments
+// themselves only go to the fix, as data. One tap starts the fix.
+function reviewCard(p, anim) {
+  const key = `pr-${p.thread_id}`;
+  const card = el("article", { className: "icard limit" + (anim === "still" ? " still" : ""), dataset: { state: "needs_you", key, anim } },
+    el("div", { className: "meta" },
+      el("span", { className: "pill needs_you" }, D.icon("question"), "Review comments"),
+      el("span", { className: "app" }, p.app)));
+  const label = "Fix these";
+  const go = async (b) => {
+    if (D.offline) return;
+    b.disabled = true;
+    try {
+      await D.send(`/threads/${p.thread_id}/pr/fix`, {});
+      D.toast(`Started a fix for ${D.plural(p.open_comments, "comment")}. You'll review it like any other work.`);
+      card.classList.add("leaving");
+      setTimeout(refresh, 180);
+    } catch (e) {
+      S.actErr = { id: key, msg: `"${label}" did not go through. ${e.message}` };
+      placeErr();
+      b.disabled = D.offline;
+    }
+  };
+  const link = el("a", { href: p.url, target: "_blank", rel: "noopener" }, `Pull request #${p.number}`);
+  card.append(
+    el("h2", { className: "h" }, `${p.line} · ${label}`),
+    el("p", { className: "means" }, `On "${p.title}". `, link, ". Fix these starts new work that answers them on the same pull request. Nothing changes on GitHub until you accept it."),
+    el("div", { className: "err-slot", role: "alert" }));
+  const b = el("button", { type: "button", className: "btn primary", disabled: D.offline }, D.icon("tool"), label);
+  b.onclick = () => go(b);
+  card.append(el("div", { className: "iacts" }, b));
+  return card;
+}
 const errNotice = (msg) => el("div", { className: "notice bad" }, D.icon("alert"), el("span", { className: "grow" }, msg));
 
 function renderInbox() {
@@ -669,7 +706,7 @@ function renderInbox() {
   if (!S.threads) {
     if (S.err) setMode(box, "error", `${D.offline}|${S.err.message}`, () => errorState("inbox"));
     else setMode(box, "loading", "", skeletons);
-  } else if (!items.length && !S.limits.length && !S.signIns.length) {
+  } else if (!items.length && !S.limits.length && !S.signIns.length && !S.prs.length) {
     const c = counts();
     setMode(box, "empty", `${c.running}|${c.queued}|${S.notifyOn}`, () => {
       const granted = "Notification" in window && Notification.permission === "granted";
@@ -690,6 +727,10 @@ function renderInbox() {
       key: `signin-${x.id}`,
       sig: JSON.stringify([x.label, x.app_name, x.status, x.expires_at, D.offline]),
       build: (anim) => signInCard(x, anim),
+    })), ...S.prs.map((p) => ({
+      key: `pr-${p.thread_id}`,
+      sig: JSON.stringify([p.line, p.title, p.app, p.number, p.url, D.offline]),
+      build: (anim) => reviewCard(p, anim),
     })), ...items.map((t) => ({
       key: t.id,
       sig: JSON.stringify([t.state, t.updated_at, t.title, t.github, D.appName(t.app_id), D.lastWords(tailNow(t, 20) ?? []), sinceLines(tailNow(t, 20) ?? []), D.offline]),
