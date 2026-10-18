@@ -896,12 +896,16 @@ async fn move_thread(
             };
             // Only what the agent did is news; the owner's own taps are not. A
             // piece of a goal is not ready for the owner until it is checked.
-            let news = (c == Caller::Runner && fresh && !(piece && t.state == InReview))
-                .then(|| push::message_for(t.state, &t.title))
-                .flatten();
-            if let (Some(p), Some((title, body))) = (st.push.clone(), news) {
+            let news = c == Caller::Runner && fresh && !(piece && t.state == InReview);
+            if let (true, Some(p)) = (news, st.push.clone()) {
                 let store = st.store.clone();
-                tokio::spawn(async move { p.notify(&store, &title, &body).await });
+                let t = t.clone();
+                tokio::spawn(async move {
+                    let app = store.app(t.app_id).await.map(|a| a.name);
+                    if let Some(n) = push::for_move(&t, app.as_deref().unwrap_or("")) {
+                        p.send(&store, &n).await;
+                    }
+                });
             }
             // The owner accepted it: the hub sends it to GitHub now. The wish
             // was saved with the accept, so a crash here still sends it at
@@ -968,12 +972,20 @@ async fn add_event(
                 tokio::spawn(async move {
                     // One alert per account, with the work now waiting on it.
                     if let Ok(Some(l)) = store.limit_for_thread(id).await {
-                        let title = format!("Claude Max {} is out of usage", l.profile.as_str());
+                        let app = match store.thread(id).await {
+                            Ok(t) => store
+                                .app(t.app_id)
+                                .await
+                                .map(|a| a.name)
+                                .unwrap_or_default(),
+                            Err(_) => String::new(),
+                        };
+                        let head = format!("Claude Max {} is out of usage", l.profile.as_str());
                         let body = format!(
                             "{} waiting; they restart on their own when it resets. Open to continue on pay-per-use.",
                             if l.waiting == 1 { "1 job".to_owned() } else { format!("{} jobs", l.waiting) }
                         );
-                        p.notify(&store, &title, &body).await;
+                        p.send(&store, &push::Notice::new(&app, &head, &body)).await;
                     }
                 });
             }
@@ -1141,11 +1153,24 @@ async fn runner_claim(
             if let (Some(p), Some(first)) = (st.push.clone(), out.capped.first()) {
                 // One alert, however many pieces of work it stopped.
                 let body = match out.capped.len() {
-                    1 => first.title.chars().take(80).collect::<String>(),
+                    1 => first.title.clone(),
                     n => format!("{n} pieces of work are waiting"),
                 };
+                let mut apps: Vec<i64> = out.capped.iter().map(|t| t.app_id).collect();
+                apps.dedup();
                 let store = st.store.clone();
-                tokio::spawn(async move { p.notify(&store, "Spending cap reached", &body).await });
+                tokio::spawn(async move {
+                    let mut names = Vec::new();
+                    for a in apps {
+                        if let Ok(a) = store.app(a).await {
+                            if !names.contains(&a.name) {
+                                names.push(a.name);
+                            }
+                        }
+                    }
+                    let n = push::Notice::new(&names.join(", "), "spending cap reached", &body);
+                    p.send(&store, &n).await;
+                });
             }
             match out.work {
                 Some(claim) => Json(claim).into_response(),

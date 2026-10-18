@@ -25,6 +25,7 @@
 //!   header.
 
 use crate::github::{is_login, Repo, Sender, Token};
+use crate::push::Notice;
 use crate::store::{check_receipt, receipt_result, save_receipt, Result, Store, StoreError};
 use crate::{forbidden, ApiError, AppState, Caller};
 use axum::extract::{Path as UrlPath, State};
@@ -263,7 +264,9 @@ struct Open {
     thread_id: i64,
     repo: Repo,
     number: i64,
+    url: String,
     title: String,
+    app: String,
 }
 
 /// What a look changed, for the phone.
@@ -372,8 +375,8 @@ const FIX_UNDER_WAY: &str = "EXISTS (SELECT 1 FROM threads f WHERE f.fix_of = w.
 impl Store {
     async fn open_watches(&self) -> Result<Vec<Open>> {
         let rows = sqlx::query(
-            "SELECT w.thread_id, w.owner, w.repo, w.number, t.title
-             FROM pr_watches w JOIN threads t ON t.id = w.thread_id
+            "SELECT w.thread_id, w.owner, w.repo, w.number, w.url, t.title, a.name AS app
+             FROM pr_watches w JOIN threads t ON t.id = w.thread_id JOIN apps a ON a.id = w.app_id
              WHERE w.state = 'open' ORDER BY w.thread_id",
         )
         .fetch_all(self.pool())
@@ -387,7 +390,9 @@ impl Store {
                         name: r.try_get("repo")?,
                     },
                     number: r.try_get("number")?,
+                    url: r.try_get("url")?,
                     title: r.try_get("title")?,
+                    app: r.try_get("app")?,
                 })
             })
             .collect()
@@ -634,15 +639,31 @@ pub async fn poll(state: &AppState) -> usize {
         if changed.ended == Some(PrState::Merged) {
             merged(&s, w.thread_id).await;
         }
-        let body: String = w.title.chars().take(80).collect();
+        // "Refill tracker: merged on GitHub". Comments open the inbox, where
+        // Fix these is; an end opens the pull request.
         let notice = match changed.ended {
-            Some(PrState::Merged) => Some("Merged on GitHub".to_owned()),
-            Some(_) => Some("Closed on GitHub without merging".to_owned()),
-            None if !changed.new.is_empty() => Some(left_words(&changed.new)),
+            Some(PrState::Merged) => Some(
+                Notice::work(&w.app, w.thread_id, "merged on GitHub", &w.title).open_pr(&w.url),
+            ),
+            Some(_) => Some(
+                Notice::work(
+                    &w.app,
+                    w.thread_id,
+                    "closed on GitHub without merging",
+                    &w.title,
+                )
+                .open_pr(&w.url),
+            ),
+            None if !changed.new.is_empty() => Some(Notice::work(
+                &w.app,
+                w.thread_id,
+                &left_words(&changed.new),
+                &w.title,
+            )),
             None => None,
         };
-        if let (Some(p), Some(head)) = (&s.push, notice) {
-            p.notify_to(&s.store, &head, &body, "/inbox").await;
+        if let (Some(p), Some(n)) = (&s.push, notice) {
+            p.send(&s.store, &n).await;
         }
     }
     looked
