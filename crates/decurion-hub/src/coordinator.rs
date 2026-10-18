@@ -51,8 +51,8 @@ const MAX_RESULT_CHARS: usize = 64 * 1024;
 /// Notes about an app shown to the coordinator.
 const NOTES_IN_PROMPT: i64 = 30;
 
-/// Something the owner should hear about on their phone: (title, body).
-pub type News = (String, String);
+/// Something the owner should hear about on their phone.
+pub type News = crate::push::Notice;
 
 /// Who moves a piece to Done when the checker passes it: the hub, acting on
 /// the owner's approval of the plan the piece came from.
@@ -1251,7 +1251,12 @@ impl Store {
                             .await?;
                         }
                     }
-                    news.push(("Spending cap reached".to_owned(), clip(&title, 80)));
+                    news.push(News::goal(
+                        &app.name,
+                        goal_id,
+                        "spending cap reached",
+                        &title,
+                    ));
                     continue;
                 }
             };
@@ -1595,9 +1600,12 @@ impl Store {
                             if state == GoalState::Working {
                                 set_state(&mut tx, goal_id, GoalState::ForReview).await?;
                             }
-                            news = Some((
-                                "Work is ready for your review".to_owned(),
-                                clip(&title, 80),
+                            let app = app_name(&mut tx, app_id).await?;
+                            news = Some(News::goal(
+                                &app,
+                                goal_id,
+                                "work is ready for your review",
+                                &title,
                             ));
                         } else {
                             // Only from talking with the owner: a report turn reads
@@ -1631,15 +1639,20 @@ impl Store {
                                 .bind(design_prompt(&app, &title, plan, &transcript(&messages)))
                                 .execute(&mut *tx)
                                 .await?;
-                                news =
-                                    Some(("A plan is ready for you".to_owned(), clip(&title, 80)));
+                                news = Some(
+                                    News::goal(&app, goal_id, "plan ready to approve", &title)
+                                        .approve(goal_id, msg),
+                                );
                             } else if has_questions {
                                 if state == GoalState::PlanReady {
                                     set_state(&mut tx, goal_id, GoalState::Talking).await?;
                                 }
-                                news = Some((
-                                    "Your project lead has a question".to_owned(),
-                                    clip(&title, 80),
+                                let app = app_name(&mut tx, app_id).await?;
+                                news = Some(News::goal(
+                                    &app,
+                                    goal_id,
+                                    "your project lead has a question",
+                                    &title,
                                 ));
                             }
                             maybe_report(&mut tx, goal_id).await?;
@@ -1692,7 +1705,13 @@ impl Store {
                             )
                         };
                         note(&mut tx, goal_id, format!("{why} Tap Try again.")).await?;
-                        news = Some(("Your project lead got stuck".to_owned(), clip(&title, 80)));
+                        let app = app_name(&mut tx, app_id).await?;
+                        news = Some(News::goal(
+                            &app,
+                            goal_id,
+                            "your project lead got stuck",
+                            &title,
+                        ));
                     }
                 }
             }
@@ -1933,10 +1952,13 @@ impl Store {
             )
             .await?;
             set_state(&mut tx, goal_id, GoalState::Done).await?;
-            let (_, title) = goal_row(&mut tx, goal_id).await?;
-            news = Some((
-                "Goal done: everything is merged".to_owned(),
-                clip(&title, 80),
+            let (app_id, title) = goal_row(&mut tx, goal_id).await?;
+            let app = app_name(&mut tx, app_id).await?;
+            news = Some(News::goal(
+                &app,
+                goal_id,
+                "goal done, everything is merged",
+                &title,
             ));
         }
         tx.commit().await?;

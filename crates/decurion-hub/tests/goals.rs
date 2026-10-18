@@ -1330,7 +1330,7 @@ async fn a_goal_closes_itself_once_every_pull_request_is_merged() {
     assert_eq!(view(&r, goal).await["goal"]["state"], "for_review");
 
     let news = store.piece_merged(thread).await.expect("merged");
-    assert!(news.is_some_and(|(title, _)| title.contains("merged")));
+    assert!(news.is_some_and(|n| n.title.contains("merged")));
     let v = view(&r, goal).await;
     assert_eq!(v["goal"]["state"], "done");
     assert_eq!(v["pieces"][0]["merged"], true);
