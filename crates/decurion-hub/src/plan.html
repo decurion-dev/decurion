@@ -428,7 +428,9 @@
   }
   function writeHash() {
     const h = new URLSearchParams();
-    if (S.app != null) h.set("app", S.app);
+    // Before the apps load, keep the app the address asked for.
+    const app = S.app ?? readHash().app;
+    if (app != null) h.set("app", app);
     if (S.tab === "pages") h.set("tab", "pages");
     const next = "#" + h.toString();
     if (location.hash !== next) history.replaceState(null, "", next);

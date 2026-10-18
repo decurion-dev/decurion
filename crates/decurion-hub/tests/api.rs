@@ -1163,10 +1163,17 @@ async fn finished_research_points_to_its_fixes() {
     assert!(ui.contains("D.RESEARCH_REVIEW"));
     assert!(ui.contains("\"Fix what it found\""));
     let goals = text("/goals").await;
-    assert!(goals.contains("v.pieces.every(p => p.research)"));
+    assert!(goals.contains("v.pieces.every(p => p.research && p.review === \"passed\")"));
     assert!(goals.contains("D.planHref(g.app_id)"));
+    assert!(
+        ui.contains("!t.research && D.canFix()"),
+        "no second fix route on research"
+    );
+    let inbox = text("/inbox").await;
+    assert!(inbox.contains("t.research && t.state === \"in_review\" ? \"research\""));
     let plan = text("/plan").await;
     assert!(plan.contains("await loadApps(h.app)"));
+    assert!(plan.contains("S.app ?? readHash().app"));
 }
 
 #[tokio::test]
