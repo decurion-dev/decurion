@@ -1098,15 +1098,18 @@ function renderAppChips() {
     if (t.state === "needs_you") needs[t.app_id] = (needs[t.app_id] ?? 0) + 1;
   }
   const sel = appFilter();
-  const sig = JSON.stringify([S.appList.map((a) => [a.id, a.name]), open, needs, sel]);
+  const sig = JSON.stringify([S.appList.map((a) => [a.id, a.name, a.first_today]), open, needs, sel]);
   if (box.dataset.sig === sig) return;
   box.dataset.sig = sig;
   const total = Object.values(open).reduce((a, b) => a + b, 0);
   const anyNeeds = Object.values(needs).reduce((a, b) => a + b, 0);
+  // A star instead of the app mark: that app goes first today (Settings).
   const chip = (key, name, n, need, ic) => {
-    const b = el("button", { type: "button", className: "chip" + (n ? "" : " zero"), "aria-pressed": key === sel ? "true" : "false", title: name },
+    const first = ic === "star";
+    const b = el("button", { type: "button", className: "chip" + (n ? "" : " zero"), "aria-pressed": key === sel ? "true" : "false", title: first ? `${name} goes first today` : name },
       D.icon(ic), name, need && key !== sel ? el("span", { className: "dot", "aria-hidden": "true" }) : null,
       el("span", { className: "n", "aria-label": `${n} open` }, n),
+      first ? el("span", { className: "sr-only" }, ", goes first today") : null,
       need ? el("span", { className: "sr-only" }, `, ${need} ${need === 1 ? "needs" : "need"} you`) : null);
     b.onclick = async () => {
       if (key === sel) return;
@@ -1120,7 +1123,7 @@ function renderAppChips() {
     return b;
   };
   box.replaceChildren(chip("all", "All apps", total, anyNeeds, "board"),
-    ...S.appList.map((a) => chip(String(a.id), a.name, open[a.id] ?? 0, needs[a.id] ?? 0, "app")));
+    ...S.appList.map((a) => chip(String(a.id), a.name, open[a.id] ?? 0, needs[a.id] ?? 0, a.first_today ? "star" : "app")));
   const on = box.querySelector('[aria-pressed="true"]');
   if (on) box.scrollLeft = Math.max(0, on.offsetLeft - (box.clientWidth - on.offsetWidth) / 2);
 }

@@ -32,6 +32,16 @@
   .needs-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber-line); flex: none; }
   .ghost { display: inline-grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 6px; background: none; color: var(--faint); cursor: pointer; }
   .ghost:hover { background: var(--surface-2); color: var(--ink); }
+  /* An app in the list with its go-first-today star. Unstarred, the star shows on hover. */
+  .nav-row { display: flex; align-items: center; gap: 2px; }
+  .nav-row .nav-item { flex: 1; min-width: 0; }
+  .star-btn { opacity: 0; transition: opacity .12s var(--ease); }
+  .star-btn svg.i { width: 14px; height: 14px; }
+  .nav-row:hover .star-btn, .star-btn:focus-visible, .star-btn[aria-pressed="true"] { opacity: 1; }
+  .star-btn[aria-pressed="true"] { color: var(--accent-ink); }
+  .star-btn[aria-pressed="true"] svg.i { fill: currentColor; }
+  .star-btn[disabled] { cursor: not-allowed; }
+  @media (hover: none) { .star-btn { opacity: 1; } }
 
   .side .usage { margin-top: auto; }
 
@@ -188,6 +198,9 @@
     .nav.apps .nav-h { display: none; }
     .nav.apps .nav-item { width: auto; flex: none; border: 1px solid var(--line); border-radius: 99px; min-height: 32px; }
     .nav.apps .nav-item[aria-pressed="true"] { border-color: transparent; }
+    /* Pills: only a starred app shows its star, to tap it off. */
+    .nav.apps .nav-row { flex: none; }
+    .nav.apps .star-btn[aria-pressed="false"] { display: none; }
     .usage { display: none; }
     .topbar { position: static; padding: 14px 16px 8px; background: none; backdrop-filter: none; }
     .content { padding: 4px 16px 32px; }
@@ -434,7 +447,7 @@
     }
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
     const totalNeeds = Object.values(needs).reduce((a, b) => a + b, 0);
-    if (changed("side", [apps.map((a) => [a.id, a.name]), counts, needs, filter, view])) {
+    if (changed("side", [apps.map((a) => [a.id, a.name, a.first_today]), counts, needs, filter, view, D.offline])) {
       keepFocus(() => {
         const item = (key, name, count, need, iconName) => {
           const b = el("button", { type: "button", className: "nav-item", "aria-pressed": filter === key ? "true" : "false", dataset: { key: `app-${key}` }, title: name },
@@ -444,11 +457,22 @@
           b.onclick = () => { setFilter(key); if (view !== "board") location.hash = "#board"; };
           return b;
         };
+        // The go-first-today star beside each app (settings.js saves it).
+        const star = (a) => {
+          const on = !!a.first_today;
+          const s = el("button", { type: "button", className: "ghost star-btn", "aria-pressed": on ? "true" : "false",
+            "aria-label": `${a.name} goes first today`, dataset: { key: `star-${a.id}` },
+            title: on ? `${a.name} goes first today. Click to let it take turns again.` : `Let ${a.name} go first today` }, icon("star"));
+          s.disabled = D.offline;
+          s.onclick = () => D.settings.setFirst(a, !on);
+          return s;
+        };
         const add = el("a", { className: "ghost", href: "#settings/apps", "aria-label": "Add an app", title: "Add an app" }, icon("plus"));
         $("app-nav").replaceChildren(
           el("div", { className: "nav-h" }, el("span", {}, "Apps"), add),
           item("all", "All apps", total, totalNeeds, "board"),
-          ...apps.map((a) => item(String(a.id), a.name, counts[a.id] ?? 0, needs[a.id] ?? 0, "app")));
+          ...apps.map((a) => el("div", { className: "nav-row" },
+            item(String(a.id), a.name, counts[a.id] ?? 0, needs[a.id] ?? 0, "app"), star(a))));
       });
     }
     D.settings.usage($("usage"));

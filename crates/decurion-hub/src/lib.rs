@@ -229,6 +229,8 @@ pub fn router(state: AppState) -> Router {
         .route("/spend/cap", post(set_cap))
         .route("/apps/{id}/pay-per-use", post(set_pay_per_use))
         .route("/apps/{id}/sites", post(set_sites))
+        .route("/apps/{id}/edit", post(edit_app))
+        .route("/apps/{id}/first", post(set_first_today))
         .route("/sites/built-in", get(built_in_sites))
         .route("/apps/{id}/cap", post(set_app_cap))
         .route("/accounts", get(list_accounts))
@@ -1863,6 +1865,51 @@ async fn set_sites(
     }
     match st.store.set_sites(id, &b.sites).await {
         Ok(sites) => Json(sites).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// The owner changes an app's name, folder, Max plan or reviewer
+/// ([`store::Store::edit_app`]). Owner-only: the plan and the folder decide
+/// which account pays and which code agents get.
+async fn edit_app(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+    Json(b): Json<store::AppEdit>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("changing an app");
+    }
+    match st.store.edit_app(id, &b).await {
+        Ok((app, _)) => Json(app).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct FirstToday {
+    on: bool,
+    #[serde(default)]
+    receipt: Option<String>,
+}
+
+/// The owner stars an app to go first in the queue today, or unstars it.
+async fn set_first_today(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    Path(id): Path<i64>,
+    Json(b): Json<FirstToday>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("choosing which app goes first");
+    }
+    match st
+        .store
+        .set_first_today(id, b.on, b.receipt.as_deref())
+        .await
+    {
+        Ok((app, _)) => Json(app).into_response(),
         Err(e) => ApiError(e).into_response(),
     }
 }
