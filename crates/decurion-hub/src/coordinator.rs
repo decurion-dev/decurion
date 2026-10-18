@@ -1975,25 +1975,32 @@ impl Store {
                         let upto: Option<i64> = row.try_get("upto_message_id")?;
                         // A turn of the same kind queued meanwhile becomes the retry, so
                         // it also carries what the owner said since.
+                        // A "why" turn's retry resumes a session that read the
+                        // building agent's words, so it keeps the context and,
+                        // with it, keeps no notes either.
+                        let why_context: Option<String> = row.try_get("why_context")?;
                         let merged = sqlx::query(
-                            "UPDATE helper_jobs SET attempt = 2, fix_note = ?, message_id = ?
+                            "UPDATE helper_jobs SET attempt = 2, fix_note = ?, message_id = ?,
+                                 why_context = COALESCE(why_context, ?)
                              WHERE goal_id = ? AND kind = 'coordinator' AND state = 'queued' AND purpose = ?",
                         )
                         .bind(clip(&why, 500))
                         .bind(upto)
+                        .bind(&why_context)
                         .bind(goal_id)
                         .bind(&purpose)
                         .execute(&mut *tx)
                         .await?;
                         if merged.rows_affected() == 0 {
                             sqlx::query(
-                                "INSERT INTO helper_jobs (kind, goal_id, purpose, attempt, fix_note, message_id)
-                                 VALUES ('coordinator', ?, ?, 2, ?, ?)",
+                                "INSERT INTO helper_jobs (kind, goal_id, purpose, attempt, fix_note, message_id, why_context)
+                                 VALUES ('coordinator', ?, ?, 2, ?, ?, ?)",
                             )
                             .bind(goal_id)
                             .bind(&purpose)
                             .bind(clip(&why, 500))
                             .bind(upto)
+                            .bind(&why_context)
                             .execute(&mut *tx)
                             .await?;
                         }
