@@ -103,6 +103,8 @@ impl Store {
             state,
             place,
             messages,
+            // Filled in by the hub's live endpoint, which knows who is watching.
+            browser: None,
         })
     }
 

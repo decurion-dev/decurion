@@ -15,7 +15,7 @@ once (commit `793f21c`). Read those pieces first.
 
 ## A new field on an app (or thread)
 
-1. **Migration.** New file with the next free number above the highest in `crates/decurion-hub/migrations/` (today `0043`, so `0044_<name>.sql`). Begin with a `--` comment saying why. Use `ALTER TABLE ... ADD COLUMN ... NOT NULL DEFAULT ...` so old rows stay valid; add a `CHECK` for closed sets (see `0041_accounts.sql`). Never edit a shipped migration.
+1. **Migration.** New file with the next free number above the highest in `crates/decurion-hub/migrations/` (today `0045`, so `0046_<name>.sql`). Begin with a `--` comment saying why. Use `ALTER TABLE ... ADD COLUMN ... NOT NULL DEFAULT ...` so old rows stay valid; add a `CHECK` for closed sets (see `0041_accounts.sql`). Never edit a shipped migration.
 2. **Type.** Add the field to the struct in `decurion-proto` with a doc comment and `#[serde(default)]`, so old clients and stored JSON still parse.
 3. **Store.** Add the column to `APP_COLS` (or `THREAD_COLS`) and to `app_from` / `thread_from`. Validate in the store, not only in the page; return `StoreError::Invalid("plain words the owner can act on")` (HTTP 400). `Refused` and `Duplicate` become 409, `NotFound` 404 (`impl IntoResponse for ApiError`).
 4. **Route.** In `router()` add it to the `api` router (everything there needs a key, via `require_key`). In the handler, take `axum::Extension(c): axum::Extension<Caller>` and start with `if c != Caller::Owner { return forbidden("doing X"); }` unless the runner needs it. The runner key can call any `/api` route whose handler does not check; cloud workers can call only what `cloud_reach` lists, so do not add to that list unless a running box truly needs it.

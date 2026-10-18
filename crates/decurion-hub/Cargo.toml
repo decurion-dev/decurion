@@ -10,11 +10,11 @@ build = "build.rs"
 [dependencies]
 anyhow.workspace = true
 reqwest.workspace = true
-axum.workspace = true
+axum = { workspace = true, features = ["ws"] }
 base64 = "0.22"
 decurion-proto = { path = "../decurion-proto" }
 decurion-vault = { path = "../decurion-vault" }
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -24,6 +24,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+url = "2"
 uuid.workspace = true
 web-push-native = "0.5"
 
@@ -33,6 +34,7 @@ keyring = { version = "3", features = ["windows-native"] }
 [dev-dependencies]
 base64 = "0.22"
 http-body-util = "0.1"
+tokio-tungstenite = "0.29"
 tower.workspace = true
 web-push-native = "0.5"
 
