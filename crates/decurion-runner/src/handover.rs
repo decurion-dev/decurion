@@ -191,11 +191,14 @@ pub fn host_git_env() -> [(&'static str, &'static str); 5] {
 
 /// Settings put before every host git command. Command-line settings win
 /// over any repo's config: no hooks, no fsmonitor, and a fixed name in case
-/// anything commits (there is no user config to take one from).
+/// anything commits (there is no user config to take one from). Long paths
+/// are on because Git for Windows otherwise refuses any file whose full path
+/// passes 260 characters, and the PC's own setting for that is not read.
 pub fn host_git_args() -> Vec<String> {
     [
         format!("core.hooksPath={NULL_DEVICE}"),
         "core.fsmonitor=false".to_owned(),
+        "core.longpaths=true".to_owned(),
         "user.name=decurion".to_owned(),
         "user.email=decurion@decurion.invalid".to_owned(),
     ]
@@ -336,6 +339,7 @@ mod tests {
         for want in [
             format!("core.hooksPath={NULL_DEVICE}"),
             "core.fsmonitor=false".to_owned(),
+            "core.longpaths=true".to_owned(),
             "user.name=decurion".to_owned(),
             "user.email=decurion@decurion.invalid".to_owned(),
         ] {

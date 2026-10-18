@@ -380,7 +380,8 @@ async fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
 }
 
 /// Like [`git`], but ignoring the PC's system and user git settings, for
-/// commands that handle files an agent wrote.
+/// commands that handle files an agent wrote. Long paths are on for the
+/// same reason as in [`host_git_args`].
 async fn git_isolated(dir: &Path, args: &[&str], null: &str) -> anyhow::Result<String> {
     let out = Command::new("git")
         .env("GIT_NO_LAZY_FETCH", "1")
@@ -388,6 +389,7 @@ async fn git_isolated(dir: &Path, args: &[&str], null: &str) -> anyhow::Result<S
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", null)
         .env("GIT_LFS_SKIP_SMUDGE", "1")
+        .args(["-c", "core.longpaths=true"])
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -3380,6 +3382,66 @@ mod tests {
             ],
         )
         .await
+    }
+
+    /// An app holding a file whose full path is past Windows' old
+    /// 260-character limit still copies, both through [`git`] (goal and work
+    /// copies) and [`git_isolated`] (check copies). Before, Windows failed the
+    /// checkout with "Filename too long" and the goal could not start.
+    #[tokio::test]
+    async fn apps_with_very_long_file_names_can_be_copied() -> anyhow::Result<()> {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("git not found; skipping");
+            return Ok(());
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let root =
+            std::env::temp_dir().join(format!("decurion-long-{}-{nanos}", std::process::id()));
+        let src = root.join("app");
+        let mut rel = PathBuf::new();
+        for _ in 0..7 {
+            rel.push("a-folder-name-that-is-about-forty-chars-long");
+        }
+        rel.push("notes.md");
+        assert!(rel.to_string_lossy().len() > 300);
+        std::fs::create_dir_all(src.join(&rel).parent().expect("has a folder"))?;
+        std::fs::write(src.join(&rel), "notes\n")?;
+        let r = async {
+            git(&src, &["init", "--quiet"]).await?;
+            git(&src, &["add", "."]).await?;
+            commit(&src, "t <t@example.invalid>", "deep").await?;
+            let listed = git(&src, &["ls-files"]).await?;
+            anyhow::ensure!(listed.ends_with("notes.md"), "not committed: {listed:?}");
+            let from = src.to_string_lossy().into_owned();
+
+            let copy = root.join("copy");
+            clone_into(&from, &copy).await?;
+            anyhow::ensure!(copy.join(&rel).is_file(), "work copy is missing the file");
+
+            let checked = root.join("check");
+            let to = checked.to_string_lossy().into_owned();
+            git_isolated(
+                Path::new("."),
+                &["clone", "--quiet", "--no-hardlinks", "--", &from, &to],
+                null_device(),
+            )
+            .await?;
+            anyhow::ensure!(
+                checked.join(&rel).is_file(),
+                "check copy is missing the file"
+            );
+            anyhow::Ok(())
+        }
+        .await;
+        let _ = std::fs::remove_dir_all(&root);
+        r
     }
 
     /// The leak check against real git: values in a file's contents, a
