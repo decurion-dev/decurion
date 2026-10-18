@@ -11,7 +11,7 @@ use decurion_proto::{
 use decurion_runner::dispatch;
 use decurion_runner::gatekeeper::{Gatekeeper, Grant, ANTHROPIC_API};
 use decurion_runner::handover::{
-    bundle_spec, context_import_args, host_git_args, host_git_env, is_sha, move_note,
+    bundle_specs, context_import_args, host_git_args, host_git_env, is_sha, move_note,
     reuse_workspace, save_edits_args, session_export_args, session_import_args,
     tool_container_name, CODE_CAP, CONTEXT_CAP, SESSION_CAP,
 };
@@ -825,10 +825,65 @@ async fn merged_main(
     Ok(decurion_proto::merged_as_asked(&list, merge_from))
 }
 
-async fn count_since(bare: &Path, base: &str, branch: &str) -> anyhow::Result<u64> {
+async fn count_since(
+    bare: &Path,
+    base: &str,
+    branch: &str,
+    main: Option<&str>,
+) -> anyhow::Result<u64> {
     let range = format!("{base}..refs/heads/{branch}");
-    let n = git(bare, &["rev-list", "--count", &range]).await?;
+    let not_main = main.map(|m| format!("^{m}"));
+    let mut args = vec!["rev-list", "--count", range.as_str()];
+    args.extend(not_main.as_deref());
+    args.push("--");
+    let n = git(bare, &args).await?;
     Ok(n.parse()?)
+}
+
+/// The main commit a Bring up to date run's saved copy may leave out: only
+/// when its branch actually holds it (an update that never merged main has
+/// nothing of main's to leave out).
+async fn main_in_branch<'a>(
+    bare: &Path,
+    branch: &str,
+    merge_from: Option<&'a str>,
+) -> Option<&'a str> {
+    let m = merge_from.filter(|m| is_sha(m))?;
+    git(
+        bare,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            m,
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .await
+    .ok()
+    .map(|_| m)
+}
+
+/// Writes the code part of a saved copy, the branch as a git bundle, to
+/// `out`, from the runner-owned bare repo. It holds what the work added
+/// since its start and, for a Bring up to date run, since the main it
+/// merged ([`bundle_specs`]). Returns how many commits it carries.
+async fn code_bundle(
+    bare: &Path,
+    base: &str,
+    branch: &str,
+    merge_from: Option<&str>,
+    out: &Path,
+) -> anyhow::Result<u64> {
+    let main = main_in_branch(bare, branch, merge_from).await;
+    // A branch rewritten past its starting commit cannot be counted; send it
+    // whole.
+    let n = count_since(bare, base, branch, main).await.unwrap_or(0);
+    let out = out.to_string_lossy().into_owned();
+    let specs = bundle_specs(base, branch, n, main);
+    let mut args = vec!["bundle", "create", "--quiet", out.as_str()];
+    args.extend(specs.iter().map(String::as_str));
+    git(bare, &args).await?;
+    Ok(n)
 }
 
 /// Runs a throwaway container to the end, within [`TOOL_TIMEOUT`]. `name` is
@@ -1017,6 +1072,7 @@ async fn save_checkpoint(
     id: i64,
     wt: &Path,
     branch: &str,
+    merge_from: Option<&str>,
 ) -> anyhow::Result<i64> {
     let base = read_base(wt)?;
     let bare = fetch_branch(data, wt, branch).await?;
@@ -1029,23 +1085,9 @@ async fn save_checkpoint(
         ],
     )
     .await?;
-    // A branch rewritten past its starting commit cannot be counted; send it
-    // whole.
-    let n = count_since(&bare, &base, branch).await.unwrap_or(0);
     let xfer = transfer_dir(data, id)?;
     let code = xfer.join("code.bundle");
-    let code_s = code.to_string_lossy().into_owned();
-    git(
-        &bare,
-        &[
-            "bundle",
-            "create",
-            "--quiet",
-            &code_s,
-            &bundle_spec(&base, branch, n),
-        ],
-    )
-    .await?;
+    code_bundle(&bare, &base, branch, merge_from, &code).await?;
     let tar = xfer.join("session.tar");
     if let Err(err) = export_session(id, &tar).await {
         // The code matters most; without a session the agent starts afresh
@@ -1279,12 +1321,14 @@ async fn stop_agent(hub: &Hub, id: i64, child: &mut Child) {
 /// problem here is logged. If the work could not be saved it is not queued,
 /// since the other computer would start from an older copy; it stays here
 /// and goes to the owner.
+#[allow(clippy::too_many_arguments)]
 async fn hand_over(
     hub: &Hub,
     data: &Path,
     id: i64,
     wt: &Path,
     branch: &str,
+    merge_from: Option<&str>,
     to: Place,
     child: &mut Child,
 ) {
@@ -1293,7 +1337,7 @@ async fn hand_over(
     if let Err(err) = save_edits(id, wt).await {
         tracing::warn!(%err, id, "could not save unfinished edits");
     }
-    let (state, note) = match save_checkpoint(hub, data, id, wt, branch).await {
+    let (state, note) = match save_checkpoint(hub, data, id, wt, branch, merge_from).await {
         Ok(_) => (ThreadState::Queued, move_note(to)),
         Err(err) => {
             tracing::error!(%err, id, "could not save a checkpoint before moving; keeping the work here");
@@ -2099,7 +2143,17 @@ make sure Docker Desktop is running and delete that container there",
             return Ok(());
         }
         Ended::Moved(to) => {
-            hand_over(hub, data, id, &wt, &branch, to, &mut child).await;
+            hand_over(
+                hub,
+                data,
+                id,
+                &wt,
+                &branch,
+                c.merge_from.as_deref(),
+                to,
+                &mut child,
+            )
+            .await;
             browser_box::stop(browser).await;
             if let Some(t) = &tools {
                 addon_box::stop(t).await;
@@ -2217,24 +2271,25 @@ make sure Docker Desktop is running and delete that container there",
     // A failed save is logged and the outcome is still reported, except that
     // unsaved work never goes back in the queue, where another computer could
     // pick it up from an older copy: it goes to the owner instead.
-    let (to, note) = match save_checkpoint(hub, data, id, &wt, &branch).await {
-        Ok(_) => (to, note),
-        Err(err) => {
-            tracing::error!(%err, id, "could not save a checkpoint");
-            // Only a Max usage limit queues work at the end of a run.
-            if to == ThreadState::Queued {
-                (
-                    ThreadState::NeedsYou,
-                    "The Max account is out of usage, and the work could not be saved, so it \
+    let (to, note) =
+        match save_checkpoint(hub, data, id, &wt, &branch, c.merge_from.as_deref()).await {
+            Ok(_) => (to, note),
+            Err(err) => {
+                tracing::error!(%err, id, "could not save a checkpoint");
+                // Only a Max usage limit queues work at the end of a run.
+                if to == ThreadState::Queued {
+                    (
+                        ThreadState::NeedsYou,
+                        "The Max account is out of usage, and the work could not be saved, so it \
                      stayed here instead of waiting in the queue. Queue it again once the \
                      account resets."
-                        .to_owned(),
-                )
-            } else {
-                (to, note)
+                            .to_owned(),
+                    )
+                } else {
+                    (to, note)
+                }
             }
-        }
-    };
+        };
     // A research run goes to review only with its report at the hub, so the
     // owner never finds it there with nothing to read.
     let (to, note) = if c.thread.research && to == ThreadState::InReview {
@@ -4769,6 +4824,101 @@ mod tests {
         }
         .await;
         let _ = std::fs::remove_dir_all(&data);
+        r
+    }
+
+    /// Bytes that do not compress, so a bundle's size shows what it holds.
+    fn noise(seed: u64, n: usize) -> Vec<u8> {
+        let mut x = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        (0..n)
+            .map(|_| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (x >> 56) as u8
+            })
+            .collect()
+    }
+
+    /// An update's saved copy carries the agent's own commits (its work and
+    /// the merge), not main's history, which the hub already has pinned;
+    /// and it still unpacks in a copy that has the start and main.
+    #[tokio::test]
+    async fn an_update_checkpoint_leaves_out_mains_history() -> anyhow::Result<()> {
+        let root = temp_root("update-checkpoint");
+        let dir = root.join("work");
+        std::fs::create_dir_all(&dir)?;
+        let branch = "decurion/9";
+        let r = async {
+            git(&dir, &["init", "--quiet", "-b", "main"]).await?;
+            std::fs::write(dir.join("app.txt"), "one\n")?;
+            tgit(&dir, &["add", "."]).await?;
+            tgit(&dir, &["commit", "--quiet", "-m", "base"]).await?;
+            let base = git(&dir, &["rev-parse", "HEAD"]).await?;
+            for i in 0..3u64 {
+                std::fs::write(dir.join(format!("big-{i}.bin")), noise(i, 200_000))?;
+                tgit(&dir, &["add", "."]).await?;
+                tgit(&dir, &["commit", "--quiet", "-m", "main grows"]).await?;
+            }
+            let m = git(&dir, &["rev-parse", "HEAD"]).await?;
+            tgit(&dir, &["switch", "--quiet", "-c", branch, &base]).await?;
+            std::fs::write(dir.join("feature.txt"), "the feature\n")?;
+            tgit(&dir, &["add", "."]).await?;
+            tgit(&dir, &["commit", "--quiet", "-m", "feature"]).await?;
+            tgit(&dir, &["merge", "--no-ff", "--no-edit", &m]).await?;
+            let head = git(&dir, &["rev-parse", "HEAD"]).await?;
+
+            let update = root.join("update.bundle");
+            let whole = root.join("whole.bundle");
+            assert_eq!(
+                code_bundle(&dir, &base, branch, Some(&m), &update).await?,
+                2
+            );
+            assert_eq!(code_bundle(&dir, &base, branch, None, &whole).await?, 5);
+            let (small, big) = (
+                std::fs::metadata(&update)?.len(),
+                std::fs::metadata(&whole)?.len(),
+            );
+            assert!(small < 100_000 && big > 500_000, "{small} vs {big}");
+
+            // A copy with the start and main (as every copy of an update
+            // has) takes it in whole.
+            let copy = root.join("copy");
+            std::fs::create_dir_all(&copy)?;
+            git(&copy, &["init", "--quiet", "--bare"]).await?;
+            let src = dir.to_string_lossy().into_owned();
+            git(
+                &copy,
+                &["fetch", "--quiet", &src, &format!("{m}:refs/heads/main")],
+            )
+            .await?;
+            let update_s = update.to_string_lossy().into_owned();
+            git(
+                &copy,
+                &[
+                    "fetch",
+                    "--quiet",
+                    &update_s,
+                    &format!("refs/heads/{branch}:refs/heads/{branch}"),
+                ],
+            )
+            .await?;
+            assert_eq!(
+                git(&copy, &["rev-parse", &format!("refs/heads/{branch}")]).await?,
+                head
+            );
+
+            // An update that never merged main has nothing to leave out.
+            tgit(&dir, &["reset", "--quiet", "--hard", "HEAD^1"]).await?;
+            let unmerged = root.join("unmerged.bundle");
+            assert_eq!(
+                code_bundle(&dir, &base, branch, Some(&m), &unmerged).await?,
+                1
+            );
+            anyhow::Ok(())
+        }
+        .await;
+        let _ = std::fs::remove_dir_all(&root);
         r
     }
 }

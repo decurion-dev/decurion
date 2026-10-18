@@ -224,6 +224,19 @@ pub fn bundle_spec(base: &str, branch: &str, new_commits: u64) -> String {
     }
 }
 
+/// [`bundle_spec`] for a saved copy, as `git bundle create` arguments. For
+/// a Bring up to date run whose branch holds the main commit it merged
+/// (`main`), that commit's history is left out too (`^<main>`): the hub
+/// keeps it pinned and every copy of the work starts with it, so it never
+/// needs to travel again.
+pub fn bundle_specs(base: &str, branch: &str, new_commits: u64, main: Option<&str>) -> Vec<String> {
+    let mut v = vec![bundle_spec(base, branch, new_commits)];
+    if new_commits > 0 {
+        v.extend(main.map(|m| format!("^{m}")));
+    }
+    v
+}
+
 /// A full git commit id (SHA-1, or SHA-256 repos).
 pub fn is_sha(s: &str) -> bool {
     matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
@@ -428,6 +441,19 @@ mod tests {
             format!("{base}..refs/heads/decurion/7")
         );
         assert_eq!(bundle_spec(&base, "decurion/7", 0), "refs/heads/decurion/7");
+        let main = "b".repeat(40);
+        assert_eq!(
+            bundle_specs(&base, "decurion/7", 3, Some(&main)),
+            [format!("{base}..refs/heads/decurion/7"), format!("^{main}")]
+        );
+        assert_eq!(
+            bundle_specs(&base, "decurion/7", 0, Some(&main)),
+            ["refs/heads/decurion/7"]
+        );
+        assert_eq!(
+            bundle_specs(&base, "decurion/7", 3, None),
+            [format!("{base}..refs/heads/decurion/7")]
+        );
     }
 
     #[test]
