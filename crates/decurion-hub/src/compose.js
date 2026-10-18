@@ -24,6 +24,14 @@
       line: "One agent does it right away. No plan and no checker. Best for small changes." },
   };
 
+  // The mic for "What do you want?" (voice.js fills .c-voice when the browser
+  // can listen; empty, it takes no room). It sits at the end of the row under
+  // the box. On the phone sheet that row's pieces stand in one ordered column,
+  // so order 2 keeps the mic right under the box there too, inside the margin.
+  document.head.append(el("style", {}, `
+    .composer .c-voice { flex: none; order: 2; display: flex; margin-left: auto; margin-right: var(--side, 0px); }
+    .composer .c-voice:empty { display: none; }`));
+
   // The account an app's Claude work runs on.
   const claudeAcct = (app) => (!app ? "" : app.pay_per_use ? "pay-per-use" : `Max plan ${app.profile}`);
 
@@ -57,6 +65,7 @@
     let pending = null;
 
     const prompt = el("textarea", { id: id("prompt"), className: "c-prompt", rows: 3, "aria-describedby": id("add-err"),
+      dataset: { voice: "", voiceLabel: "Say what you want" },
       placeholder: "For example: add a page where clients book a treatment, pick a time and get a confirmation email" });
     const app = el("select", { id: id("app"), className: "c-app", "aria-label": "App" });
     const ai = el("select", { id: id("ai"), className: "c-ai", "aria-label": "Which AI does the work" },
@@ -96,7 +105,7 @@
     const form = el("form", { id: id("add-thread"), noValidate: true },
       el("label", { className: "lead", htmlFor: id("prompt") }, "What do you want?"),
       prompt,
-      el("div", { className: "c-modes" }, seg, modeLine),
+      el("div", { className: "c-modes" }, seg, modeLine, el("div", { className: "c-voice", dataset: { voiceSlot: id("prompt") } })),
       el("div", { className: "bar" },
         field("App", app),
         fAi, fPlace, fTitle, fParent, bgWrap,

@@ -116,6 +116,8 @@
   .icard.limit { cursor: default; }
   .icard.limit .lim { font-size: 15px; line-height: 1.5; color: var(--ink); }
   .notice { align-items: center; }
+  .read-all { display: flex; justify-content: flex-end; margin: 0 0 10px; }
+  .said .lbl-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .notice svg.i { margin-top: 0; }
   .notice.bad { align-items: flex-start; }
   .notice.bad svg.i { margin-top: 2px; }
@@ -297,6 +299,7 @@
   <section class="view" id="view-inbox" aria-labelledby="title">
     <div class="notice ask" id="notify" hidden></div>
     <div class="err-slot" id="act-err" role="alert"></div>
+    <div class="read-all" id="read-all" hidden></div>
     <div class="list live" id="inbox"></div>
   </section>
   <section class="view" id="view-board" aria-labelledby="title" hidden>
@@ -320,6 +323,7 @@
 <script src="/files.js"></script>
 <script src="/compose.js"></script>
 <script src="/settings.js"></script>
+<script src="/voice.js"></script>
 <script>
 "use strict";
 const { el, $ } = D;
@@ -555,7 +559,8 @@ function inboxCard(t, anim) {
       more.textContent = now ? "Show less" : "Show more";
       more.setAttribute("aria-expanded", now ? "true" : "false");
     };
-    card.append(el("div", { className: "said" }, el("div", { className: "lbl" }, "The agent says"), q, more));
+    card.append(el("div", { className: "said" },
+      el("div", { className: "lbl-row" }, el("div", { className: "lbl" }, "The agent says"), window.Voice?.speaker(said) ?? null), q, more));
   }
   const since = sinceLines(tailNow(t, 20) ?? []);
   if (since.length) card.append(el("div", { className: "said" }, el("div", { className: "lbl" }, said ? "Since then" : "Recently"), el("p", { className: "since" }, since.join("\n"))));
@@ -692,7 +697,32 @@ function renderInbox() {
     }))]);
   }
   placeErr();
+  readAllButton(items);
   requestAnimationFrame(measureQuotes);
+}
+
+// "Read what needs me": the inbox read top to bottom, for when the owner's
+// hands are busy. Built from the same words the cards show.
+function readAllButton(items) {
+  const slot = $("read-all");
+  const V = window.Voice;
+  slot.hidden = !(V?.canSpeak() && S.threads && items.length);
+  if (slot.hidden || slot.firstChild) return;
+  slot.append(V.speaker(() => readAllText(inboxItems()), { label: "Read what needs me" }));
+}
+function readAllText(items) {
+  if (!items.length) return "Nothing needs you right now.";
+  const lines = [items.length === 1 ? "One thing needs you." : `${items.length} things need you.`];
+  items.forEach((t, i) => {
+    const { questions, rest } = D.questions(D.rawWords(tailNow(t, 20) ?? []));
+    const asks = ASKS_IN.has(t.state) ? questions : [];
+    const head = `${items.length > 1 ? `Number ${i + 1}. ` : ""}${t.title}, in ${D.appName(t.app_id)}. ${D.STATES[t.state]?.word ?? ""}.`;
+    const about = asks.length
+      ? `The agent asks: ${asks.map((q) => q.text + (q.choices.length ? ` You can say: ${q.choices.join(", or ")}.` : "")).join(" ")}`
+      : rest.trim().slice(0, 400);
+    lines.push(head, about);
+  });
+  return lines.filter(Boolean).join("\n");
 }
 // A failed action's error shows on its card, or at the top once the work has
 // left the inbox, and stays until the next tap on an action.

@@ -65,6 +65,9 @@
   const MIC = ["M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z", "M5 11a7 7 0 0 0 14 0", "M12 18v3"];
   const STOP = ["M7 7h10v10H7z"];
   const SPEAKER = ["M4 9h4l5-4v14l-5-4H4z", "M16.5 8.5a5 5 0 0 1 0 7"];
+  // The mic and speaker drawings, for pages that want them in their own
+  // headings ("mic" or "speaker").
+  V.icon = (name) => svg(name === "speaker" ? SPEAKER : MIC);
 
   const say = (text) => {
     if (window.D?.toast) return window.D.toast(text, "alert");
@@ -133,7 +136,12 @@
   };
 
   let reading = null; // { owner, token }
-  const announce = () => document.dispatchEvent(new CustomEvent("voice:reading", { detail: { owner: reading?.owner ?? null } }));
+  // One listener repaints every speaker on the page, so buttons that pages
+  // redraw and throw away leave nothing behind.
+  const announce = () => {
+    for (const b of document.querySelectorAll(".voice-speak")) b.voicePaint?.();
+    document.dispatchEvent(new CustomEvent("voice:reading", { detail: { owner: reading?.owner ?? null } }));
+  };
 
   V.stop = () => {
     if (!V.canSpeak()) return;
@@ -200,7 +208,7 @@
       name.textContent = on ? "Stop" : label;
     };
     paint();
-    document.addEventListener("voice:reading", paint);
+    b.voicePaint = paint;
     b.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -275,7 +283,11 @@
         document.dispatchEvent(new CustomEvent("voice:listening", { detail: { on: false, stopped } }));
         resolve(heard.trim());
       };
-      try { rec.start(); } catch (_) { if (V.listening === handle) V.listening = null; resolve(""); }
+      try { rec.start(); } catch (_) {
+        if (V.listening === handle) V.listening = null;
+        document.dispatchEvent(new CustomEvent("voice:listening", { detail: { on: false, stopped } }));
+        resolve("");
+      }
     });
     return handle;
   };

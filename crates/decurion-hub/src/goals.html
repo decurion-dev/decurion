@@ -364,6 +364,30 @@
     .tabs { overflow-x:auto; scrollbar-width:none; }
     .tab { flex:none; padding-left:8px; padding-right:8px; }
   }
+  /* Voice (voice.js): a mic by the typing boxes, a speaker on the project lead's messages.
+     voice.js styles its own buttons; these names give them this page's colors in both themes. */
+  :root { --surface:var(--card); --field-line:var(--line-strong); --red-solid:var(--bad); --red-soft:var(--bad-soft); --focus:var(--accent); }
+  .composer-box .voice-mic { border:0; background:transparent; color:var(--muted); margin:0 -4px 0 -6px; }
+  /* With the mic the box is narrower; the hint keeps to one line rather than being cut in half. */
+  .composer textarea::placeholder { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .composer-box .voice-mic:hover { color:var(--ink); background:var(--neutral-soft); }
+  .composer-box .voice-mic.on, .composer-box .voice-mic.on:hover { background:var(--bad); color:#fff; }
+  .composer-box:has(textarea:disabled) .voice-mic { opacity:.5; cursor:not-allowed; }
+  .composer textarea.voice-live { box-shadow:none !important; }
+  .composer-box:has(textarea.voice-live) { border-color:var(--bad); box-shadow:0 0 0 3px var(--bad-soft); }
+  .talk-note { text-align:center; font-size:13px; font-weight:600; color:var(--bad-ink); }
+  .who .voice-speak { margin-left:8px; }
+  .new-goal .voice-slot { margin-left:auto; display:flex; }
+  @media (max-width: 759px) {
+    .choices .other-toggle:has(+ .voice-mic:not([hidden])) { width:auto; flex:1; }
+  }
+  /* voice.js tells the owner what went wrong in a toast (D.toast in ui.js); this page has no ui.css. */
+  .toasts { position:fixed; z-index:60; right:16px; bottom:calc(16px + env(safe-area-inset-bottom)); display:grid; gap:8px; max-width:min(380px, calc(100vw - 32px)); }
+  .toast { display:flex; gap:10px; align-items:center; padding:12px 14px; border-radius:12px; background:var(--ink); color:var(--bg); font-size:14px; box-shadow:0 8px 30px rgba(0,0,0,.2); }
+  .toast svg.i { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  @media (max-width: 759px) {
+    .toasts { left:16px; right:16px; bottom:calc(96px + env(safe-area-inset-bottom)); max-width:none; }
+  }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; }
     .dots i { opacity:.7; }
@@ -394,10 +418,11 @@
         <label for="new-app">App</label>
         <select id="new-app"></select>
         <label for="new-text">What do you want built?</label>
-        <textarea id="new-text" rows="4" placeholder="Say it in your own words, the way you'd tell a person."></textarea>
+        <textarea id="new-text" rows="4" placeholder="Say it in your own words, the way you'd tell a person." data-voice></textarea>
         <div class="row">
           <button class="btn primary" id="new-start" type="submit">Start</button>
           <button class="btn ghost" id="new-cancel" type="button">Cancel</button>
+          <span class="voice-slot" data-voice-slot="new-text"></span>
         </div>
         <p class="hint" style="margin-top:10px">Your project lead reads the app, asks a few questions, then shows you a plan to approve.</p>
         <p class="err-line" id="new-err" role="alert"></p>
@@ -443,12 +468,13 @@
           <form class="composer" id="composer">
             <div class="column">
               <p class="hint" id="composer-note" hidden></p>
+              <p class="talk-note" id="talk-note" role="status" hidden>Talk mode: your turn. Tap the red button when you're done.</p>
               <div class="composer-box">
                 <button class="clip" id="clip" type="button" aria-label="Add files to this goal" title="Add files to this goal" hidden>
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>
                 </button>
                 <label class="sr-only" for="say">Message your project lead</label>
-                <textarea id="say" rows="1" placeholder="Reply to your project lead…"></textarea>
+                <textarea id="say" rows="1" placeholder="Reply to your project lead…" data-voice></textarea>
                 <button class="send" id="send" type="submit" aria-label="Send" disabled>
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
                 </button>
@@ -475,6 +501,7 @@
 <!-- For the phone's bottom tabs (D.phoneTabs). This page keeps its own look and helpers. -->
 <script src="/ui.js"></script>
 <script src="/files.js"></script>
+<script src="/voice.js"></script>
 <script>
 "use strict";
 const POLL_MS = 2500;
@@ -997,8 +1024,10 @@ function renderMessages(v, ctx) {
   }
   if (lastAdded && !S.firstPaint) {
     const b = lastAdded.body;
-    if (b.kind === "coordinator") announce(`Your project lead: ${b.say}${b.plan ? " A plan is ready." : ""}${b.questions?.length ? ` ${b.questions.length} question${b.questions.length > 1 ? "s" : ""} for you.` : ""}`);
-    else if (b.kind === "report") announce(`Report: ${b.say}`);
+    if (b.kind === "coordinator") {
+      announce(`Your project lead: ${b.say}${b.plan ? " A plan is ready." : ""}${b.questions?.length ? ` ${b.questions.length} question${b.questions.length > 1 ? "s" : ""} for you.` : ""}`);
+      voiceNew(leadSpeech(b), true);
+    } else if (b.kind === "report") { announce(`Report: ${b.say}`); voiceNew(b.say, false); }
     else if (b.kind === "note") announce(b.text);
   }
   return added;
@@ -1014,9 +1043,9 @@ function renderMessage(m, ctx) {
       b.questions?.length ? renderQuestions(m, ctx) : null,
       b.plan ? renderPlan(m, ctx) : null,
       b.remember?.length ? b.remember.map(r => el("div", { class: "remember" }, `Noted for next time: ${r}`)) : null,
-    ]);
+    ], leadSpeech(b));
     case "report": return leadMsg(m, el("section", { class: "report", "aria-label": "Report" },
-      el("span", { class: "kicker" }, "Report"), richText(b.say)));
+      el("span", { class: "kicker" }, "Report"), richText(b.say)), b.say);
     case "note": return el("div", { class: "note", role: "note" }, el("span", null, `${b.text}${clock(m.at) ? " · " + clock(m.at) : ""}`));
     default: return el("div", { class: "note" }, el("span", null, "An update this page can't show yet."));
   }
@@ -1025,10 +1054,19 @@ function ownerMsg(m, bubble) {
   return el("article", { class: "msg owner", "aria-label": "You" },
     el("div", { class: "stack" }, bubble, el("span", { class: "time" }, `You · ${clock(m.at)}`)));
 }
-function leadMsg(m, kids) {
+/** `speech` is what the speaker by the name reads aloud; it sits on the name line so the bubble keeps its full width on a phone. */
+function leadMsg(m, kids, speech) {
+  const who = el("div", { class: "who" }, el("b", null, "Project lead"), ` · ${clock(m.at)}`);
+  if (speech && window.Voice) who.append(Voice.speaker(speech));
   return el("article", { class: "msg lead", "aria-label": "Your project lead" },
     el("div", { class: "avatar", "aria-hidden": "true" }, "PL"),
-    el("div", { class: "stack" }, el("div", { class: "who" }, el("b", null, "Project lead"), ` · ${clock(m.at)}`), kids));
+    el("div", { class: "stack" }, who, kids));
+}
+/** What a project-lead message says out loud: its words, its questions, and whether a plan came with it. */
+function leadSpeech(b) {
+  return [b.say, ...(b.questions ?? []).map(q => q.text), b.plan ? "A plan is ready." : ""]
+    .map(s => String(s ?? "").trim()).filter(Boolean)
+    .map(s => (/[.!?]$/.test(s) ? s : `${s}.`)).join(" ");
 }
 function answersBubble(b, ctx) {
   const qs = ctx.byId.get(b.to)?.body.questions ?? [];
@@ -1082,7 +1120,9 @@ function questionField(msgId, q, qi, draft) {
   if (!draft.has(q.id)) draft.set(q.id, { choice: null, other: "", open: false });
   const d = draft.get(q.id);
   const legendId = `ql-${msgId}-${qi}`, inputId = `qo-${msgId}-${qi}`;
-  const input = el("input", { type: "text", id: inputId, autocomplete: "off", placeholder: "Type your answer" });
+  const input = el("input", { type: "text", id: inputId, autocomplete: "off", placeholder: "Type your answer", "data-voice": true });
+  // A tap and a spoken choice both go through here, so the draft and "Send answers" stay in step.
+  const pick = ci => { d.choice = d.choice === ci ? null : ci; syncQset(msgId); };
   input.value = d.other;
   input.addEventListener("input", () => { d.other = input.value; syncQset(msgId); });
   input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); sendAnswers(msgId); } });
@@ -1100,11 +1140,37 @@ function questionField(msgId, q, qi, draft) {
     el("legend", { id: legendId }, q.text),
     el("div", { class: "choices" },
       q.choices.map((c, ci) => el("button", { class: "choice", type: "button", "aria-pressed": String(d.choice === ci), "data-q": q.id, "data-c": ci,
-        onclick: () => { d.choice = d.choice === ci ? null : ci; syncQset(msgId); } },
+        onclick: () => pick(ci) },
         el("span", { class: "tick", "aria-hidden": "true" }, "✓"), el("span", null, c),
         q.recommended === ci ? el("span", { class: "suggested" }, "Suggested") : null)),
-      toggle),
+      toggle, questionMic(msgId, q, d, input, pick)),
     otherWrap);
+}
+/**
+ * The one mic for a question, beside its choices. The words show in "Something else" as they come;
+ * if they clearly mean one of the choices, that choice is picked as if tapped and the box goes back
+ * to how it was. Otherwise the words stay as the owner's own answer.
+ */
+function questionMic(msgId, q, d, input, pick) {
+  if (!window.Voice) return null;
+  let heard = "", before = null;
+  const mic = Voice.mic(input, { label: "Answer by talking", onDone: text => { heard = text; } });
+  input.voiceMic = mic; // voice.js then adds no second mic inside the hidden box
+  mic.addEventListener("click", () => {
+    if (before || !mic.classList.contains("on")) return;
+    before = { open: d.open, other: d.other };
+    heard = "";
+    d.open = true; syncQset(msgId);
+    whenMicStops(mic, () => {
+      const was = before; before = null;
+      const ci = heard ? Voice.matchChoice(heard, q.choices) : -1;
+      if (ci >= 0) {
+        d.open = was.open; d.other = was.other; input.value = was.other;
+        if (d.choice !== ci) pick(ci); else syncQset(msgId);
+      } else if (!d.other.trim()) { d.open = was.open; syncQset(msgId); }
+    });
+  });
+  return mic;
 }
 const answered = d => d && (d.choice != null || (d.open && d.other.trim() !== ""));
 function questionsOf(msgId) { return S.view?.messages.find(m => m.id === msgId)?.body.questions ?? []; }
@@ -1398,6 +1464,50 @@ $("clip").addEventListener("click", () => {
   DFiles.pick({ appId: g.app_id, goalId: g.id, onChange: filesCount });
 });
 if (!window.DFiles) $("tab-files").hidden = true;
+
+// ---------- voice (voice.js) ----------
+// New replies are read aloud only when the owner turned that on, on this
+// device. Talk mode then opens the message box's mic for the answer; it does
+// this only for replies that arrive while the page is open, never for ones
+// loaded with it, and sends by itself only if the owner also chose "Send when
+// I stop talking". The page works the same without voice.js.
+let talkTurn = 0;
+async function voiceNew(text, listenAfter) {
+  if (!window.Voice) return;
+  const turn = ++talkTurn, goal = S.id;
+  const finished = await Voice.readNew(text);
+  if (!finished || !listenAfter || turn !== talkTurn || goal !== S.id || !Voice.settings().talk) return;
+  talkListen(goal);
+}
+function talkListen(goal) {
+  const say = $("say"), mic = say.voiceMic, g = S.view?.goal;
+  if (!mic || mic.hidden || mic.classList.contains("on") || Voice.listening || Voice.reading()) return;
+  if (say.disabled || S.saying || !g || g.busy || CLOSED.has(g.state) || document.hidden) return;
+  mic.click();
+  if (!mic.classList.contains("on")) return;
+  $("talk-note").hidden = false;
+  whenMicStops(mic, () => {
+    $("talk-note").hidden = true;
+    const s = Voice.settings();
+    // Not when the owner moved to another goal, left the page, or started another mic or a reading.
+    if (s.talk && s.autoSend && goal === S.id && !document.hidden && !Voice.listening && !Voice.reading() && say.value.trim()) $("composer").requestSubmit();
+  });
+}
+/** Runs `then` once, after a mic has stopped and put its last words in its box. */
+function whenMicStops(mic, then) {
+  const watch = new MutationObserver(() => {
+    if (mic.classList.contains("on")) return;
+    watch.disconnect();
+    setTimeout(then, 0);
+  });
+  watch.observe(mic, { attributes: true, attributeFilter: ["class"] });
+}
+// The mic and the reading belong to the goal on screen.
+addEventListener("hashchange", () => {
+  if (!window.Voice) return;
+  if ($("say").voiceMic?.classList.contains("on")) Voice.listening?.stop();
+  Voice.stop();
+});
 
 selectFromHash();
 if (S.id == null) tick();
