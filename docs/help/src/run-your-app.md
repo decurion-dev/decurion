@@ -28,7 +28,7 @@ While an app is running, its button says **Open**. Tap it to see the app again.
 
 ## The first time is slow
 
-The first time you run an app, Decurion has to fetch what the app needs before it can start, and that can take a few minutes. The picture shows how far it has got: getting the code, installing what the app needs, and starting the app. After that, starting is much quicker.
+The first time you run an app, Decurion has to fetch what the app needs before it can start, and that can take a few minutes. The picture shows how far it has got: installing what the app needs, then starting the app. After that, starting is much quicker.
 
 ## Use the app
 
@@ -66,14 +66,16 @@ Agents already start your app themselves to check their work. To see what an age
 
 ## If it doesn't start
 
-The picture says why. Most often, Decurion doesn't know how to start this app yet. Ask an agent for a start recipe, for example as **Just do it** work:
+Instead of the picture, you see **Your app isn't running** and the reason. If the app printed anything before it stopped, **What it printed** shows the last lines.
 
-> Add a Run it recipe so Decurion can start this app
+Most often, Decurion doesn't know how to start this app yet. It can guess for most simple apps. But it can't guess for an app made of several parts that each start, such as a web app with a separate server and a database, because starting only one part would look broken.
 
-The agent writes a small file in the app called `.decurion/run.json`. It looks like this, and says what to install, how to start the app, and which port the app opens on:
+When the app itself is the reason, tap **Ask an agent to fix it**. Decurion starts a piece of work that writes a start recipe: a small file in the app called `.decurion/run.json`. It says what to install, how to start every part the app needs, and which port to open. The agent then starts the app the same way and checks the main page works. A recipe looks like this:
 
 ```json
 {"install": "npm ci", "start": "npm run dev", "port": 5173}
 ```
 
-To try the recipe, open that piece of work when it's finished and tap **Run it** under **Try it**. The **Run it** button in **Today** runs your app's folder on this PC, so it uses the recipe once that folder has the merged change.
+To try the recipe, tap **Open that work**. When the work is finished, tap **Run it** under **Try it**. The **Run it** button in **Today** runs your app's folder on this PC, so it uses the recipe once that folder has the merged change.
+
+If the reason is about Docker or your PC, make sure Docker Desktop is running, then tap **Run it again**.

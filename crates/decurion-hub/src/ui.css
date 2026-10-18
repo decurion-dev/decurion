@@ -391,6 +391,13 @@ details.fold[open] > summary svg.i { transform: rotate(90deg); }
 
 /* ---------- Live test browser (D.browserView in ui.js) ---------- */
 .bv-start { display: grid; gap: 10px; justify-items: start; }
+/* Run it could not start the app (D.previewFailed): why, what it printed, what next. */
+.pv { display: grid; gap: 10px; min-width: 0; }
+.pv-failed { display: grid; gap: 10px; min-width: 0; }
+.pv-failed .notice p { margin: 4px 0 0; overflow-wrap: anywhere; }
+.pv-failed summary { cursor: pointer; font-size: 14px; color: var(--muted); }
+.pv-log { margin: 8px 0 0; max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 var(--mono); background: var(--surface-2); padding: 10px 12px; border-radius: var(--radius-s); }
+.pv-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
 .bv { display: grid; gap: 10px; min-width: 0; }
 .bv-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; }
 .bv-bar .grow { flex: 1 1 180px; min-width: 0; }

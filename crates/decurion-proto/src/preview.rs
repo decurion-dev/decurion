@@ -71,6 +71,10 @@ pub struct PreviewEnded {
     /// Something went wrong, rather than the preview simply being over.
     #[serde(default)]
     pub failed: bool,
+    /// The app itself is why (no start recipe, or it stopped), so an agent
+    /// could fix it; not Docker or the PC.
+    #[serde(default)]
+    pub fixable: bool,
 }
 
 #[cfg(test)]

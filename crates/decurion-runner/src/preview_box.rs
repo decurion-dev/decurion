@@ -10,6 +10,11 @@
 //! soon as the hub says it should not run (the owner tapped Stop, started
 //! another, or nobody has looked at it for a while). Everything is removed
 //! when it stops: boxes, network, home volume and the copy of the code.
+//!
+//! When the app cannot start, or stops, the preview ends at once and the
+//! hub keeps why, so the owner's screen says so (however late it opens) and,
+//! when the app itself is why, offers to ask an agent to fix it. Nothing is
+//! left running behind a page that only looks busy.
 
 use super::{
     branch_copy, clone_into, docker, docker_out, read_capped_line, remove_dir, remove_named,
@@ -41,9 +46,14 @@ const READY_WAIT: Duration = Duration::from_secs(15 * 60);
 /// The hub out of reach for this long stops the preview: nobody can see it.
 const HUB_GONE: Duration = Duration::from_secs(10 * 60);
 /// Lines of the app's output kept to show when it stops.
-const TAIL_LINES: usize = 25;
+const TAIL_LINES: usize = 15;
 /// The longest line of the app's output kept.
-const TAIL_LINE: usize = 400;
+const TAIL_LINE: usize = 200;
+/// What the owner is told when the app's box ends by itself.
+const STOPPED: &str = "Your app stopped before it was ready to use.";
+/// What the owner is told when the app never says where to open it.
+const NEVER_SAID: &str =
+    "Your app didn't say where to open it within 15 minutes, so Decurion stopped it.";
 
 /// Opens the previews the owner asks for, one at a time.
 pub(crate) async fn preview_loop(hub: Hub, data: PathBuf) {
@@ -91,11 +101,11 @@ pub(crate) async fn preview_loop(hub: Hub, data: PathBuf) {
             thread = ?claim.thread.as_ref().map(|t| t.thread_id),
             "starting a preview"
         );
-        let (why, failed) = run_preview(&hub, &data, &claim).await;
-        tracing::info!(sid, %why, "preview over");
-        // The relay already told the owner's screen when it was up; this
-        // closes the session even when it never was.
-        let end = PreviewEnded { why, failed };
+        let end = run_preview(&hub, &data, &claim).await;
+        tracing::info!(sid, why = %end.why, failed = end.failed, "preview over");
+        // Closes the session even when its relay never came up; the hub
+        // keeps why for the owner's screen.
+
         if let Err(err) = hub.post(&format!("/runner/preview/{sid}/end"), &end).await {
             tracing::debug!(%err, sid, "could not tell the hub a preview ended");
         }
@@ -129,8 +139,8 @@ impl Parts {
 }
 
 /// Runs one preview until it should stop. Returns why it stopped, for the
-/// owner, and whether that was a failure.
-async fn run_preview(hub: &Hub, data: &Path, claim: &PreviewClaim) -> (String, bool) {
+/// owner.
+async fn run_preview(hub: &Hub, data: &Path, claim: &PreviewClaim) -> PreviewEnded {
     let sid = claim.session_id;
     let copy = data
         .join("previews")
@@ -147,43 +157,69 @@ async fn run_preview(hub: &Hub, data: &Path, claim: &PreviewClaim) -> (String, b
         gate: None,
         browser: None,
     };
-    let r = preview_in(hub, data, claim, &mut parts).await;
-    let (why, failed) = match r {
-        Ok(why) => (why, false),
+    let end = match preview_in(hub, data, claim, &mut parts).await {
+        Ok(why) => PreviewEnded {
+            why,
+            failed: false,
+            fixable: false,
+        },
         Err(err) => {
             tracing::warn!(err = %format!("{err:#}"), sid, "preview failed");
-            let why = owner_words(&err);
-            match parts.browser.as_mut().filter(|b| !b.gone()) {
-                // The app's box is no use any more; the page says why.
-                Some(b) => {
-                    let _ = remove_named(sid, &[preview_container_name(sid)]).await;
-                    (hold_failure(hub, sid, b, &why).await, true)
-                }
-                None => (why, true),
+            let (why, fixable) = owner_words(&err);
+            PreviewEnded {
+                why,
+                failed: true,
+                fixable,
             }
         }
     };
-    parts.clean(&why).await;
-    (why, failed)
+    parts.clean(&end.why).await;
+    end
 }
 
-/// An error for the owner: one we wrote for them, or a plain catch-all.
-fn owner_words(err: &anyhow::Error) -> String {
+/// An error for the owner, and whether the app itself is why: one we wrote
+/// for them, or a plain catch-all.
+fn owner_words(err: &anyhow::Error) -> (String, bool) {
     match err.downcast_ref::<ForOwner>() {
-        Some(ForOwner(s)) => s.clone(),
-        None => "Your app could not be started. Make sure Docker is running on your PC, \
+        Some(f) => (f.text.clone(), f.fixable),
+        None => (
+            "Your app could not be started. Make sure Docker is running on your PC, \
 then tap Run it again."
-            .to_owned(),
+                .to_owned(),
+            false,
+        ),
     }
 }
 
-/// An error written for the owner.
+/// An error written for the owner. `fixable` when the app itself is why (no
+/// start recipe, or it stopped), so an agent could fix it.
 #[derive(Debug)]
-struct ForOwner(String);
+struct ForOwner {
+    text: String,
+    fixable: bool,
+}
+
+impl ForOwner {
+    /// Something the owner sees to, like a missing test key.
+    fn owner(text: impl Into<String>) -> Self {
+        ForOwner {
+            text: text.into(),
+            fixable: false,
+        }
+    }
+
+    /// The app's own problem, which an agent can fix.
+    fn app(text: impl Into<String>) -> Self {
+        ForOwner {
+            text: text.into(),
+            fixable: true,
+        }
+    }
+}
 
 impl std::fmt::Display for ForOwner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.text)
     }
 }
 
@@ -197,8 +233,14 @@ async fn preview_in(
 ) -> anyhow::Result<String> {
     let sid = claim.session_id;
     let keys = vault_keys(hub, data, claim.app.id, &claim.test_keys)
-        .map_err(|e| ForOwner(format!("{e}")))?;
+        .map_err(|e| ForOwner::owner(format!("{e}")))?;
     let secrets: Vec<String> = keys.iter().map(|(_, v)| v.clone()).collect();
+    // The code and how it starts come first: an app that cannot start says
+    // so in a second or two, before any box is made for it.
+    copy_code(hub, data, claim, &parts.copy)
+        .await
+        .context("copying the code")?;
+    let recipe = preview::recipe(&parts.copy).map_err(ForOwner::app)?;
     parts.gate = Some(
         start_site_gate(hub, BoxNet::preview(sid), &claim.app, None, None)
             .await
@@ -209,11 +251,6 @@ async fn preview_in(
             .await
             .context("the preview's browser")?,
     );
-    browser.send(note(preview::GETTING_CODE));
-    copy_code(hub, data, claim, &parts.copy)
-        .await
-        .context("copying the code")?;
-    let recipe = preview::recipe(&parts.copy).map_err(ForOwner)?;
     let names: Vec<String> = keys.iter().map(|(n, _)| n.clone()).collect();
     let args = preview_box_args(sid, &parts.copy, &names)?;
     let mut cmd = docker();
@@ -321,7 +358,6 @@ async fn follow(
 ) -> anyhow::Result<String> {
     let mut tail: VecDeque<String> = VecDeque::new();
     let mut opened = false;
-    let mut stopped = false;
     let mut out_open = true;
     let ready_by = Instant::now() + READY_WAIT;
     let mut alive = tokio::time::interval(Duration::from_secs(PREVIEW_ALIVE_SECS));
@@ -359,8 +395,7 @@ async fn follow(
                 }
                 None => out_open = false,
             },
-            status = child.wait(), if !stopped => {
-                stopped = true;
+            status = child.wait() => {
                 let code = status.ok().and_then(|s| s.code());
                 tracing::info!(sid, ?code, "the app's box ended");
                 // What it printed last, once the readers have caught up.
@@ -370,24 +405,14 @@ async fn follow(
                         keep(&mut tail, &line);
                     }
                 }
-                out_open = false;
-                browser.send(stopped_note(&tail));
+                return Err(ForOwner::app(with_tail(STOPPED, &tail)).into());
             },
-            _ = tokio::time::sleep_until(ready_by), if !opened && !stopped => {
-                stopped = true;
+            _ = tokio::time::sleep_until(ready_by), if !opened => {
                 let _ = child.start_kill();
-                let mut text = String::from(
-                    "The app stopped: it did not say where to open it within 15 minutes. \
-        Ask an agent to add a Run it recipe that names its port.",
-                );
-                if !tail.is_empty() {
-                    text.push_str(" These are the last lines it printed:\n\n");
-                    text.push_str(&tail.iter().cloned().collect::<Vec<_>>().join("\n"));
-                }
-                browser.send(ToBrowser::Note { text, stopped: true });
+                return Err(ForOwner::app(with_tail(NEVER_SAID, &tail)).into());
             },
             why = browser.ended() => {
-                return Err(ForOwner(format!("The preview's browser stopped. {why}")).into());
+                return Err(ForOwner::owner(format!("The preview's browser stopped. {why}")).into());
             },
             _ = alive.tick() => {
                 if let Some(why) = still_wanted(hub, sid, &mut hub_ok).await {
@@ -435,29 +460,6 @@ async fn still_wanted(hub: &Hub, sid: i64, hub_ok: &mut Instant) -> Option<Strin
     None
 }
 
-/// Shows why the app could not start on the preview's own page, and keeps
-/// it there until the owner stops it (or nobody is looking), so the reason
-/// is still there when the owner's screen catches up.
-async fn hold_failure(hub: &Hub, sid: i64, browser: &mut PreviewBrowser, why: &str) -> String {
-    browser.send(ToBrowser::Note {
-        text: why.to_owned(),
-        stopped: true,
-    });
-    let mut hub_ok = Instant::now();
-    let mut alive = tokio::time::interval(Duration::from_secs(PREVIEW_ALIVE_SECS));
-    alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        tokio::select! {
-            _ = browser.ended() => return why.to_owned(),
-            _ = alive.tick() => {
-                if let Some(stop) = still_wanted(hub, sid, &mut hub_ok).await {
-                    return stop;
-                }
-            }
-        }
-    }
-}
-
 /// Keeps the last lines of the app's output, each cut short.
 fn keep(tail: &mut VecDeque<String>, line: &str) {
     let line = preview::strip_ansi(line);
@@ -472,18 +474,12 @@ fn keep(tail: &mut VecDeque<String>, line: &str) {
     }
 }
 
-/// What the waiting page says once the app has stopped on its own.
-fn stopped_note(tail: &VecDeque<String>) -> ToBrowser {
-    let mut text = String::from(
-        "The app stopped. If it keeps happening, ask an agent to look at why it doesn't start, \
-or to add a Run it recipe.",
-    );
+/// What the owner is told, with the last lines the app printed if any.
+fn with_tail(text: &str, tail: &VecDeque<String>) -> String {
+    let mut text = text.to_owned();
     if !tail.is_empty() {
         text.push_str(" These are the last lines it printed:\n\n");
         text.push_str(&tail.iter().cloned().collect::<Vec<_>>().join("\n"));
     }
-    ToBrowser::Note {
-        text,
-        stopped: true,
-    }
+    text
 }

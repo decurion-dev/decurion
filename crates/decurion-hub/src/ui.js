@@ -1363,8 +1363,10 @@
         c.runBtn = null;
         const back = (why) => { if (cur !== c) return; c.runView = null; runButton(c, why); };
         c.runView = D.previewView(s.id, {
+          appId: c.t.app_id,
           onEnded: back,
           onStopped: () => back("Stopped. Tap Run it to start it again."),
+          again: () => { back(); c.runBtn?.click(); },
         });
         box.replaceChildren(el("section", {}, el("div", { className: "section-title" }, "Try it"), c.runView.el));
       } catch (e) {
@@ -1447,11 +1449,11 @@
   //   opts.label     what a screen reader calls the picture, e.g. "Live picture of your app"
   //   opts.status    the line above the picture while you drive (takeOver false only)
   //   opts.waitingText  what the picture says if nothing has come after 20 seconds
-  //   opts.onEnded   called with the reason once the view is over for good
+  //   opts.onEnded   called with the reason, and { failed, fixable }, once the view is over for good
   D.browserView = (sid, opts = {}) => {
     const takeOver = opts.takeOver !== false;
     let ws = null, who = takeOver ? "agent" : "owner", over = false, ended = null, closing = false;
-    let frameW = 0, frameH = 0, gotFrame = false, slow = null, handing = false;
+    let frameW = 0, frameH = 0, gotFrame = false, slow = null, handing = false, endInfo = {};
 
     const dot = el("span", { className: "dot", "aria-hidden": "true" });
     const status = el("span", { className: "grow" });
@@ -1654,7 +1656,7 @@
           who = m.who === "owner" ? "owner" : "agent";
           if (takeOver && was === "owner" && who === "agent" && !handing) say("The browser went back to the agent.");
           paint();
-        } else if (m.type === "ended") { ended = m.why; cover(m.why); }
+        } else if (m.type === "ended") { ended = m.why; endInfo = { failed: !!m.failed, fixable: !!m.fixable }; cover(m.why); }
       };
       ws.onclose = () => {
         ws = null;
@@ -1675,7 +1677,7 @@
       root.classList.remove("big");
       cover(why || "The live view has ended.");
       paint();
-      opts.onEnded?.(why);
+      opts.onEnded?.(why, endInfo);
     }
 
     async function hand(path, to) {
@@ -1769,16 +1771,18 @@
 (() => {
   const { el, icon } = D;
 
-  // D.previewView(sessionId, { onEnded, onStopped }) → the live view of a
-  // running app, with a Stop button under it. onStopped runs once Stop went
-  // through (the view is closed by then); onEnded when the hub ends it.
+  // D.previewView(sessionId, { appId, onEnded, onStopped, again }) → the
+  // live view of a Run it preview, with Stop. If the app could not start, the
+  // view becomes a notice saying why, with "Run it again" (opts.again) and,
+  // when the app itself is why, "Ask an agent to fix it". onEnded(why) is
+  // called when it simply ended (stopped, replaced, nobody looking).
   D.previewView = (sid, opts = {}) => {
     const note = el("p", { className: "hint", role: "status", "aria-live": "polite" });
+    const wrap = el("div", { className: "pv" });
     const view = D.browserView(sid, {
       takeOver: false,
       label: "Live picture of your app",
-      status: "Your app is running on your PC.",
-      hint: "Tap to click, drag to scroll, and type in the box above the keys. Nothing you do here changes the code.",
+      status: "Your app, live from your PC.",
       waitingText: "Starting your app on your PC. The first time can take a few minutes while it installs what it needs.",
       extra: {
         label: [icon("stop"), "Stop"],
@@ -1799,10 +1803,59 @@
           }
         },
       },
-      onEnded: opts.onEnded,
+      onEnded: (why, info = {}) => {
+        if (!info.failed) { opts.onEnded?.(why); return; }
+        wrap.replaceChildren(D.previewFailed(why, { appId: opts.appId, fixable: info.fixable, again: opts.again }));
+      },
     });
-    view.el.append(note);
-    return view;
+    wrap.append(view.el, note);
+    return { el: wrap, sid, close: () => view.close() };
+  };
+
+  // What an agent is asked to do when Run it can't start an app.
+  const FIX_PROMPT = (why) => `Make the Run it button work for this app. When the owner tapped Run it, Decurion said:
+
+${why}
+
+Add or fix .decurion/run.json so the app starts in a fresh box: one install command, one start command (each on one line), the port it listens on and the page to open. If the app has several parts (for example a web app and an API), start every part it needs in the one start command, the others in the background, and set "port" to the web app's port. If it needs PostgreSQL, start a private one with decurion-postgres at the beginning of the start command. Then start the app exactly as the recipe says, open it in your test browser and make sure the main page works.`;
+
+  // D.previewFailed(why, { appId, fixable, again }) → why Run it couldn't
+  // run the app, what it printed (folded away), and what to do next.
+  D.previewFailed = (why, opts = {}) => {
+    const cut = why.indexOf("\n\n");
+    const words = cut < 0 ? why : why.slice(0, cut);
+    const printed = cut < 0 ? "" : why.slice(cut + 2);
+    const status = el("p", { className: "hint", role: "status", "aria-live": "polite" });
+    const buttons = el("div", { className: "pv-buttons" });
+    if (opts.fixable && opts.appId != null) {
+      const ask = el("button", { type: "button", className: "btn primary", dataset: { key: "pv-fix" } }, icon("tool"), "Ask an agent to fix it");
+      ask.onclick = async () => {
+        if (D.offline) { status.textContent = "Your PC isn't answering. Try again when it's back."; return; }
+        ask.disabled = true;
+        status.textContent = "Asking an agent…";
+        try {
+          const t = await D.send("/threads", { app_id: opts.appId, title: "Make Run it work", prompt: FIX_PROMPT(why) });
+          const open = el("button", { type: "button", className: "btn" }, "Open that work");
+          open.onclick = () => D.openWork?.(t);
+          status.textContent = "An agent is on it. When it's done, tap Run it in that work to try it.";
+          ask.replaceWith(open);
+        } catch (e) {
+          ask.disabled = false;
+          status.textContent = `Couldn't ask an agent. ${e.message}`;
+        }
+      };
+      buttons.append(ask);
+    }
+    if (opts.again) {
+      const again = el("button", { type: "button", className: "btn", dataset: { key: "pv-again" } }, icon("start"), "Run it again");
+      again.onclick = () => opts.again();
+      buttons.append(again);
+    }
+    return el("div", { className: "pv-failed" },
+      el("div", { className: "notice bad", role: "alert" }, icon("alert"),
+        el("div", { className: "grow" }, el("strong", {}, "Your app isn't running"), el("p", {}, words))),
+      printed && el("details", {}, el("summary", {}, "What it printed"), el("pre", { className: "pv-log" }, printed)),
+      buttons, status);
   };
 
   // D.runApp(app, { sid }) runs a whole app as it is in its folder on the PC
@@ -1824,6 +1877,8 @@
 
     const show = (sid) => {
       view = D.previewView(sid, {
+        appId: app.id,
+        again: start,
         // The picture stays, saying why it ended, with a way to start again.
         onEnded: () => { view = null; if (!body.contains(again)) body.append(el("div", { className: "bv-start" }, again)); },
         onStopped: () => { view = null; D.toast(`${app.name} stopped.`); if (d.open) d.close(); },

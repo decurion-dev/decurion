@@ -235,6 +235,14 @@ pub enum ViewerDown {
     /// The browser is not running (yet, or any more).
     Ended {
         why: String,
+        /// Something went wrong (a preview that could not start), rather
+        /// than the view simply being over.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        failed: bool,
+        /// It failed in a way an agent can fix (no start recipe, or the app
+        /// stopped): the screen offers to ask one.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        fixable: bool,
     },
 }
 

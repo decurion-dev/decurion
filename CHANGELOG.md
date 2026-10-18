@@ -59,6 +59,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Run it says why an app didn't start.** When Decurion couldn't start an app, the picture kept saying "Starting your app" and its boxes stayed on. Now it stops at once and shows why, with the last lines the app printed, and **Ask an agent to fix it** starts work that writes the app's start recipe. Run it also starts an app whose only runnable part is in a sub-folder of a monorepo.
 - **Agents can open the app they are building.** An agent's or checker's test browser could not open an app running in its own box ("localhost is not on the list"); it can now, so agents really try their work before saying it is done.
 - **Sign in on this PC works with Claude Code installed by npm on Windows.** Decurion now starts Claude Code's own program instead of npm's script, which could hang with Claude's page never answering. If Claude doesn't start its sign-in within 45 seconds, Decurion says so with Claude's last words instead of waiting 10 minutes, and the sign-in's Cancel button now sits at the top of Sign-ins, where you can see it.
 - **Finished research points to its fixes.** A research card no longer offers Accept, which sounded like sending code to GitHub. It offers **Fix what it found**, which opens that app's master plan, plus Mark done and Reject. A goal made only of research says to read the report and turn the findings into changes. A link to one app's master plan now opens that app, not the last one you picked.
