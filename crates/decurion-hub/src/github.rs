@@ -808,6 +808,9 @@ pub fn push_args(head: &str, branch: &str) -> Vec<String> {
 /// Pushes `head` from the owner's folder `repo` to `branch` on its
 /// `origin`, borrowing the objects in the hub's bare copy `cache`. A plain
 /// push: never forced, so other history on that branch is left alone.
+/// Afterwards the folder's tracking ref for the branch is put back if the
+/// push left it naming a commit only the hub's copy holds
+/// ([`keep_tracking_readable`]).
 async fn push(
     repo: &Path,
     cache: &Path,
@@ -815,6 +818,11 @@ async fn push(
     branch: &str,
     place: &str,
 ) -> std::result::Result<(), String> {
+    let tracking = format!("refs/remotes/origin/{branch}");
+    let before = ref_at(repo, &tracking).await;
+    if let Err(e) = &before {
+        tracing::warn!(error = %scrub(&e.to_string()), "could not read the folder's tracking ref before the push");
+    }
     let mut cmd = netgit::command(repo).await;
     cmd.args(push_args(head, branch))
         .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", cache.join("objects"));
@@ -834,11 +842,90 @@ async fn push(
         Ok(out) => out,
     };
     if out.status.success() {
+        // Without the old value there is nothing safe to put back.
+        if let Ok(before) = before {
+            keep_tracking_readable(repo, &tracking, before.as_deref()).await;
+        }
         return Ok(());
     }
     let err = scrub(&String::from_utf8_lossy(&out.stderr));
     tracing::warn!(branch, error = %err.trim(), "push to the app's remote failed");
     Err(push_failure(&err, branch, place))
+}
+
+/// The commit the ref named exactly `name` points at in `repo`, or `None`
+/// when there is no such ref. Read without checking that the commit is
+/// there, so a tracking ref an earlier push broke still reads.
+async fn ref_at(repo: &Path, name: &str) -> Result<Option<String>> {
+    let all = git(
+        repo,
+        &["for-each-ref", "--format=%(refname) %(objectname)", name],
+    )
+    .await?;
+    Ok(all
+        .lines()
+        .filter_map(|l| l.split_once(' '))
+        .find(|(r, _)| *r == name)
+        .map(|(_, sha)| sha.to_owned()))
+}
+
+/// True if the owner's folder can read commit `sha` from its own objects,
+/// with no borrowed object storage in the way.
+async fn folder_has_commit(repo: &Path, sha: &str) -> bool {
+    let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    Command::new("git")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "-c",
+            &format!("core.hooksPath={null}"),
+            "-c",
+            "core.fsmonitor=false",
+            "cat-file",
+            "-e",
+            &format!("{sha}^{{commit}}"),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .is_ok_and(|s| s.success())
+}
+
+/// A successful push also moves the folder's tracking ref `tracking` (git's
+/// usual fetch rule maps the branch there) to the pushed commit. That
+/// commit lives only in the hub's copy, so the folder would be left with a
+/// ref to a commit it cannot read, and the owner's own `git fetch` and
+/// `git pull` would fail. This puts the ref back to `before`, or removes it
+/// if there was none, only when the commit it now names is unreadable, and
+/// only while it still names that commit, so an owner's fetch that ran in
+/// between is never undone. It never touches another ref and never writes
+/// objects into the folder. The work is already sent, so a failure here is
+/// logged and nothing more.
+async fn keep_tracking_readable(repo: &Path, tracking: &str, before: Option<&str>) {
+    let after = match ref_at(repo, tracking).await {
+        Ok(Some(after)) => after,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(error = %scrub(&e.to_string()), "could not read the folder's tracking ref after the push");
+            return;
+        }
+    };
+    if before == Some(after.as_str()) || folder_has_commit(repo, &after).await {
+        return;
+    }
+    let put_back = match before {
+        Some(old) => git(repo, &["update-ref", tracking, old, &after]).await,
+        None => git(repo, &["update-ref", "-d", tracking, &after]).await,
+    };
+    if let Err(e) = put_back {
+        tracing::warn!(error = %scrub(&e.to_string()), "could not put back the folder's tracking ref after the push");
+    }
 }
 
 /// Plain words for a failed push, from git's own message.
