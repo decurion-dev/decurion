@@ -272,6 +272,9 @@ async fn sign_ins_are_checked_and_only_the_owner_adds_them() {
     let a = app(&h, "demo").await;
     for (start, check) in [
         ("http://staging.example.com", None),
+        // That would be the sign-in window's own box, not the owner's PC.
+        ("http://localhost:3000/login", None),
+        ("https://localhost/login", None),
         ("javascript:alert(1)", None),
         ("https://me:secret@staging.example.com", None),
         ("https://staging.example.com", Some("ftp://x.example.com")),
@@ -291,13 +294,13 @@ async fn sign_ins_are_checked_and_only_the_owner_adds_them() {
         "POST",
         &format!("/api/apps/{a}/sign-ins"),
         Some(OWNER),
-        json!({"label": " Local admin ", "start_url": "http://localhost:3000/login",
-               "check_url": "http://localhost:3000/admin"}),
+        json!({"label": " Local admin ", "start_url": "https://x.example.com/login",
+               "check_url": "https://x.example.com/admin"}),
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
     assert_eq!(v["label"], "Local admin");
-    assert_eq!(v["check_url"], "http://localhost:3000/admin");
+    assert_eq!(v["check_url"], "https://x.example.com/admin");
     assert_eq!(v["card"], Value::Null);
     let (s, _) = call(
         &h.r,

@@ -848,7 +848,7 @@
     // Picture pixels per screen pixel, so a drag moves the page as far as your finger.
     const scale = () => (frameW ? frameW / canvas.getBoundingClientRect().width : 1);
 
-    // Scrolls are gathered and sent at most every 50 ms.
+    // Scrolls are gathered, in picture pixels, and sent at most every 50 ms.
     let pend = null;
     function scroll(x, y, dx, dy) {
       if (!pend) { pend = { ...spot(x, y), dx: 0, dy: 0 }; setTimeout(flush, 50); }
@@ -857,7 +857,11 @@
     function flush() {
       const p = pend;
       pend = null;
-      if (p && (Math.abs(p.dx) >= 1 || Math.abs(p.dy) >= 1)) input({ kind: "scroll", x: p.x, y: p.y, dx: Math.round(p.dx), dy: Math.round(p.dy) });
+      if (!p || !frameW || !frameH || (Math.abs(p.dx) < 1 && Math.abs(p.dy) < 1)) return;
+      // Sent as fractions of the picture, as the browser box expects; at
+      // most ten pictures' worth at once.
+      const f = (v, size) => Math.max(-10, Math.min(10, v / size));
+      input({ kind: "scroll", x: p.x, y: p.y, dx: f(p.dx, frameW), dy: f(p.dy, frameH) });
     }
 
     let press = null;
@@ -927,7 +931,7 @@
       ws = new WebSocket(`${proto}://${location.host}/api/browser/${encodeURIComponent(sid)}/ws?max_width=${width}`);
       clearTimeout(slow);
       slow = setTimeout(() => {
-        if (!gotFrame && !over) cover("Still waiting for the test browser. It starts when the agent first uses it, so it may not be open yet.");
+        if (!gotFrame && !over) cover("Still waiting for the test browser. It starts just before the agent does, so it may not be open yet.");
       }, 20000);
       ws.onmessage = (e) => {
         let m;
@@ -1021,7 +1025,8 @@
         },
       },
       onEnded: (why) => {
-        saved = /saved/i.test(why ?? "");
+        // The runner says exactly this once the sign-in is kept on the PC.
+        saved = why === "The sign-in was saved.";
         note.textContent = saved ? "Saved. Agents working on this app will be signed in from their next run." : (why ?? "");
         if (saved) { D.toast("Sign-in saved"); setTimeout(() => d.open && d.close(), 1200); }
       },

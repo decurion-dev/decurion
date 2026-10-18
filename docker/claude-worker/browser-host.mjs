@@ -625,9 +625,13 @@ async function capture() {
   }
   const cookies = state.cookies ?? [];
   const domains = [...new Set(cookies.map((c) => String(c.domain).replace(/^\./, '')).filter(Boolean))].sort();
-  // Session cookies (expires -1) end with the browser and say nothing.
+  // Session cookies (expires -1) end with the browser and say nothing. The
+  // latest date, not the earliest: sites set short-lived tracking and bot
+  // cookies (minutes or a day) that say nothing about the sign-in. When the
+  // last cookie is gone the sign-in surely is; before that, the check before
+  // each run and the agent landing on the login page are what tell.
   const lasting = cookies.map((c) => c.expires).filter((e) => typeof e === 'number' && e > 0);
-  const expiresAt = lasting.length ? Math.floor(Math.min(...lasting)) : null;
+  const expiresAt = lasting.length ? Math.floor(Math.max(...lasting)) : null;
   send({ type: 'captured', state, login_url: loginUrl, domains, expires_at: expiresAt });
 }
 

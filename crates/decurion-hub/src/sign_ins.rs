@@ -29,6 +29,9 @@ use sqlx::Row;
 pub const EXPIRING_HOURS: i64 = 24;
 /// A sign-in window nobody saved from is given up after this long.
 const STALE_MINUTES: i64 = 30;
+/// The most sign-ins one app may have: the runner hands at most this many
+/// to one browser (`MAX_STATES` in the runner).
+const MAX_SIGN_INS: i64 = 16;
 /// How often the hub records sign-ins that ran out by date, and tells the
 /// owner. Lists show the status by date at once either way.
 const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
@@ -172,12 +175,13 @@ fn check_label(label: &str) -> Result<String> {
     Ok(label.to_owned())
 }
 
-/// An address the owner gave: https, or http on this PC (`localhost`), with
-/// no name or password in it.
+/// An address the owner gave: https, with no name or password in it. Not
+/// `localhost`: the sign-in window is a box of its own, where that would be
+/// the box itself, not the owner's PC.
 fn check_owner_url(what: &str, raw: &str) -> Result<String> {
     let bad = || {
         StoreError::Invalid(format!(
-            "the {what} must start with https:// (or http://localhost for an app on this PC)"
+            "the {what} must start with https://. Sites running on your PC can't be signed in to yet"
         ))
     };
     let raw = raw.trim();
@@ -187,8 +191,7 @@ fn check_owner_url(what: &str, raw: &str) -> Result<String> {
     let u = url::Url::parse(raw).map_err(|_| bad())?;
     let host = u.host_str().unwrap_or("");
     let ok = match u.scheme() {
-        "https" => !host.is_empty(),
-        "http" => host == "localhost",
+        "https" => !host.is_empty() && host != "localhost",
         _ => false,
     };
     if !ok {
@@ -311,6 +314,15 @@ impl Store {
             Some(c) => Some(check_owner_url("page to check", c)?),
         };
         self.app(app_id).await?;
+        let have: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM site_sign_ins WHERE app_id = ?")
+            .bind(app_id)
+            .fetch_one(self.pool())
+            .await?;
+        if have >= MAX_SIGN_INS {
+            return Err(StoreError::Refused(format!(
+                "an app can have at most {MAX_SIGN_INS} website sign-ins; remove one you no longer need first"
+            )));
+        }
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO site_sign_ins (app_id, label, start_url, check_url) VALUES (?, ?, ?, ?)
              RETURNING id",
@@ -798,10 +810,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn owner_addresses_are_https_or_this_pc() {
-        assert!(check_owner_url("address", "https://staging.example.com/login").is_ok());
-        assert!(check_owner_url("address", " http://localhost:3000/admin ").is_ok());
+    fn owner_addresses_are_https_and_not_this_pc() {
+        assert!(check_owner_url("address", " https://staging.example.com/login ").is_ok());
         for bad in [
+            // The sign-in window's own box, not the owner's PC.
+            "http://localhost:3000/admin",
+            "https://localhost/admin",
             "http://staging.example.com",
             "http://127.0.0.1:3000",
             "http://localhost.evil.com",

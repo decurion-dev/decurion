@@ -267,7 +267,8 @@ Make sure Docker is running and the worker image is up to date."
     let (wants, wanted) = watch::channel(None);
     let hub = hub.clone();
     let task = tokio::spawn(async move {
-        relay_loop(&hub, Some(thread), BrowserMode::Run, io, wanted).await;
+        let (end, relay) = relay_loop(&hub, Some(thread), BrowserMode::Run, io, wanted).await;
+        finish(relay, &ended_why(&end)).await;
     });
     Ok(RunBrowser {
         wants,
@@ -288,12 +289,14 @@ pub(crate) async fn stop(browser: Option<RunBrowser>) {
 /// owner through browser session `session_id` and driven by them alone,
 /// with no agent and no tools. Returns what to save once the owner taps
 /// "I'm signed in, save". The password is never kept: only what the browser
-/// holds afterwards.
+/// holds afterwards. The owner's screen stays connected until the caller
+/// says how saving went ([`SignInWindow::finish`]): the hub only takes the
+/// save while the window is still open.
 pub(crate) async fn run_sign_in_box(
     hub: &Hub,
     session_id: i64,
     start_url: &str,
-) -> anyhow::Result<Captured> {
+) -> anyhow::Result<(Captured, SignInWindow)> {
     let first = start_sign_in(start_url)?;
     let name = sign_in_container_name(session_id);
     // One left by a runner that died.
@@ -313,13 +316,61 @@ pub(crate) async fn run_sign_in_box(
     )
     .await;
     remover.remove().await;
-    match end {
-        Ok(BoxEnd::Captured(c)) => Ok(c),
-        Ok(BoxEnd::Failed(why)) => bail!("The sign-in window stopped: {why}"),
-        Ok(BoxEnd::Gone) => bail!("The sign-in window closed before the sign-in was saved."),
+    let (end, relay) = match end {
+        Ok(r) => r,
         Err(_) => bail!(
             "The sign-in window was open for 30 minutes without being saved, so it was closed."
         ),
+    };
+    match end {
+        BoxEnd::Captured(c) => Ok((c, SignInWindow { relay })),
+        BoxEnd::Failed(why) => {
+            finish(relay, &why).await;
+            bail!("The sign-in window stopped: {why}")
+        }
+        BoxEnd::Gone => {
+            finish(relay, &ended_why(&end)).await;
+            bail!("The sign-in window closed before the sign-in was saved.")
+        }
+    }
+}
+
+/// What the owner's screen is told once a sign-in has been saved. The
+/// screen checks for exactly this.
+pub(crate) const SIGN_IN_SAVED: &str = "The sign-in was saved.";
+
+/// A sign-in window whose browser is gone but whose screen is still
+/// connected, waiting to hear whether the sign-in was saved.
+pub(crate) struct SignInWindow {
+    relay: Option<Relay>,
+}
+
+impl SignInWindow {
+    /// Tells the owner's screen how saving went, and closes it.
+    pub(crate) async fn finish(self, why: &str) {
+        finish(self.relay, why).await;
+    }
+}
+
+/// Why the owner's screen closes, when nobody else says.
+fn ended_why(end: &BoxEnd) -> String {
+    match end {
+        BoxEnd::Captured(_) => SIGN_IN_SAVED.to_owned(),
+        BoxEnd::Failed(why) => why.clone(),
+        BoxEnd::Gone => "The browser has closed.".to_owned(),
+    }
+}
+
+/// Ends the owner's view, saying why, and closes the relay.
+async fn finish(relay: Option<Relay>, why: &str) {
+    if let Some(r) = relay {
+        let _ =
+            r.up.send(RelayUp::Ended {
+                why: why.to_owned(),
+            })
+            .await;
+        drop(r.up);
+        let _ = tokio::time::timeout(Duration::from_secs(5), r.task).await;
     }
 }
 
@@ -424,13 +475,14 @@ fn unwatched(io: &BoxIo, mode: BrowserMode) {
 /// Follows a browser box until it ends: reports saved sign-ins it finds
 /// signed out, and while the hub wants the browser shown (`wanted`), keeps
 /// a relay open and passes the screen up and the owner's input down.
+/// Returns the relay still open, for the caller to [`finish`].
 async fn relay_loop(
     hub: &Hub,
     thread: Option<i64>,
     mode: BrowserMode,
     mut io: BoxIo,
     mut wanted: watch::Receiver<Option<BrowserWant>>,
-) -> BoxEnd {
+) -> (BoxEnd, Option<Relay>) {
     let mut relay: Option<Relay> = None;
     let mut page: Option<RelayUp> = None;
     let mut wants_open = true;
@@ -517,17 +569,7 @@ async fn relay_loop(
             },
         }
     };
-    if let Some(r) = relay.take() {
-        let why = match &end {
-            BoxEnd::Captured(_) => "The sign-in was saved.".to_owned(),
-            BoxEnd::Failed(why) => why.clone(),
-            BoxEnd::Gone => "The browser has closed.".to_owned(),
-        };
-        let _ = r.up.send(RelayUp::Ended { why }).await;
-        drop(r.up);
-        let _ = tokio::time::timeout(Duration::from_secs(5), r.task).await;
-    }
-    end
+    (end, relay)
 }
 
 #[cfg(test)]
@@ -634,10 +676,11 @@ mod tests {
         let hub = hub_at(l.local_addr()?);
         let (io, mut lines, prints) = fake_box();
         let (wants, wanted) = watch::channel(Some(BrowserWant { session_id: 7 }));
-        let looping =
-            tokio::spawn(
-                async move { relay_loop(&hub, Some(3), BrowserMode::Run, io, wanted).await },
-            );
+        let looping = tokio::spawn(async move {
+            let (end, relay) = relay_loop(&hub, Some(3), BrowserMode::Run, io, wanted).await;
+            finish(relay, &ended_why(&end)).await;
+            end
+        });
 
         let (mut ws, path, auth) = accept(&l).await?;
         assert_eq!(path, "/api/runner/browser/7/ws");
@@ -751,11 +794,14 @@ mod tests {
                 expires_at: Some(1_800_000_000),
             })
             .await?;
-        assert!(
-            matches!(up(&mut ws).await?, RelayUp::Ended { why } if why == "The sign-in was saved.")
-        );
-        let end = tokio::time::timeout(WAIT, looping).await??;
+        // The screen hears nothing until the caller says how saving went:
+        // the hub only takes the save while the window is open.
+        let (end, relay) = tokio::time::timeout(WAIT, looping).await??;
         assert!(matches!(end, BoxEnd::Captured(c) if c.domains == ["example.com"]));
+        assert!(relay.is_some());
+        let told = tokio::spawn(async move { SignInWindow { relay }.finish(SIGN_IN_SAVED).await });
+        assert!(matches!(up(&mut ws).await?, RelayUp::Ended { why } if why == SIGN_IN_SAVED));
+        told.await?;
         Ok(())
     }
 }

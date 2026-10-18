@@ -20,9 +20,9 @@ use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
 
-/// Shortest value hidden, as for test keys: a shorter one would hide
-/// ordinary words.
-pub const MIN_HIDDEN: usize = decurion_vault::MIN_VALUE;
+/// Shortest value hidden. Longer than for test keys: a website keeps plenty
+/// of ordinary words and settings, and a hit fails the work's review.
+pub const MIN_HIDDEN: usize = 16;
 /// Longest single value hidden as a whole. Longer values are usually JSON
 /// (their pieces are hidden instead); hiding a huge one would cost every
 /// line the runner reads and blank out long lines that were cut off.
@@ -141,10 +141,12 @@ fn looks_like_state(v: &Value) -> bool {
     v.get("cookies").is_some_and(Value::is_array) && v.get("origins").is_some_and(Value::is_array)
 }
 
-/// Every cookie and local storage value of at least [`MIN_HIDDEN`]
-/// characters. A value that is JSON (a stored session, say) also gives up
-/// each piece of text inside it, and an escaped cookie its plain form, since
-/// a page shows them that way.
+/// Every cookie and local storage value that looks like a secret (see
+/// [`secret_like`]). A value that is JSON (a stored session, say) also gives
+/// up the pieces inside it kept under token-like names, and an escaped
+/// cookie its plain form, since a page shows them that way. Other pieces of
+/// stored JSON (a user's role, a site's public settings) are left alone:
+/// they turn up in ordinary code, and a hit there would fail the work.
 pub fn hidden_values(state: &Value) -> Vec<String> {
     let mut raw: Vec<&str> = Vec::new();
     for c in state["cookies"].as_array().into_iter().flatten() {
@@ -163,30 +165,65 @@ pub fn hidden_values(state: &Value) -> Vec<String> {
 }
 
 fn add_value(v: &str, out: &mut Vec<String>, depth: u8) {
-    let long_enough = v.chars().count() >= MIN_HIDDEN;
-    if !long_enough {
-        return;
-    }
-    if v.len() <= MAX_HIDDEN {
+    if v.len() <= MAX_HIDDEN && secret_like(v) {
         out.push(v.to_owned());
         let plain = percent_decoded(v);
-        if plain != v && plain.chars().count() >= MIN_HIDDEN {
+        if plain != v && secret_like(&plain) {
             out.push(plain);
         }
     }
-    // A value that is itself JSON: hide what is inside it, a few levels down.
+    // A value that is itself JSON: hide its tokens, a few levels down.
     if depth < 4 && (v.starts_with('{') || v.starts_with('[')) {
         if let Ok(inner) = serde_json::from_str::<Value>(v) {
-            json_strings(&inner, out, depth + 1);
+            json_strings(&inner, None, out, depth + 1);
         }
     }
 }
 
-fn json_strings(v: &Value, out: &mut Vec<String>, depth: u8) {
+/// At least [`MIN_HIDDEN`] characters, no spaces, and both letters and
+/// digits, as session ids and tokens are; words and plain settings are not.
+fn secret_like(v: &str) -> bool {
+    v.chars().count() >= MIN_HIDDEN
+        && !v.chars().any(char::is_whitespace)
+        && v.chars().any(|c| c.is_ascii_digit())
+        && v.chars().any(|c| c.is_alphabetic())
+}
+
+/// Whether a stored JSON name is one a site keeps a secret under.
+fn token_name(k: &str) -> bool {
+    let k = k.to_ascii_lowercase();
+    [
+        "token",
+        "jwt",
+        "secret",
+        "session",
+        "password",
+        "credential",
+        "bearer",
+        "cookie",
+        "sid",
+    ]
+    .iter()
+    .any(|t| k.contains(t))
+}
+
+/// The strings in stored JSON kept under token-like names (`key`, the name
+/// the value sits under; a list's items take the list's name).
+fn json_strings(v: &Value, key: Option<&str>, out: &mut Vec<String>, depth: u8) {
     match v {
-        Value::String(s) => add_value(s, out, depth),
-        Value::Array(a) => a.iter().for_each(|x| json_strings(x, out, depth)),
-        Value::Object(o) => o.values().for_each(|x| json_strings(x, out, depth)),
+        Value::String(s) if key.is_some_and(token_name) => add_value(s, out, depth),
+        // Stored JSON inside stored JSON is opened whatever its name.
+        Value::String(s) if s.starts_with('{') || s.starts_with('[') => {
+            if depth < 4 {
+                if let Ok(inner) = serde_json::from_str::<Value>(s) {
+                    json_strings(&inner, None, out, depth + 1);
+                }
+            }
+        }
+        Value::Array(a) => a.iter().for_each(|x| json_strings(x, key, out, depth)),
+        Value::Object(o) => o
+            .iter()
+            .for_each(|(k, x)| json_strings(x, Some(k), out, depth)),
         _ => {}
     }
 }
@@ -413,12 +450,14 @@ mod tests {
             "cookies": [
                 {"name": "sid", "value": "s3ss10n-abcdef123", "domain": "staging.example.com"},
                 {"name": "theme", "value": "dark"},
-                {"name": "enc", "value": "a%2Bb%3Dc%3D1234"},
+                {"name": "enc", "value": "a%2Bb%3Dc%3D1234567890ab"},
+                {"name": "page", "value": "https://staging.example.com/dashboard"},
             ],
             "origins": [{
                 "origin": "https://staging.example.com",
                 "localStorage": [
-                    {"name": "sb-auth-token", "value": "{\"access_token\":\"eyJhbGciOi.payload.sig\",\"user\":{\"id\":\"short\"}}"},
+                    {"name": "sb-auth-token", "value": "{\"access_token\":\"eyJhbGciOi.payload1.sig\",\"aud\":\"authenticated\",\"user\":{\"id\":\"short\",\"role\":\"authenticated\"}}"},
+                    {"name": "firebase:authUser", "value": "{\"apiKey\":\"AIzaSyA1234567890abcdefgh\",\"stsTokenManager\":{\"accessToken\":\"eyJ0eXAi.fire2.sig\"}}"},
                     {"name": "big", "value": "x".repeat(MAX_HIDDEN + 1)},
                 ],
             }],
@@ -429,10 +468,21 @@ mod tests {
     fn values_long_enough_are_hidden_including_inside_json() {
         let h = hidden_values(&state());
         assert!(h.contains(&"s3ss10n-abcdef123".to_owned()));
-        assert!(h.contains(&"eyJhbGciOi.payload.sig".to_owned()));
-        assert!(h.contains(&"a%2Bb%3Dc%3D1234".to_owned()));
-        assert!(h.contains(&"a+b=c=1234".to_owned()));
-        assert!(!h.iter().any(|v| v == "dark" || v == "short"));
+        assert!(h.contains(&"eyJhbGciOi.payload1.sig".to_owned()));
+        assert!(h.contains(&"eyJ0eXAi.fire2.sig".to_owned()));
+        assert!(h.contains(&"a%2Bb%3Dc%3D1234567890ab".to_owned()));
+        assert!(h.contains(&"a+b=c=1234567890ab".to_owned()));
+        // Words, settings and public config a site keeps are not secrets,
+        // and turn up in ordinary code.
+        for plain in [
+            "dark",
+            "short",
+            "authenticated",
+            "AIzaSyA1234567890abcdefgh",
+            "https://staging.example.com/dashboard",
+        ] {
+            assert!(!h.iter().any(|v| v == plain), "{plain}");
+        }
         // Too long to hide whole; it is not JSON, so nothing inside it either.
         assert!(!h.iter().any(|v| v.len() > MAX_HIDDEN));
         assert_eq!(percent_decoded("100%"), "100%");

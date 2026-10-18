@@ -1458,7 +1458,7 @@
       el("div", { className: "field" }, el("label", { htmlFor: id("label") }, "Name"), label,
         el("span", { className: "hint" }, "Your own name for it, such as the account it signs in as.")),
       el("div", { className: "field" }, el("label", { htmlFor: id("start") }, "Sign-in page"), start,
-        el("span", { className: "hint" }, "Starts with https://, or http://localhost for an app on this PC.")),
+        el("span", { className: "hint" }, "Starts with https://.")),
       el("div", { className: "field" }, el("label", { htmlFor: id("check") }, "Page to check (optional)"), check,
         el("span", { className: "hint" }, "A page that only works when signed in. Checked before each run.")),
       el("div", { className: "full actions" }, el("button", { className: "btn primary", type: "submit" }, "Add sign-in"), err));
@@ -1467,7 +1467,7 @@
       err.textContent = "";
       const name = label.value.trim(), addr = start.value.trim();
       if (!name) { err.textContent = "Give the sign-in a name."; label.focus(); return; }
-      if (!/^(https:\/\/|http:\/\/localhost(:\d+)?(\/|$))/i.test(addr)) { err.textContent = "Enter the sign-in page's address, starting with https://."; start.focus(); return; }
+      if (!/^https:\/\//i.test(addr)) { err.textContent = "Enter the sign-in page's address, starting with https://."; start.focus(); return; }
       try {
         await D.api(`/apps/${a.id}/sign-ins`, { method: "POST", body: JSON.stringify({ label: name, start_url: addr, check_url: check.value.trim() || null }) });
         D.toast(`Added ${name} for ${a.name}. Tap Sign in next to it to sign in.`);

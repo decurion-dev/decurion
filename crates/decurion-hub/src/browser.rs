@@ -729,7 +729,8 @@ impl Relays {
 /// again.
 fn input_ok(i: &Input) -> bool {
     let frac = |v: f64| (0.0..=1.0).contains(&v);
-    let step = |v: f64| v.is_finite() && v.abs() <= 10_000.0;
+    // Scrolls are fractions of the picture, at most ten pictures at once.
+    let step = |v: f64| v.is_finite() && v.abs() <= 10.0;
     match i {
         Input::Click { x, y } => frac(*x) && frac(*y),
         Input::Scroll { x, y, dx, dy } => frac(*x) && frac(*y) && step(*dx) && step(*dy),

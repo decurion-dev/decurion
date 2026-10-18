@@ -2672,18 +2672,24 @@ async fn sign_in_loop(hub: Hub, data: PathBuf) {
             "opening a sign-in window"
         );
         match browser_box::run_sign_in_box(&hub, sid, &session.start_url).await {
-            Ok(c) => {
+            Ok((c, window)) => {
                 let captured = FromBrowser::Captured {
                     state: c.state,
                     login_url: c.login_url,
                     domains: c.domains,
                     expires_at: c.expires_at,
                 };
-                if let Err(err) =
-                    sign_ins::save_capture(&hub.access(), &data, &session, &captured).await
-                {
-                    tracing::error!(%err, sid, "could not save a sign-in");
-                }
+                // The window stays open on the owner's screen until this is
+                // known, and the hub takes the save only while it is.
+                let why =
+                    match sign_ins::save_capture(&hub.access(), &data, &session, &captured).await {
+                        Ok(()) => browser_box::SIGN_IN_SAVED.to_owned(),
+                        Err(err) => {
+                            tracing::error!(%err, sid, "could not save a sign-in");
+                            "The sign-in could not be kept. Close this and try again.".to_owned()
+                        }
+                    };
+                window.finish(&why).await;
             }
             Err(err) => tracing::info!(%err, sid, "sign-in window ended without a save"),
         }

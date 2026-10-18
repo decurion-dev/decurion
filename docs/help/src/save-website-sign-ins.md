@@ -15,7 +15,7 @@ Why: most of what keeps a browser signed in is locked away from the agent, but s
 1. Open the board and click **Settings**.
 2. Find **Website sign-ins**, then the app the sign-in is for.
 3. In **Name**, type your own name for it, such as `Staging admin`.
-4. In **Sign-in page**, paste the address of the website's sign-in page. It must start with `https://`, or `http://localhost` for an app running on your PC. Don't put a name or password in the address.
+4. In **Sign-in page**, paste the address of the website's sign-in page. It must start with `https://`. Sites running on your own PC (`localhost`) can't be signed in to this way yet. Don't put a name or password in the address.
 5. If you like, in **Page to check**, paste the address of a page that only works when signed in, such as your account page. Before each run, Decurion opens it to check the sign-in still works.
 6. Click **Add sign-in**.
 7. Click **Sign in** next to it. A browser window opens at the sign-in page.
@@ -38,13 +38,13 @@ Tap the card, or **Sign in again** on the board, and sign in once more. Agents g
 - Saved sign-ins stay on your PC, locked with a key kept in Windows' own secure store. They are never in Decurion's database, your app's folder or GitHub.
 - Each piece of work gets only its own app's sign-ins.
 - Agents can only visit the websites on the app's list in **Settings**. Add the website the sign-in is for there too, or agents will be turned away from it.
-- Work for an app with saved sign-ins runs on your PC, not on a cloud worker.
+- Saved sign-ins never leave your PC. Work running on a cloud worker goes without them.
 - An agent's own changes to a sign-in (signing out, say) are never saved. The next run starts from your saved sign-in again.
 - To stop agents being signed in, click **Remove**. The saved sign-in is deleted from your PC.
 
 ## If something goes wrong
 
-- **"the address must start with https://"** Use the website's https address. Plain `http://` only works for `localhost`.
+- **"the address must start with https://"** Use the website's https address.
 - **"leave the name and password out of the address"** Remove the `name:password@` part. You type those into the sign-in window instead.
 - **The sign-in window says it is not available yet** Your hub is older than this feature. Update Decurion and try again.
 - **The card keeps coming back right after you sign in** The website may sign people out quickly, or the page to check may need more than a sign-in. Try another page to check, or remove it.
