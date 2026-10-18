@@ -419,6 +419,7 @@ mod tests {
             parent_id: None,
             background: false,
             github: None,
+            research: false,
         };
         Claim {
             thread,

@@ -1,7 +1,9 @@
 use anyhow::{bail, Context};
 use decurion_proto::browser::{FromBrowser, SiteState};
 use decurion_proto::context::ContextRef;
-use decurion_proto::goal::{HelperClaim, HelperResult, HelperSource};
+use decurion_proto::goal::{
+    HelperClaim, HelperResult, HelperSource, ResearchReport, MAX_PAGE_BYTES,
+};
 use decurion_proto::{
     sites, App, Claim, HelloReply, JoinReply, JoinRequest, Live, MoveRequest, NewCheckpoint, Place,
     RunCredential, RunEvent, RunnerHello, SignInSession, ThreadState, RULES_VERSION,
@@ -19,12 +21,13 @@ use decurion_runner::sign_ins::{self, HubAccess};
 mod browser_box;
 
 use decurion_runner::{
-    backoff, browser_container_name, check_home_volume, container_name, context_prompt,
-    design_home_volume, goal_home_volume, helper_container_name, helper_run_args,
+    backoff, browser_container_name, check_home_volume, clear_report, container_name,
+    context_prompt, design_home_volume, goal_home_volume, helper_container_name, helper_run_args,
     helper_tool_container_name, hide, hide_cut, home_volume, is_interrupted_turn, is_turn_start,
-    parse_line_hiding, parse_result, part_done, pi_run_args, prompt_for, read_page, redact,
-    retriable, run_args, sibling, valid_branch, Acks, Action, Conversation, Credential,
-    FirstResult, LeakScanner, PiRun, Sandbox, Start, Step, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
+    parse_line_hiding, parse_result, part_done, pi_run_args, prompt_for, read_page, read_report,
+    redact, research_outcome, retriable, run_args, sibling, valid_branch, Acks, Action,
+    Conversation, Credential, FirstResult, LeakScanner, PiRun, Sandbox, Start, Step, BUDGET_STOP,
+    DOCKER_CLI_ENV, LIMIT_STOP,
 };
 use decurion_runner::{gate_args, parse_gate_line, BoxNet, GateLine, GATE_IMAGE, RELAY_URL};
 use decurion_vault::{check_name, Vault};
@@ -1759,6 +1762,11 @@ make sure Docker Desktop is running and delete that container there",
     let _ = docker_out(&["rm", "-f", &tool_container_name(id)]).await;
 
     let (wt, rebuilt) = workspace(hub, data, &c, &branch).await?;
+    // A research run's report comes from this run alone: one left by an
+    // earlier try is removed before every start, so it is never sent.
+    if c.thread.research {
+        clear_report(&wt).context("could not remove the old research report")?;
+    }
     // The home volume is ready (sessions restored); the owner's files go in
     // fresh on every start.
     let xfer = transfer_dir(data, id)?;
@@ -1823,6 +1831,7 @@ make sure Docker Desktop is running and delete that container there",
     let mut prompt = prompt_for(
         &c.thread.prompt,
         start,
+        c.thread.research,
         &c.test_keys,
         &c.messages,
         c.interrupted.as_ref(),
@@ -2042,6 +2051,22 @@ make sure Docker Desktop is running and delete that container there",
             }
         }
     };
+    // A research run goes to review only with its report at the hub, so the
+    // owner never finds it there with nothing to read.
+    let (to, note) = if c.thread.research && to == ThreadState::InReview {
+        match send_report(hub, id, &wt, &secrets).await {
+            Ok(()) => (to, note),
+            Err(err) => {
+                tracing::error!(%err, id, "could not send the research report");
+                (
+                    ThreadState::Failed,
+                    format!("the research report could not be sent to the hub: {err:#}"),
+                )
+            }
+        }
+    } else {
+        (to, note)
+    };
     let note = hide(&note, &secrets);
     with_retry("report the outcome", FINAL_RETRY, async || {
         if let (ThreadState::Queued, Some(reset_epoch)) = (to, max_limit) {
@@ -2069,9 +2094,28 @@ struct Exit<'a> {
     used_up: bool,
 }
 
+/// Sends a research run's report to the hub, with test keys and saved
+/// sign-in values hidden like all other output. With no report file the hub
+/// makes a page from the agent's summary instead.
+async fn send_report(hub: &Hub, id: i64, wt: &Path, secrets: &[String]) -> anyhow::Result<()> {
+    // Hiding can make the page longer; one past the limit is not sent, and
+    // the owner gets the summary's page instead.
+    let html = read_report(wt)
+        .map(|page| hide(&page, secrets))
+        .filter(|page| page.len() <= MAX_PAGE_BYTES);
+    let report = ResearchReport { html };
+    with_retry("send the research report", FINAL_RETRY, async || {
+        hub.post(&format!("/runner/threads/{id}/report"), &report)
+            .await?;
+        Ok(())
+    })
+    .await
+}
+
 /// Where the work goes after the run. The agent's own "done" is not enough:
 /// work only goes to review if it actually left commits on its branch, and
-/// none of them holds a test key.
+/// none of them holds a test key. A research run needs no commits, only a
+/// report or a summary; anything it commits is ignored and never sent on.
 async fn outcome(
     data: &Path,
     wt: &Path,
@@ -2089,6 +2133,9 @@ async fn outcome(
     } = exit;
     let branch = c.thread.branch.as_deref().unwrap_or_default();
     match finished {
+        Some((true, summary)) if status.success() && c.thread.research => {
+            research_outcome(read_report(wt).is_some(), &summary)
+        }
         Some((true, _)) if status.success() => match new_commits(data, wt, branch).await {
             Ok(0) => (
                 ThreadState::Failed,
