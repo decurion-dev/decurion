@@ -234,7 +234,7 @@ async fn a_ready_plan_needs_you_and_a_working_goal_counts_its_pieces() {
     let rows = today(&r).await;
     let refill_row = rows.iter().find(|x| x["app_id"] == refill).expect("refill");
     assert_eq!(refill_row["tone"], "needs_you");
-    assert_eq!(refill_row["line"], "Plan ready");
+    assert_eq!(refill_row["line"], "Approve the plan");
     assert_eq!(refill_row["needs_you"], 1);
     let atlas_row = rows.iter().find(|x| x["app_id"] == atlas).expect("atlas");
     assert_eq!(

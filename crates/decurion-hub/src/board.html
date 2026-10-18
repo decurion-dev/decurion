@@ -527,7 +527,7 @@
     });
   }
   $("new-work").onclick = focusComposer;
-  // Other screens (such as "Fix these" on finished work) open the same box, filled in.
+  // Other screens (such as "Fix what it found" on finished work) open the same box, filled in.
   D.setNewWork((fill) => { composer.fill(fill); focusComposer(); });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "n" && e.key !== "N") return;
@@ -616,13 +616,13 @@
       const fixOn = r.open_comments > 0 ? (r.fix_thread_id ?? r.last_pr?.thread_id) : null;
       let act;
       if (fixOn != null) {
-        act = el("button", { type: "button", className: "btn primary sm", dataset: { key: `today-fix-${id}` } }, icon("tool"), "Fix these");
+        act = el("button", { type: "button", className: "btn primary sm", dataset: { key: `today-fix-${id}` } }, icon("tool"), "Answer the comments");
         act.disabled = D.offline;
         act.onclick = async () => {
           act.disabled = true;
           try {
             await D.send(`/threads/${fixOn}/pr/fix`, {});
-            D.toast("Started a fix for the comments.");
+            D.toast("Started work that answers the comments.");
           } catch (e) {
             D.toast(e.message, "alert");
           }

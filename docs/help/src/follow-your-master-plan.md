@@ -20,18 +20,18 @@ Each goal is a card. Its mark and words tell you where it is:
 
 - **✓ Done** in green: you closed the goal.
 - **◐ Working**: agents are building or checking it. Nothing for you to do.
-- **! Plan ready for you**, **Ready for your review** or **Needs you** in
-  amber: the goal waits for you. Tap its name to open it.
+- **! Needs you** in amber: the goal waits for you. The words after it say
+  what, such as **Needs you · approve the plan**. Tap its name to open it.
 - **✕ Stopped** in grey: you stopped the goal.
 
 Under the name, the goal's steps show in order, each with a mark: ✓ done,
-◐ an agent is on it now, ! waiting for you (in amber), ○ not started yet. A
-step marked **Needs a look** in red went wrong; tap it to open that piece of
-work on the board.
+◐ an agent is on it now, ! **Needs you** (in amber), ○ not started yet. A
+step marked **Failed** in red went wrong; tap it to open that piece of work
+on the board.
 
 The pages agents drew for the goal show as small buttons, such as
-**Visual plan** or **As built: Order form**. One marked **Question waiting**
-has a question for you.
+**Visual plan** or **As built: Order form**. One marked **Needs you · a
+question** has a question for you.
 
 Use the small arrows on the right of a card to move it up or down. The order
 is yours; it does not change what agents do.
@@ -62,8 +62,8 @@ the plan** at the bottom for something on its own. A to-do of your own has a
 
 **Pages** lists every page agents drew for the app, newest first, grouped by
 goal: **Visual plan** pages from before the work, and **As built** pictures
-taken by the checker. Pages with a question for you are marked **Questions
-waiting for you**. Tap **Waiting for you** to see only those.
+taken by the checker. Pages with a question for you are marked **Needs you ·
+answer a question** (or how many). Tap **Needs you** to see only those.
 
 ## Answer questions beside a page
 

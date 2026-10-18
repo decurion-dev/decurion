@@ -105,13 +105,13 @@ pub struct TodayRow {
     /// for yet.
     pub open_comments: i64,
     /// The work whose pull request has the newest of those comments: the one
-    /// "Fix these" answers (`POST /api/threads/{id}/pr/fix`).
+    /// "Answer the comments" answers (`POST /api/threads/{id}/pr/fix`).
     pub fix_thread_id: Option<i64>,
     pub last_pr: Option<LastPr>,
     pub tone: Tone,
     /// One or two words for the label: "Needs you", "Working", "Done".
     pub status: String,
-    /// What the app waits on, in a few plain words: "Plan ready",
+    /// What the app waits on, in a few plain words: "Approve the plan",
     /// "2 of 4 pieces built", "PR #88 · param left 3 comments".
     pub line: String,
 }
@@ -186,13 +186,13 @@ fn words(f: &Facts) -> (Tone, &'static str, String) {
         ));
     }
     if f.plans_ready > 0 {
-        asks.push("Plan ready".to_owned());
+        asks.push("Approve the plan".to_owned());
     }
     if f.goals_for_review > 0 {
-        asks.push("Work ready for your review".to_owned());
+        asks.push("Review the finished work".to_owned());
     }
     if f.goals_talking > 0 {
-        asks.push("Your project lead waits for your answer".to_owned());
+        asks.push("Answer your project lead".to_owned());
     }
     if f.goals_stuck > 0 {
         asks.push("Your project lead got stuck. Try again".to_owned());
@@ -404,7 +404,7 @@ impl Store {
                 c.newest = newest;
             }
         }
-        // "Fix these" answers the pull request with the newest comment.
+        // "Answer the comments" answers the pull request with the newest comment.
         let mut by_pr: Vec<(i64, (i64, Comments))> = by_pr.into_iter().collect();
         by_pr
             .sort_by(|(a_id, (_, a)), (b_id, (_, b))| b.newest.cmp(&a.newest).then(b_id.cmp(a_id)));
@@ -496,7 +496,7 @@ mod tests {
         let (tone, status, line) = words(&f);
         assert_eq!(tone, Tone::NeedsYou);
         assert_eq!(status, "Needs you");
-        assert_eq!(line, "Plan ready · 1 more");
+        assert_eq!(line, "Approve the plan · 1 more");
     }
 
     #[test]

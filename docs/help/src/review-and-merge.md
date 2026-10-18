@@ -14,6 +14,8 @@ Work moves to **In review** only when the agent has finished and saved its chang
    - **Send back** if it needs more. The agent runs again and picks up where it left off. Today you cannot add a note when you send work back.
    - **Reject** if you do not want it. The work moves to **Failed**.
 
+If the agent's summary lists problems it found along the way, tap **Fix what it found**. It opens the "What do you want?" box filled in with that summary, so you can start new work from it. The work you are looking at stays as it is.
+
 ## After you accept: merge it on GitHub
 
 When you tap **Accept**, Decurion puts the work on your app's GitHub page as a new **branch**, a separate line of changes. Its name starts with `decurion/`, then the app, the number and a few words from the title, such as `decurion/shop-7-fix-login`. It uses this PC's own GitHub sign-in, the same one you use to push from this PC yourself, so you are not asked anything.
@@ -36,11 +38,11 @@ If someone reviews an app's work for you, put their GitHub name in the app's set
 After a pull request is open, Decurion looks at it about every five minutes until it is merged or closed. It needs a saved GitHub token for this (see below); without one it does not watch.
 
 - **When it is merged or closed,** you get a notice, and the app's line on the board says so. Decurion stops looking at it then.
-- **When someone leaves comments,** you get a notice and an inbox card like "param left 3 comments · Fix these". Your own comments do not count.
-- **Tap Fix these** to start new work that answers those comments. The agent gets the comments as notes from other people to weigh, never as orders. It starts from the work already in the pull request.
+- **When someone leaves comments,** you get a notice and an inbox card like "param left 3 comments · Answer the comments". Your own comments do not count.
+- **Tap Answer the comments** to start new work that answers those comments. The agent gets the comments as notes from other people to weigh, never as orders. It starts from the work already in the pull request.
 - **Review the fix like any other work.** When you accept it, Decurion adds it to the same pull request, on the same branch, and asks the reviewer to look again. It only ever adds on top of what is there: it never rewrites the branch, never opens a second pull request and never merges.
 
-Only one fix per pull request runs at a time. New comments that arrive while it runs wait for the next **Fix these**.
+Only one fix per pull request runs at a time. New comments that arrive while it runs wait for the next **Answer the comments**.
 
 ## Let Decurion open the pull request for you
 

@@ -374,7 +374,7 @@ const CHIPS = ["running", "in_review", "needs_you", "queued", "done", "failed"];
 const BOARD_EMPTY = {
   running: "Nothing is running right now.",
   in_review: "Nothing is waiting for review.",
-  needs_you: "No agent is waiting on you.",
+  needs_you: "No agent needs you.",
   queued: "Nothing is waiting to start.",
   done: "Nothing is done yet.",
   failed: "Nothing has failed.",
@@ -495,7 +495,7 @@ function goalsBadge(list) {
   const n = list.filter(waitsOnYou).length;
   $("goals-badge").hidden = n === 0;
   $("goals-badge").textContent = n > 99 ? "99+" : n;
-  $("tab-goals").setAttribute("aria-label", n ? `Goals, ${D.plural(n, "goal")} waiting on you` : "Goals");
+  $("tab-goals").setAttribute("aria-label", n ? `Goals, ${D.plural(n, "goal")} ${n === 1 ? "needs" : "need"} you` : "Goals");
 }
 // Goals, the badge and the views behind their cards. Never throws: if the hub
 // can't say, the badge and the cards stay as they were.
@@ -553,13 +553,13 @@ function renderToday() {
     const fixOn = r.open_comments > 0 ? (r.fix_thread_id ?? r.last_pr?.thread_id) : null;
     let act;
     if (fixOn != null) {
-      act = el("button", { type: "button", className: "btn primary", disabled: D.offline }, D.icon("tool"), "Fix these");
+      act = el("button", { type: "button", className: "btn primary", disabled: D.offline }, D.icon("tool"), "Answer the comments");
       act.onclick = async () => {
         if (D.offline) return;
         act.disabled = true;
         try {
           await D.send(`/threads/${fixOn}/pr/fix`, {});
-          D.toast("Started a fix for the comments.");
+          D.toast("Started work that answers the comments.");
         } catch (e) {
           D.toast(e.message, "alert");
         }
@@ -760,7 +760,7 @@ function inboxCard(t, anim) {
     const tell = el("button", { type: "button", className: "btn quiet" }, D.icon("question"), "Tell the agent something");
     tell.onclick = () => D.openWork(t, refresh, { talk: true });
     // Starts new work from what it found, in the one "What do you want?" box.
-    const fix = t.state === "in_review" && !t.research && said && D.canFix() && el("button", { type: "button", className: "btn quiet" }, D.icon("tool"), "Fix these");
+    const fix = t.state === "in_review" && !t.research && said && D.canFix() && el("button", { type: "button", className: "btn quiet" }, D.icon("tool"), "Fix what it found");
     if (fix) fix.onclick = (e) => { e.stopPropagation(); D.fixWork(t, said); };
     card.append(el("div", { className: "iacts" }, fix ? el("div", { className: "pair" }, tell, fix) : tell));
   }
@@ -783,7 +783,7 @@ function limitCard(l, anim) {
       el("p", { className: "lim" }, `Claude Max ${l.profile} is out of usage. Its work is running on pay-per-use until ${untilText(l.pay_per_use_until)}, within this month's cap. Then it goes back to the Max plan.`));
   }
   const card = el("article", { className: "icard limit" + (anim === "still" ? " still" : ""), dataset: { state: "needs_you", key, anim } },
-    el("div", { className: "meta" }, el("span", { className: "pill needs_you" }, D.icon("money"), "Account out of usage")),
+    el("div", { className: "meta" }, el("span", { className: "pill needs_you" }, D.icon("money"), "Needs you · account out of usage")),
     el("p", { className: "lim" }, `Claude Max ${l.profile} is out until about ${untilText(l.until)}. ${l.waiting} waiting; they restart on their own then. Or continue on pay-per-use until then, within this month's cap.`),
     el("div", { className: "err-slot", role: "alert" }));
   const label = "Continue on pay-per-use";
@@ -813,7 +813,7 @@ function signInCard(s, anim) {
   const gone = s.status === "expired";
   const card = el("article", { className: "icard limit" + (anim === "still" ? " still" : ""), dataset: { state: "needs_you", key, anim } },
     el("div", { className: "meta" },
-      el("span", { className: "pill needs_you" }, D.icon("key"), gone ? "Signed out" : "Runs out soon"),
+      el("span", { className: "pill needs_you" }, D.icon("key"), gone ? "Needs you · signed out" : "Needs you · sign-in runs out soon"),
       el("span", { className: "app" }, s.app_name)));
   const label = "Sign in again";
   const go = async (b) => {
@@ -854,15 +854,15 @@ function reviewCard(p, anim) {
   const key = `pr-${p.thread_id}`;
   const card = el("article", { className: "icard limit" + (anim === "still" ? " still" : ""), dataset: { state: "needs_you", key, anim } },
     el("div", { className: "meta" },
-      el("span", { className: "pill needs_you" }, D.icon("question"), "Review comments"),
+      el("span", { className: "pill needs_you" }, D.icon("question"), "Needs you · review comments"),
       el("span", { className: "app" }, p.app)));
-  const label = "Fix these";
+  const label = "Answer the comments";
   const go = async (b) => {
     if (D.offline) return;
     b.disabled = true;
     try {
       await D.send(`/threads/${p.thread_id}/pr/fix`, {});
-      D.toast(`Started a fix for ${D.plural(p.open_comments, "comment")}. You'll review it like any other work.`);
+      D.toast(`Started work that answers ${D.plural(p.open_comments, "comment")}. You'll review it like any other work.`);
       card.classList.add("leaving");
       setTimeout(refresh, 180);
     } catch (e) {
@@ -874,7 +874,7 @@ function reviewCard(p, anim) {
   const link = el("a", { href: p.url, target: "_blank", rel: "noopener" }, `Pull request #${p.number}`);
   card.append(
     el("h2", { className: "h" }, `${p.line} · ${label}`),
-    el("p", { className: "means" }, `On "${p.title}". `, link, ". Fix these starts new work that answers them on the same pull request. Nothing changes on GitHub until you accept it."),
+    el("p", { className: "means" }, `On "${p.title}". `, link, ". Answer the comments starts new work that answers them on the same pull request. Nothing changes on GitHub until you accept it."),
     el("div", { className: "err-slot", role: "alert" }));
   const b = el("button", { type: "button", className: "btn primary", disabled: D.offline }, D.icon("tool"), label);
   b.onclick = () => go(b);
@@ -893,7 +893,8 @@ function goalCard({ g, w }, anim) {
   ttl.onclick = go;
   card.append(
     el("div", { className: "meta" },
-      el("span", { className: "pill needs_you" }, D.icon(plan ? "send" : "question"), plan ? "Plan ready" : "Question"),
+      el("span", { className: "pill needs_you" }, D.icon(plan ? "send" : "question"), plan ? "Needs you · approve the plan"
+        : `Needs you · answer ${w.questions.length === 1 ? "a question" : `${w.questions.length} questions`}`),
       el("span", { className: "app" }, D.appName(g.app_id)),
       el("span", { className: "when", dataset: { at: w.at } }, D.ago(w.at)),
       el("span", { className: "chev" }, D.icon("right"))),
@@ -1286,7 +1287,7 @@ function openSheet(fill) {
   }
   composer.focus();
 }
-// Other screens (such as "Fix these" on finished work) open the same box, filled in.
+// Other screens (such as "Fix what it found" on finished work) open the same box, filled in.
 D.setNewWork((fill) => openSheet(fill));
 const newWorkButton = (cls) => {
   const b = el("button", { type: "button", className: cls }, D.icon("plus"), "New work");

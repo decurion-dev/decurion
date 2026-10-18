@@ -42,7 +42,7 @@ Each piece of work runs in its own sealed workspace, with its own copy of the co
 
 Some parts of Decurion are what keep you safe: the sealed workspaces, the websites agents may use, how keys are kept, and the spending cap. Decurion's code carries a list of the files for these parts.
 
-If a piece of work changes any of those files, Decurion holds it for you and marks it **needs a look**. This happens even when the checker passed it. You see which protected files were changed. Look closely before you accept it, or ask someone who knows code to look.
+If a piece of work changes any of those files, Decurion holds it for you and marks it **Needs you · take a look**. This happens even when the checker passed it. You see which protected files were changed. Look closely before you accept it, or ask someone who knows code to look.
 
 An agent cannot change the list to get around this. Decurion always uses the list as it was before the work started.
 
@@ -60,7 +60,7 @@ A cloud worker updates itself to match your PC, using the code on Decurion's Git
 ## If something goes wrong
 
 - **Work fails right away with a "git clone" message.** The path is not the folder you cloned. Check the path under **Settings**, **Apps**.
-- **A piece of work says needs a look.** It changed a protected part, or the checker still found problems. Read its notes, then accept it, send it back, or reject it.
+- **A piece of work says Needs you · take a look.** It changed a protected part, or the checker still found problems. Read its notes, then accept it, send it back, or reject it.
 - **The agent says it could not run the checks.** The agent's workspace can build and test Decurion, but a few checks (the license check, the help book and a check of the cloud worker page) need tools it does not have. Those run on GitHub when the change goes there as a pull request. If the agent says the build or tests themselves could not run, or the work is not going to GitHub, ask someone who knows code to run Decurion's checks before you merge.
 
 Next: [Review and merge work](review-and-merge.md).

@@ -204,7 +204,7 @@
     reviewing: ["Being checked", "work", "running"],
     fixing: ["Fixing the checker's notes", "work", "running"],
     passed: ["Passed the check", "done", "done"],
-    needs_a_look: ["Needs a look from you", "you", "alert"],
+    needs_a_look: ["Needs you · take a look", "you", "alert"],
     failed: ["Failed", "bad", "failed"],
   };
   const wide = matchMedia("(min-width: 900px)");
@@ -555,9 +555,9 @@
   function bar(n, approve, closed, busy) {
     const waiting = n > 0 || approve;
     $("answer-bar").classList.toggle("waiting", waiting);
-    const words = n && approve ? `${D.plural(n, "question")} and a plan for you`
-      : n ? `${D.plural(n, "question")} for you`
-      : approve ? "A plan is ready for you"
+    const words = n && approve ? `Needs you · answer ${D.plural(n, "question")}, then approve the plan`
+      : n ? `Needs you · answer ${D.plural(n, "question")}`
+      : approve ? "Needs you · approve the plan"
       : busy ? "Updating the plan…"
       : closed ? "This goal is closed" : "Nothing to answer here";
     $("bar-t").replaceChildren(icon(waiting ? "needs_you" : busy ? "running" : "question", busy && !waiting ? "spin" : ""), el("span", {}, words));

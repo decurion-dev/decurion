@@ -564,23 +564,23 @@ const POLL_MS = 2500;
 const SIGNED_OUT = "Signed out. Open the sign-in link the hub printed.";
 const GOAL_STATES = {
   talking: ["Talking", "neutral"],
-  plan_ready: ["Plan ready for you", "attn"],
+  plan_ready: ["Needs you · approve the plan", "attn"],
   working: ["Working", "accent"],
-  for_review: ["Ready for your review", "attn"],
+  for_review: ["Needs you · review the work", "attn"],
   done: ["Done", "ok"],
   stopped: ["Stopped", "muted"],
 };
 const REVIEW_STATES = {
   building: ["Building", "accent"],
   reviewing: ["Being checked", "accent"],
-  fixing: ["Fixing the checker's notes", "attn"],
+  fixing: ["Fixing the checker's notes", "accent"],
   passed: ["Passed the check", "ok"],
-  needs_a_look: ["Needs a look", "attn"],
+  needs_a_look: ["Needs you · take a look", "attn"],
   failed: ["Failed", "bad"],
 };
 const THREAD_STATES = {
-  queued: "Waiting to start", running: "Agent at work", needs_you: "Waiting on you",
-  in_review: "Waiting for your review", done: "Finished", failed: "Stopped",
+  queued: "Waiting to start", running: "Agent at work", needs_you: "Needs you",
+  in_review: "Finished, in review", done: "Finished", failed: "Stopped",
 };
 const CLOSED = new Set(["done", "stopped"]);
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
@@ -815,8 +815,8 @@ function renderList() {
       el("span", { class: "gi-meta" },
         pill(label, tone),
         r.busy ? el("span", { class: "gi-hint thinking" }, dots(true), "Thinking…") : null,
-        r.stuck ? el("span", { class: "gi-hint retry" }, "Needs a retry") : null,
-        r.turn ? el("span", { class: "gi-hint turn" }, "Your turn") : null,
+        r.stuck ? el("span", { class: "gi-hint retry" }, "Needs you · try again") : null,
+        r.turn ? el("span", { class: "gi-hint turn" }, "Needs you · reply") : null,
         el("span", null, [r.app, r.when].filter(Boolean).join(" · ")))));
   };
   const open = rows.filter(r => !r.closed), closed = rows.filter(r => r.closed && !r.dismissed), gone = rows.filter(r => r.dismissed);

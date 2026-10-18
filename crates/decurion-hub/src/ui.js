@@ -1169,7 +1169,7 @@
     };
     let fix = null;
     if (!t.research && D.canFix() && said.trim() && (s === "in_review" || s === "done")) {
-      fix = el("button", { type: "button", className: "btn", dataset: { key: "wk-fix" } }, icon("tool"), "Fix these");
+      fix = el("button", { type: "button", className: "btn", dataset: { key: "wk-fix" } }, icon("tool"), "Fix what it found");
       fix.onclick = () => afterClose(() => D.fixWork(t, said));
     }
     if (s === "in_review" && t.research) {
