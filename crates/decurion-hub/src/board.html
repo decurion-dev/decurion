@@ -655,7 +655,8 @@
         hit, el("div", { className: "ln", title: r.line + when }, r.line + when),
         el("div", { className: "ft" }, act, r.first_today ? el("span", { className: "first" }, "First today") : null,
           runButton(r.app_id, r.name, `today-run-${id}`)),
-        r.deploy ? D.deployBox(r.deploy, { onChange: loadToday }) : null);
+        r.deploy ? D.deployBox(r.deploy, { onChange: loadToday })
+          : r.can_deploy ? D.deployCheck(r.app_id, r.name, { onChange: loadToday }) : null);
     })));
   }
 

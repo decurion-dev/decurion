@@ -574,7 +574,9 @@ function renderToday() {
       act = el("span", { className: `pill ${cls}` }, D.icon(ic), r.status);
     }
     const row = el("div", { className: "tr", dataset: { tone: r.tone } }, go, act, runButton(r));
-    return r.deploy ? [row, D.deployBox(r.deploy, { onChange: () => { todaySig = ""; loadToday(); } })] : [row];
+    const again = () => { todaySig = ""; loadToday(); };
+    if (r.deploy) return [row, D.deployBox(r.deploy, { onChange: again })];
+    return r.can_deploy ? [row, D.deployCheck(r.app_id, r.name, { onChange: again })] : [row];
   }), ...(more > 0 ? [Object.assign(el("button", { type: "button", className: "btn quiet sm more-apps" }, `and ${D.plural(more, "more app")}`),
     { onclick: () => { todayAll = true; renderToday(); } })] : []));
 }

@@ -2334,6 +2334,7 @@ Add or fix .decurion/run.json so the app starts in a fresh box: one install comm
     onChange();
   }
 
+  // `c` needs only the app's id and name, so an app with no card can check too.
   async function check(c, btn, onChange) {
     if (D.offline) return;
     btn.disabled = true;
@@ -2407,6 +2408,15 @@ Add or fix .decurion/run.json so the app starts in a fresh box: one install comm
     load().then(() => { out.scrollTop = out.scrollHeight; });
     close.focus();
   }
+
+  // D.deployCheck(appId, name, { onChange }): Check for changes on its own,
+  // for an app whose rules allow deploys but that has no card to show.
+  D.deployCheck = (appId, name, { onChange = () => {} } = {}) => {
+    const b = el("button", { type: "button", className: "btn quiet", dataset: { key: `deploy-check-app-${appId}` } }, icon("retry"), el("span", {}, "Check for changes"));
+    b.disabled = D.offline;
+    b.onclick = () => check({ app_id: appId, app: name }, b, onChange);
+    return el("div", { className: "deploy-box", dataset: { state: "none" } }, el("div", { className: "dl-acts" }, b));
+  };
 
   // D.deployBox(card, { onChange }) draws one deploy card. `onChange` runs
   // after every tap, so the page fetches the card again.

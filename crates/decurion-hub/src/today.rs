@@ -115,6 +115,9 @@ pub struct TodayRow {
     /// The app's deploy card, when its rules allow deploys and there is one
     /// to show: ready, running, failed, or live in the last day.
     pub deploy: Option<crate::deploy::Card>,
+    /// The app's rules allow deploys, so Check for changes can show even
+    /// when there is no card.
+    pub can_deploy: bool,
     pub tone: Tone,
     /// One or two words for the label: "Needs you", "Working", "Done".
     pub status: String,
@@ -444,6 +447,12 @@ impl Store {
             }
         }
 
+        let can_deploy: std::collections::HashSet<i64> =
+            sqlx::query_scalar::<_, i64>("SELECT id FROM apps WHERE can_deploy = 1")
+                .fetch_all(self.pool())
+                .await?
+                .into_iter()
+                .collect();
         for d in self.deploy_cards().await? {
             let app_id = d.app_id;
             facts.entry(app_id).or_default().deploy = Some(d);
@@ -474,6 +483,7 @@ impl Store {
                     fix_thread_id: fix_thread.get(&a.id).copied(),
                     last_pr: f.last_pr,
                     deploy: f.deploy,
+                    can_deploy: can_deploy.contains(&a.id),
                     tone,
                     status: status.to_owned(),
                     line,
