@@ -1,0 +1,651 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Page · Decurion</title>
+<link rel="icon" href="/icon.svg">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/ui.css">
+<style>
+  /* The page viewer: an agent's page in a frame that runs nothing, and the
+     hub's own answer panel beside it (a bottom sheet on a phone). Nothing
+     the agent wrote can reach the panel: the frame has no permissions at
+     all, and the panel is built from checked JSON, as text. */
+  html, body { height: 100%; }
+  body { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
+
+  .vbar {
+    flex: none; display: flex; align-items: center; gap: 12px; min-height: 60px;
+    padding: 8px 16px; padding-top: max(8px, env(safe-area-inset-top));
+    border-bottom: 1px solid var(--line); background: var(--surface);
+  }
+  .vbar .mk { flex: none; display: inline-flex; border-radius: 8px; }
+  .vbar .mk svg { border-radius: 8px; }
+  .vbar .back { flex: none; color: var(--ink); }
+  .vbar .back:hover { background: var(--surface-2); }
+  .vt { flex: 1; min-width: 0; display: grid; gap: 1px; }
+  .vt h1 { font: 650 16.5px/1.3 var(--font-display); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vt .sub { display: flex; align-items: center; min-width: 0; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+  .vt .sub a { color: var(--accent-ink); text-decoration: none; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .vt .sub a:hover { text-decoration: underline; }
+  .vt .sub .kind { flex: none; }
+  .vbar .raw { flex: none; }
+  .vbar .raw svg.i { width: 14px; height: 14px; }
+
+  .vmain { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 380px; }
+  .frame { position: relative; min-width: 0; min-height: 0; background: var(--surface-3); }
+  .frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+
+  .side { min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--surface); }
+  .sheet-head { display: none; }
+  .side-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px 20px calc(28px + env(safe-area-inset-bottom)); display: grid; gap: 22px; align-content: start; }
+  .side-body > section + section { border-top: 1px solid var(--line); padding-top: 20px; }
+  .side-body h2 { font: 650 15px/1.3 var(--font-display); margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .nothing { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: var(--radius); background: var(--surface-2); color: var(--muted); font-size: 14px; }
+  .nothing svg.i { color: var(--faint); }
+
+  /* The agent asks: the same pieces the board will use. */
+  .asks h2 .n { font: 600 12px/20px var(--font); padding: 0 8px; border-radius: 99px; color: var(--amber); background: var(--amber-soft); box-shadow: inset 0 0 0 1px var(--amber-line); }
+  .asks-say { font-size: 14px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; margin: -2px 0 12px; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+  .ask { border: 0; margin: 0; padding: 0; min-width: 0; }
+  .ask + .ask { margin-top: 18px; }
+  .ask legend, .ask .q { float: left; width: 100%; padding: 0; margin-bottom: 10px; font-weight: 700; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
+  .ask-choices { clear: both; display: grid; gap: 8px; }
+  .ask-choices.short { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
+  .ask-choice {
+    display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 9px 12px;
+    text-align: left; font: 500 14.5px/1.35 var(--font); color: var(--ink); overflow-wrap: anywhere;
+    background: var(--surface); border: 1px solid var(--field-line); border-radius: 10px; cursor: pointer;
+    transition: border-color .12s var(--ease), background-color .12s var(--ease);
+  }
+  .ask-choice:hover { border-color: var(--accent); }
+  .ask-choice .tk { flex: none; width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--field-line); display: grid; place-items: center; }
+  .ask-choice .tk svg.i { width: 11px; height: 11px; stroke-width: 3.2; color: transparent; }
+  .ask-choice .nm { flex: 1; min-width: 0; }
+  .ask-choice[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+  .ask-choice[aria-pressed="true"] .tk { background: var(--accent); border-color: var(--accent); }
+  .ask-choice[aria-pressed="true"] .tk svg.i { color: var(--on-accent); }
+  .ask-choice[disabled] { cursor: not-allowed; opacity: .6; }
+  .suggested { flex: none; font: 700 11px/1.6 var(--font); color: var(--accent-ink); border: 1px solid currentColor; border-radius: 99px; padding: 0 7px; }
+  .own { margin-top: 6px; }
+  .own .btn.quiet { padding: 0 6px; margin-left: -6px; font-weight: 600; color: var(--muted); }
+  .own .btn.quiet:hover { color: var(--ink); background: var(--surface-2); }
+  .ask-words { display: grid; gap: 6px; margin-top: 8px; }
+  .ask-words label { font-size: 13px; color: var(--muted); }
+  .ask-words textarea { min-height: 70px; }
+  .asks-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  .asks-foot .status { margin-right: auto; font-size: 13px; color: var(--muted); }
+  .asks-foot .btn.primary { min-height: 40px; padding: 0 18px; }
+  .ask-given { display: flex; align-items: flex-start; gap: 8px; clear: both; font-size: 14.5px; overflow-wrap: anywhere; }
+  .ask-given svg.i { margin-top: 3px; color: var(--green); }
+  .ask-given .own-words { color: var(--muted); }
+  .asks-sent { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding: 8px 12px; border-radius: var(--radius-s); background: var(--green-soft); color: var(--green); font-weight: 600; font-size: 14px; }
+  .asks-sent svg.i { stroke-width: 2.6; }
+
+  /* Ready to start? */
+  .ready { padding: 16px; border-radius: var(--radius-l); background: var(--amber-soft); box-shadow: inset 0 0 0 1px var(--amber-line); }
+  .side-body > section.ready + section, .side-body > section + section.ready { border-top: 0; }
+  .ready p { font-size: 14px; color: var(--ink); }
+  .ready .acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .ready .acts .btn { flex: 1 1 auto; }
+  .ready .btn.primary { min-height: 42px; }
+  .changes { display: grid; gap: 8px; margin-top: 12px; }
+  .changes label { font-size: 13px; font-weight: 600; }
+  .changes .row { display: flex; gap: 8px; }
+  .state-line { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+  .state-line .mk2 { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; }
+  .state-line .mk2 svg.i { width: 14px; height: 14px; stroke-width: 2.6; }
+  .mk2.done { background: var(--green-soft); color: var(--green); }
+  .mk2.you { background: var(--amber-soft); color: var(--amber); box-shadow: inset 0 0 0 1.5px var(--amber-line); }
+  .mk2.bad { background: var(--red-soft); color: var(--red); }
+  .mk2.work { background: var(--steel-soft); color: var(--steel); }
+  .mk2.calm { background: var(--surface-2); color: var(--faint); }
+  .state-line b { font-weight: 650; }
+  .summary-text { margin-top: 10px; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .issues { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; color: var(--muted); }
+  .issues li + li { margin-top: 4px; }
+  .check .links { margin-top: 12px; }
+  .say textarea { min-height: 76px; }
+  .say .row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .say .row .hint { flex: 1; }
+  .say label.h { display: block; font: 650 15px/1.3 var(--font-display); margin-bottom: 10px; }
+
+  /* Phone: the answer bar and the bottom sheet. */
+  .answer-bar { display: none; }
+  .scrim { display: none; }
+
+  @media (max-width: 899px) {
+    .vbar { gap: 8px; padding-left: 10px; padding-right: 10px; min-height: 56px; }
+    .vbar .mk { display: none; }
+    .vbar .raw .lbl { display: none; }
+    .vbar .raw { width: 40px; padding: 0; }
+    .vmain { grid-template-columns: 1fr; }
+    .answer-bar {
+      flex: none; display: flex; align-items: center; gap: 12px; padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+      background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -6px 18px -12px rgba(15, 18, 24, .35);
+    }
+    .answer-bar.waiting { background: var(--amber-soft); border-top-color: var(--amber-line); }
+    .answer-bar .t { flex: 1; min-width: 0; font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+    .answer-bar.waiting .t { color: var(--amber); }
+    .answer-bar .t svg.i { flex: none; }
+    .answer-bar .btn { flex: none; min-width: 104px; }
+    .side {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; max-height: 82dvh;
+      border: 0; border-top: 1px solid var(--line); border-radius: 20px 20px 0 0; box-shadow: var(--shadow-pop);
+      transform: translateY(105%); transition: transform .25s var(--ease); visibility: hidden;
+    }
+    body.sheet .side { transform: none; visibility: visible; }
+    .sheet-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px 6px 20px; position: relative; }
+    .sheet-head::before { content: ""; position: absolute; top: 6px; left: 50%; width: 40px; height: 4px; margin-left: -20px; border-radius: 99px; background: var(--surface-3); }
+    .sheet-head h2 { flex: 1; font: 650 16px/1.3 var(--font-display); padding-top: 10px; }
+    .sheet-head .btn { margin-top: 6px; color: var(--muted); }
+    .side-body { padding: 8px 16px calc(24px + env(safe-area-inset-bottom)); }
+    .scrim { display: block; position: fixed; inset: 0; z-index: 25; background: var(--scrim); opacity: 0; pointer-events: none; transition: opacity .2s var(--ease); }
+    body.sheet .scrim { opacity: 1; pointer-events: auto; }
+  }
+</style>
+</head>
+<body>
+<header class="vbar">
+  <a class="mk" href="/plan" id="mark" aria-label="Master plan"></a>
+  <a class="btn quiet back" id="back" href="/plan"><span class="sr-only">Back</span></a>
+  <div class="vt">
+    <h1 id="title">Loading the page…</h1>
+    <div class="sub" id="sub"></div>
+  </div>
+  <a class="btn sm raw" id="raw" target="_blank" rel="noopener noreferrer" aria-label="Open the page on its own, in a new tab"><span class="lbl">Open on its own</span></a>
+</header>
+<div class="banner" id="banner" role="alert" hidden></div>
+<div class="vmain">
+  <div class="frame" id="frame"></div>
+  <aside class="side" id="side" aria-labelledby="side-h">
+    <div class="sheet-head">
+      <h2 id="side-h">For you</h2>
+      <button class="btn icon quiet" type="button" id="sheet-close" aria-label="Close"></button>
+    </div>
+    <div class="side-body" id="panel" aria-live="polite"></div>
+  </aside>
+</div>
+<div class="scrim" id="scrim"></div>
+<div class="answer-bar" id="answer-bar">
+  <span class="t" id="bar-t"></span>
+  <button class="btn primary" type="button" id="bar-open" aria-controls="side" aria-expanded="false">Answer</button>
+</div>
+
+<script src="/ui.js"></script>
+<script>
+"use strict";
+(() => {
+  const { el, icon, $ } = D;
+  const POLL_MS = 5000;
+  const m = /^\/pages\/(\d+)\/(\d+)\/?$/.exec(location.pathname);
+  const G = m ? Number(m[1]) : NaN, P = m ? Number(m[2]) : NaN;
+  const CLOSED = new Set(["done", "stopped"]);
+  const KIND = { plan: "Visual plan", check: "As built" };
+  const REVIEW = {
+    building: ["Being built", "work", "running"],
+    reviewing: ["Being checked", "work", "running"],
+    fixing: ["Fixing the checker's notes", "work", "running"],
+    passed: ["Passed the check", "done", "done"],
+    needs_a_look: ["Needs a look from you", "you", "alert"],
+    failed: ["Failed", "bad", "failed"],
+  };
+  const wide = matchMedia("(min-width: 900px)");
+
+  const S = {
+    view: null, pq: null, page: null, err: "", missing: false,
+    drafts: { page: new Map(), lead: new Map() },
+    sending: new Set(),           // "page", "lead", "approve", "changes", "say"
+    errs: {},                     // block -> words
+    changes: { open: false, text: "" },
+    say: "",
+    sig: "", loading: false,
+  };
+
+  // ---------- Top bar and frame ----------
+  $("mark").append(D.mark(26));
+  $("back").prepend(icon("left", "l"));
+  $("back").append(el("span", { className: "lbl" }, "Back"));
+  $("raw").append(icon("expand"));
+  $("sheet-close").append(icon("close", "l"));
+  const raw = `/api/goals/${G}/pages/${P}`;
+  $("raw").href = raw;
+  // Back goes where you came from, or to the plan this page belongs to.
+  $("back").onclick = (e) => {
+    if (history.length > 1) { e.preventDefault(); history.back(); }
+  };
+  if (Number.isFinite(G)) {
+    // No permissions at all: no scripts, no forms, no pop-ups, no reaching the hub.
+    const f = document.createElement("iframe");
+    f.setAttribute("sandbox", "");
+    f.setAttribute("referrerpolicy", "no-referrer");
+    f.title = "The agent's page";
+    f.src = raw;
+    $("frame").append(f);
+  }
+
+  // ---------- Bottom sheet (phone) ----------
+  function setSheet(open) {
+    const on = open && !wide.matches;
+    document.body.classList.toggle("sheet", on);
+    $("bar-open").setAttribute("aria-expanded", String(on));
+    $("side").inert = !wide.matches && !on;
+    if (on) setTimeout(() => $("sheet-close").focus({ preventScroll: true }), 50);
+  }
+  $("bar-open").onclick = () => setSheet(true);
+  $("sheet-close").onclick = () => { setSheet(false); $("bar-open").focus(); };
+  $("scrim").onclick = () => setSheet(false);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document.body.classList.contains("sheet")) { setSheet(false); $("bar-open").focus(); } });
+  wide.addEventListener("change", () => setSheet(false));
+  setSheet(false);
+
+  // ---------- The agent asks (reusable) ----------
+  // asksBlock({ id, title, say, questions, answers, draft, sending, blocked, err, onSend })
+  //   questions  [{ id, text, choices, recommended? }]; no choices means words only
+  //   answers    the answers already given, or null; given answers show read-only
+  //   draft      a Map kept by the caller, so a refresh keeps what was picked or typed
+  //   blocked    words saying why it can't be sent yet, or ""
+  //   onSend     (answers) => Promise
+  // Class names (asks, ask, ask-choices, ask-choice, ask-words) are shared with
+  // the board's own "The agent asks" look.
+  const complete = (q, d) => d && (d.choice != null || ((d.open || !q.choices.length) && d.other.trim() !== ""));
+  function asksBlock(o) {
+    const qs = o.questions;
+    const box = el("section", { className: `asks${o.answers ? " answered" : ""}`, "aria-labelledby": `${o.id}-h` },
+      el("h2", { id: `${o.id}-h` }, o.title, !o.answers ? el("span", { className: "n" }, D.plural(qs.length, "question")) : null));
+    if (o.say) box.append(el("p", { className: "asks-say" }, o.say));
+    if (o.answers) {
+      for (const q of qs) box.append(askGiven(q, o.answers.find((a) => a.question_id === q.id)));
+      box.append(el("p", { className: "asks-sent" }, icon("done"), o.sentWords ?? "Sent to your project lead"));
+      return box;
+    }
+    const draft = o.draft;
+    const sync = () => {
+      const n = qs.filter((q) => complete(q, draft.get(q.id))).length;
+      status.textContent = o.sending ? "Sending…" : o.blocked || (qs.length === 1 ? (n ? "Ready to send" : "Pick an answer") : `${n} of ${qs.length} answered`);
+      send.disabled = o.sending || !!o.blocked || n < qs.length || D.offline;
+    };
+    qs.forEach((q, i) => box.append(askLive(o, q, i, draft, sync)));
+    const status = el("span", { className: "status", role: "status" });
+    const send = el("button", { type: "button", className: "btn primary", dataset: { key: `${o.id}-send` } }, o.sending ? "Sending…" : "Send answers");
+    send.onclick = () => {
+      if (!qs.every((q) => complete(q, draft.get(q.id)))) return;
+      o.onSend(qs.map((q) => {
+        const d = draft.get(q.id), a = { question_id: q.id };
+        if (d.choice != null) a.choice = d.choice;
+        if ((d.open || !q.choices.length) && d.other.trim()) a.other = d.other.trim();
+        return a;
+      }));
+    };
+    box.append(el("div", { className: "asks-foot" }, status, send), el("p", { className: "field-error", role: "alert" }, o.err || ""));
+    sync();
+    return box;
+  }
+
+  function askLive(o, q, qi, draft, sync) {
+    if (!draft.has(q.id)) draft.set(q.id, { choice: null, other: "", open: false });
+    const d = draft.get(q.id);
+    const qid = `${o.id}-q${qi}`;
+    const set = el("fieldset", { className: "ask", "aria-labelledby": `${qid}-t` }, el("legend", { id: `${qid}-t` }, q.text));
+    const wordsId = `${qid}-w`;
+    const area = el("textarea", { id: wordsId, rows: 2, maxLength: 1000, disabled: o.sending, dataset: { key: wordsId },
+      placeholder: q.choices.length ? "Say it your way" : "Type your answer" });
+    area.value = d.other;
+    area.oninput = () => { d.other = area.value; sync(); };
+    const words = el("div", { className: "ask-words", hidden: q.choices.length > 0 && !d.open },
+      el("label", { for: wordsId }, q.choices.length ? "In your own words" : "Your answer"), area);
+    if (q.choices.length) {
+      const short = q.choices.every((c) => c.length <= 14);
+      const btns = q.choices.map((c, ci) => {
+        const b = el("button", { type: "button", className: "ask-choice", "aria-pressed": String(d.choice === ci), disabled: o.sending, dataset: { key: `${qid}-c${ci}` } },
+          el("span", { className: "tk", "aria-hidden": "true" }, icon("done")),
+          el("span", { className: "nm" }, c),
+          q.recommended === ci ? el("span", { className: "suggested" }, "Suggested") : null);
+        b.onclick = () => {
+          d.choice = d.choice === ci ? null : ci;
+          btns.forEach((x, xi) => x.setAttribute("aria-pressed", String(d.choice === xi)));
+          sync();
+        };
+        return b;
+      });
+      const toggle = el("button", { type: "button", className: "btn sm quiet", "aria-expanded": String(d.open), "aria-controls": wordsId, dataset: { key: `${qid}-own` } },
+        icon(d.open ? "close" : "plus"), d.open ? "No words, thanks" : "Answer in your own words");
+      toggle.onclick = () => {
+        d.open = !d.open;
+        if (!d.open) { d.other = ""; area.value = ""; }
+        words.hidden = !d.open;
+        toggle.setAttribute("aria-expanded", String(d.open));
+        toggle.replaceChildren(icon(d.open ? "close" : "plus"), d.open ? "No words, thanks" : "Answer in your own words");
+        sync();
+        if (d.open) area.focus();
+      };
+      set.append(el("div", { className: `ask-choices${short ? " short" : ""}` }, ...btns), el("div", { className: "own" }, toggle));
+    }
+    set.append(words);
+    return set;
+  }
+
+  function askGiven(q, a) {
+    const picked = a?.choice != null ? q.choices[a.choice] ?? `Choice ${a.choice + 1}` : null;
+    return el("div", { className: "ask" },
+      el("p", { className: "q" }, q.text),
+      el("p", { className: "ask-given" }, icon("done"),
+        el("span", {}, picked ?? "", picked && a?.other ? " · " : "", a?.other ? el("span", { className: picked ? "own-words" : "" }, a.other) : null,
+          !picked && !a?.other ? "No answer" : null)));
+  }
+
+  // ---------- Loading ----------
+  function showBanner(text) {
+    $("banner").hidden = !text;
+    if (text) $("banner").replaceChildren(icon(D.offline ? "offline" : "alert"), el("span", {}, text));
+  }
+
+  async function load() {
+    if (S.loading || !Number.isFinite(G)) return;
+    S.loading = true;
+    try {
+      const [view, pq] = await Promise.all([
+        D.api(`/goals/${G}`),
+        D.api(`/goals/${G}/pages/${P}/questions`).catch((e) => { if (e.signedOut) throw e; return null; }),
+      ]);
+      S.view = view;
+      if (pq) { S.pq = pq; S.page = pq.page; }
+      if (!S.page) {
+        // Without the questions route, the library still names the page.
+        const lib = await D.api(`/library?goal=${G}`).catch(() => []);
+        S.page = (lib ?? []).find((p) => p.id === P) ?? null;
+      }
+      S.missing = !(view.pages ?? []).some((p) => p.id === P) && !S.page;
+      S.err = "";
+      showBanner(D.offline ? "Can't reach your PC right now. Answers wait until it's back." : "");
+    } catch (e) {
+      if (/not found|404/i.test(e.message) && !S.view) S.missing = true;
+      else S.err = e.message;
+      showBanner(S.err);
+    } finally {
+      S.loading = false;
+      render();
+    }
+  }
+
+  // ---------- What the panel shows ----------
+  function context() {
+    const v = S.view;
+    if (!v) return null;
+    const g = v.goal, info = (v.pages ?? []).find((p) => p.id === P) ?? null;
+    let latestQ = null, latestPlan = null;
+    const answered = new Set();
+    for (const msg of v.messages ?? []) {
+      const b = msg.body;
+      if (b.kind === "answers") answered.add(b.to);
+      if (b.kind === "coordinator") {
+        if (b.questions?.length) latestQ = msg;
+        if (b.plan) latestPlan = msg;
+      }
+    }
+    const closed = CLOSED.has(g.state);
+    // Same rule as the goal page: the newest questions, not yet answered, on an open goal.
+    const leadQ = latestQ && !answered.has(latestQ.id) && !closed ? latestQ : null;
+    const kind = info?.kind ?? S.page?.kind ?? "plan";
+    let plan = null;
+    if (kind === "plan" && info?.message_id != null) {
+      if (!latestPlan || info.message_id !== latestPlan.id) plan = "replaced";
+      else if (g.state === "talking" || g.state === "plan_ready") plan = g.busy ? "waiting" : "approvable";
+      else if (g.state === "stopped") plan = "stopped";
+      else plan = "approved";
+    }
+    const threadId = info?.thread_id ?? S.page?.thread_id ?? null;
+    const piece = kind === "check" ? (v.pieces ?? []).find((p) => p.thread_id === threadId) ?? null : null;
+    const pq = S.pq;
+    const pageWaiting = !!(pq?.questions?.length && !pq.answers && !closed);
+    return { v, g, info, kind, closed, leadQ, plan, piece, threadId, pq, pageWaiting };
+  }
+
+  function render() {
+    const c = context();
+    renderHead(c);
+    const sig = JSON.stringify([c && [c.g, c.plan, c.leadQ?.id, c.piece, c.pq, c.kind], S.missing, S.err && !S.view,
+      [...S.sending], S.errs, S.changes.open, D.offline]);
+    if (sig === S.sig) return;
+    S.sig = sig;
+    const focus = rememberFocus();
+    const panel = $("panel"), top = panel.scrollTop;
+    if (S.missing) {
+      panel.replaceChildren(el("div", { className: "notice bad" }, icon("alert"),
+        el("span", { className: "grow" }, "This page isn't here. It may have been removed.")),
+        el("a", { className: "btn", href: "/plan" }, "Open the master plan"));
+      bar(0, false, false);
+      return;
+    }
+    if (!c) {
+      panel.replaceChildren(...(S.err
+        ? [el("div", { className: "notice bad" }, icon("alert"), el("span", { className: "grow" }, `Couldn't load this page's goal. ${S.err}`))]
+        : [0, 1].map(() => el("div", { className: "skeleton", style: "height:120px" }))));
+      return;
+    }
+    const parts = [];
+    const pageQs = c.pq?.questions ?? [];
+    const leadN = c.leadQ ? c.leadQ.body.questions.length : 0;
+    const pageN = c.pageWaiting ? pageQs.length : 0;
+    if (!pageN && !leadN && c.plan !== "approvable") {
+      parts.push(el("p", { className: "nothing" }, icon("done", "l"), "Nothing to answer on this page."));
+    }
+    if (pageQs.length) {
+      parts.push(asksBlock({
+        id: "page", title: "The agent asks", questions: pageQs,
+        answers: c.pq.answers ?? null, draft: S.drafts.page,
+        sending: S.sending.has("page"), err: S.errs.page,
+        sentWords: c.pq.answered_at ? `Sent to your project lead ${agoText(c.pq.answered_at)}` : "Sent to your project lead",
+        blocked: c.closed ? "This goal is closed." : "",
+        onSend: sendPage,
+      }));
+    }
+    if (c.plan) parts.push(planBlock(c));
+    if (c.leadQ) {
+      parts.push(asksBlock({
+        id: "lead", title: "Your project lead asks", say: c.leadQ.body.say, questions: c.leadQ.body.questions,
+        answers: null, draft: S.drafts.lead, sending: S.sending.has("lead"), err: S.errs.lead,
+        blocked: c.g.busy ? "Your project lead is still thinking. You can send once it's done." : "",
+        onSend: (answers) => sendLead(c.leadQ.id, answers),
+      }));
+    }
+    if (c.kind === "check") parts.push(checkBlock(c));
+    parts.push(sayBlock(c));
+    panel.replaceChildren(...parts);
+    bar(pageN + leadN, c.plan === "approvable", c.closed);
+    restoreFocus(focus);
+    panel.scrollTop = top;
+  }
+
+  function renderHead(c) {
+    const page = S.page;
+    const title = page?.title ?? (c?.kind === "check" ? "As built" : c ? "Visual plan" : S.missing ? "Page not found" : "Loading the page…");
+    $("title").textContent = title;
+    document.title = `${title} · Decurion`;
+    const sub = $("sub");
+    const goalTitle = c?.g.title ?? page?.goal_title;
+    const kind = KIND[c?.kind ?? page?.kind] ?? "";
+    sub.replaceChildren(
+      goalTitle ? el("a", { href: `/goals#goal-${G}` }, goalTitle) : null,
+      kind ? el("span", { className: `kind${goalTitle ? " dot-sep" : ""}` }, page?.piece_title ? `${kind}: ${page.piece_title}` : kind) : null);
+    const app = c?.g.app_id ?? page?.app_id;
+    const back = app != null ? `/plan#app=${app}&tab=pages` : "/plan";
+    $("back").href = back;
+    $("mark").href = app != null ? `/plan#app=${app}` : "/plan";
+  }
+
+  function bar(n, approve, closed) {
+    const waiting = n > 0 || approve;
+    $("answer-bar").classList.toggle("waiting", waiting);
+    const words = n && approve ? `${D.plural(n, "question")} and a plan for you`
+      : n ? `${D.plural(n, "question")} for you`
+      : approve ? "A plan is ready for you"
+      : closed ? "This goal is closed" : "Nothing to answer here";
+    $("bar-t").replaceChildren(icon(waiting ? "needs_you" : "question"), el("span", {}, words));
+    $("bar-open").textContent = n ? "Answer" : approve ? "Open" : "Talk";
+    $("side-h").textContent = n ? "Questions for you" : approve ? "Ready to start?" : "Talk to your project lead";
+  }
+
+  const agoText = (s) => D.ago(s && !/[zZ]|[+-]\d\d:?\d\d$/.test(s) ? String(s).replace(" ", "T") + "Z" : s);
+
+  function planBlock(c) {
+    if (c.plan === "approvable") {
+      const busy = S.sending.has("approve");
+      const go = el("button", { type: "button", className: "btn primary", disabled: busy || D.offline, dataset: { key: "approve" } }, icon("start"), busy ? "Starting the work…" : "Approve this plan");
+      go.onclick = () => approve(c);
+      const ask = el("button", { type: "button", className: "btn", "aria-expanded": String(S.changes.open), dataset: { key: "changes-open" } }, "Ask for changes");
+      ask.onclick = () => { S.changes.open = !S.changes.open; S.sig = ""; render(); if (S.changes.open) $("changes")?.focus(); };
+      const sec = el("section", { className: "ready", "aria-labelledby": "ready-h" },
+        el("h2", { id: "ready-h" }, "Ready to start?"),
+        el("p", {}, "This page shows the plan your project lead made. One tap starts every piece of it. Each piece is built, then checked by a second agent."),
+        el("div", { className: "acts" }, go, ask));
+      if (S.changes.open) {
+        const t = el("textarea", { id: "changes", rows: 3, maxLength: 4000, placeholder: "Say what should be different", dataset: { key: "changes" }, disabled: S.sending.has("changes") });
+        t.value = S.changes.text;
+        t.oninput = () => { S.changes.text = t.value; };
+        const send = el("button", { type: "button", className: "btn", disabled: S.sending.has("changes") || D.offline, dataset: { key: "changes-send" } }, icon("send"), S.sending.has("changes") ? "Sending…" : "Send");
+        send.onclick = () => sendChanges();
+        sec.append(el("div", { className: "changes" }, el("label", { for: "changes" }, "What should change?"), t, el("div", { className: "row" }, send)));
+      }
+      if (S.errs.approve) sec.append(el("p", { className: "field-error", role: "alert" }, S.errs.approve));
+      return sec;
+    }
+    const line = (cls, ic, words, more) => el("section", { "aria-labelledby": "plan-h" },
+      el("h2", { id: "plan-h" }, "The plan"),
+      el("div", { className: "state-line" }, el("span", { className: `mk2 ${cls}` }, icon(ic)), el("span", {}, words)),
+      more ?? null);
+    if (c.plan === "waiting") return line("work", "running", "Your project lead is still thinking. You can approve once it has finished.");
+    if (c.plan === "replaced") return line("calm", "retry", "A newer plan replaced this one.",
+      el("p", { className: "hint", style: "margin-top:8px" }, el("a", { href: `/goals#goal-${G}` }, "See the latest plan on the goal")));
+    if (c.plan === "stopped") return line("calm", "close", "This goal was stopped before the work started.");
+    return line("done", "done", c.g.state === "done" ? "You approved this plan, and the goal is done." : "You approved this plan. The work is under way.");
+  }
+
+  function checkBlock(c) {
+    const p = c.piece;
+    const sec = el("section", { className: "check", "aria-labelledby": "check-h" }, el("h2", { id: "check-h" }, "How the check went"));
+    if (!p) { sec.append(el("p", { className: "hint" }, "The check for this piece isn't listed on the goal any more.")); return sec; }
+    const [words, cls, ic] = REVIEW[p.review] ?? [p.review, "work", "running"];
+    sec.append(el("div", { className: "state-line" }, el("span", { className: `mk2 ${cls}` }, icon(ic)),
+      el("span", {}, el("b", {}, words), p.title ? ` · ${p.title}` : "")));
+    if (p.review_summary) sec.append(el("p", { className: "summary-text" }, p.review_summary));
+    if (p.review_issues?.length) sec.append(el("ul", { className: "issues" }, ...p.review_issues.map((i) => el("li", {}, i))));
+    sec.append(el("p", { className: "links" }, el("a", { className: "btn sm", href: `/#work-${p.thread_id}` }, icon("board"), "Open it on the board")));
+    return sec;
+  }
+
+  function sayBlock(c) {
+    const sec = el("section", { className: "say" });
+    if (c.closed) {
+      sec.append(el("p", { className: "hint" }, "This goal is closed. Start a new goal to ask for more."));
+      return sec;
+    }
+    const t = el("textarea", { id: "say", rows: 3, maxLength: 4000, placeholder: "A thought about this page, a change, a question", dataset: { key: "say" }, disabled: S.sending.has("say") });
+    t.value = S.say;
+    t.oninput = () => { S.say = t.value; };
+    const send = el("button", { type: "button", className: "btn", disabled: S.sending.has("say") || D.offline, dataset: { key: "say-send" } }, icon("send"), S.sending.has("say") ? "Sending…" : "Send");
+    send.onclick = () => sendSay();
+    sec.append(el("label", { className: "h", for: "say" }, "Tell your project lead something"), t,
+      el("div", { className: "row" }, el("p", { className: "hint" }, "It reads it next time it works on this goal."), send));
+    if (S.errs.say) sec.append(el("p", { className: "field-error", role: "alert" }, S.errs.say));
+    return sec;
+  }
+
+  // ---------- Sending ----------
+  async function act(key, fn) {
+    if (S.sending.has(key)) return false;
+    S.sending.add(key);
+    delete S.errs[key];
+    S.sig = ""; render();
+    try {
+      await fn();
+      return true;
+    } catch (e) {
+      S.errs[key] = `That didn't go through. ${e.message}`;
+      return false;
+    } finally {
+      S.sending.delete(key);
+      S.sig = ""; render();
+    }
+  }
+
+  async function sendPage(answers) {
+    const ok = await act("page", async () => {
+      const pq = await D.send(`/goals/${G}/pages/${P}/answer`, { answers });
+      if (pq) { S.pq = pq; S.page = pq.page ?? S.page; }
+      S.drafts.page.clear();
+    });
+    if (ok) { D.toast("Sent to your project lead.", "send"); load(); }
+  }
+
+  async function sendLead(to, answers) {
+    const ok = await act("lead", () => D.api(`/goals/${G}/answer`, { method: "POST", body: JSON.stringify({ to, answers }) }));
+    if (ok) { S.drafts.lead.clear(); D.toast("Sent to your project lead.", "send"); load(); }
+  }
+
+  // D.confirm draws its yes button red, for stopping work. Approving starts
+  // work, so here it is the blue button you press.
+  function confirmStart(words) {
+    const p = D.confirm(words);
+    const yes = [...document.querySelectorAll("dialog.confirm .btn.danger")].pop();
+    if (yes) yes.className = "btn primary";
+    return p;
+  }
+
+  async function approve(c) {
+    const n = (c.v.messages ?? []).find((x) => x.id === c.info.message_id)?.body.plan?.pieces?.length ?? 0;
+    const sure = await confirmStart([
+      "Start this plan?",
+      `${n ? `All ${D.plural(n, "piece")} of work start` : "The work starts"} now. Each is built in its own sealed box, then checked by a second agent. Nothing reaches GitHub until you accept it.`,
+      "Approve and start", "Not yet",
+    ]);
+    if (!sure) return;
+    const ok = await act("approve", () => D.api(`/goals/${G}/approve`, { method: "POST", body: JSON.stringify({ plan_message_id: c.info.message_id }) }));
+    if (ok) { D.toast("Approved. The work is starting."); load(); }
+  }
+
+  async function sendChanges() {
+    const text = S.changes.text.trim();
+    if (!text) { S.errs.approve = "Say what should change first."; S.sig = ""; render(); $("changes")?.focus(); return; }
+    const ok = await act("changes", () => D.api(`/goals/${G}/say`, { method: "POST", body: JSON.stringify({ text }) }));
+    if (ok) { S.changes = { open: false, text: "" }; delete S.errs.approve; D.toast("Sent. Your project lead will come back with a new plan.", "send"); load(); }
+    else { S.errs.approve = S.errs.changes; S.sig = ""; render(); }
+  }
+
+  async function sendSay() {
+    const text = S.say.trim();
+    if (!text) { S.errs.say = "Type a message first."; S.sig = ""; render(); $("say")?.focus(); return; }
+    const ok = await act("say", () => D.api(`/goals/${G}/say`, { method: "POST", body: JSON.stringify({ text }) }));
+    if (ok) { S.say = ""; D.toast("Sent to your project lead.", "send"); S.sig = ""; render(); load(); }
+  }
+
+  // A refresh rebuilds the panel; put the cursor back where it was.
+  function rememberFocus() {
+    const a = document.activeElement;
+    if (!a?.dataset?.key || !$("panel").contains(a)) return null;
+    return { key: a.dataset.key, start: a.selectionStart ?? null, end: a.selectionEnd ?? null };
+  }
+  function restoreFocus(f) {
+    if (!f) return;
+    const n = $("panel").querySelector(`[data-key="${CSS.escape(f.key)}"]`);
+    if (n && !n.disabled) {
+      n.focus({ preventScroll: true });
+      if (f.start != null && typeof n.setSelectionRange === "function") { try { n.setSelectionRange(f.start, f.end); } catch (_) { /* not a text box */ } }
+    }
+  }
+
+  // ---------- Start ----------
+  if (!Number.isFinite(G)) {
+    S.missing = true;
+    render();
+  } else {
+    render();
+    load();
+    setInterval(() => { if (!document.hidden && !S.sending.size) load(); }, POLL_MS);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+  }
+})();
+</script>
+</body>
+</html>

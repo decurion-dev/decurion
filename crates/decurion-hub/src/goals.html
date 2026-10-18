@@ -526,7 +526,7 @@ function inline(s) {
 }
 const pill = (label, tone) => el("span", { class: `pill ${tone}` }, label);
 const dots = small => el("span", { class: small ? "dots small" : "dots", "aria-hidden": "true" }, el("i"), el("i"), el("i"));
-const pageUrl = (goalId, pageId) => `/api/goals/${goalId}/pages/${pageId}`;
+const pageUrl = (goalId, pageId) => `/pages/${goalId}/${pageId}`;
 
 function announce(text) {
   const live = $("live");
