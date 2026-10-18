@@ -69,6 +69,8 @@ async fn main() -> anyhow::Result<()> {
         .with_push(pusher)
         .with_vault(vault)
         .with_files(dir.join("saved-work"))
+        // The folder picker never shows the hub's own folder.
+        .with_folders(decurion_hub::folders::Places::for_this_pc(&dir))
         .with_github(github);
     decurion_hub::sign_ins::watch_dates(state.clone());
     // Anything accepted but not yet sent when the hub last stopped.
