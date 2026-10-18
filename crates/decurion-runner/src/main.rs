@@ -2425,7 +2425,7 @@ async fn copy_from_bundle(
         bail!("the hub's bundle of the start commit is missing");
     }
     std::fs::create_dir_all(dir.parent().context("helper copy parent")?)?;
-    let tmp = dir.with_extension("partial");
+    let tmp = sibling(dir, "partial");
     remove_all(&tmp)?;
     let r = async {
         let bundle_s = bundle.to_string_lossy().into_owned();
@@ -2741,13 +2741,14 @@ async fn helper_container(
     hb: &HelperBox,
 ) -> anyhow::Result<HelperResult> {
     match &job.source {
-        // Made once per goal and kept for its later turns: always at the
-        // goal's one start commit.
+        // Made once per goal and kept for its later turns, rebuilt when a
+        // later round of the goal moved its start commit.
         HelperSource::App {
             goal_id,
             start_commit: Some(start),
         } => {
-            if !hb.dir.join(".git").is_dir() {
+            if !copy_is_at(&hb.dir, start) {
+                remove_all(&hb.dir)?;
                 helper_copy_at(hub, data, job, *goal_id, start, &hb.dir).await?;
             }
         }
@@ -3044,31 +3045,68 @@ async fn sign_in_loop(hub: Hub, data: PathBuf) {
     }
 }
 
+/// What asking the hub for a helper job came to.
+enum HelperAsk {
+    Job(Box<HelperClaim>),
+    Nothing,
+    /// The hub follows other rules now.
+    OtherRules,
+    Retry,
+}
+
+async fn ask_for_helper(hub: &Hub) -> HelperAsk {
+    let r = hub
+        .post(
+            "/runner/helper/claim",
+            &serde_json::json!({ "runner": hub.name, "rules_version": RULES_VERSION }),
+        )
+        .await;
+    match r {
+        Ok(resp) if resp.status() == StatusCode::NO_CONTENT => HelperAsk::Nothing,
+        Ok(resp) => match resp.json().await {
+            Ok(job) => HelperAsk::Job(Box::new(job)),
+            Err(err) => {
+                // The hub requeues it when this runner restarts.
+                tracing::error!(%err, "could not read claimed helper job");
+                HelperAsk::Retry
+            }
+        },
+        // As for work claims: a 409 that names the hub's rules.
+        Err(HubError::Refused(_, s, text))
+            if s == StatusCode::CONFLICT && serde_json::from_str::<HelloReply>(&text).is_ok() =>
+        {
+            HelperAsk::OtherRules
+        }
+        Err(err) => {
+            tracing::warn!(%err, "could not ask the hub for helper jobs; retrying");
+            HelperAsk::Retry
+        }
+    }
+}
+
+/// True if the folder `dir` is a copy checked out, detached, at exactly
+/// `sha`. Read from the file rather than by asking git.
+fn copy_is_at(dir: &Path, sha: &str) -> bool {
+    std::fs::read_to_string(dir.join(".git").join("HEAD")).is_ok_and(|h| h.trim() == sha)
+}
+
 async fn helper_loop(hub: Hub, data: PathBuf, gate: Gate) {
     loop {
         let Some(_job) = SideJob::start() else {
             return;
         };
-        let r = hub
-            .post(
-                "/runner/helper/claim",
-                &serde_json::json!({ "runner": hub.name, "rules_version": RULES_VERSION }),
-            )
-            .await;
-        match r {
-            Ok(resp) if resp.status() == StatusCode::NO_CONTENT => {
-                tokio::time::sleep(Duration::from_secs(3)).await;
+        match ask_for_helper(&hub).await {
+            HelperAsk::Nothing => tokio::time::sleep(Duration::from_secs(3)).await,
+            HelperAsk::Retry => tokio::time::sleep(Duration::from_secs(5)).await,
+            HelperAsk::OtherRules => {
+                // The work loop's own next claim hears the same and updates
+                // the runner once what is in hand is finished.
+                tracing::warn!("the hub follows other rules now; taking no more helper jobs");
+                WINDING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+                return;
             }
-            Ok(resp) => {
-                let job: HelperClaim = match resp.json().await {
-                    Ok(j) => j,
-                    Err(err) => {
-                        // The hub requeues it when this runner restarts.
-                        tracing::error!(%err, "could not read claimed helper job");
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                        continue;
-                    }
-                };
+            HelperAsk::Job(job) => {
+                let job = *job;
                 let id = job.job_id;
                 tracing::info!(id, kind = job.kind.as_str(), "helper job");
                 let result = match run_helper(&hub, &data, &gate, &job).await {
@@ -3079,10 +3117,6 @@ async fn helper_loop(hub: Hub, data: PathBuf, gate: Gate) {
                     }
                 };
                 finish_helper(&hub, id, result).await;
-            }
-            Err(err) => {
-                tracing::warn!(%err, "hub unreachable for helper jobs; retrying");
-                tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
     }
@@ -3929,8 +3963,20 @@ mod tests {
         )
         .await?;
 
-        let dir = root.join("goal").join("copy");
+        // An app whose name has a dot: its unfinished copy must not land
+        // on another app's folder (`shop.web` cut to `shop.partial`).
+        let other = root.join("goal").join("shop.partial");
+        std::fs::create_dir_all(&other)?;
+        std::fs::write(other.join("keep.txt"), "another app's")?;
+        let dir = root.join("goal").join("shop.web-1");
         copy_from_bundle(&bundle, Some(&a), &a, &dir).await?;
+        assert!(
+            other.join("keep.txt").is_file(),
+            "another folder was touched"
+        );
+        assert!(copy_is_at(&dir, &a));
+        assert!(!copy_is_at(&dir, &b));
+        assert!(!copy_is_at(&root.join("nowhere"), &a));
         assert_eq!(
             std::fs::read_to_string(dir.join(".git").join("HEAD"))?.trim(),
             a
@@ -3943,7 +3989,7 @@ mod tests {
             .join("alternates")
             .exists());
         assert_eq!(git(&dir, &["remote"]).await?, "");
-        assert!(!sibling(&dir, "partial").exists() && !dir.with_extension("partial").exists());
+        assert!(!sibling(&dir, "partial").exists());
 
         // Nothing is made from a start that is odd, unnamed, another one, or gone.
         for (n, (sent, want, from)) in [
@@ -3964,6 +4010,48 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
+    }
+
+    /// A fake hub whose helper-claim route answers `code` with `body`.
+    async fn fake_helper_hub(code: u16, body: String) -> Hub {
+        let app = axum::Router::new().route(
+            "/api/runner/helper/claim",
+            axum::routing::post(move || {
+                let body = body.clone();
+                async move { (StatusCode::from_u16(code).expect("status"), body) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        Hub {
+            base: format!("http://{addr}"),
+            key: "k".into(),
+            http: reqwest::Client::new(),
+            name: "local".into(),
+            place: Place::Pc,
+        }
+    }
+
+    /// A hub on other rules turns the helper loop down the way it turns
+    /// work claims down: the runner winds down to update, and does not
+    /// keep asking as if the hub were unreachable.
+    #[tokio::test]
+    async fn a_hub_on_other_rules_winds_the_helper_loop_down() {
+        let reply = HelloReply {
+            paused: vec![],
+            rules_version: RULES_VERSION + 1,
+            hub_commit: "abc".into(),
+            concurrent: true,
+        };
+        let hub = fake_helper_hub(409, serde_json::to_string(&reply).expect("json")).await;
+        assert!(matches!(ask_for_helper(&hub).await, HelperAsk::OtherRules));
+        let hub = fake_helper_hub(204, String::new()).await;
+        assert!(matches!(ask_for_helper(&hub).await, HelperAsk::Nothing));
+        let hub = fake_helper_hub(409, "busy".into()).await;
+        assert!(matches!(ask_for_helper(&hub).await, HelperAsk::Retry));
     }
 
     /// An app holding a file whose full path is past Windows' old
