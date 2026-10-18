@@ -37,7 +37,19 @@ RUN npm install -g @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} \
 # --cap-drop ALL and cannot start it; the container is the sandbox.
 # Screenshots without a name go to /tmp, not /work, so they never end up in a commit.
 # --no-webmcp: web pages cannot add their own tools to the agent.
+# Coordinator, design and review helpers use this browser.
 COPY mcp.json /etc/decurion/mcp.json
+
+# A work run's browser is in a box of its own, started from this same image
+# with `--entrypoint node /opt/decurion/browser-host.mjs`, so saved website
+# sign-ins never enter the agent's box. The agent's box shares that box's
+# network and reaches the browser tools at 127.0.0.1:8931 (mcp-box.json).
+# The check below stops the build if the pinned Playwright MCP no longer
+# looks the way browser-host.mjs expects, and prints the tools agents get.
+COPY browser-host.mjs /opt/decurion/browser-host.mjs
+COPY mcp-box.json /etc/decurion/mcp-box.json
+RUN chmod a+r /opt/decurion/browser-host.mjs /etc/decurion/mcp-box.json \
+ && node /opt/decurion/browser-host.mjs --self-check
 
 # On Linux the agent must have the same user id as the runner, or neither can
 # write the other's files in the shared work folder. The cloud worker builds

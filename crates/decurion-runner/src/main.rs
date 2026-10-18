@@ -1,8 +1,9 @@
 use anyhow::{bail, Context};
+use decurion_proto::browser::{FromBrowser, SiteState};
 use decurion_proto::goal::{HelperClaim, HelperResult, HelperSource};
 use decurion_proto::{
     App, Claim, HelloReply, JoinReply, JoinRequest, Live, MoveRequest, NewCheckpoint, Place,
-    RunCredential, RunEvent, RunnerHello, ThreadState, RULES_VERSION,
+    RunCredential, RunEvent, RunnerHello, SignInSession, ThreadState, RULES_VERSION,
 };
 use decurion_runner::gatekeeper::{Gatekeeper, Grant, ANTHROPIC_API};
 use decurion_runner::handover::{
@@ -12,12 +13,16 @@ use decurion_runner::handover::{
 use decurion_runner::identity::{
     hub_url, place_from_env, write_atomic, CloudRunner, PC_HUB, PC_NAME,
 };
+use decurion_runner::sign_ins::{self, HubAccess};
+mod browser_box;
+
 use decurion_runner::{
-    backoff, check_home_volume, container_name, design_home_volume, goal_home_volume,
-    helper_container_name, helper_run_args, hide, hide_cut, home_volume, is_interrupted_turn,
-    is_turn_start, parse_line_hiding, parse_result, part_done, pi_run_args, prompt_for, read_page,
-    redact, retriable, run_args, sibling, valid_branch, Acks, Action, Conversation, Credential,
-    FirstResult, LeakScanner, PiRun, Sandbox, Start, Step, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
+    backoff, browser_container_name, check_home_volume, container_name, design_home_volume,
+    goal_home_volume, helper_container_name, helper_run_args, hide, hide_cut, home_volume,
+    is_interrupted_turn, is_turn_start, parse_line_hiding, parse_result, part_done, pi_run_args,
+    prompt_for, read_page, redact, retriable, run_args, sibling, valid_branch, Acks, Action,
+    Conversation, Credential, FirstResult, LeakScanner, PiRun, Sandbox, Start, Step, BUDGET_STOP,
+    DOCKER_CLI_ENV, LIMIT_STOP,
 };
 use decurion_vault::{check_name, Vault};
 use reqwest::header::{HeaderMap, CONTENT_LENGTH, CONTENT_TYPE};
@@ -95,6 +100,17 @@ struct Hub {
     name: String,
     /// The computer this runner is; it only runs work placed here.
     place: Place,
+}
+
+impl Hub {
+    /// What the sign-in calls need from this connection.
+    fn access(&self) -> HubAccess<'_> {
+        HubAccess {
+            http: &self.http,
+            base: &self.base,
+            key: &self.key,
+        }
+    }
 }
 
 /// Short calls to the hub give up after this, so a hub that went to sleep
@@ -987,6 +1003,14 @@ const STDERR_TAIL: usize = 8 << 10;
 async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
     r: &mut R,
 ) -> std::io::Result<Option<(String, bool)>> {
+    read_line_up_to(r, MAX_LINE).await
+}
+
+/// [`read_capped_line`] with a cap of its own.
+async fn read_line_up_to<R: tokio::io::AsyncBufRead + Unpin>(
+    r: &mut R,
+    max: usize,
+) -> std::io::Result<Option<(String, bool)>> {
     let mut buf = Vec::new();
     let mut seen_any = false;
     let mut cut = false;
@@ -1000,7 +1024,7 @@ async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
             Some(i) => (i + 1, true),
             None => (chunk.len(), false),
         };
-        let room = MAX_LINE.saturating_sub(buf.len());
+        let room = max.saturating_sub(buf.len());
         cut |= take > room;
         buf.extend_from_slice(&chunk[..take.min(room)]);
         r.consume(take);
@@ -1237,6 +1261,9 @@ been given yet is kept for the next run.";
 struct Guard<'a> {
     secrets: &'a [String],
     grant: Option<&'a Grant>,
+    /// The run's browser box, told whenever the hub says whether the owner
+    /// wants to see it.
+    browser: Option<&'a browser_box::Wants>,
 }
 
 /// Follows a run until the agent's output ends or the owner stops it: posts
@@ -1366,6 +1393,9 @@ async fn follow(
                 Ok(live) => {
                     hub_down = false;
                     send(conv.on_messages(&live.messages));
+                    if let Some(b) = guard.browser {
+                        browser_box::want(b, live.browser);
+                    }
                 }
                 // Keep going; the next tick tries again.
                 Err(err) => {
@@ -1515,15 +1545,22 @@ fn lost(err: &anyhow::Error) -> bool {
     )
 }
 
-/// Removes a thread's container and checks that it is really gone. Tried a
-/// few times: docker refuses to remove a container it is still taking down.
+/// Removes a thread's container, and its browser box with it, and checks
+/// that they are really gone.
 async fn remove_container(id: i64) -> bool {
-    let name = container_name(id);
+    remove_named(id, &[container_name(id), browser_container_name(id)]).await
+}
+
+/// Removes containers by name and checks that they are really gone. Tried a
+/// few times: docker refuses to remove a container it is still taking down.
+async fn remove_named(id: i64, names: &[String]) -> bool {
     for attempt in 0..3 {
         if attempt > 0 {
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
-        match docker_out(&["rm", "-f", &name]).await {
+        let mut rm = vec!["rm", "-f"];
+        rm.extend(names.iter().map(String::as_str));
+        match docker_out(&rm).await {
             // Fails when there is no such container too; the check says.
             Ok(out) if !out.status.success() => tracing::debug!(
                 id,
@@ -1533,8 +1570,13 @@ async fn remove_container(id: i64) -> bool {
             Ok(_) => {}
             Err(err) => tracing::warn!(%err, id, "could not run docker rm"),
         }
-        let filter = format!("name=^{name}$");
-        match docker_out(&["ps", "-aq", "--filter", &filter]).await {
+        // Several name filters match any of them.
+        let filters: Vec<String> = names.iter().map(|n| format!("name=^{n}$")).collect();
+        let mut ps = vec!["ps", "-aq"];
+        for f in &filters {
+            ps.extend(["--filter", f.as_str()]);
+        }
+        match docker_out(&ps).await {
             Ok(out) if out.status.success() && out.stdout.trim_ascii().is_empty() => return true,
             Ok(out) if !out.status.success() => tracing::warn!(
                 id,
@@ -1579,13 +1621,18 @@ Containers, and delete it."
 
 /// Runs one claimed thread to the end and reports the outcome. `keys` are the
 /// app's test keys: they go into the container, and their values are hidden
-/// from everything sent to the hub.
+/// from everything sent to the hub. `states` are the app's saved website
+/// sign-ins, opened on this computer: they go into the run's browser box
+/// only, never the agent's, and `site_secrets` are their values, hidden like
+/// test keys.
 async fn run(
     hub: &Hub,
     data: &Path,
     gate: &Gate,
     c: Claim,
     keys: &[(String, String)],
+    states: Vec<SiteState>,
+    site_secrets: Vec<String>,
 ) -> anyhow::Result<()> {
     let id = c.thread.id;
     let session = c
@@ -1645,14 +1692,38 @@ make sure Docker Desktop is running and delete that container there",
     for (name, value) in keys {
         cmd.env(name, value);
     }
-    let secrets: Vec<String> = keys.iter().map(|(_, v)| v.clone()).collect();
-    let prompt = prompt_for(
+    let mut secrets: Vec<String> = keys.iter().map(|(_, v)| v.clone()).collect();
+    secrets.extend(site_secrets.iter().cloned());
+    // A sign-in value turning up in the agent's commits stops the work the
+    // same way a test key does.
+    let mut scanned = keys.to_vec();
+    scanned.extend(
+        site_secrets
+            .into_iter()
+            .map(|v| ("(a saved website sign-in)".to_owned(), v)),
+    );
+    let mut prompt = prompt_for(
         &c.thread.prompt,
         start,
         &c.test_keys,
         &c.messages,
         c.interrupted.as_ref(),
     );
+    if !pi {
+        if let Some(more) = sign_ins::sign_ins_prompt(&c.sign_ins, &states) {
+            prompt.push_str(&more);
+        }
+    }
+    // A Claude Code run's test browser goes in a box of its own, up and
+    // checked before the agent's box starts and joins its network. The app's
+    // saved sign-ins go into that box only. pi runs have no browser box.
+    // Removed with the agent's box (see remove_container), and on every
+    // other way out of this function when `browser` drops.
+    let browser = if pi {
+        None
+    } else {
+        Some(browser_box::start_run(hub, id, states, &secrets).await?)
+    };
     // Tell the hub before launching: from here the run may cost money, and if
     // the hub cannot be told, the run does not start.
     hub.post(&format!("/threads/{id}/events"), &RunEvent::Started)
@@ -1706,6 +1777,7 @@ make sure Docker Desktop is running and delete that container there",
         let guard = Guard {
             secrets: &secrets,
             grant: grant.as_ref(),
+            browser: browser.as_ref().map(|b| b.wants()),
         };
         follow(hub, id, conv, to_agent, lines, wrote, guard).await
     };
@@ -1715,11 +1787,13 @@ make sure Docker Desktop is running and delete that container there",
             // is saved: the work is not this runner's to touch any more.
             tracing::info!(id, "stopped by the owner");
             kill(hub, &mut child, id).await;
+            browser_box::stop(browser).await;
             let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
             return Ok(());
         }
         Ended::Moved(to) => {
             hand_over(hub, data, id, &wt, &branch, to, &mut child).await;
+            browser_box::stop(browser).await;
             let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
             return Ok(());
         }
@@ -1731,6 +1805,8 @@ make sure Docker Desktop is running and delete that container there",
     };
     reader.await.context("stdout reader")??;
     let status = child.wait().await?;
+    // The agent is done with its browser.
+    browser_box::stop(browser).await;
     // The container is gone; its token goes with it.
     // For pay-per-use, the gatekeeper's count is the cost: it saw every call,
     // including any the agent made itself, and runs outside the container.
@@ -1820,7 +1896,7 @@ make sure Docker Desktop is running and delete that container there",
         pay_per_use,
         used_up,
     };
-    let (to, note) = outcome(data, &wt, &c, finished, max_limit, exit, keys).await;
+    let (to, note) = outcome(data, &wt, &c, finished, max_limit, exit, &scanned).await;
     // Save the work whatever the outcome, so it can continue anywhere later.
     // A failed save is logged and the outcome is still reported, except that
     // unsaved work never goes back in the queue, where another computer could
@@ -2507,6 +2583,63 @@ async fn finish_helper(hub: &Hub, id: i64, mut r: HelperResult) {
 
 /// Takes coordinator, design and review jobs one at a time, alongside the
 /// work loop, so a goal's planning never waits for a long build.
+/// Opens the sign-in windows the owner asks for, one at a time: a fresh
+/// browser the owner drives from the board or phone, whose sign-in is sealed
+/// into this PC's vault when the owner taps "I'm signed in, save".
+async fn sign_in_loop(hub: Hub, data: PathBuf) {
+    let mut hub_down = false;
+    loop {
+        let r = hub
+            .post("/runner/browser/claim", &serde_json::json!({}))
+            .await;
+        let session: SignInSession = match r {
+            Ok(resp) if resp.status() == StatusCode::NO_CONTENT => {
+                hub_down = false;
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                continue;
+            }
+            Ok(resp) => match resp.json().await {
+                Ok(s) => s,
+                Err(err) => {
+                    tracing::warn!(%err, "could not read a sign-in window from the hub");
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    continue;
+                }
+            },
+            Err(err) => {
+                if !hub_down {
+                    tracing::warn!(%err, "could not ask the hub for sign-in windows");
+                }
+                hub_down = true;
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                continue;
+            }
+        };
+        let sid = session.session_id;
+        tracing::info!(
+            sid,
+            sign_in = session.sign_in_id,
+            "opening a sign-in window"
+        );
+        match browser_box::run_sign_in_box(&hub, sid, &session.start_url).await {
+            Ok(c) => {
+                let captured = FromBrowser::Captured {
+                    state: c.state,
+                    login_url: c.login_url,
+                    domains: c.domains,
+                    expires_at: c.expires_at,
+                };
+                if let Err(err) =
+                    sign_ins::save_capture(&hub.access(), &data, &session, &captured).await
+                {
+                    tracing::error!(%err, sid, "could not save a sign-in");
+                }
+            }
+            Err(err) => tracing::info!(%err, sid, "sign-in window ended without a save"),
+        }
+    }
+}
+
 async fn helper_loop(hub: Hub, data: PathBuf, gate: Gate) {
     loop {
         let r = hub
@@ -2881,6 +3014,10 @@ async fn main() -> anyhow::Result<()> {
             "name=^decurion-thread-",
             "--filter",
             "name=^decurion-helper-",
+            // Browser boxes: a run's (decurion-thread-{id}-browser, caught
+            // above) and a sign-in window's.
+            "--filter",
+            "name=^decurion-signin-",
         ])
         .output()
         .await
@@ -2909,6 +3046,8 @@ async fn main() -> anyhow::Result<()> {
     // only the PC has.
     if place == Place::Pc {
         tokio::spawn(helper_loop(hub.clone(), data.clone(), gate.clone()));
+        // Sign-in windows save into this PC's vault, so only the PC opens them.
+        tokio::spawn(sign_in_loop(hub.clone(), data.clone()));
     }
     loop {
         let r = hub
@@ -2948,8 +3087,30 @@ async fn main() -> anyhow::Result<()> {
                         continue;
                     }
                 };
-                let secrets: Vec<String> = keys.iter().map(|(_, v)| v.clone()).collect();
-                if let Err(err) = run(&hub, &data, &gate, claim, &keys).await {
+                let mut secrets: Vec<String> = keys.iter().map(|(_, v)| v.clone()).collect();
+                // The app's saved website sign-ins, for the run's browser box.
+                // pi runs have no browser, so they get none.
+                let (states, site_secrets) = if claim.thread.ai == decurion_proto::Ai::Claude {
+                    match sign_ins::site_states(&data, hub.place, &claim) {
+                        Ok(s) => s,
+                        Err(err) => {
+                            tracing::error!(%err, id, "could not open saved sign-ins");
+                            fail(&hub, id, &err.to_string()).await;
+                            continue;
+                        }
+                    }
+                } else {
+                    (Vec::new(), Vec::new())
+                };
+                // One that could not be opened needs the owner to sign in again.
+                for r in sign_ins::missing(&claim, &states) {
+                    if let Err(err) = sign_ins::report_signed_out(&hub.access(), r.id).await {
+                        tracing::warn!(%err, id, sign_in = r.id, "could not report a missing sign-in");
+                    }
+                }
+                secrets.extend(site_secrets.iter().cloned());
+                if let Err(err) = run(&hub, &data, &gate, claim, &keys, states, site_secrets).await
+                {
                     let note = hide(&err.to_string(), &secrets);
                     tracing::error!(err = %note, id, "run failed");
                     fail(&hub, id, &note).await;

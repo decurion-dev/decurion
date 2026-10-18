@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **ChatGPT and Grok as workers.** Choose Claude, ChatGPT or Grok when you add work. ChatGPT and Grok run through pi, an open-source coding agent, in the same sealed box, and stop at their run's budget.
 - **Usage meters and a cap per account.** The board shows how much of each Max plan's week and five hours is used, and what each paid account (Claude pay-per-use, ChatGPT, Grok) spent this month against its own cap.
 - **A cap per app.** Each app can have its own monthly cap across all paid AIs, coordinator and review work included.
+- **Take over the test browser.** Watch an agent's test browser live from the board or your phone, take control, and hand it back. The browser now runs in a box of its own beside the agent's.
+- **Saved website sign-ins.** Sign in once to a site an app needs (a staging admin, a test dashboard) in a sign-in window. Decurion keeps the sign-in encrypted on your PC, never the password, gives it only to that app's runs, and puts a card in your inbox when it needs renewing.
 - Contribution guide, security policy, code of conduct, issue and pull request templates, and a cargo-deny configuration for dependency license and source checks.
 
 ## [0.1.0] - Unreleased
