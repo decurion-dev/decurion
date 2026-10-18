@@ -39,9 +39,19 @@ sha256() {
 # Prepares one agent workspace image ($1) from its folder in docker/ ($2);
 # $3 names it in the message. The image is rebuilt when the Dockerfile shipped
 # with this version changes. Fails when the image could not be built.
+# One hash for every file in a folder, names included, so a change to any
+# file the image copies in (not only its Dockerfile) means a rebuild.
+folder_sha256() {
+    (cd "$1" && find . -type f | LC_ALL=C sort | while IFS= read -r f; do
+        printf '%s %s\n' "$f" "$(sha256 "$f")"
+    done) > "${TMPDIR:-/tmp}/decurion-folder.$$"
+    sha256 "${TMPDIR:-/tmp}/decurion-folder.$$"
+    rm -f "${TMPDIR:-/tmp}/decurion-folder.$$"
+}
+
 prepare_image() {
     context="$share/docker/$2"
-    want=$(sha256 "$context/Dockerfile")
+    want=$(folder_sha256 "$context")
     have=$(docker image inspect -f '{{ index .Config.Labels "org.decurion.dockerfile" }}' "$1" 2>/dev/null)
     [ -n "$want" ] && [ "$have" = "$want" ] && return 0
     echo "Getting $3 ready. This happens once per version and takes a few minutes."

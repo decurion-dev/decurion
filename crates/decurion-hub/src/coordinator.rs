@@ -29,12 +29,12 @@ use std::str::FromStr;
 /// Review rounds before a piece with problems left goes to the owner.
 pub const MAX_REVIEW_ROUNDS: i64 = 2;
 
-/// The coordinator reads code and talks; it never changes or runs anything.
-/// Its copy of the code is mounted read-only as well.
 /// What a checker is told about the private database in its box, the same
 /// words builders and research agents get (`decurion_proto::local_database!`).
 const LOCAL_DATABASE: &str = decurion_proto::local_database!();
 
+/// The coordinator reads code and talks; it never changes or runs anything.
+/// Its copy of the code is mounted read-only as well.
 const COORDINATOR_DISALLOWED: &[&str] = &[
     "Bash",
     "PowerShell",

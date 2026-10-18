@@ -32,12 +32,22 @@ function Read-Shared([string]$Path) {
 
 function Test-Docker { docker info *> $null; return ($LASTEXITCODE -eq 0) }
 
+# One hash for every file in a folder, names included, so a change to any
+# file the image copies in (not only its Dockerfile) means a rebuild.
+function Get-FolderHash([string]$Folder) {
+    $list = (Get-ChildItem -Recurse -File $Folder | Sort-Object FullName | ForEach-Object {
+        $_.FullName.Substring($Folder.Length) + ' ' + (Get-FileHash -Algorithm SHA256 $_.FullName).Hash
+    }) -join "`n"
+    $stream = [IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes($list))
+    (Get-FileHash -Algorithm SHA256 -InputStream $stream).Hash.ToLower()
+}
+
 # Prepares one agent workspace image from its folder in docker\. The image is
-# rebuilt when the Dockerfile shipped with this version changes. Returns $true
-# when the image is ready.
+# rebuilt when any file in that folder shipped with this version changes.
+# Returns $true when the image is ready.
 function Initialize-Image([string]$Image, [string]$Folder, [string]$What) {
     $context = Join-Path $Here "docker\$Folder"
-    $want = (Get-FileHash -Algorithm SHA256 (Join-Path $context 'Dockerfile')).Hash.ToLower()
+    $want = Get-FolderHash $context
     $have = docker image inspect -f '{{ index .Config.Labels "org.decurion.dockerfile" }}' $Image 2> $null
     if ($LASTEXITCODE -eq 0 -and "$have".Trim() -eq $want) { return $true }
     Write-Host "Getting $What ready. This happens once per version and takes a few minutes."

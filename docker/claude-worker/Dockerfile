@@ -110,8 +110,11 @@ RUN chmod a+r /opt/decurion/browser-host.mjs /etc/decurion/mcp-box.json \
 
 # PostgreSQL, so an app's tests that need a database can run inside the box
 # (decurion-postgres starts a private one; see that script). It comes from
-# PostgreSQL's own Debian repository, checked against its signing key's
-# fingerprint, and PG_MAJOR is pinned. Only the server and client are kept;
+# PostgreSQL's own Debian repository. Only the one signing key with the
+# pinned fingerprint is kept in its keyring, whatever else the downloaded
+# file holds. PG_MAJOR is pinned; the minor version is whatever that
+# repository serves, as it keeps only the newest (security fixes included),
+# the same as the Debian packages above. Only the server and client are kept;
 # the box reaches no package site for it at run time. The image's own
 # cluster is removed: agents make theirs in their home volume.
 ARG PG_MAJOR=16
@@ -119,18 +122,22 @@ ARG PGDG_SIGNER=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
 RUN apt-get update \
  && apt-get install -y --no-install-recommends gnupg wget \
  && wget -q -O /tmp/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
- && gpg --batch --with-colons --show-keys /tmp/pgdg.asc | awk -F: '$1 == "fpr" { print $10; exit }' > /tmp/pgdg.fpr \
- && if [ "$(cat /tmp/pgdg.fpr)" != "$PGDG_SIGNER" ]; then \
-      echo "PostgreSQL signing key fingerprint is $(cat /tmp/pgdg.fpr), expected $PGDG_SIGNER" >&2; exit 1; \
+ && export GNUPGHOME="$(mktemp -d)" \
+ && gpg --batch --quiet --import /tmp/pgdg.asc \
+ && gpg --batch --export "$PGDG_SIGNER" > /usr/share/keyrings/pgdg.gpg \
+ && keys="$(gpg --batch --with-colons --show-keys /usr/share/keyrings/pgdg.gpg | awk -F: '$1 == "fpr" { print $10 }' | head -n 1)" \
+ && n="$(gpg --batch --with-colons --show-keys /usr/share/keyrings/pgdg.gpg | grep -c '^pub:')" \
+ && if [ "$keys" != "$PGDG_SIGNER" ] || [ "$n" != 1 ]; then \
+      echo "PostgreSQL signing key is not exactly $PGDG_SIGNER" >&2; exit 1; \
     fi \
- && gpg --batch --dearmor -o /usr/share/keyrings/pgdg.gpg /tmp/pgdg.asc \
+ && rm -rf "$GNUPGHOME" \
  && echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
       > /etc/apt/sources.list.d/pgdg.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" \
  && { pg_dropcluster --stop "${PG_MAJOR}" main || true; } \
  && apt-get purge -y --auto-remove gnupg wget \
- && rm -rf /var/lib/apt/lists/* /tmp/pgdg.asc /tmp/pgdg.fpr \
+ && rm -rf /var/lib/apt/lists/* /tmp/pgdg.asc \
  && "/usr/lib/postgresql/${PG_MAJOR}/bin/postgres" --version
 COPY decurion-postgres /usr/local/bin/decurion-postgres
 RUN chmod a+rx /usr/local/bin/decurion-postgres
@@ -149,12 +156,25 @@ ENV CLAUDE_CONFIG_DIR=/home/agent/.claude
 # root. The pinned toolchain stays ahead of it on PATH.
 ENV CARGO_HOME=/home/agent/.cargo \
     PATH=$PATH:/home/agent/.cargo/bin
-# Proves decurion-postgres works for the agent user: start, set up like
-# docker-compose would, query, then leave no data behind in the image.
+# Proves decurion-postgres works for the agent user, and leaves no data
+# behind in the image: a setup script that fails keeps nothing, so the next
+# start sets up afresh; then a setup like docker-compose's (POSTGRES_USER,
+# POSTGRES_DB, init scripts) and a query as the app's own role.
 RUN mkdir -p /tmp/pg-init \
  && printf "CREATE ROLE app_user LOGIN PASSWORD 'x';\nCREATE DATABASE app_test;\n" > /tmp/pg-init/01-init.sql \
- && decurion-postgres start --port 5499 --db app --init /tmp/pg-init \
+ && printf "SELECT broken;\n" > /tmp/pg-init/02-broken.sql \
+ && if decurion-postgres start --port 5499 --user app --init /tmp/pg-init 2>/dev/null; then \
+      echo "a failed setup was reported as success" >&2; exit 1; \
+    fi \
+ && test ! -e "$HOME/.decurion-postgres/5499" \
+ && printf 'echo "for $POSTGRES_USER in $POSTGRES_DB" > "$HOME/pg-env"\n' > /tmp/pg-init/02-broken.sql.sh \
+ && rm /tmp/pg-init/02-broken.sql \
+ && decurion-postgres start --port 5499 --user app --init /tmp/pg-init \
+ && grep -qx "for app in app" "$HOME/pg-env" \
  && psql -h 127.0.0.1 -p 5499 -U app_user -d app_test -tAc "select 1" | grep -qx 1 \
+ && psql -h 127.0.0.1 -p 5499 -U app -d app -tAc "select current_user" | grep -qx app \
+ && decurion-postgres stop --port 5499 \
+ && decurion-postgres start --port 5499 \
  && decurion-postgres reset --port 5499 \
- && rm -rf /tmp/pg-init "$HOME/.decurion-postgres"
+ && rm -rf /tmp/pg-init "$HOME/.decurion-postgres" "$HOME/pg-env"
 ENTRYPOINT ["claude"]
