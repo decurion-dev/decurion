@@ -115,7 +115,12 @@
   .err-slot:empty { display: none; }
   .icard.limit { cursor: default; }
   .icard.limit .lim { font-size: 15px; line-height: 1.5; color: var(--ink); }
+  /* A goal's question: the project lead's words, cut short in the script. */
+  .said .gq { font-size: 15px; line-height: 1.5; color: var(--ink); }
+  .said .gq-more { font-size: 13px; color: var(--muted); }
   .notice { align-items: center; }
+  .read-all { display: flex; justify-content: flex-end; margin: 0 0 10px; }
+  .said .lbl-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .notice svg.i { margin-top: 0; }
   .notice.bad { align-items: flex-start; }
   .notice.bad svg.i { margin-top: 2px; }
@@ -297,6 +302,7 @@
   <section class="view" id="view-inbox" aria-labelledby="title">
     <div class="notice ask" id="notify" hidden></div>
     <div class="err-slot" id="act-err" role="alert"></div>
+    <div class="read-all" id="read-all" hidden></div>
     <div class="list live" id="inbox"></div>
   </section>
   <section class="view" id="view-board" aria-labelledby="title" hidden>
@@ -320,6 +326,7 @@
 <script src="/files.js"></script>
 <script src="/compose.js"></script>
 <script src="/settings.js"></script>
+<script src="/voice.js"></script>
 <script>
 "use strict";
 const { el, $ } = D;
@@ -347,7 +354,7 @@ const EMPTY_ICON = { running: "pc", in_review: "in_review", needs_you: "done", q
 const BOARD_LIMIT = 40;
 
 const S = {
-  tab: "inbox", threads: null, apps: {}, appList: [], limits: [], signIns: [], err: null, signedOut: false, updated: null,
+  tab: "inbox", threads: null, goals: [], apps: {}, appList: [], limits: [], signIns: [], err: null, signedOut: false, updated: null,
   chip: null, actErr: null, open: new Set(), notifyOn: false,
   // The board tab's app filter, remembered like the PC board's; how many cards it shows; whether a cloud worker exists.
   app: D.store.get("decurion.board.app") || "all", limit: BOARD_LIMIT, hasCloud: false,
@@ -394,23 +401,85 @@ const wantsTail = (s) => s === "running" || s === "needs_you" || s === "in_revie
 const boardTails = () => boardItems().slice(0, S.limit).filter((t) => wantsTail(t.state))
   .map((t) => loadTail(t, 5, t.state === "running"));
 
+// ---------- Goals waiting on you ----------
+// A goal waits on you when its project lead is not thinking and the goal is
+// talking or has a plan ready. The inbox shows a card for a plan to approve
+// or questions to answer. What a goal waits on comes from its view, fetched
+// only for waiting goals and kept until the goal changes, so the five-second
+// refresh costs little.
+const waitsOnYou = (g) => !g.busy && (g.state === "talking" || g.state === "plan_ready");
+const goalViews = new Map();
+// A goal's updated_at only moves with its state, so a new question in a
+// talking goal does not move it. A view is dropped while the project lead is
+// thinking (the goal is not waiting then), and refetched now and then anyway.
+const VIEW_FRESH_MS = 60000;
+const viewKey = (g) => `${g.updated_at}|${g.state}|${g.stuck}`;
+async function loadGoalView(g) {
+  const c = goalViews.get(g.id);
+  if (c && c.key === viewKey(g) && Date.now() - c.at < VIEW_FRESH_MS) return;
+  try { goalViews.set(g.id, { key: viewKey(g), at: Date.now(), v: await D.api(`/goals/${g.id}`) }); } catch (_) { /* keep what we had */ }
+}
+// What a waiting goal needs from you: the latest plan to approve, or the
+// latest questions nobody has answered yet. Null when the view can't say.
+function goalWait(g) {
+  const v = goalViews.get(g.id)?.v;
+  if (!v?.messages) return null;
+  const answered = new Set();
+  let last = null, plan = null;
+  for (const m of v.messages) {
+    const b = m.body;
+    if (b.kind === "answers") answered.add(b.to);
+    if (b.kind !== "coordinator") continue;
+    last = m;
+    if (b.plan) plan = m;
+  }
+  if (g.state === "plan_ready" && plan) {
+    return { kind: "plan", planId: plan.id, pieces: plan.body.plan.pieces?.length ?? 0, at: plan.at };
+  }
+  if (g.state === "talking" && last?.body.questions?.length && !answered.has(last.id)) {
+    return { kind: "question", questions: last.body.questions, at: last.at };
+  }
+  return null;
+}
+const goalCards = () => S.goals.filter(waitsOnYou).map((g) => ({ g, w: goalWait(g) })).filter((x) => x.w);
+// Everything the inbox lists after limits and sign-ins: work as { t } and
+// goals as { g, w }. A goal waits on a decision, so it sorts with Needs you,
+// by when its project lead last spoke.
+function inboxEntries() {
+  const work = inboxItems().map((t) => ({ t, rank: URGENCY[t.state], at: t.updated_at }));
+  const goals = goalCards().map((x) => ({ ...x, rank: URGENCY.needs_you, at: x.w.at > x.g.updated_at ? x.w.at : x.g.updated_at }));
+  return [...work, ...goals].sort((a, b) => a.rank - b.rank || b.at.localeCompare(a.at));
+}
+// Goals whose Approve tap is on its way, so a rebuilt card can't send it twice.
+const approving = new Set();
+
 // ---------- Loading ----------
 // The Goals tab's badge: goals waiting on you, with questions to answer or a
-// plan to approve (the project lead is not thinking). If the hub can't say,
-// the badge stays as it was.
-async function goalsBadge() {
-  let n;
-  try { n = (await D.api("/goals")).filter((g) => !g.busy && (g.state === "talking" || g.state === "plan_ready")).length; }
-  catch (_) { return; }
+// plan to approve (the project lead is not thinking).
+function goalsBadge(list) {
+  const n = list.filter(waitsOnYou).length;
   $("goals-badge").hidden = n === 0;
   $("goals-badge").textContent = n > 99 ? "99+" : n;
   $("tab-goals").setAttribute("aria-label", n ? `Goals, ${D.plural(n, "goal")} waiting on you` : "Goals");
+}
+// Goals, the badge and the views behind their cards. Never throws: if the hub
+// can't say, the badge and the cards stay as they were.
+async function loadGoals() {
+  let list;
+  try { list = await D.api("/goals"); } catch (_) { return; }
+  if (!Array.isArray(list)) return;
+  goalsBadge(list);
+  S.goals = list;
+  const waiting = list.filter(waitsOnYou), ids = new Set(waiting.map((g) => g.id));
+  for (const id of goalViews.keys()) if (!ids.has(id)) goalViews.delete(id);
+  for (const id of approving) if (!ids.has(id)) approving.delete(id);
+  await Promise.all(waiting.map(loadGoalView));
 }
 let busy = false, again = false;
 async function refresh() {
   if (busy) { again = true; return; }
   busy = true;
-  goalsBadge();
+  const goalsJob = loadGoals();
   try {
     // Hubs without the limits endpoint answer 404; that just means no limits.
     // Money and accounts only matter on the Settings tab. Computers also say
@@ -444,6 +513,7 @@ async function refresh() {
     S.err = e;
     if (e.signedOut) S.signedOut = true;
   }
+  await goalsJob;
   busy = false;
   render();
   if (again) { again = false; refresh(); }
@@ -496,7 +566,7 @@ function errorState(what) {
 }
 
 function renderShell() {
-  const n = inboxItems().length + S.limits.length + S.signIns.length;
+  const n = inboxEntries().length + S.limits.length + S.signIns.length;
   document.body.classList.toggle("signed-out", S.signedOut);
   $("title").textContent = S.signedOut ? "Decurion" : TITLES[S.tab];
   $("count").hidden = !(S.tab === "inbox" && n > 0 && !S.signedOut);
@@ -555,7 +625,8 @@ function inboxCard(t, anim) {
       more.textContent = now ? "Show less" : "Show more";
       more.setAttribute("aria-expanded", now ? "true" : "false");
     };
-    card.append(el("div", { className: "said" }, el("div", { className: "lbl" }, "The agent says"), q, more));
+    card.append(el("div", { className: "said" },
+      el("div", { className: "lbl-row" }, el("div", { className: "lbl" }, "The agent says"), window.Voice?.speaker(said) ?? null), q, more));
   }
   const since = sinceLines(tailNow(t, 20) ?? []);
   if (since.length) card.append(el("div", { className: "said" }, el("div", { className: "lbl" }, said ? "Since then" : "Recently"), el("p", { className: "since" }, since.join("\n"))));
@@ -656,15 +727,74 @@ function signInCard(s, anim) {
   card.append(el("div", { className: "iacts" }, b));
   return card;
 }
+// A goal waiting on you: a plan to approve here in one tap, or the project
+// lead's questions, answered on the goal's page. The title and question are
+// the owner's and the project lead's words, so they go in as text.
+const cut = (s, n) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
+function goalCard({ g, w }, anim) {
+  const key = `goal-${g.id}`, href = `/goals#goal-${g.id}`, plan = w.kind === "plan";
+  const go = () => { location.href = href; };
+  const card = el("article", { className: "icard" + (anim === "still" ? " still" : ""), dataset: { state: "needs_you", key, anim } });
+  const ttl = el("button", { type: "button", className: "ttl" }, g.title);
+  ttl.onclick = go;
+  card.append(
+    el("div", { className: "meta" },
+      el("span", { className: "pill needs_you" }, D.icon(plan ? "send" : "question"), plan ? "Plan ready" : "Question"),
+      el("span", { className: "app" }, D.appName(g.app_id)),
+      el("span", { className: "when", dataset: { at: w.at } }, D.ago(w.at)),
+      el("span", { className: "chev" }, D.icon("right"))),
+    el("h2", { className: "h" }, ttl));
+  if (plan) {
+    const n = w.pieces;
+    card.append(el("p", { className: "means" },
+      `${D.plural(n, "piece")} of work. Approve starts ${n === 1 ? "it" : "them all"}, or open the plan to read it first.`));
+    const sending = approving.has(g.id);
+    const ok = el("button", { type: "button", className: "btn primary", disabled: D.offline || sending },
+      D.icon("done"), sending ? "Starting the work…" : "Approve");
+    ok.onclick = async () => {
+      if (D.offline || approving.has(g.id)) return;
+      approving.add(g.id);
+      ok.disabled = true;
+      ok.replaceChildren(D.icon("done"), "Starting the work…");
+      try {
+        await D.api(`/goals/${g.id}/approve`, { method: "POST", body: JSON.stringify({ plan_message_id: w.planId, receipt: D.receipt() }) });
+        D.toast(n === 1 ? "Approved. The work has started." : `Approved. ${n} pieces started.`);
+        card.classList.add("leaving");
+        setTimeout(refresh, 180);
+      } catch (e) {
+        approving.delete(g.id);
+        // The plan may have changed meanwhile; the next refresh fetches it again.
+        goalViews.delete(g.id);
+        D.toast(`The plan wasn't approved: ${e.message}`, "alert");
+        ok.disabled = D.offline;
+        ok.replaceChildren(D.icon("done"), "Approve");
+        refresh();
+      }
+    };
+    card.append(el("div", { className: "iacts" }, ok,
+      el("div", { className: "sub" }, el("a", { className: "btn", href }, "Open plan"))));
+  } else {
+    const more = w.questions.length - 1;
+    card.append(
+      el("p", { className: "means" }, "Your project lead needs your answer before it can make a plan."),
+      el("div", { className: "said" },
+        el("div", { className: "lbl" }, "Your project lead asks"),
+        el("p", { className: "gq" }, cut(w.questions[0].text, 240)),
+        more > 0 && el("p", { className: "gq-more" }, `And ${D.plural(more, "more question")}.`)),
+      el("div", { className: "iacts" }, el("a", { className: "btn primary", href }, D.icon("question"), "Answer")));
+  }
+  card.addEventListener("click", (e) => { if (!e.target.closest("button, a")) go(); });
+  return card;
+}
 const errNotice = (msg) => el("div", { className: "notice bad" }, D.icon("alert"), el("span", { className: "grow" }, msg));
 
 function renderInbox() {
   const box = $("inbox");
-  const items = inboxItems();
+  const entries = inboxEntries();
   if (!S.threads) {
     if (S.err) setMode(box, "error", `${D.offline}|${S.err.message}`, () => errorState("inbox"));
     else setMode(box, "loading", "", skeletons);
-  } else if (!items.length && !S.limits.length && !S.signIns.length) {
+  } else if (!entries.length && !S.limits.length && !S.signIns.length) {
     const c = counts();
     setMode(box, "empty", `${c.running}|${c.queued}|${S.notifyOn}`, () => {
       const granted = "Notification" in window && Notification.permission === "granted";
@@ -685,14 +815,49 @@ function renderInbox() {
       key: `signin-${x.id}`,
       sig: JSON.stringify([x.label, x.app_name, x.status, x.expires_at, D.offline]),
       build: (anim) => signInCard(x, anim),
-    })), ...items.map((t) => ({
+    })), ...entries.map(({ t, g, w }) => (t ? {
       key: t.id,
       sig: JSON.stringify([t.state, t.updated_at, t.title, t.github, D.appName(t.app_id), D.lastWords(tailNow(t, 20) ?? []), sinceLines(tailNow(t, 20) ?? []), D.offline]),
       build: (anim) => inboxCard(t, anim),
+    } : {
+      key: `goal-${g.id}`,
+      sig: JSON.stringify([g.title, D.appName(g.app_id), w, approving.has(g.id), D.offline]),
+      build: (anim) => goalCard({ g, w }, anim),
     }))]);
   }
   placeErr();
+  readAllButton(entries);
   requestAnimationFrame(measureQuotes);
+}
+
+// "Read what needs me": the inbox read top to bottom, for when the owner's
+// hands are busy. Built from the same words the cards show.
+function readAllButton(entries) {
+  const slot = $("read-all");
+  const V = window.Voice;
+  slot.hidden = !(V?.canSpeak() && S.threads && entries.length);
+  if (slot.hidden || slot.firstChild) return;
+  slot.append(V.speaker(() => readAllText(inboxEntries()), { label: "Read what needs me" }));
+}
+const askText = (qs) => qs.map((q) => q.text + (q.choices?.length ? ` You can say: ${q.choices.join(", or ")}.` : "")).join(" ");
+function readAllText(entries) {
+  if (!entries.length) return "Nothing needs you right now.";
+  const lines = [entries.length === 1 ? "One thing needs you." : `${entries.length} things need you.`];
+  entries.forEach(({ t, g, w }, i) => {
+    const num = entries.length > 1 ? `Number ${i + 1}. ` : "";
+    if (g) {
+      lines.push(`${num}${g.title}, a goal in ${D.appName(g.app_id)}.`, w.kind === "plan"
+        ? `Your project lead's plan is ready to approve. It has ${D.plural(w.pieces, "piece")} of work.`
+        : `Your project lead asks: ${askText(w.questions)}`);
+      return;
+    }
+    const { questions, rest } = D.questions(D.rawWords(tailNow(t, 20) ?? []));
+    const asks = ASKS_IN.has(t.state) ? questions : [];
+    const head = `${num}${t.title}, in ${D.appName(t.app_id)}. ${D.STATES[t.state]?.word ?? ""}.`;
+    const about = asks.length ? `The agent asks: ${askText(asks)}` : rest.trim().slice(0, 400);
+    lines.push(head, about);
+  });
+  return lines.filter(Boolean).join("\n");
 }
 // A failed action's error shows on its card, or at the top once the work has
 // left the inbox, and stays until the next tap on an action.

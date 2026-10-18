@@ -207,7 +207,19 @@
       card("sign-ins", "key", "Website sign-ins",
         "Let this app's agents check pages that need a sign-in. You sign in once, in a sign-in window on your PC or phone; the sign-in is kept on your PC and your password is never saved. Use test accounts only: an agent may be able to read part of what a website keeps.",
         parts.signIns),
-      phones);
+      phones,
+      voiceCard());
+  }
+
+  // Voice choices are kept on each phone or PC, not on the hub, so this card
+  // only appears where the browser can listen or read aloud (voice.js).
+  function voiceCard() {
+    const V = window.Voice;
+    if (!V || !(V.canListen() || V.canSpeak())) return null;
+    return el("section", { className: "scard live", id: "set-voice", "aria-labelledby": "h-voice" },
+      el("header", {}, el("span", { className: "ic" }, V.icon("mic")), el("div", {}, el("h2", { id: "h-voice" }, "Voice"),
+        el("p", {}, "Talk instead of typing, and hear replies read aloud. These choices are kept on this device only."))),
+      V.settingsPanel());
   }
 
   // ---------- Add an app ----------
