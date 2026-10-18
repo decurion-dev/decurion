@@ -400,6 +400,7 @@
   <a class="brand" href="/goals"><span class="mark" aria-hidden="true"></span>Decurion</a>
   <nav aria-label="Pages">
     <a href="/goals" aria-current="page">Goals</a>
+    <a href="/plan">Master plan</a>
     <a href="/">Board</a>
     <a href="/inbox">Inbox</a>
   </nav>
@@ -629,9 +630,9 @@ function inline(s) {
 }
 const pill = (label, tone) => el("span", { class: `pill ${tone}` }, label);
 const dots = small => el("span", { class: small ? "dots small" : "dots", "aria-hidden": "true" }, el("i"), el("i"), el("i"));
-const pageUrl = (goalId, pageId) => `/api/goals/${goalId}/pages/${pageId}`;
-/** A page an agent drew. On the PC it opens in a new tab; on a phone it opens in place, and the hub adds a Back link to it. */
-const pageLink = (goalId, pageId) => inApp() ? { href: `${pageUrl(goalId, pageId)}?back=1` }
+const pageUrl = (goalId, pageId) => `/pages/${goalId}/${pageId}?from=goal`;
+/** A page an agent drew, in the page viewer. On the PC it opens in a new tab; on a phone it opens in place, and the viewer's Back returns here. */
+const pageLink = (goalId, pageId) => inApp() ? { href: pageUrl(goalId, pageId) }
   : { href: pageUrl(goalId, pageId), target: "_blank", rel: "noopener" };
 const newTabNote = () => (inApp() ? null : el("span", { class: "sr-only" }, "(opens in a new tab)"));
 
