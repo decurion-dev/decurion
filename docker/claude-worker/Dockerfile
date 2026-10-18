@@ -30,6 +30,51 @@ RUN npm install -g @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} \
  && rm -rf /var/lib/apt/lists/* \
  && npm cache clean --force
 
+# Rust, so agents can build and test Rust apps (Decurion itself included) and
+# run the same checks as its CI: cargo fmt, cargo clippy, cargo test.
+# gcc and libc6-dev are the C compiler and linker Rust needs, and build the C
+# parts of some crates (SQLite, ring); pkg-config lets crates find system
+# libraries. wget is only for the download and is removed again.
+# rustup-init is pinned and checked against the sha256 published next to it
+# for this version (static.rust-lang.org/rustup/archive/<version>/<target>/
+# rustup-init.sha256); rustup then installs the pinned toolchain and checks
+# each download itself. Only the minimal set plus rustfmt and clippy.
+# CI uses the newest stable Rust; move RUST_VERSION along with it, or the
+# agent's clippy may disagree with CI's.
+# The toolchain lives in /usr/local, owned by root and only readable by
+# `agent`, so an agent cannot change its own compiler. Crates the agent
+# downloads go to its home volume (CARGO_HOME, set below), so they are kept
+# between runs of the same piece of work. The box reaches crates.io through
+# its gate; it cannot reach static.rust-lang.org, so a repo that asks for
+# another Rust version (rust-toolchain.toml) gets none.
+ARG RUSTUP_VERSION=1.29.1
+ARG RUST_VERSION=1.99.1
+ENV RUSTUP_HOME=/usr/local/rustup \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gcc libc6-dev pkg-config wget \
+ && case "$(dpkg --print-architecture)" in \
+      amd64) target=x86_64-unknown-linux-gnu; \
+             sum=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71 ;; \
+      arm64) target=aarch64-unknown-linux-gnu; \
+             sum=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433 ;; \
+      *) echo "no pinned rustup-init for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac \
+ && wget -q -O /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${target}/rustup-init" \
+ && echo "${sum}  /tmp/rustup-init" | sha256sum -c - \
+ && chmod +x /tmp/rustup-init \
+ && CARGO_HOME=/usr/local/cargo /tmp/rustup-init -y --no-modify-path --profile minimal \
+      --default-toolchain "${RUST_VERSION}" --component rustfmt --component clippy \
+ && rm /tmp/rustup-init \
+ && chmod -R a+rX,go-w /usr/local/rustup /usr/local/cargo \
+ && apt-get purge -y --auto-remove wget \
+ && rm -rf /var/lib/apt/lists/* \
+ && CARGO_HOME=/usr/local/cargo rustc --version \
+ && CARGO_HOME=/usr/local/cargo cargo --version \
+ && CARGO_HOME=/usr/local/cargo cargo clippy --version \
+ && CARGO_HOME=/usr/local/cargo cargo fmt --version \
+ && cc --version
+
 # The box reaches the web only through its gate. WebFetch's own pre-check of
 # each site goes to claude.ai, which is not on the gate's list; the gate does
 # that job instead.
@@ -57,4 +102,9 @@ RUN useradd ${AGENT_UID:+--uid "$AGENT_UID" --non-unique} --create-home --shell 
 USER agent
 WORKDIR /work
 ENV CLAUDE_CONFIG_DIR=/home/agent/.claude
+# cargo keeps downloaded crates and `cargo install`ed tools here, in the
+# agent's home volume. Set only now, so no step above creates the folder as
+# root. The pinned toolchain stays ahead of it on PATH.
+ENV CARGO_HOME=/home/agent/.cargo \
+    PATH=$PATH:/home/agent/.cargo/bin
 ENTRYPOINT ["claude"]

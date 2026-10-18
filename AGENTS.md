@@ -39,6 +39,7 @@ mdbook build docs/help                       # mdBook 0.4.52, output in target/h
 ```
 
 One test: `cargo test -p decurion-hub --test api <test_name>`, `cargo test -p decurion-runner --lib <test_name>`.
+In a Decurion box, `cargo fmt`, `cargo clippy` and `cargo test` run as they are: the Claude worker image has a pinned Rust toolchain (rustfmt, clippy) and a C compiler. Run them before you finish. `check-template.sh` (needs Python), `cargo deny`, `mdbook` and Docker are not available in the box; say so in your summary instead.
 Images: `docker build -t decurion/claude-worker:dev docker/claude-worker`, same for `pi-worker`;
 gate: `docker build -t decurion/gate:dev -f docker/gate/Dockerfile .`.
 
