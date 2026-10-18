@@ -2,6 +2,7 @@
 
 pub mod browser;
 pub mod context;
+pub mod deploy;
 pub mod goal;
 pub mod plan;
 pub mod preview;
