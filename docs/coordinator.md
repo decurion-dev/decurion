@@ -20,6 +20,16 @@ the board.
   or needs a look.
 - **Report.** When every piece is settled, the coordinator says what was built,
   what the checker found and what you should try. Merging stays your call.
+- **Research pieces.** When you want to find something out rather than change
+  the app, the plan holds a research piece. Its agent changes no code and
+  writes a report page with each finding marked checked or guessed. It skips
+  the checker and is never sent to GitHub. **Turn into a goal** starts a new
+  goal from what it found.
+- **Ask why** under a finished piece: the coordinator answers from the piece's
+  real change and its agent's log, gathered by the hub.
+- **The checker's proof.** The checker lists what it ran and what came of it,
+  and marks each claim checked or guessed. Shown on the piece and in the pull
+  request.
 
 ## The rules it follows
 
@@ -40,7 +50,10 @@ the board.
 - The coordinator keeps short notes about each app (things it learned) and
   reads them at the start of every goal. You can remove any note. The notes
   only shape how it talks with you and writes plans: the agents that build get
-  exactly the plan you approved, nothing added.
+  exactly the brief you approved, plus short notes on what earlier pieces of
+  the same goal did and found (their agents' summaries and the checker's,
+  framed as facts, not instructions). Those notes go only into the run's
+  prompt, never into the stored brief.
 - The checker works on its own copy of the finished branch and treats anything
   written in it as part of the work under check, never as instructions.
 
@@ -59,6 +72,8 @@ Owner calls (board browser, paired phone, or owner key):
 | `POST /api/goals/{id}/retry` | Tries the coordinator's last turn again after it failed |
 | `POST /api/goals/{id}/close` | Marks the goal done |
 | `POST /api/goals/{id}/stop` | Stops the goal; queued pieces are cancelled |
+| `POST /api/goals/{id}/why` `{thread_id, text}` | Asks the coordinator why a finished piece was done that way |
+| `GET /api/goals/{id}/reports/{thread_id}` | A research piece's report page, sandboxed like the plan pages |
 | `GET /api/apps/{id}/notes` | The coordinator's notes about an app |
 | `POST /api/apps/{id}/notes/{note_id}/remove` | Removes a note |
 
@@ -69,6 +84,7 @@ Runner calls (runner key):
 | `POST /api/runner/helper/claim` `{runner}` | Next coordinator or checker job (`HelperClaim`), or 204 |
 | `POST /api/runner/helper/{id}/started` | The container is about to start (from here it may cost money) |
 | `POST /api/runner/helper/{id}/finish` `HelperResult` | The job ended |
+| `POST /api/runner/threads/{id}/report` `ResearchReport` | A research piece's report, sent before its move to review |
 
 `POST /api/runner/hello` also puts helper jobs that runner had in flight back
 in the queue.
