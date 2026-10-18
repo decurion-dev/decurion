@@ -13,9 +13,9 @@ way. Owner-facing version: `docs/help/src/improve-decurion-itself.md`.
 ## How the work goes
 
 1. The owner gives a goal. The coordinator reads the code read-only and proposes a plan; the owner approves it once (`approve_plan`).
-2. Each piece is built by its own agent in its own sealed box, on its own branch (`decurion/thread-<n>`), in a copy under the runner's `workspaces/` folder. The owner's clone is never touched.
+2. Each piece is built by its own agent in its own sealed box, on its own branch (`decurion/thread-<n>`), in a copy under the runner's `workspaces/` folder. The owner's clone is never touched: no branch or commit is written into it (the push to GitHub only borrows objects from the hub's own copy).
 3. When the agent finishes with commits, the checker reviews a separate copy taken from the runner-owned review repo (`branch_copy`), and passes it, sends it back with notes (at most 2 rounds), or marks it **needs a look**.
-4. The owner reviews and merges, by pulling the branch from `<data>/review/<app>-<n>.git` into their clone (`docs/help/src/review-and-merge.md`). Decurion never merges or pushes. If the change goes to GitHub as a pull request, CI (`.github/workflows/`) runs the checks there.
+4. The owner reviews it and taps Accept. The hub (never a box) pushes the accepted commit from the owner's clone to a new `decurion/...` branch on its `origin` and opens a pull request (`crates/decurion-hub/src/github.rs`), so CI (`.github/workflows/`) runs the checks there. The owner merges on GitHub; Decurion never merges and never pushes to the default branch. If the clone has no GitHub `origin`, the owner can still pull the branch from `<data>/review/<app>-<n>.git` (`docs/help/src/review-and-merge.md`).
 
 **The running hub never changes itself.** The hub and runner keep running the
 programs they were started from. A merged change runs only after the owner

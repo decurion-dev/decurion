@@ -46,7 +46,8 @@ pub struct Store {
 }
 
 const THREAD_COLS: &str =
-    "id, app_id, title, prompt, state, ai, session_id, branch, place, updated_at, parent_id, background";
+    "id, app_id, title, prompt, state, ai, session_id, branch, place, updated_at, parent_id, background,
+     gh_state, gh_branch, gh_url, gh_pr, gh_error";
 
 /// The actor recorded for the owner's own moves.
 pub const OWNER: &str = "owner";
@@ -77,6 +78,7 @@ fn thread_from(row: &SqliteRow) -> Result<Thread> {
         updated_at: row.try_get("updated_at")?,
         parent_id: row.try_get("parent_id")?,
         background: row.try_get("background")?,
+        github: crate::github::send_from(row)?,
     })
 }
 
@@ -262,7 +264,7 @@ impl Store {
             .0)
     }
 
-    /// [`Store::move_thread`] as asked for from the board or the runner. Two
+    /// [`Store::move_thread`] as asked for from the board or the runner. Three
     /// moves do more than change the state:
     ///
     /// - The owner stopping work (to Failed) first stops the work under it,
@@ -271,6 +273,10 @@ impl Store {
     /// - The runner finishing a run (Running to In review) while the owner
     ///   has a steer or follow-up waiting sends it back to the queue instead,
     ///   so the agent gets them before anyone reviews it.
+    /// - The owner accepting work in review (to Done) records, in the same
+    ///   transaction, that the hub is to send it to GitHub
+    ///   ([`crate::github`]). The sending itself happens after, and a
+    ///   failure there never undoes the accept.
     ///
     /// With a receipt already used for this move, nothing happens and the
     /// thread is returned as it is now; the flag is false then.
@@ -327,6 +333,11 @@ impl Store {
                 .await?;
         }
         checked_move(&mut tx, id, Some(from), to, actor, note).await?;
+        // The owner accepting reviewed work: the wish to send it to GitHub
+        // is saved with the accept, so a crash right after still sends it.
+        if actor == OWNER && from == ThreadState::InReview && to == ThreadState::Done {
+            crate::github::want_send(&mut tx, id).await?;
+        }
         save_receipt(&mut tx, receipt, "move", id).await?;
         tx.commit().await?;
         Ok((self.thread(id).await?, true))
@@ -354,7 +365,8 @@ impl Store {
             // A runner only gets work placed on its own kind of computer.
             let Some(row) = sqlx::query(
                 "SELECT t.id, t.app_id, t.title, t.prompt, t.state, t.ai, t.session_id, t.branch,
-                        t.place, t.updated_at, t.parent_id, t.background, t.pay_per_use AS thread_ppu
+                        t.place, t.updated_at, t.parent_id, t.background, t.pay_per_use AS thread_ppu,
+                        t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error
                  FROM threads t JOIN apps a ON a.id = t.app_id
                  WHERE t.state = 'queued' AND t.place = ?
                    AND (t.ai <> 'claude' OR t.pay_per_use = 1 OR a.pay_per_use = 1 OR NOT EXISTS (

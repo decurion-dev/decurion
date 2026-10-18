@@ -186,6 +186,55 @@ impl Files {
         Ok((sha, path))
     }
 
+    /// Reads the branch `branch` from a saved copy's code part into the ref
+    /// `into` of the app's cache, with git checking every object (an agent
+    /// wrote it), and returns the commit it points at. The caller holds
+    /// `git_lock` and has brought the cache up to date with
+    /// [`Files::fetch_app`], so the commit the bundle builds on is there.
+    pub(crate) async fn fetch_saved_code(
+        &self,
+        cache: &Path,
+        thread: i64,
+        checkpoint: i64,
+        branch: &str,
+        into: &str,
+    ) -> Result<String> {
+        let bundle = self.saved(thread, checkpoint, Part::Code);
+        if !bundle.is_file() {
+            return Err(StoreError::Refused(
+                "the saved copy of this work is gone".into(),
+            ));
+        }
+        let bundle = bundle.to_string_lossy().into_owned();
+        git(
+            cache,
+            &[
+                "-c",
+                "protocol.allow=never",
+                "-c",
+                "protocol.file.allow=always",
+                "-c",
+                "transfer.fsckObjects=true",
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--",
+                &bundle,
+                &format!("+refs/heads/{branch}:{into}"),
+            ],
+        )
+        .await?;
+        let head = git(
+            cache,
+            &["rev-parse", "--verify", &format!("{into}^{{commit}}")],
+        )
+        .await?;
+        if !is_commit(&head) {
+            return Err(StoreError::Invalid(format!("not a commit id: {head}")));
+        }
+        Ok(head)
+    }
+
     fn bundle_path(&self, sha: &str) -> PathBuf {
         self.dir.join("bundles").join(format!("base-{sha}.bundle"))
     }

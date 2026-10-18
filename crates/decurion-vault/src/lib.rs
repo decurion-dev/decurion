@@ -5,6 +5,10 @@
 //! The hub saves keys here when the owner adds them on the board and keeps
 //! only their names and last four characters. The runner reads them here at
 //! the start of each run and hands them to that run's container.
+//!
+//! It also keeps one key of the owner's own: an optional GitHub token the
+//! hub uses to open pull requests for accepted work. That one is never
+//! handed to a run, and its entry is apart from every app's test keys.
 
 use std::path::{Path, PathBuf};
 
@@ -169,6 +173,34 @@ pub fn target(app_id: i64, name: &str) -> String {
     format!("decurion/app-{app_id}/test-key/{name}")
 }
 
+/// The Credential Manager entry for the owner's GitHub token. It belongs to
+/// the owner, not to an app: only the hub reads it, to open pull requests,
+/// and no box or run is ever given it (test keys are looked up by app and
+/// name, which can never reach this entry).
+pub const GITHUB_TARGET: &str = "decurion/github";
+
+/// The owner's GitHub token: one line, no spaces, in one of GitHub's own
+/// token shapes, so a pasted password or a key for something else is
+/// refused with a reason.
+pub fn check_github_token(value: &str) -> Result<()> {
+    const SHAPES: &[&str] = &["github_pat_", "ghp_", "gho_", "ghu_"];
+    let n = value.chars().count();
+    if !(20..=255).contains(&n)
+        || value.chars().any(|c| c.is_whitespace() || c.is_control())
+        || !value.is_ascii()
+    {
+        return Err(VaultError::Invalid(
+            "a GitHub token is one line of 20 to 255 letters and digits, without spaces".into(),
+        ));
+    }
+    if !SHAPES.iter().any(|p| value.starts_with(p)) {
+        return Err(VaultError::Invalid(
+            "this does not look like a GitHub token. Tokens start with github_pat_ or ghp_".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 enum Backend {
     #[cfg(windows)]
@@ -266,6 +298,67 @@ impl Vault {
             },
         }
     }
+
+    /// Saves the owner's GitHub token, replacing any saved before.
+    pub fn put_github(&self, value: &str) -> Result<()> {
+        check_github_token(value)?;
+        match &self.backend {
+            #[cfg(windows)]
+            Backend::CredentialManager => github_entry()?
+                .set_password(value)
+                .map_err(|e| VaultError::Store(e.to_string())),
+            Backend::Folder(dir) => {
+                let owner = dir.join("owner");
+                private_dir(dir)?;
+                private_dir(&owner)?;
+                let path = owner.join("github");
+                let tmp = owner.join(format!("github.{}.tmp", std::process::id()));
+                write_private(&tmp, value.as_bytes())?;
+                std::fs::rename(&tmp, &path).map_err(store)
+            }
+        }
+    }
+
+    /// The owner's GitHub token, or `None` if none is saved.
+    pub fn get_github(&self) -> Result<Option<String>> {
+        match &self.backend {
+            #[cfg(windows)]
+            Backend::CredentialManager => match github_entry()?.get_password() {
+                Ok(v) => Ok(Some(v)),
+                Err(keyring::Error::NoEntry) => Ok(None),
+                Err(e) => Err(VaultError::Store(e.to_string())),
+            },
+            Backend::Folder(dir) => {
+                match std::fs::read_to_string(dir.join("owner").join("github")) {
+                    Ok(v) => Ok(Some(v)),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Err(e) => Err(store(e)),
+                }
+            }
+        }
+    }
+
+    /// Forgets the owner's GitHub token. Forgetting none is not an error.
+    pub fn delete_github(&self) -> Result<()> {
+        match &self.backend {
+            #[cfg(windows)]
+            Backend::CredentialManager => match github_entry()?.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(e) => Err(VaultError::Store(e.to_string())),
+            },
+            Backend::Folder(dir) => match std::fs::remove_file(dir.join("owner").join("github")) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(store(e)),
+            },
+        }
+    }
+}
+
+#[cfg(windows)]
+fn github_entry() -> Result<keyring::Entry> {
+    keyring::Entry::new_with_target(GITHUB_TARGET, "decurion", "github")
+        .map_err(|e| VaultError::Store(e.to_string()))
 }
 
 #[cfg(windows)]
@@ -414,5 +507,42 @@ mod tests {
     #[test]
     fn targets_are_per_app() {
         assert_eq!(target(7, "API_KEY"), "decurion/app-7/test-key/API_KEY");
+    }
+
+    #[test]
+    fn the_github_token_is_the_owners_and_kept_apart_from_test_keys() {
+        assert!(check_github_token("github_pat_11ABCDEFG0123456789_abcdef").is_ok());
+        assert!(check_github_token("ghp_abcdefghijklmnopqrstuvwxyz0123456789").is_ok());
+        for bad in [
+            "hunter2hunter2hunter2",
+            "ghp_short",
+            "ghp_abcdefghij klmnopqrstuvwxyz",
+            " ghp_abcdefghijklmnopqrstuvwxyz",
+            "ghp_abcdefghijklmnopqrstuvwxyz\n",
+            "sk_test_abcdefghijklmnopqrstuvwxyz",
+        ] {
+            assert!(check_github_token(bad).is_err(), "{bad:?}");
+        }
+        let dir = tmp();
+        let v = Vault::in_folder(&dir);
+        assert!(matches!(v.get_github(), Ok(None)));
+        let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        v.put_github(token).expect("put");
+        assert_eq!(v.get_github().ok().flatten().as_deref(), Some(token));
+        // No app's test key, whatever its name, reads it.
+        assert!(matches!(v.get(0, "GITHUB"), Ok(None)));
+        assert!(v.put_github("not a token").is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join("owner").join("github"))
+                .map(|m| m.permissions().mode() & 0o777)
+                .unwrap_or(0);
+            assert_eq!(mode, 0o600);
+        }
+        v.delete_github().expect("delete");
+        v.delete_github().expect("delete twice");
+        assert!(matches!(v.get_github(), Ok(None)));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

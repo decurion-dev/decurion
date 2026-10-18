@@ -9,17 +9,50 @@ Work moves to **In review** only when the agent has finished and saved its chang
 1. On the board, click the card under **In review**. Or open it from the inbox on your phone.
 2. Read the activity log. It shows what the agent did, step by step, and its final summary.
 3. Choose one:
-   - **Accept** if you are happy with it. The work moves to **Done**.
+   - **Accept** if you are happy with it. The work moves to **Done**, and Decurion sends it to GitHub for you. See the next part.
    - **Send back** if it needs more. The agent runs again and picks up where it left off. Today you cannot add a note when you send work back.
    - **Reject** if you do not want it. The work moves to **Failed**.
 
-> **Coming soon.** This part of Decurion is still being built. This page shows how it will work.
->
-> You will see the changed files side by side, along with a second agent's review notes. Decurion will then ask: "Merge pull request into main? Tests passed." Tap **Merge**, and Decurion pushes and merges the work on GitHub for you.
+## After you accept: merge it on GitHub
 
-## Get the changes into your app today
+When you tap **Accept**, Decurion puts the work on your app's GitHub page as a new **branch**, a separate line of changes. Its name starts with `decurion/`, then the app, the number and a few words from the title, such as `decurion/shop-7-fix-login`. It uses this PC's own GitHub sign-in, the same one you use to push from this PC yourself, so you are not asked anything.
 
-Accepting work does not change your app's own folder yet. The agent's changes are saved on a **branch**, a separate line of changes in Git. To bring them into your app, you or someone who uses Git can merge that branch.
+Decurion only ever adds a new branch. It never changes your app's main branch, never overwrites a branch that is already there, and never merges. Merging is always yours.
+
+1. Wait a moment. The card says **Sending to GitHub…** while it works.
+2. When it is done, you get a notice on your phone, and the card shows a button:
+   - **Open pull request** if Decurion opened the pull request for you. Look it over on GitHub, wait for the checks to pass, then click **Merge pull request** there.
+   - **Open pull request on GitHub** if it did not. Tap it, and GitHub opens a page with the pull request filled in. Click **Create pull request**, then merge it there when you are ready.
+
+The pull request says what was done, what the checker found, and any protected parts that were held for you. It also says that Decurion made it.
+
+## Let Decurion open the pull request for you
+
+This is optional. Without it, you make each pull request yourself with one tap.
+
+1. On GitHub, open **Settings**, then **Developer settings**, then **Personal access tokens**, then **Fine-grained tokens**, and click **Generate new token**.
+2. Under **Repository access**, choose your apps' repos.
+3. Under **Permissions**, set **Pull requests** to **Read and write**. It needs nothing else.
+4. Click **Generate token** and copy it.
+5. On the board, open **Settings**, find **GitHub**, paste it into **GitHub token**, and click **Save token**.
+
+Decurion keeps the token in this PC's password store and shows only its last four characters. It is never given to an agent. To stop using it, click **Remove** next to it.
+
+If you use the GitHub command line tool (`gh`) and are signed in to it, Decurion uses that sign-in when no token is saved.
+
+## If sending to GitHub does not work
+
+Your work is still accepted, and nothing is lost. The card says **Not sent to GitHub**, with the reason in plain words. Fix what it says, then tap **Try again**. Common reasons:
+
+- **This PC is not signed in to GitHub with access to this app's repo.** Push once from this PC yourself, for example with GitHub Desktop, so it remembers you. Then tap **Try again**.
+- **A branch with that name is already on GitHub with other changes.** Decurion did not overwrite it. Delete or rename that branch on GitHub, then tap **Try again**.
+- **Could not reach GitHub.** Check this PC's internet connection, then tap **Try again**.
+- **This app's folder is not linked to GitHub.** It has no remote named `origin`. Get the work by hand instead, as shown below.
+- **The pull request was not opened, but the work was sent.** The card still shows **Open pull request on GitHub**. Tap it to make the pull request yourself. If it says the token was not accepted, save a new one in **Settings**, **GitHub**.
+
+## Get the changes by hand
+
+You can always get the work without GitHub. The agent's changes are also saved on a branch in Decurion's own folder.
 
 1. Open the Decurion data folder. On Windows, it is `%LOCALAPPDATA%\decurion`. On a Mac or Linux, it is the `decurion` folder in your home folder.
 2. Open the `review` folder. Each finished piece of work has a folder named after the app and a number, such as `portal-7.git`. To find the newest one, sort the folder by **Date modified**.

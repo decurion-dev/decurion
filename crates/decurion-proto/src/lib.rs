@@ -316,6 +316,67 @@ pub struct Thread {
     /// Keeps going when its parent is stopped.
     #[serde(default)]
     pub background: bool,
+    /// Accepted work sent to GitHub by the hub, once the owner accepts it.
+    #[serde(default)]
+    pub github: Option<GitHubSend>,
+}
+
+/// Where sending accepted work to GitHub has got to. Only the hub sends,
+/// never a box, and it never merges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SendState {
+    /// Accepted; the hub will send it.
+    Waiting,
+    /// The hub is sending it now.
+    Sending,
+    /// On GitHub (or the app's own git server) as a branch.
+    Sent,
+    /// Not sent; `error` says why and the owner can try again.
+    Failed,
+}
+
+impl SendState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Waiting => "waiting",
+            Self::Sending => "sending",
+            Self::Sent => "sent",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl FromStr for SendState {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "waiting" => Self::Waiting,
+            "sending" => Self::Sending,
+            "sent" => Self::Sent,
+            "failed" => Self::Failed,
+            other => return Err(format!("unknown send state {other:?}")),
+        })
+    }
+}
+
+/// What the board shows about accepted work sent to GitHub.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHubSend {
+    pub state: SendState,
+    /// The branch the work goes to, always under `decurion/`.
+    pub branch: String,
+    /// The pull request, or a link that opens one, once sent to GitHub.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// True when `url` is a pull request Decurion opened; false when it is
+    /// a link for the owner to open one.
+    #[serde(default)]
+    pub pull_request: bool,
+    /// Plain words for the owner: why it was not sent, or why no pull
+    /// request was opened.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
