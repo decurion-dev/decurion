@@ -1,11 +1,13 @@
 //! Handing work between computers: rebuilding a thread's copy from the hub,
 //! saving it back as a checkpoint, and the sealed throwaway containers that
-//! touch the agent's files on the runner's behalf.
+//! touch the agent's files on the runner's behalf (saving edits, moving
+//! sessions, putting the owner's attached files in the agent's home).
 //!
 //! Everything here is decided without Docker, git or a hub, so it can be
 //! tested directly; `main.rs` does the work.
 
 use crate::{home_mount, work_mount, GIT_ENV, IMAGE};
+use decurion_proto::context::{MAX_APP_BYTES, MAX_FILES, MAX_TEXT_BYTES};
 use decurion_proto::Place;
 use std::path::Path;
 
@@ -13,6 +15,10 @@ use std::path::Path;
 pub const CODE_CAP: u64 = 2 << 30;
 /// Largest session archive the runner downloads or uploads (the hub's limit).
 pub const SESSION_CAP: u64 = 512 << 20;
+/// Largest archive of attached files the runner downloads: every file of the
+/// app, a text version of each, and room for the tar headers.
+pub const CONTEXT_CAP: u64 =
+    MAX_APP_BYTES + MAX_FILES as u64 * (MAX_TEXT_BYTES as u64 + 4096) + (1 << 20);
 
 /// The commit message for edits the agent had not committed when its work
 /// was moved.
@@ -28,8 +34,9 @@ pub fn tool_container_name(thread_id: i64) -> String {
 /// powers, one mount, and a fixed program instead of Claude Code. The agent's
 /// files are only ever handled in here, never by the runner itself, so
 /// nothing the agent planted (git hooks, config, odd links) runs on the host.
+/// `name` is the container's name, so a timed-out one can be removed by it.
 fn sealed_args(
-    thread_id: i64,
+    name: &str,
     mount: &str,
     stdin: bool,
     env: &[&str],
@@ -42,7 +49,7 @@ fn sealed_args(
     }
     for s in [
         "--name",
-        &tool_container_name(thread_id),
+        name,
         "--network",
         "none",
         "--cap-drop",
@@ -76,7 +83,7 @@ pub fn save_edits_args(thread_id: i64, worktree: &Path) -> anyhow::Result<[Vec<S
     let work = work_mount(worktree)?;
     Ok([
         sealed_args(
-            thread_id,
+            &tool_container_name(thread_id),
             &work,
             false,
             GIT_ENV,
@@ -84,7 +91,7 @@ pub fn save_edits_args(thread_id: i64, worktree: &Path) -> anyhow::Result<[Vec<S
             &["-C", "/work", "add", "-A"],
         ),
         sealed_args(
-            thread_id,
+            &tool_container_name(thread_id),
             &work,
             false,
             GIT_ENV,
@@ -109,7 +116,7 @@ pub fn save_edits_args(thread_id: i64, worktree: &Path) -> anyhow::Result<[Vec<S
 /// them, so a missing folder is skipped rather than failing the save.
 pub fn session_export_args(thread_id: i64) -> Vec<String> {
     sealed_args(
-        thread_id,
+        &tool_container_name(thread_id),
         &home_mount(thread_id),
         false,
         &[],
@@ -130,12 +137,63 @@ pub fn session_export_args(thread_id: i64) -> Vec<String> {
 /// (fresh) home volume.
 pub fn session_import_args(thread_id: i64) -> Vec<String> {
     sealed_args(
-        thread_id,
+        &tool_container_name(thread_id),
         &home_mount(thread_id),
         true,
         &[],
         "tar",
         &["-C", "/home/agent", "-xf", "-"],
+    )
+}
+
+/// The one program the attached-files box runs, under `sh` (dash in the
+/// image). It reads the hub's archive on stdin and never sees a file name
+/// from anywhere else: names only ever reach it inside the archive and are
+/// used quoted, so spaces and brackets are plain characters.
+///
+/// What must stay true:
+/// - The old folder goes entirely first, so a file the owner removed, or
+///   anything the agent left there, is gone. A folder the agent made
+///   unwritable is made writable again first, but a link is never followed.
+/// - PDFs get `<name>.txt` here, inside the box, because the hub does not
+///   read them: each try is cut at 60 seconds and [`MAX_TEXT_BYTES`], all of
+///   them stop after ten minutes (inside the runner's own limit for the box),
+///   and a PDF without text simply gets none. Without `pdftotext` (an older
+///   image) there are no PDF text versions, and nothing fails.
+/// - Files end read-only, so an agent sees they are copies; the folder stays
+///   writable by its owner so the next run can remove it.
+pub const CONTEXT_SCRIPT: &str = r#"set -eu
+d=/home/agent/context
+if [ -d "$d" ] && [ ! -L "$d" ]; then chmod -R u+rwX "$d" 2>/dev/null || true; fi
+rm -rf "$d"
+mkdir "$d"
+tar -C "$d" -xf - --no-same-owner
+if command -v pdftotext >/dev/null 2>&1; then
+  end=$(( $(date +%s) + 600 ))
+  for f in "$d"/*.[pP][dD][fF]; do
+    [ -f "$f" ] || continue
+    [ ! -e "$f.txt" ] || continue
+    [ "$(date +%s)" -lt "$end" ] || break
+    timeout 60 pdftotext -q -enc UTF-8 "$f" - 2>/dev/null | head -c 4194304 > "$f.txt" || true
+    [ -s "$f.txt" ] || rm -f "$f.txt"
+  done
+fi
+find "$d" -type f -exec chmod a-w {} +
+"#;
+
+/// `docker run` that puts the owner's attached files (a tar archive on
+/// stdin) in a fresh `/home/agent/context` in `home_volume`, and adds PDF
+/// text versions there. Sealed like the other throwaway boxes: no network,
+/// and the agent's home volume as its only mount. Work runs and helper jobs
+/// both use it, each with its own container name and volume.
+pub fn context_import_args(container_name: &str, home_volume: &str) -> Vec<String> {
+    sealed_args(
+        container_name,
+        &format!("type=volume,src={home_volume},dst=/home/agent"),
+        true,
+        &[],
+        "sh",
+        &["-c", CONTEXT_SCRIPT],
     )
 }
 
@@ -291,6 +349,64 @@ mod tests {
         assert!(!out.contains(&"-i".to_string()));
         assert!(inp.contains(&"-i".to_string()));
         assert!(inp.ends_with(&["-xf".into(), "-".into()]));
+    }
+
+    #[test]
+    fn attached_files_go_in_through_a_sealed_box_with_only_the_home_volume() {
+        for (name, vol) in [
+            ("decurion-thread-7-tool", "decurion-home-7"),
+            ("decurion-helper-9-tool", "decurion-goal-home-3"),
+        ] {
+            let a = context_import_args(name, vol);
+            assert_sealed(&a);
+            let image = a.iter().position(|x| x == IMAGE).expect("image");
+            let opts = &a[..image];
+            assert!(opts.windows(2).any(|w| w[0] == "--name" && w[1] == name));
+            let mounts: Vec<&String> = opts
+                .windows(2)
+                .filter(|w| w[0] == "--mount")
+                .map(|w| &w[1])
+                .collect();
+            assert_eq!(
+                mounts,
+                [&format!("type=volume,src={vol},dst=/home/agent")],
+                "the home volume is the one mount"
+            );
+            assert!(!a.iter().any(|x| x.contains("type=bind") || x == "-v"));
+            assert!(!a.iter().any(|x| x == "--privileged" || x.contains("host")));
+            assert!(opts.windows(2).any(|w| w[0] == "--memory"));
+            assert!(opts.windows(2).any(|w| w[0] == "--pids-limit"));
+            assert!(opts.contains(&"-i".to_string()));
+            assert!(!opts.contains(&"-e".to_string()));
+            assert!(opts
+                .windows(2)
+                .any(|w| w[0] == "--entrypoint" && w[1] == "sh"));
+            // The script is fixed: nothing from the call goes into it.
+            assert_eq!(&a[image + 1..], ["-c", CONTEXT_SCRIPT]);
+        }
+    }
+
+    #[test]
+    fn the_attached_files_script_replaces_the_folder_and_caps_pdf_text() {
+        let s = CONTEXT_SCRIPT;
+        assert!(s.contains(&format!("head -c {MAX_TEXT_BYTES} ")));
+        assert!(s.contains("d=/home/agent/context\n"));
+        assert_eq!(decurion_proto::context::BOX_DIR, "/home/agent/context");
+        let rm = s.find("rm -rf \"$d\"").expect("old folder removed");
+        let tar = s
+            .find("tar -C \"$d\" -xf - --no-same-owner")
+            .expect("unpacked");
+        let pdf = s
+            .find("pdftotext -q -enc UTF-8 \"$f\" -")
+            .expect("pdf text");
+        let ro = s.find("chmod a-w").expect("read-only");
+        assert!(rm < tar && tar < pdf && pdf < ro);
+        assert!(s.contains("timeout 60 pdftotext"));
+        // Every name is used quoted, and bash-only syntax would break dash.
+        for bad in ["[[", "pipefail", "$f.txt ", " $f ", "${", "\\`"] {
+            assert!(!s.contains(bad), "{bad}");
+        }
+        assert!(CONTEXT_CAP > MAX_APP_BYTES + MAX_FILES as u64 * MAX_TEXT_BYTES as u64);
     }
 
     #[test]

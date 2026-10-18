@@ -433,6 +433,7 @@ mod tests {
             prior_micros: 0,
             checkpoint: None,
             sign_ins,
+            context: vec![],
         }
     }
 

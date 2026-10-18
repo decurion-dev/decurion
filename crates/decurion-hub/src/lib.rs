@@ -19,6 +19,7 @@
 
 pub mod browser;
 pub mod checkpoints;
+pub mod context;
 pub mod coordinator;
 pub mod devices;
 pub mod folders;
@@ -278,6 +279,23 @@ pub fn router(state: AppState) -> Router {
                 decurion_proto::goal::MAX_PAGE_BYTES * 2 + (1 << 20),
             )),
         )
+        // Files the owner attaches for agents (context.rs).
+        .route(
+            "/apps/{id}/files",
+            get(context::list).post(context::upload).layer(
+                // A little over the largest file; the handler gives the owner
+                // plain words at the largest file itself.
+                DefaultBodyLimit::max(
+                    usize::try_from(decurion_proto::context::MAX_FILE_BYTES).unwrap_or(usize::MAX)
+                        + (1 << 20),
+                ),
+            ),
+        )
+        .route("/apps/{id}/files/{file}", get(context::download))
+        .route("/apps/{id}/files/{file}/remove", post(context::remove))
+        .route("/runner/threads/{id}/context", get(context::runner_thread))
+        // Not in cloud_reach: helpers run on the PC only.
+        .route("/runner/helper/{id}/context", get(context::runner_helper))
         // Saved website sign-ins: owner and runner routes (sign_ins.rs).
         .merge(sign_ins::routes())
         .layer(middleware::from_fn_with_state(state.clone(), require_key));
@@ -312,6 +330,10 @@ pub fn router(state: AppState) -> Router {
                     include_str!("settings.js"),
                 )
             }),
+        )
+        .route(
+            "/files.js",
+            get(|| async { asset("text/javascript; charset=utf-8", include_str!("files.js")) }),
         )
         .route(
             "/icon.svg",
@@ -1525,20 +1547,46 @@ async fn runner_credential(
 
 /// Streams a file to the caller, with an extra header if given.
 async fn file_response(path: &std::path::Path, extra: Option<(&'static str, String)>) -> Response {
-    use tokio::io::AsyncReadExt;
     let Ok(file) = tokio::fs::File::open(path).await else {
         return (StatusCode::NOT_FOUND, "that saved work is gone").into_response();
     };
-    let len = file.metadata().await.map(|m| m.len()).ok();
-    let stream = futures_util::stream::try_unfold(file, |mut f| async move {
-        let mut buf = vec![0u8; 64 << 10];
-        let n = f.read(&mut buf).await?;
-        if n == 0 {
-            return Ok::<_, std::io::Error>(None);
+    stream_file(file, extra, None).await
+}
+
+/// Removes a file when dropped. A temporary file being streamed goes once
+/// the stream ends or the caller hangs up, whichever comes first.
+pub(crate) struct RemoveOnDrop(pub(crate) std::path::PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_file(&self.0) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(error = %e, path = %self.0.display(), "could not remove a temporary file");
+            }
         }
-        buf.truncate(n);
-        Ok(Some((Bytes::from(buf), f)))
-    });
+    }
+}
+
+/// Streams an open file as `application/octet-stream`, with an extra header
+/// if given, then removes it if asked to.
+pub(crate) async fn stream_file(
+    file: tokio::fs::File,
+    extra: Option<(&'static str, String)>,
+    then_remove: Option<RemoveOnDrop>,
+) -> Response {
+    use tokio::io::AsyncReadExt;
+    let len = file.metadata().await.map(|m| m.len()).ok();
+    // The file comes first so it is closed before the guard removes it.
+    let stream =
+        futures_util::stream::try_unfold((file, then_remove), |(mut f, gone)| async move {
+            let mut buf = vec![0u8; 64 << 10];
+            let n = f.read(&mut buf).await?;
+            if n == 0 {
+                return Ok::<_, std::io::Error>(None);
+            }
+            buf.truncate(n);
+            Ok(Some((Bytes::from(buf), (f, gone))))
+        });
     let mut resp = Body::from_stream(stream).into_response();
     let h = resp.headers_mut();
     h.insert(
