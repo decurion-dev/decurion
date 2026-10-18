@@ -477,7 +477,7 @@ async fn an_update_asking_for_nothing_new_is_applied_and_a_wider_one_waits_for_t
         "POST",
         "/api/addons/example.words/update",
         OWNER,
-        Value::Null,
+        json!({}),
     )
     .await;
     assert_eq!(
@@ -493,7 +493,7 @@ async fn an_update_asking_for_nothing_new_is_applied_and_a_wider_one_waits_for_t
         "POST",
         "/api/addons/example.words/update",
         OWNER,
-        Value::Null,
+        json!({}),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{v}");
@@ -520,7 +520,7 @@ async fn an_update_asking_for_nothing_new_is_applied_and_a_wider_one_waits_for_t
         "POST",
         "/api/addons/example.words/update",
         OWNER,
-        Value::Null,
+        json!({}),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{v}");
@@ -614,7 +614,7 @@ async fn turning_off_and_removing_stop_new_runs_and_the_log_stays() {
         "POST",
         "/api/addons/example.words/remove",
         RUNNER,
-        Value::Null,
+        json!({}),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -623,7 +623,7 @@ async fn turning_off_and_removing_stop_new_runs_and_the_log_stays() {
         "POST",
         "/api/addons/example.words/remove",
         OWNER,
-        Value::Null,
+        json!({}),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{v}");
@@ -722,4 +722,197 @@ async fn the_add_ons_tab_is_served_and_both_pages_load_it() {
             .expect("loads settings.js");
         assert!(a < s, "addons.js loads before settings.js builds its tabs");
     }
+}
+
+/// A second add-on, `example.other`, whose tool is named `tool` and reads
+/// the test key `key`.
+fn publish_other(repo: &Path, version: &str, tool: &str, key: &str) {
+    let m = MANIFEST
+        .replace("VERSION", version)
+        .replace("SITES", "\"api.example.com\"")
+        .replace("id = \"example.words\"", "id = \"example.other\"")
+        .replace("name = \"Word count\"", "name = \"Other\"")
+        .replace("name = \"words\"", &format!("name = \"{tool}\""))
+        .replace(
+            "WORDS_TOKEN = \"WORDS_TOKEN\"",
+            &format!("{key} = \"{key}\""),
+        );
+    std::fs::write(repo.join("decurion-addon.toml"), m).expect("manifest");
+    std::fs::write(repo.join("server.mjs"), format!("// {version}\n")).expect("server");
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "--quiet", "-m", version]);
+}
+
+async fn add_for(h: &Hub, repo: &Path, apps: &[i64]) {
+    let (s, card) = preview(h, repo).await;
+    assert_eq!(s, StatusCode::OK, "{card}");
+    let (s, v) = call(
+        &h.r,
+        "POST",
+        "/api/addons/approve",
+        OWNER,
+        json!({"hash": card["hash"], "apps": apps}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
+
+#[tokio::test]
+async fn an_update_that_would_take_another_add_ons_tool_name_or_lacks_a_key_is_not_applied() {
+    let h = hub().await;
+    let words = author(&h);
+    let (app, _) = app_and_work(&h, "demo", true).await;
+    add_for(&h, &words, &[app]).await;
+    let other = h.dir.join("other-addon");
+    std::fs::create_dir_all(&other).expect("repo dir");
+    git(&other, &["init", "--quiet"]);
+    publish_other(&other, "0.1.0", "other", "WORDS_TOKEN");
+    add_for(&h, &other, &[app]).await;
+    let before = events(&h).await;
+
+    // Its next version renames its tool to the one "Word count" gives demo.
+    publish_other(&other, "0.2.0", "words", "WORDS_TOKEN");
+    let (s, v) = call(
+        &h.r,
+        "POST",
+        "/api/addons/example.other/update",
+        OWNER,
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let text = v.as_str().expect("text");
+    assert!(
+        text.starts_with("Decurion did not update \"Other\" to version 0.2.0.")
+            && text.contains("\"Word count\" already gives demo's agents a tool named words"),
+        "{text}"
+    );
+
+    // A next version that reads a test key demo does not have.
+    publish_other(&other, "0.3.0", "other", "OTHER_TOKEN");
+    let (s, v) = call(
+        &h.r,
+        "POST",
+        "/api/addons/example.other/update",
+        OWNER,
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(
+        v.as_str()
+            .expect("text")
+            .contains("demo has no test key named OTHER_TOKEN"),
+        "{v}"
+    );
+
+    // Nothing changed: 0.1.0 still runs, each tool still its own.
+    let kept = h
+        .store
+        .addon("example.other")
+        .await
+        .expect("db")
+        .expect("kept");
+    assert_eq!(kept.version, "0.1.0");
+    let names: Vec<String> = h
+        .store
+        .claim_addons(app)
+        .await
+        .expect("claim addons")
+        .iter()
+        .flat_map(|a| a.tools.iter().map(|t| t.name.clone()))
+        .collect();
+    assert_eq!(names, ["other", "words"]);
+    assert_eq!(events(&h).await, before);
+}
+
+#[tokio::test]
+async fn a_resent_add_on_tap_gets_its_first_answer_and_acts_once() {
+    let h = hub().await;
+    let repo = author(&h);
+    let (app, _) = app_and_work(&h, "demo", true).await;
+    let (_, card) = preview(&h, &repo).await;
+    let add = json!({"hash": card["hash"], "apps": [app], "receipt": "tap-add-0001"});
+    let (s, first) = call(&h.r, "POST", "/api/addons/approve", OWNER, add.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{first}");
+    let (s, again) = call(&h.r, "POST", "/api/addons/approve", OWNER, add).await;
+    assert_eq!((s, &again), (StatusCode::OK, &first));
+
+    let off = format!("/api/addons/example.words/apps/{app}");
+    let tap = json!({"on": false, "receipt": "tap-off-0001"});
+    let (s, first) = call(&h.r, "POST", &off, OWNER, tap.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{first}");
+    // Turned back on by a later tap, then the old Off tap arrives again:
+    // it answers as before and leaves the add-on on.
+    let (s, _) = call(
+        &h.r,
+        "POST",
+        &off,
+        OWNER,
+        json!({"on": true, "receipt": "tap-on-0001"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, again) = call(&h.r, "POST", &off, OWNER, tap).await;
+    assert_eq!((s, &again), (StatusCode::OK, &first));
+    assert_eq!(
+        h.store.addon_apps("example.words").await.expect("apps"),
+        [app]
+    );
+
+    let rm = json!({"receipt": "tap-rm-0001"});
+    let path = "/api/addons/example.words/remove";
+    let (s, first) = call(&h.r, "POST", path, OWNER, rm.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{first}");
+    let (s, again) = call(&h.r, "POST", path, OWNER, rm).await;
+    assert_eq!((s, &again), (StatusCode::OK, &first));
+    assert_eq!(first, json!({"removed": "example.words"}));
+
+    // A receipt stands for one tap, never another kind.
+    let (s, _) = call(
+        &h.r,
+        "POST",
+        path,
+        OWNER,
+        json!({"receipt": "tap-add-0001"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(
+        events(&h).await,
+        ["installed", "enabled", "disabled", "enabled", "removed"]
+    );
+}
+
+#[tokio::test]
+async fn a_file_too_big_is_refused_before_anything_is_unpacked() {
+    let h = hub().await;
+    let repo = author(&h);
+    // Zeros pack down to almost nothing, so only git's own list says how
+    // big this file is.
+    let big = vec![0u8; (decurion_proto::addon::MAX_FILE_BYTES + 1) as usize];
+    std::fs::write(repo.join("big.bin"), big).expect("big");
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "--quiet", "-m", "big"]);
+    let (s, v) = preview(&h, &repo).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(v.as_str().expect("text").contains("too big"), "{v}");
+    let addons = h.dir.join("saved").join("addons");
+    for d in ["staged", "tmp"] {
+        let n = std::fs::read_dir(addons.join(d)).map_or(0, |r| r.count());
+        assert_eq!(n, 0, "{d} is empty");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_link_in_the_add_ons_commit_is_refused() {
+    let h = hub().await;
+    let repo = author(&h);
+    std::os::unix::fs::symlink("/etc/passwd", repo.join("p")).expect("link");
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "--quiet", "-m", "link"]);
+    let (s, v) = preview(&h, &repo).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(v.as_str().expect("text").contains("is a link"), "{v}");
 }

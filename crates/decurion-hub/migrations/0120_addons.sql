@@ -50,3 +50,13 @@ CREATE TRIGGER addon_log_no_update BEFORE UPDATE ON addon_log
 BEGIN SELECT RAISE(ABORT, 'addon_log is append-only'); END;
 CREATE TRIGGER addon_log_no_delete BEFORE DELETE ON addon_log
 BEGIN SELECT RAISE(ABORT, 'addon_log is append-only'); END;
+
+-- What an add-on tap (Add, Update, on or off for an app, Remove) answered.
+-- The tap's receipt goes in `receipts` as usual, naming the row here, so a
+-- phone that resends after a dropped connection gets that same answer
+-- back and the hub never acts twice. Add-ons have text ids, so the answer
+-- is kept whole rather than rebuilt from a number.
+CREATE TABLE addon_answers (
+    id     INTEGER PRIMARY KEY,
+    answer TEXT NOT NULL
+);

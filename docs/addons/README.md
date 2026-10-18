@@ -8,9 +8,9 @@ The smallest working one is [`word-count/`](word-count/): a manifest and a small
 
 ## How a tool runs
 
-- Your tool is an **MCP server that speaks HTTP** (streamable HTTP; plain JSON answers are fine). It listens on `127.0.0.1` at `/mcp`, on the port in the `DECURION_MCP_PORT` variable (also put in place of `{port}` in your command).
+- Your tool is an **MCP server that speaks HTTP** (streamable HTTP; plain JSON answers are fine). It listens on all of its box's addresses (`0.0.0.0`) at `/mcp`, on the port in the `DECURION_MCP_PORT` variable (also put in place of `{port}` in your command). The agent calls it by the name in `DECURION_MCP_HOST` (such as `addon-0`); refuse any other `Host` header, as the example does.
 - It runs in a **sealed box of its own**, next to the agent's box, from Decurion's agent image (so `node` is there). Your add-on's files are at `/addon`, read-only, and that is the working folder. The root is read-only too; `/tmp` is writable and is `HOME`.
-- The box shares the run's network, so the agent reaches your tool on localhost, and your tool reaches the web only through the run's gate: the websites always allowed, the app's own, and the ones your manifest names. Nothing else.
+- The box sits on the run's own network as a box of its own, so the agent reaches your tool by its name, and your tool reaches the web only through the run's gate: the websites always allowed, the app's own, and the ones your manifest names. Nothing else. It never shares the agent's localhost, so it cannot reach the browser tools, the agent's database or anything else the agent runs there.
 - It gets **none of the app's code**, no Claude sign-in, no home folder, and at most the one test key it names. Agents see your functions as `mcp__<tool name>__<function>`.
 - Decurion waits up to 45 seconds for your port to answer. A tool that does not start is left out of that run, and the owner is told.
 

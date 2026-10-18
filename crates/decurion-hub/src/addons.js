@@ -13,6 +13,8 @@
 //   this page never words a permission itself.
 // - Turning an add-on on or off for an app is the owner's tap, and the hub
 //   checks it again (the app has the test key it needs, no tool clashes).
+// - Add, Update, on or off and Remove go with D.send, so each carries a
+//   receipt and a resend after a dropped connection gets the first answer.
 "use strict";
 (() => {
   const { el, icon } = D;
@@ -91,7 +93,7 @@
       busy = true; yes.disabled = true;
       const chosen = picks.filter(([, cb]) => cb.checked).map(([id]) => id);
       try {
-        const r = await D.api("/addons/approve", { method: "POST", body: JSON.stringify({ hash: c.hash, apps: chosen }) });
+        const r = await D.send("/addons/approve", { hash: c.hash, apps: chosen });
         D.toast(update ? `Updated ${r.name} to version ${r.version}.` : `Added ${r.name}. Its tools reach agents from their next piece of work.`);
         cardBox.hidden = true; fill(cardBox);
         form.reset();
@@ -127,7 +129,7 @@
       if (busy) return;
       busy = true; b.disabled = true;
       try {
-        await D.api(`/addons/${encodeURIComponent(x.id)}/apps/${a.id}`, { method: "POST", body: JSON.stringify({ on: !a.on }) });
+        await D.send(`/addons/${encodeURIComponent(x.id)}/apps/${a.id}`, { on: !a.on });
         D.toast(!a.on ? `${x.name} is on for ${a.name} from its next piece of work.` : `${x.name} is off for ${a.name} from its next piece of work.`);
         await load();
       } catch (e) { failed(e, `Couldn't change ${x.name} for ${a.name}.`); }
@@ -143,7 +145,7 @@
       if (busy) return;
       busy = true; upd.disabled = true;
       try {
-        const r = await D.api(`/addons/${encodeURIComponent(x.id)}/update`, { method: "POST" });
+        const r = await D.send(`/addons/${encodeURIComponent(x.id)}/update`, {});
         if (r.card) { showCard(r.card); D.toast(`A new version of ${x.name} asks for more. See what is new below.`, "alert"); }
         else if (r.updated) { D.toast(`Updated ${x.name} to version ${r.version}. It asks for nothing new.`); await load(); }
         else D.toast(`${x.name} is up to date.`);
@@ -154,7 +156,7 @@
     rm.onclick = async () => {
       const ok = await D.confirm([`Remove ${x.name}?`, "New work stops getting its tools at once. Work already running finishes with it. What it did stays in the log.", "Remove add-on", "Keep it"]);
       if (!ok) return;
-      try { await D.api(`/addons/${encodeURIComponent(x.id)}/remove`, { method: "POST" }); D.toast(`Removed ${x.name}.`); await load(); }
+      try { await D.send(`/addons/${encodeURIComponent(x.id)}/remove`, {}); D.toast(`Removed ${x.name}.`); await load(); }
       catch (e) { failed(e, `Couldn't remove ${x.name}.`); }
     };
     return el("li", { className: "addon-row" },
@@ -171,8 +173,9 @@
       el("div", { className: "actions" }, upd, rm));
   }
 
-  // The log in plain words, newest first.
-  function logLine(l, names) {
+  // The log in plain words, newest first, each line under the add-on's
+  // name (its id only once it is removed and the name is no longer known).
+  function logLine(l, names, addonNames) {
     const app = l.app_id != null ? names[l.app_id] ?? `app ${l.app_id}` : "";
     const work = l.thread_id != null ? `piece of work ${l.thread_id}` : "";
     const what = {
@@ -185,7 +188,7 @@
       key_used: `Gave ${work} (${app}) its ${l.detail}`,
       refused: `Not used by ${work}: its files changed after you approved them`,
     }[l.event] ?? l.event;
-    return el("li", {}, el("div", { className: "who" }, el("b", {}, `${l.addon_id}: ${what}`),
+    return el("li", {}, el("div", { className: "who" }, el("b", {}, `${addonNames[l.addon_id] ?? l.addon_id}: ${what}`),
       el("span", { className: "hint" }, `${D.ago(l.at)}${l.actor === "owner" ? ", by you" : ""}`)));
   }
 
@@ -197,10 +200,13 @@
       return;
     }
     fill(list, ...(data.addons.length ? data.addons.map(row) : [el("li", { className: "empty" }, "No add-ons yet. Paste a link below to add one.")]));
-    const names = {};
-    for (const x of data.addons) for (const a of x.apps) names[a.id] = a.name;
+    const names = {}, addonNames = {};
+    for (const x of data.addons) {
+      addonNames[x.id] = x.name;
+      for (const a of x.apps) names[a.id] = a.name;
+    }
     fill(logBox, data.log.length
-      ? el("ul", { className: "rows" }, ...data.log.map((l) => logLine(l, names)))
+      ? el("ul", { className: "rows" }, ...data.log.map((l) => logLine(l, names, addonNames)))
       : el("p", { className: "hint" }, "Nothing yet."));
   }
 

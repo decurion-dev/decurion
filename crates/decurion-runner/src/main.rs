@@ -27,10 +27,10 @@ use decurion_runner::{
     backoff, browser_container_name, check_home_volume, clear_report, container_name,
     context_prompt, design_home_volume, goal_home_volume, helper_container_name, helper_run_args,
     helper_tool_container_name, hide, hide_cut, home_volume, is_interrupted_turn, is_turn_start,
-    parse_line_hiding, parse_result, part_done, patient_data_prompt, pi_run_args, prompt_for,
-    read_page, read_report, redact, research_outcome, retriable, run_args, sibling, valid_branch,
-    Acks, Action, ContextMeter, Conversation, Credential, FirstResult, LeakScanner, PiRun, Sandbox,
-    Start, Step, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
+    network_name, parse_line_hiding, parse_result, part_done, patient_data_prompt, pi_run_args,
+    prompt_for, read_page, read_report, redact, research_outcome, retriable, run_args, sibling,
+    valid_branch, Acks, Action, ContextMeter, Conversation, Credential, FirstResult, LeakScanner,
+    PiRun, Sandbox, Start, Step, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
 };
 use decurion_runner::{gate_args, parse_gate_line, BoxNet, GateLine, GATE_IMAGE, RELAY_URL};
 use decurion_vault::{check_name, Vault};
@@ -1775,7 +1775,11 @@ async fn run(
         gate.relay(Credential::for_account(c.account)).as_deref(),
     )
     .await?;
+    let id = c.thread.id;
     let outcome = run_in_box(hub, data, gate, c, keys, states, site_secrets).await;
+    // Tool boxes sit on the run's network as boxes of their own: remove any
+    // an early error left, or the network cannot be removed with the gate.
+    addon_box::clear(data, id).await;
     exit.stop().await;
     outcome
 }
@@ -1921,16 +1925,7 @@ make sure Docker Desktop is running and delete that container there",
     let tools = if pi {
         None
     } else {
-        let t = addon_box::start(
-            hub,
-            data,
-            id,
-            &browser_container_name(id),
-            &c.addons,
-            keys,
-            &secrets,
-        )
-        .await;
+        let t = addon_box::start(hub, data, id, &network_name(id), &c.addons, keys, &secrets).await;
         if let Some(more) = &t.prompt {
             prompt.push_str("\n\n");
             prompt.push_str(more);
@@ -3858,7 +3853,7 @@ async fn run_one(hub: &Hub, data: &Path, gate: &Gate, claim: Claim) {
     let id = claim.thread.id;
     run_claimed(hub, data, gate, claim).await;
     browser_box::settle(id).await;
-    addon_box::clear(id).await;
+    addon_box::clear(data, id).await;
     if !remove_container(id).await {
         // Only logged: the run is over, so the board no longer takes this
         // piece's activity. The next attempt at it refuses to start while the

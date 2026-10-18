@@ -188,16 +188,37 @@ pub fn is_hash(s: &str) -> bool {
 /// A path inside an add-on: plain segments of letters, digits and `._-+@`
 /// joined by `/`, never `.`, `..`, absolute, or with a backslash, so it can
 /// only ever name a file inside the add-on's own folder.
+///
+/// It must also be a name Windows keeps exactly as written, because the hub
+/// and the runner may be Windows PCs and the tree hash is over the names:
+/// no device name such as `CON` or `com1.txt` (Windows opens the device, not
+/// a file), no segment ending in `.` (Windows drops it, so `a.` and `a`
+/// would be one file), and none of `\ : < > " | ? *` or spaces, which the
+/// letter list above already leaves out.
 pub fn check_path(p: &str) -> bool {
     (1..=200).contains(&p.len())
         && p.split('/').all(|seg| {
             !seg.is_empty()
                 && seg != "."
                 && seg != ".."
+                && !seg.ends_with('.')
+                && !windows_device(seg)
                 && seg.bytes().all(|b| {
                     b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+' | b'@')
                 })
         })
+}
+
+/// A name Windows reads as a device whatever its extension: `CON`, `PRN`,
+/// `AUX`, `NUL`, `COM1`-`COM9` and `LPT1`-`LPT9`, in any case, alone or
+/// before the first dot (`nul.txt`, `Com1.tar.gz`).
+fn windows_device(seg: &str) -> bool {
+    let stem = seg.split('.').next().unwrap_or(seg).to_ascii_uppercase();
+    match stem.as_bytes() {
+        b"CON" | b"PRN" | b"AUX" | b"NUL" => true,
+        [b'C', b'O', b'M', d] | [b'L', b'P', b'T', d] => (b'1'..=b'9').contains(d),
+        _ => false,
+    }
 }
 
 /// An add-on id: lowercase letters and digits in parts joined by `.` or
@@ -276,6 +297,52 @@ mod tests {
             "a b",
             "é.txt",
             "a/",
+        ] {
+            assert!(!check_path(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn paths_are_names_windows_keeps_as_written() {
+        for ok in [
+            "console.js",
+            "lib/conf.txt",
+            "com.txt",
+            "com10.txt",
+            "lpt0",
+            "auxiliary/x",
+            "nul-check.js",
+            "a.b.c",
+            ".hidden",
+        ] {
+            assert!(check_path(ok), "{ok}");
+        }
+        for bad in [
+            "CON",
+            "con",
+            "Con.txt",
+            "lib/prn.js",
+            "aux.tar.gz",
+            "NUL",
+            "nul.txt",
+            "COM1",
+            "com9.log",
+            "lpt1",
+            "Lpt5.txt/x",
+            "a/LPT3",
+            "a.",
+            "lib./x",
+            "a/b.",
+            "a ",
+            "a\\b",
+            "c:x",
+            "C:/x",
+            "a<b",
+            "a>b",
+            "a\"b",
+            "a|b",
+            "a?b",
+            "a*b",
         ] {
             assert!(!check_path(bad), "{bad}");
         }

@@ -18,7 +18,7 @@ use std::str::FromStr;
 /// built and how work is handed between computers. The hub refuses a runner
 /// built with a different number, so a PC and a cloud worker can never run
 /// the same work under different rules. Bump it whenever either changes.
-pub const RULES_VERSION: u32 = 13;
+pub const RULES_VERSION: u32 = 14;
 
 /// What every agent that may run an app's tests (builder, research, checker)
 /// is told about the private database in its box: `decurion-postgres` in the

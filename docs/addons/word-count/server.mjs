@@ -2,15 +2,17 @@
 // dependencies, so the whole add-on is these two files.
 //
 // Decurion starts it in a sealed box of its own beside the agent's box,
-// with this folder at /addon (read-only) and the port in DECURION_MCP_PORT.
-// It must listen on 127.0.0.1 and answer MCP over HTTP at /mcp. It answers
+// with this folder at /addon (read-only), the port in DECURION_MCP_PORT and
+// the name the agent reaches it at in DECURION_MCP_HOST. It must listen on
+// all of its box's addresses and answer MCP over HTTP at /mcp. It answers
 // each request with plain JSON, which MCP's streamable HTTP allows, and
 // keeps no sessions.
 
 import http from 'node:http';
 
 const PORT = Number(process.env.DECURION_MCP_PORT ?? 8940);
-const HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
+const HOST = process.env.DECURION_MCP_HOST ?? 'localhost';
+const HOSTS = new Set([`${HOST}:${PORT}`, `127.0.0.1:${PORT}`, `localhost:${PORT}`]);
 const MAX_BODY = 1 << 20;
 
 const TOOLS = [
@@ -60,8 +62,8 @@ function reply(msg) {
 }
 
 const server = http.createServer((req, res) => {
-  // Only callers on this box's own localhost, by name, so a web page cannot
-  // reach the tool by pointing a name of its own at this address.
+  // Only callers using the tool's own name, so a web page cannot reach it
+  // by pointing a name of its own at this address.
   if (!HOSTS.has(req.headers.host ?? '') || new URL(req.url, 'http://x').pathname !== '/mcp') {
     res.writeHead(404).end();
     return;
@@ -95,4 +97,4 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(PORT, '127.0.0.1', () => console.error(`word-count listening on 127.0.0.1:${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.error(`word-count listening as ${HOST}:${PORT}`));

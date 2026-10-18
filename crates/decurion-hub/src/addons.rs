@@ -20,11 +20,18 @@
 //! - **Everything is written down** in `addon_log`, which is append-only and
 //!   outlives the add-on: installs, updates, removals, on and off per app,
 //!   each run that used it, each use of a test key (by name), and refusals.
+//! - **Each tap acts once.** Add, Update, on or off for an app, and Remove
+//!   carry the tap's receipt. The answer is kept in the same transaction as
+//!   the change (`addon_answers`), and a resend gets that answer back.
+//! - **No two tools of one name.** Whenever an add-on's tools could reach
+//!   an app (added for it, turned on, or updated while on), the hub checks
+//!   the app has every test key it reads and no other add-on on for it
+//!   gives a tool of the same name, which would take the other's calls.
 //! - Owner text is plain words; git's own messages are scrubbed of
 //!   passwords before they are logged and never shown raw.
 
 use crate::addon_manifest::{self, Grants, Manifest};
-use crate::store::{Result, Store, StoreError, OWNER};
+use crate::store::{check_receipt, receipt_result, save_receipt, Result, Store, StoreError, OWNER};
 use crate::{forbidden, holding, Access, ApiError, AppState, Caller};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -34,8 +41,8 @@ use axum::{Extension, Json, Router};
 use base64::Engine;
 use decurion_proto::addon::{self, AddonUse, Bundle, BundleFile, ToolUse};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use sqlx::Row;
+use serde_json::{json, Value};
+use sqlx::{Row, Sqlite, Transaction};
 use std::path::{Path as FsPath, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -203,14 +210,36 @@ impl Store {
         log(&mut conn, actor, addon_id, event, app_id, thread_id, detail).await
     }
 
+    /// The answer a tap with this receipt already gave, if it went through.
+    async fn addon_answer(&self, tap: &Tap<'_>) -> Result<Option<Value>> {
+        check_receipt(tap.receipt)?;
+        if tap.receipt.is_none() {
+            return Ok(None);
+        }
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        let a = answered(&mut tx, tap).await?;
+        tx.commit().await?;
+        Ok(a)
+    }
+
     /// Keeps an approved add-on: a new one on for `apps`, or a new version
-    /// of one already kept (its apps stay as they are).
-    async fn keep_addon(&self, k: &Keep<'_>, apps: &[i64]) -> Result<()> {
+    /// of one already kept (its apps stay as they are). Answers `answer`, or
+    /// what the tap answered before if its receipt already went through.
+    async fn keep_addon(
+        &self,
+        k: &Keep<'_>,
+        apps: &[i64],
+        tap: &Tap<'_>,
+        answer: Value,
+    ) -> Result<Value> {
         let m = k.manifest;
         let tools: Vec<ToolUse> = m.tools.iter().map(|t| t.run.clone()).collect();
         let tools = serde_json::to_string(&tools).expect("tools always serialize");
         let grants = serde_json::to_string(&m.grants()).expect("grants always serialize");
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(first) = answered(&mut tx, tap).await? {
+            return Ok(first);
+        }
         let before: Option<String> = sqlx::query_scalar("SELECT version FROM addons WHERE id = ?")
             .bind(&m.id)
             .fetch_optional(&mut *tx)
@@ -269,12 +298,16 @@ impl Store {
                 log(&mut tx, k.actor, &m.id, "updated", None, None, &detail).await?;
             }
         }
+        save_answer(&mut tx, tap, &answer).await?;
         tx.commit().await?;
-        Ok(())
+        Ok(answer)
     }
 
-    async fn set_addon_app(&self, id: &str, app: i64, on: bool) -> Result<bool> {
+    async fn set_addon_app(&self, id: &str, app: i64, on: bool, tap: &Tap<'_>) -> Result<Value> {
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(first) = answered(&mut tx, tap).await? {
+            return Ok(first);
+        }
         let changed = if on {
             sqlx::query("INSERT OR IGNORE INTO addon_apps (addon_id, app_id) VALUES (?, ?)")
         } else {
@@ -290,12 +323,19 @@ impl Store {
             let event = if on { "enabled" } else { "disabled" };
             log(&mut tx, OWNER, id, event, Some(app), None, "").await?;
         }
+        let answer = json!({"id": id, "app_id": app, "on": on});
+        save_answer(&mut tx, tap, &answer).await?;
         tx.commit().await?;
-        Ok(changed)
+        Ok(answer)
     }
 
-    async fn remove_addon(&self, id: &str) -> Result<()> {
+    /// Removes an add-on. Answers whether this tap removed it (false when
+    /// the tap is a resend of one that already did) and what it answered.
+    async fn remove_addon(&self, id: &str, tap: &Tap<'_>) -> Result<(bool, Value)> {
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(first) = answered(&mut tx, tap).await? {
+            return Ok((false, first));
+        }
         sqlx::query("DELETE FROM addon_apps WHERE addon_id = ?")
             .bind(id)
             .execute(&mut *tx)
@@ -309,9 +349,50 @@ impl Store {
             return Err(StoreError::NotFound);
         }
         log(&mut tx, OWNER, id, "removed", None, None, "").await?;
+        let answer = json!({"removed": id});
+        save_answer(&mut tx, tap, &answer).await?;
         tx.commit().await?;
-        Ok(())
+        Ok((true, answer))
     }
+}
+
+/// One owner tap on an add-on: its receipt, if the page sent one, and the
+/// kind of tap it is, as `receipts` names it. A receipt used for one kind
+/// of tap is refused for another.
+struct Tap<'a> {
+    receipt: Option<&'a str>,
+    action: &'static str,
+}
+
+/// What a tap with this receipt answered, if it already went through.
+async fn answered(tx: &mut Transaction<'_, Sqlite>, tap: &Tap<'_>) -> Result<Option<Value>> {
+    let Some(id) = receipt_result(tx, tap.receipt, tap.action).await? else {
+        return Ok(None);
+    };
+    let text: String = sqlx::query_scalar("SELECT answer FROM addon_answers WHERE id = ?")
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await?;
+    // Written only by `save_answer`, from a JSON value.
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|e| StoreError::Invalid(format!("stored add-on answer: {e}")))
+}
+
+/// Keeps a tap's answer and its receipt, in the transaction that acted.
+async fn save_answer(
+    tx: &mut Transaction<'_, Sqlite>,
+    tap: &Tap<'_>,
+    answer: &Value,
+) -> Result<()> {
+    if tap.receipt.is_none() {
+        return Ok(());
+    }
+    let id: i64 = sqlx::query_scalar("INSERT INTO addon_answers (answer) VALUES (?) RETURNING id")
+        .bind(answer.to_string())
+        .fetch_one(&mut **tx)
+        .await?;
+    save_receipt(tx, tap.receipt, tap.action, id).await
 }
 
 async fn log(
@@ -415,35 +496,20 @@ fn check_source(s: &str) -> std::result::Result<(), String> {
 
 /// git that never asks anything, runs no hooks, keeps the hub's keys out
 /// of its surroundings, and speaks only https or local files.
+///
+/// None of the owner's own git settings apply: not the PC's (system) or
+/// their user one (global), and no `GIT_...` variable from the hub's
+/// surroundings. Those can hold a credential helper such as Git Credential
+/// Manager (which would hand the add-on's server the owner's GitHub
+/// sign-in), extra headers with a token, a proxy or an `include` of more
+/// settings. An add-on is always fetched as nobody.
 fn quiet_git() -> Command {
     let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
     let mut cmd = Command::new("git");
-    cmd.args([
-        "-c",
-        &format!("core.hooksPath={null}"),
-        "-c",
-        "core.fsmonitor=false",
-        // The same bytes on every computer: no line-ending changes.
-        "-c",
-        "core.autocrlf=false",
-        "-c",
-        "protocol.allow=never",
-        "-c",
-        "protocol.https.allow=always",
-        "-c",
-        "protocol.file.allow=always",
-    ])
-    .env("GIT_TERMINAL_PROMPT", "0")
-    .env("GCM_INTERACTIVE", "never")
-    .env("GIT_ASKPASS", "")
-    .env("SSH_ASKPASS_REQUIRE", "never")
-    .env("GIT_LFS_SKIP_SMUDGE", "1")
-    .env("LC_ALL", "C")
-    .stdin(Stdio::null())
-    .kill_on_drop(true);
     for (k, _) in std::env::vars_os() {
         let name = k.to_string_lossy().to_ascii_uppercase();
-        if name.starts_with("DECURION_")
+        if name.starts_with("GIT_")
+            || name.starts_with("DECURION_")
             || name.starts_with("ANTHROPIC_")
             || matches!(
                 name.as_str(),
@@ -457,22 +523,212 @@ fn quiet_git() -> Command {
             cmd.env_remove(&k);
         }
     }
+    cmd.args([
+        "-c",
+        &format!("core.hooksPath={null}"),
+        "-c",
+        "core.fsmonitor=false",
+        // The same bytes on every computer: no line-ending changes.
+        "-c",
+        "core.autocrlf=false",
+        // No helper may answer a sign-in question, even one set elsewhere.
+        "-c",
+        "credential.helper=",
+        "-c",
+        "protocol.allow=never",
+        "-c",
+        "protocol.https.allow=always",
+        "-c",
+        "protocol.file.allow=always",
+    ]);
+    // Without the PC's git settings, Git for Windows would not know where
+    // its own list of trusted certificates is; Windows' own list always is.
+    if cfg!(windows) {
+        cmd.args(["-c", "http.sslBackend=schannel"]);
+    }
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", null)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS_REQUIRE", "never")
+        .env("GIT_LFS_SKIP_SMUDGE", "1")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
     cmd
 }
 
-async fn run_git(args: &[&std::ffi::OsStr]) -> std::result::Result<String, String> {
+/// Runs git and answers with exactly what it printed, or its scrubbed
+/// error. `input`, if any, is written to git's stdin.
+async fn git_bytes<S: AsRef<std::ffi::OsStr>>(
+    args: &[S],
+    input: Option<Vec<u8>>,
+) -> std::result::Result<Vec<u8>, String> {
     let mut cmd = quiet_git();
-    cmd.args(args);
-    match tokio::time::timeout(Duration::from_secs(FETCH_SECS), cmd.output()).await {
-        Err(_) => Err("git took too long".into()),
-        Ok(Err(e)) => Err(format!("could not start git: {e}")),
-        Ok(Ok(out)) if out.status.success() => {
-            Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-        }
-        Ok(Ok(out)) => Err(crate::github::scrub(
-            String::from_utf8_lossy(&out.stderr).trim(),
-        )),
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if input.is_some() {
+        cmd.stdin(Stdio::piped());
     }
+    let run = async {
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("could not start git: {e}"))?;
+        // Written beside the read, so a full pipe either way never stalls.
+        let feed = match (input, child.stdin.take()) {
+            (Some(data), Some(mut stdin)) => Some(tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                let _ = stdin.write_all(&data).await;
+            })),
+            _ => None,
+        };
+        let out = child
+            .wait_with_output()
+            .await
+            .map_err(|e| format!("could not run git: {e}"))?;
+        if let Some(f) = feed {
+            let _ = f.await;
+        }
+        if out.status.success() {
+            Ok(out.stdout)
+        } else {
+            Err(crate::github::scrub(
+                String::from_utf8_lossy(&out.stderr).trim(),
+            ))
+        }
+    };
+    match tokio::time::timeout(Duration::from_secs(FETCH_SECS), run).await {
+        Err(_) => Err("git took too long".into()),
+        Ok(r) => r,
+    }
+}
+
+async fn run_git<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> std::result::Result<String, String> {
+    let out = git_bytes(args, None).await?;
+    Ok(String::from_utf8_lossy(&out).trim().to_owned())
+}
+
+fn odd_name(rel: &str) -> String {
+    format!(
+        "The add-on has a file named {rel:?}. Names may use letters, digits and . _ - + @ only."
+    )
+}
+
+fn a_link(rel: &str) -> String {
+    format!("The add-on's {rel} is a link to somewhere else. Add-ons cannot hold links.")
+}
+
+fn too_big() -> String {
+    format!(
+        "The add-on is too big. Each file can be at most {} MB and all of them {} MB.",
+        addon::MAX_FILE_BYTES >> 20,
+        addon::MAX_TOTAL_BYTES >> 20
+    )
+}
+
+fn too_many() -> String {
+    format!("The add-on has more than {} files.", addon::MAX_FILES)
+}
+
+/// One file of the add-on as git lists it, before any of it is read.
+#[derive(Debug, PartialEq)]
+struct TreeFile {
+    path: String,
+    oid: String,
+    size: u64,
+}
+
+/// Checks what `git ls-tree -r -l -z` lists for the add-on, before a single
+/// file is read or written: plain files only (no links, no other repos
+/// inside it), names [`addon::check_path`] allows, no `.git` folder, no two
+/// names that are one file on Windows, and within the size and file-count
+/// limits. git's sizes come from the pack's own headers, so a tiny download
+/// that would unpack into something huge is refused here, not after it
+/// filled the PC's disk.
+fn check_listing(out: &[u8]) -> std::result::Result<Vec<TreeFile>, String> {
+    let mut files: Vec<TreeFile> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut total: u64 = 0;
+    let unreadable = || "could not read the add-on's list of files".to_owned();
+    for entry in out.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+        let tab = entry
+            .iter()
+            .position(|b| *b == b'\t')
+            .ok_or_else(unreadable)?;
+        let head = std::str::from_utf8(&entry[..tab]).map_err(|_| unreadable())?;
+        let rel = String::from_utf8_lossy(&entry[tab + 1..]).into_owned();
+        let mut parts = head.split_ascii_whitespace();
+        let (Some(mode), Some(kind), Some(oid), Some(size)) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return Err(unreadable());
+        };
+        match mode {
+            "120000" => return Err(a_link(&rel)),
+            "160000" => {
+                return Err(format!(
+                    "The add-on's {rel} is another repo inside it. Add-ons cannot hold those."
+                ))
+            }
+            "100644" | "100755" | "100664" if kind == "blob" => {}
+            _ => return Err(format!("The add-on's {rel} is not a plain file.")),
+        }
+        if std::str::from_utf8(&entry[tab + 1..]).is_err()
+            || !addon::check_path(&rel)
+            || rel.split('/').any(|seg| seg.eq_ignore_ascii_case(".git"))
+        {
+            return Err(odd_name(&rel));
+        }
+        if !seen.insert(rel.to_ascii_lowercase()) {
+            return Err(format!(
+                "The add-on has two files named {rel:?} that differ only in capital letters. Windows keeps them as one file."
+            ));
+        }
+        if !(oid.len() == 40 || oid.len() == 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(unreadable());
+        }
+        let size: u64 = size.parse().map_err(|_| unreadable())?;
+        total = total.saturating_add(size);
+        if size > addon::MAX_FILE_BYTES || total > addon::MAX_TOTAL_BYTES {
+            return Err(too_big());
+        }
+        files.push(TreeFile {
+            path: rel,
+            oid: oid.to_owned(),
+            size,
+        });
+        if files.len() > addon::MAX_FILES {
+            return Err(too_many());
+        }
+    }
+    Ok(files)
+}
+
+/// Splits what `git cat-file --batch` printed for `listed` (asked in that
+/// order) into each file's bytes, checking each is the blob and the size
+/// the list said.
+fn split_blobs(
+    listed: Vec<TreeFile>,
+    out: &[u8],
+) -> std::result::Result<Vec<(String, Vec<u8>)>, String> {
+    let bad = || "could not read the add-on's files".to_owned();
+    let mut rest = out;
+    let mut files = Vec::with_capacity(listed.len());
+    for l in listed {
+        let nl = rest.iter().position(|b| *b == b'\n').ok_or_else(bad)?;
+        let head = std::str::from_utf8(&rest[..nl]).map_err(|_| bad())?;
+        let want = format!("{} blob {}", l.oid, l.size);
+        let size = usize::try_from(l.size).map_err(|_| bad())?;
+        if head != want || rest.len() < nl + 1 + size + 1 || rest[nl + 1 + size] != b'\n' {
+            return Err(bad());
+        }
+        files.push((l.path, rest[nl + 1..nl + 1 + size].to_vec()));
+        rest = &rest[nl + 1 + size + 1..];
+    }
+    if !rest.is_empty() {
+        return Err(bad());
+    }
+    Ok(files)
 }
 
 /// Every file under `root` (leaving out a `.git` folder at its top), by
@@ -497,15 +753,11 @@ fn read_tree(root: &FsPath) -> std::result::Result<Vec<(String, Vec<u8>)>, Strin
                 format!("{prefix}/{name}")
             };
             if !addon::check_path(&rel) {
-                return Err(format!(
-                    "The add-on has a file named {rel:?}. Names may use letters, digits and . _ - + @ only."
-                ));
+                return Err(odd_name(&rel));
             }
             let ft = e.file_type().map_err(io)?;
             if ft.is_symlink() {
-                return Err(format!(
-                    "The add-on's {rel} is a link to somewhere else. Add-ons cannot hold links."
-                ));
+                return Err(a_link(&rel));
             }
             if ft.is_dir() {
                 stack.push((e.path(), rel));
@@ -517,18 +769,11 @@ fn read_tree(root: &FsPath) -> std::result::Result<Vec<(String, Vec<u8>)>, Strin
             let len = e.metadata().map_err(io)?.len();
             total += len;
             if len > addon::MAX_FILE_BYTES || total > addon::MAX_TOTAL_BYTES {
-                return Err(format!(
-                    "The add-on is too big. Each file can be at most {} MB and all of them {} MB.",
-                    addon::MAX_FILE_BYTES >> 20,
-                    addon::MAX_TOTAL_BYTES >> 20
-                ));
+                return Err(too_big());
             }
             out.push((rel, std::fs::read(e.path()).map_err(io)?));
             if out.len() > addon::MAX_FILES {
-                return Err(format!(
-                    "The add-on has more than {} files.",
-                    addon::MAX_FILES
-                ));
+                return Err(too_many());
             }
         }
     }
@@ -589,8 +834,18 @@ async fn fetch(root: &FsPath, source: &str, folder: &str) -> std::result::Result
         .map_err(|e| format!("could not make a folder to fetch into: {e}"))?;
     let repo = tmp.join("repo");
     let r = async {
+        // No checkout: git only keeps the packed download until the list of
+        // files below has been checked, so nothing is unpacked onto the disk
+        // before Decurion knows how big it is.
         let clone: Vec<&std::ffi::OsStr> = [
-            "clone", "--quiet", "--depth", "1", "--no-tags", "--single-branch", "--",
+            "clone",
+            "--quiet",
+            "--no-checkout",
+            "--depth",
+            "1",
+            "--no-tags",
+            "--single-branch",
+            "--",
         ]
         .iter()
         .map(std::ffi::OsStr::new)
@@ -600,29 +855,40 @@ async fn fetch(root: &FsPath, source: &str, folder: &str) -> std::result::Result
             tracing::warn!(err = %e, "could not fetch an add-on");
             "Decurion could not fetch the add-on from that link. Check the link works in your browser, then try again.".to_owned()
         })?;
-        let rev = run_git(&[
-            std::ffi::OsStr::new("-C"),
-            repo.as_os_str(),
-            std::ffi::OsStr::new("rev-parse"),
-            std::ffi::OsStr::new("HEAD"),
-        ])
-        .await
-        .map_err(|e| format!("could not read the add-on's commit: {e}"))?;
+        let in_repo = |rest: &[&str]| -> Vec<std::ffi::OsString> {
+            let mut a = vec!["-C".into(), repo.clone().into_os_string()];
+            a.extend(rest.iter().map(std::ffi::OsString::from));
+            a
+        };
+        let rev = run_git(&in_repo(&["rev-parse", "--verify", "HEAD^{commit}"]))
+            .await
+            .map_err(|e| format!("could not read the add-on's commit: {e}"))?;
         if !(rev.len() == 40 || rev.len() == 64) || !rev.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("could not read the add-on's commit".to_owned());
         }
-        let top = if folder.is_empty() { repo.clone() } else { repo.join(folder) };
-        // A folder that is a link in the repo could lead anywhere on the PC.
-        let inside = match (std::fs::canonicalize(&top), std::fs::canonicalize(&repo)) {
-            (Ok(t), Ok(r)) => t.starts_with(&r) && t.is_dir(),
-            _ => false,
+        // The folder is looked up inside the commit, never on the disk, so a
+        // folder that is a link in the repo is simply not a folder.
+        let tree = if folder.is_empty() {
+            format!("{rev}^{{tree}}")
+        } else {
+            format!("{rev}:{folder}")
         };
-        if !inside {
+        let kind = run_git(&in_repo(&["cat-file", "-t", &tree])).await;
+        if kind.as_deref() != Ok("tree") {
             return Err(format!("The add-on's repo has no folder {folder}."));
         }
-        let files = tokio::task::spawn_blocking(move || read_tree(&top))
+        let listing = git_bytes(&in_repo(&["ls-tree", "-r", "-l", "-z", &tree]), None)
             .await
-            .map_err(|e| e.to_string())??;
+            .map_err(|e| format!("could not read the add-on's list of files: {e}"))?;
+        let listed = check_listing(&listing)?;
+        let ask: Vec<u8> = listed
+            .iter()
+            .flat_map(|l| format!("{}\n", l.oid).into_bytes())
+            .collect();
+        let blobs = git_bytes(&in_repo(&["cat-file", "--batch"]), Some(ask))
+            .await
+        .map_err(|e| format!("could not read the add-on's files: {e}"))?;
+        let files = split_blobs(listed, &blobs)?;
         let manifest = manifest_of(&files)?;
         let hash = hash_of(&files);
         let meta = Meta {
@@ -989,6 +1255,24 @@ struct ApproveBody {
     /// For a new add-on: the apps to turn it on for.
     #[serde(default)]
     apps: Vec<i64>,
+    #[serde(default)]
+    receipt: Option<String>,
+}
+
+/// A tap that sends nothing but its receipt.
+#[derive(Deserialize)]
+struct TapBody {
+    #[serde(default)]
+    receipt: Option<String>,
+}
+
+/// The answer to a resent tap, if this receipt already went through.
+async fn answered_before(st: &AppState, tap: &Tap<'_>) -> Option<Response> {
+    match st.store.addon_answer(tap).await {
+        Ok(Some(v)) => Some(Json(v).into_response()),
+        Ok(None) => None,
+        Err(e) => Some(ApiError(e).into_response()),
+    }
 }
 
 /// The owner's Add (or Update) on the card: keeps exactly the files the
@@ -1004,25 +1288,22 @@ async fn approve(
     let Some(root) = root_of(&st) else {
         return no_files();
     };
-    let kept_now = |id: String| {
-        let st = st.clone();
-        async move {
-            match st.store.addon(&id).await {
-                Ok(Some(k)) => {
-                    Json(json!({"id": k.id, "name": k.name, "version": k.version})).into_response()
-                }
-                Ok(None) => ApiError(StoreError::NotFound).into_response(),
-                Err(e) => ApiError(e).into_response(),
-            }
-        }
+    let tap = Tap {
+        receipt: b.receipt.as_deref(),
+        action: "addon_add",
     };
+    if let Some(first) = answered_before(&st, &tap).await {
+        return first;
+    }
     let s = match staged(&root, &b.hash).await {
         Ok(s) => s,
         Err(e) => {
-            // A resend of an Add that already went through.
+            // A resend of an Add that already went through, from a page
+            // that sent no receipt.
             if let Ok(all) = st.store.addons().await {
                 if let Some(k) = all.into_iter().find(|k| k.hash == b.hash) {
-                    return kept_now(k.id).await;
+                    return Json(json!({"id": k.id, "name": k.name, "version": k.version}))
+                        .into_response();
                 }
             }
             return ApiError(StoreError::Refused(e)).into_response();
@@ -1038,32 +1319,23 @@ async fn approve(
             if let Err(e) = same_place(k, &s.meta) {
                 return ApiError(StoreError::Duplicate(e)).into_response();
             }
+            // The new version reaches every app the add-on is on for.
+            let on = match st.store.addon_apps(&k.id).await {
+                Ok(on) => on,
+                Err(e) => return ApiError(e).into_response(),
+            };
+            if let Err(e) = fits_apps(&st, &s.manifest, &on, true).await {
+                return e;
+            }
         }
         None => {
-            let keys = s.manifest.keys();
             for id in b.apps {
-                let app = match st.store.app(id).await {
-                    Ok(a) => a,
-                    Err(e) => return ApiError(e).into_response(),
-                };
-                let have = match st.store.test_key_names(id).await {
-                    Ok(h) => h,
-                    Err(e) => return ApiError(e).into_response(),
-                };
-                if let Some(k) = keys.iter().find(|k| !have.contains(k)) {
-                    return refused(format!(
-                        "{} has no test key named {k}. Add it in Settings, Test keys first, or leave {} out for now.",
-                        app.name, app.name
-                    ));
-                }
-                if let Err(e) =
-                    tool_names_free(&st, &s.manifest.id, &tools_of(&s.manifest), id).await
-                {
-                    return e;
-                }
                 if !apps.contains(&id) {
                     apps.push(id);
                 }
+            }
+            if let Err(e) = fits_apps(&st, &s.manifest, &apps, false).await {
+                return e;
             }
         }
     }
@@ -1082,20 +1354,26 @@ async fn approve(
         actor: OWNER,
         note: ", approved by the owner",
     };
-    if let Err(e) = st.store.keep_addon(&keep, &apps).await {
-        return ApiError(e).into_response();
+    let m = &s.manifest;
+    let answer = json!({"id": m.id, "name": m.name, "version": m.version});
+    match st.store.keep_addon(&keep, &apps, &tap, answer).await {
+        Ok(v) => {
+            prune(&root, &m.id, &s.hash).await;
+            Json(v).into_response()
+        }
+        Err(e) => ApiError(e).into_response(),
     }
-    prune(&root, &s.manifest.id, &s.hash).await;
-    kept_now(s.manifest.id.clone()).await
 }
 
 /// Looks for a newer version at the add-on's own link. One that asks for
 /// nothing new is applied now; otherwise the answer is the card listing
-/// only what is new, and the version kept now goes on running.
+/// only what is new, and the version kept now goes on running. Either way
+/// it must still fit every app the add-on is on for.
 async fn update(
     State(st): State<AppState>,
     Extension(c): Extension<Caller>,
     Path(id): Path<String>,
+    Json(b): Json<TapBody>,
 ) -> Response {
     if c != Caller::Owner {
         return forbidden("updating add-ons");
@@ -1103,6 +1381,13 @@ async fn update(
     let Some(root) = root_of(&st) else {
         return no_files();
     };
+    let tap = Tap {
+        receipt: b.receipt.as_deref(),
+        action: "addon_update",
+    };
+    if let Some(first) = answered_before(&st, &tap).await {
+        return first;
+    }
     let kept = match st.store.addon(&id).await {
         Ok(Some(k)) => k,
         Ok(None) => return ApiError(StoreError::NotFound).into_response(),
@@ -1120,6 +1405,13 @@ async fn update(
     }
     if s.hash == kept.hash {
         return Json(json!({"current": true, "version": kept.version})).into_response();
+    }
+    let on = match st.store.addon_apps(&id).await {
+        Ok(on) => on,
+        Err(e) => return ApiError(e).into_response(),
+    };
+    if let Err(e) = fits_apps(&st, &s.manifest, &on, true).await {
+        return e;
     }
     if !addon_manifest::new_lines(&kept.grants, &s.manifest).is_empty() {
         return match card_for(&st, &s, Some(&kept)).await {
@@ -1142,10 +1434,11 @@ async fn update(
         actor: OWNER,
         note: ", asks for nothing new",
     };
-    match st.store.keep_addon(&keep, &[]).await {
-        Ok(()) => {
+    let answer = json!({"updated": true, "version": s.manifest.version});
+    match st.store.keep_addon(&keep, &[], &tap, answer).await {
+        Ok(v) => {
             prune(&root, &s.manifest.id, &s.hash).await;
-            Json(json!({"updated": true, "version": s.manifest.version})).into_response()
+            Json(v).into_response()
         }
         Err(e) => ApiError(e).into_response(),
     }
@@ -1155,27 +1448,71 @@ fn tools_of(m: &Manifest) -> Vec<String> {
     m.tools.iter().map(|t| t.run.name.clone()).collect()
 }
 
-/// Two add-ons on for one app may not give agents tools of the same name.
-async fn tool_names_free(
+/// Checks the add-on `m` may reach each of `apps`: the app has every test
+/// key it reads, and its tools clash with no other add-on on for the app
+/// and stay within one run's limit. `update` is set when `m` is a new
+/// version of an add-on already on for them, so the refusal says the
+/// update was not applied.
+async fn fits_apps(
+    st: &AppState,
+    m: &Manifest,
+    apps: &[i64],
+    update: bool,
+) -> std::result::Result<(), Response> {
+    let keys = m.keys();
+    let tools = tools_of(m);
+    for &id in apps {
+        let app = st
+            .store
+            .app(id)
+            .await
+            .map_err(|e| ApiError(e).into_response())?;
+        let have = st
+            .store
+            .test_key_names(id)
+            .await
+            .map_err(|e| ApiError(e).into_response())?;
+        let why = match keys.iter().find(|k| !have.contains(k)) {
+            Some(k) if update => Some(format!(
+                "{} has no test key named {k}, which the new version needs. Add it in Settings, Test keys first, or turn \"{}\" off for {}.",
+                app.name, m.name, app.name
+            )),
+            Some(k) => Some(format!(
+                "{} has no test key named {k}. Add it in Settings, Test keys first, or leave {} out for now.",
+                app.name, app.name
+            )),
+            None => clash(st, &m.id, &tools, id, &app.name)
+                .await
+                .map_err(|e| ApiError(e).into_response())?,
+        };
+        if let Some(why) = why {
+            return Err(refused(if update {
+                format!(
+                    "Decurion did not update \"{}\" to version {}. {why}",
+                    m.name, m.version
+                )
+            } else {
+                why
+            }));
+        }
+    }
+    Ok(())
+}
+
+/// Why add-on `id`'s `tools` cannot be on for `app`, if they cannot: another
+/// add-on on for it already gives agents a tool of one of those names (one
+/// would take the other's calls), or the run would get too many tools.
+async fn clash(
     st: &AppState,
     id: &str,
     tools: &[String],
     app: i64,
-) -> std::result::Result<(), Response> {
-    let others = st
-        .store
-        .claim_addons(app)
-        .await
-        .map_err(|e| ApiError(e).into_response())?;
-    let app_name = st
-        .store
-        .app(app)
-        .await
-        .map_err(|e| ApiError(e).into_response())?
-        .name;
+    app_name: &str,
+) -> Result<Option<String>> {
+    let others = st.store.claim_addons(app).await?;
     for o in others.iter().filter(|o| o.id != id) {
         if let Some(t) = o.tools.iter().find(|t| tools.contains(&t.name)) {
-            return Err(refused(format!(
+            return Ok(Some(format!(
                 "\"{}\" already gives {app_name}'s agents a tool named {}. Turn it off for {app_name} first.",
                 o.name, t.name
             )));
@@ -1188,17 +1525,19 @@ async fn tool_names_free(
         .sum::<usize>()
         + tools.len();
     if total > addon::MAX_RUN_TOOLS {
-        return Err(refused(format!(
+        return Ok(Some(format!(
             "{app_name}'s agents would get more than {} add-on tools. Turn another add-on off for {app_name} first.",
             addon::MAX_RUN_TOOLS
         )));
     }
-    Ok(())
+    Ok(None)
 }
 
 #[derive(Deserialize)]
 struct OnBody {
     on: bool,
+    #[serde(default)]
+    receipt: Option<String>,
 }
 
 /// Turns an add-on on or off for one app, from the app's next piece of
@@ -1211,6 +1550,13 @@ async fn set_app(
 ) -> Response {
     if c != Caller::Owner {
         return forbidden("turning add-ons on or off");
+    }
+    let tap = Tap {
+        receipt: b.receipt.as_deref(),
+        action: "addon_app",
+    };
+    if let Some(first) = answered_before(&st, &tap).await {
+        return first;
     }
     let kept = match st.store.addon(&id).await {
         Ok(Some(k)) => k,
@@ -1233,12 +1579,14 @@ async fn set_app(
             ));
         }
         let tools: Vec<String> = kept.tools.iter().map(|t| t.name.clone()).collect();
-        if let Err(e) = tool_names_free(&st, &id, &tools, app).await {
-            return e;
+        match clash(&st, &id, &tools, app, &a.name).await {
+            Ok(None) => {}
+            Ok(Some(why)) => return refused(why),
+            Err(e) => return ApiError(e).into_response(),
         }
     }
-    match st.store.set_addon_app(&id, app, b.on).await {
-        Ok(_) => Json(json!({"id": id, "app_id": app, "on": b.on})).into_response(),
+    match st.store.set_addon_app(&id, app, b.on, &tap).await {
+        Ok(v) => Json(v).into_response(),
         Err(e) => ApiError(e).into_response(),
     }
 }
@@ -1249,20 +1597,31 @@ async fn remove(
     State(st): State<AppState>,
     Extension(c): Extension<Caller>,
     Path(id): Path<String>,
+    Json(b): Json<TapBody>,
 ) -> Response {
     if c != Caller::Owner {
         return forbidden("removing add-ons");
     }
-    if let Err(e) = st.store.remove_addon(&id).await {
-        return ApiError(e).into_response();
+    let tap = Tap {
+        receipt: b.receipt.as_deref(),
+        action: "addon_remove",
+    };
+    if let Some(first) = answered_before(&st, &tap).await {
+        return first;
     }
-    if let Some(root) = root_of(&st) {
-        if addon::check_id(&id) {
-            let dir = root.join(&id);
-            let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(dir)).await;
+    let (removed, answer) = match st.store.remove_addon(&id, &tap).await {
+        Ok(r) => r,
+        Err(e) => return ApiError(e).into_response(),
+    };
+    if removed {
+        if let Some(root) = root_of(&st) {
+            if addon::check_id(&id) {
+                let dir = root.join(&id);
+                let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(dir)).await;
+            }
         }
     }
-    Json(json!({"removed": id})).into_response()
+    Json(answer).into_response()
 }
 
 /// A running piece of work's add-on files, for its runner only, after the
@@ -1413,5 +1772,89 @@ mod tests {
             assert!(read_tree(&dir).expect_err("refused").contains("link"));
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const OID: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    fn ls(lines: &[(&str, &str, u64, &str)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (mode, kind, size, path) in lines {
+            out.extend(format!("{mode} {kind} {OID} {size:>7}\t{path}\0").into_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn the_list_of_files_is_checked_before_any_is_read() {
+        let ok = check_listing(&ls(&[
+            ("100644", "blob", 3, "decurion-addon.toml"),
+            ("100755", "blob", 10, "bin/run.sh"),
+        ]))
+        .expect("plain files");
+        assert_eq!(ok.len(), 2);
+        assert_eq!((ok[1].path.as_str(), ok[1].size), ("bin/run.sh", 10));
+
+        let refused =
+            |lines: &[(&str, &str, u64, &str)]| check_listing(&ls(lines)).expect_err("refused");
+        assert!(refused(&[("120000", "blob", 11, "p")]).contains("is a link"));
+        assert!(refused(&[("160000", "commit", 0, "sub")]).contains("another repo"));
+        assert!(refused(&[("100644", "blob", 1, "a b")]).contains("named"));
+        assert!(refused(&[("100644", "blob", 1, "con.txt")]).contains("named"));
+        assert!(refused(&[("100644", "blob", 1, "x/.git/config")]).contains("named"));
+        assert!(refused(&[
+            ("100644", "blob", 1, "A.txt"),
+            ("100644", "blob", 1, "a.txt")
+        ])
+        .contains("capital letters"));
+        let huge = addon::MAX_FILE_BYTES + 1;
+        assert!(refused(&[("100644", "blob", huge, "zeros")]).contains("too big"));
+        let each = addon::MAX_FILE_BYTES;
+        let names: Vec<String> = (0..5).map(|i| format!("f{i}")).collect();
+        let many: Vec<(&str, &str, u64, &str)> = names
+            .iter()
+            .map(|n| ("100644", "blob", each, n.as_str()))
+            .collect();
+        assert!(refused(&many).contains("too big"));
+        let names: Vec<String> = (0..=addon::MAX_FILES).map(|i| format!("f{i}")).collect();
+        let many: Vec<(&str, &str, u64, &str)> = names
+            .iter()
+            .map(|n| ("100644", "blob", 1, n.as_str()))
+            .collect();
+        assert!(refused(&many).contains("more than"));
+    }
+
+    #[test]
+    fn blobs_must_be_exactly_what_the_list_said() {
+        let list = || {
+            vec![
+                TreeFile {
+                    path: "a".into(),
+                    oid: OID.into(),
+                    size: 2,
+                },
+                TreeFile {
+                    path: "b".into(),
+                    oid: OID.into(),
+                    size: 0,
+                },
+            ]
+        };
+        let good = format!("{OID} blob 2\nhi\n{OID} blob 0\n\n");
+        let files = split_blobs(list(), good.as_bytes()).expect("reads");
+        assert_eq!(
+            files,
+            [
+                ("a".to_owned(), b"hi".to_vec()),
+                ("b".to_owned(), Vec::new())
+            ]
+        );
+        for bad in [
+            format!("{OID} blob 3\nhi!\n{OID} blob 0\n\n"),
+            format!("{OID} blob 2\nhi\n"),
+            format!("{OID} missing\n"),
+            format!("{good}extra"),
+        ] {
+            assert!(split_blobs(list(), bad.as_bytes()).is_err(), "{bad:?}");
+        }
     }
 }

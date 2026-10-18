@@ -40,14 +40,14 @@ fn run_dir(data: &Path, id: i64) -> PathBuf {
     data.join("addons").join(id.to_string())
 }
 
-/// Fetches, checks and starts the tools of `addons` for thread `id`, beside
-/// its browser box. `keys` are the app's test keys (name, value); a tool gets
+/// Fetches, checks and starts the tools of `addons` for thread `id`, each
+/// in a box of its own on the run's `network`. `keys` are the app's test keys (name, value); a tool gets
 /// only the one it named. `secrets` are hidden from the tools' logs.
 pub(crate) async fn start(
     hub: &Hub,
     data: &Path,
     id: i64,
-    browser: &str,
+    network: &str,
     addons: &[AddonUse],
     keys: &[(String, String)],
     secrets: &[String],
@@ -63,9 +63,8 @@ pub(crate) async fn start(
     if addons.is_empty() {
         return t;
     }
-    clear(id).await;
-    let _ = remove_all(&dir);
-    let mut started: Vec<(String, u16)> = Vec::new();
+    clear(data, id).await;
+    let mut started: Vec<(String, usize)> = Vec::new();
     let mut told: Vec<ToolUse> = Vec::new();
     let mut n = 0;
     for addon in addons {
@@ -108,11 +107,11 @@ pub(crate) async fn start(
                     }
                 },
             };
-            match start_tool(id, n, browser, &files, tool, value, secrets).await {
+            match start_tool(id, n, network, &files, tool, value, secrets).await {
                 Ok(child) => {
                     t.names.push(a::tool_container_name(id, n));
                     t._children.push(child);
-                    started.push((tool.name.clone(), a::port(n)));
+                    started.push((tool.name.clone(), n));
                     told.push(tool.clone());
                 }
                 Err(err) => {
@@ -179,7 +178,7 @@ async fn fetch(
 async fn start_tool(
     id: i64,
     n: usize,
-    browser: &str,
+    network: &str,
     files: &Path,
     tool: &ToolUse,
     key: Option<(String, String)>,
@@ -187,7 +186,7 @@ async fn start_tool(
 ) -> anyhow::Result<Child> {
     let name = a::tool_container_name(id, n);
     let mut cmd = docker();
-    cmd.args(a::tool_box_args(id, n, browser, files, tool)?);
+    cmd.args(a::tool_box_args(id, n, network, files, tool)?);
     if let Some((var, value)) = key {
         // Passed by name in the arguments; the value only ever here.
         cmd.env(var, value);
@@ -234,8 +233,10 @@ pub(crate) async fn stop(t: &Tools) {
     let _ = remove_all(&t.dir);
 }
 
-/// Removes any tool box of thread `id`'s, such as one a dead runner left.
-pub(crate) async fn clear(id: i64) {
+/// Removes any tool box of thread `id`'s, such as one a dead runner left,
+/// and the run's copy of its add-ons' files.
+pub(crate) async fn clear(data: &Path, id: i64) {
+    let _ = remove_all(&run_dir(data, id));
     let filter = format!("name=^{}", a::tool_container_prefix(id));
     let Ok(out) = docker_out(&["ps", "-aq", "--filter", &filter]).await else {
         return;

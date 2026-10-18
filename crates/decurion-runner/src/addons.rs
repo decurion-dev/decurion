@@ -10,9 +10,12 @@
 //! - **Sealed like every box**: all capabilities dropped, no new
 //!   privileges, capped memory and processes, a read-only root, and only
 //!   the add-on's own checked files, read-only, at `/addon`.
-//! - **Same gate, this run only.** The tool box joins the run's network
-//!   (the browser box's, behind the run's gate), so it reaches only the
-//!   run's websites; its own websites are added to that gate for this run.
+//! - **Its own network namespace.** The tool box is a container of its own
+//!   on the run's network, behind the run's gate, reached by the agent at
+//!   [`tool_host`]. It never joins the agent's or the browser box's
+//!   namespace (`--network container:`), whose loopback holds the browser
+//!   tools with the owner's saved sign-ins, the agent's database and dev
+//!   servers. Its websites are added to that gate for this run only.
 //! - **Exactly the approved bytes.** [`check_bundle`] refuses files whose
 //!   tree hash is not the one in the claim.
 //! - **Only Decurion's MCP config.** The tools reach the agent as one more
@@ -36,6 +39,16 @@ pub fn tool_container_prefix(thread_id: i64) -> String {
     format!("{}-addon-", container_name(thread_id))
 }
 
+/// The name the agent reaches the `n`th tool of its run at, on the run's
+/// own network. Every box lists these in `NO_PROXY` (`no_proxy`).
+pub fn tool_host(n: usize) -> String {
+    format!("addon-{n}")
+}
+
+/// The variable a tool box finds its [`tool_host`] name in, to check the
+/// `Host` of each call against.
+pub const HOST_VAR: &str = "DECURION_MCP_HOST";
+
 /// The port the `n`th tool of a run listens on.
 pub fn port(n: usize) -> u16 {
     addon::FIRST_PORT + n as u16
@@ -55,14 +68,15 @@ pub fn sites(addons: &[AddonUse]) -> Vec<String> {
 }
 
 /// Arguments for `docker run` of one add-on tool. `files` is the runner's
-/// checked copy of the add-on, mounted read-only; `browser` is the run's
-/// browser box, whose network (behind the run's gate) the tool joins. The
+/// checked copy of the add-on, mounted read-only; `network` is the run's
+/// own network (behind the run's gate), which the tool joins as a box of
+/// its own under [`tool_host`]. The
 /// key, if the tool has one, is passed by name only: the caller sets its
 /// value on the docker command.
 pub fn tool_box_args(
     thread_id: i64,
     n: usize,
-    browser: &str,
+    network: &str,
     files: &Path,
     tool: &ToolUse,
 ) -> anyhow::Result<Vec<String>> {
@@ -105,8 +119,12 @@ pub fn tool_box_args(
         "--read-only",
         "--tmpfs",
         "/tmp",
+        // Never `container:`: sharing the agent's loopback would hand the
+        // tool the browser tools and anything else listening there.
         "--network",
-        &format!("container:{browser}"),
+        network,
+        "--network-alias",
+        &tool_host(n),
         "--mount",
         &format!("type=bind,src={src},dst={},readonly", addon::BOX_DIR),
         "--workdir",
@@ -130,6 +148,8 @@ pub fn tool_box_args(
         "NODE_USE_ENV_PROXY=1",
         "-e",
         &format!("{}={port}", addon::PORT_VAR),
+        "-e",
+        &format!("{HOST_VAR}={}", tool_host(n)),
     ]
     .iter()
     .map(|s| s.to_string())
@@ -142,16 +162,15 @@ pub fn tool_box_args(
     Ok(a)
 }
 
-/// The MCP config the agent's Claude Code gets for the tools that started:
-/// each one over HTTP on the run's localhost.
-pub fn mcp_config(started: &[(String, u16)]) -> String {
+/// The MCP config the agent's Claude Code gets for the tools that started,
+/// by name and number: each one over HTTP at its own box on the run's
+/// network.
+pub fn mcp_config(started: &[(String, usize)]) -> String {
     let servers: serde_json::Map<String, Value> = started
         .iter()
-        .map(|(name, port)| {
-            (
-                name.clone(),
-                json!({ "type": "http", "url": format!("http://127.0.0.1:{port}/mcp") }),
-            )
+        .map(|(name, n)| {
+            let url = format!("http://{}:{}/mcp", tool_host(*n), port(*n));
+            (name.clone(), json!({ "type": "http", "url": url }))
         })
         .collect();
     json!({ "mcpServers": servers }).to_string()
@@ -254,7 +273,7 @@ mod tests {
         let a = tool_box_args(
             7,
             1,
-            "decurion-thread-7-browser",
+            "decurion-net-7",
             Path::new("/data/addons/7/x"),
             &tool(),
         )
@@ -267,10 +286,11 @@ mod tests {
             "--cap-drop ALL",
             "--security-opt no-new-privileges",
             "--read-only",
-            "--network container:decurion-thread-7-browser",
+            "--network decurion-net-7 --network-alias addon-1",
             "--mount type=bind,src=/data/addons/7/x,dst=/addon,readonly",
             "-e HTTPS_PROXY=http://gate:3128",
             "-e DECURION_MCP_PORT=8941",
+            "-e DECURION_MCP_HOST=addon-1",
             "-e WORDS_TOKEN",
             "--entrypoint node decurion/claude-worker:dev server.mjs --port 8941",
         ] {
@@ -287,11 +307,34 @@ mod tests {
             "docker.sock",
             "--privileged",
             "WORDS_TOKEN=",
+            // Never the agent's or the browser's loopback: that holds the
+            // browser tools with the owner's saved sign-ins.
+            "container:",
+            "--network=",
         ] {
             assert!(!s.contains(never), "{never} in {s}");
         }
+        assert_eq!(a.iter().filter(|x| *x == "--network").count(), 1);
+        let net = a.iter().position(|x| x == "--network").expect("network");
+        assert_eq!(a[net + 1], "decurion-net-7");
         let image = a.iter().position(|x| x == IMAGE).expect("image");
         assert_eq!(a[image - 2], "--entrypoint");
+    }
+
+    #[test]
+    fn every_box_reaches_each_tool_without_the_gate_and_nothing_else() {
+        let n = crate::no_proxy();
+        for i in 0..addon::MAX_RUN_TOOLS {
+            assert!(
+                n.split(',').any(|x| x == tool_host(i)),
+                "{i} missing in {n}"
+            );
+        }
+        assert_eq!(
+            n.split(',').count(),
+            addon::MAX_RUN_TOOLS + 4,
+            "only the gate, the tools and loopback: {n}"
+        );
     }
 
     #[test]
@@ -327,7 +370,7 @@ mod tests {
         ]
         .map(String::from)
         .to_vec();
-        let config = mcp_config(&[("words".into(), 8940)]);
+        let config = mcp_config(&[("words".into(), 0)]);
         add_to_run(&mut a, &config).expect("added");
         let at = a.iter().position(|x| x == "--mcp-config").expect("flag");
         assert_eq!(a[at + 1], MCP_BOX_CONFIG);
@@ -335,7 +378,10 @@ mod tests {
         assert_eq!(a[at + 3], "--strict-mcp-config");
         assert_eq!(a.iter().filter(|x| *x == "--mcp-config").count(), 1);
         let v: Value = serde_json::from_str(&config).expect("json");
-        assert_eq!(v["mcpServers"]["words"]["url"], "http://127.0.0.1:8940/mcp");
+        assert_eq!(
+            v["mcpServers"]["words"]["url"],
+            format!("http://addon-0:{}/mcp", port(0))
+        );
         assert_eq!(v["mcpServers"]["words"]["type"], "http");
         let mut helper: Vec<String> = vec!["--mcp-config".into(), "/etc/decurion/mcp.json".into()];
         assert!(add_to_run(&mut helper, &config).is_err());
