@@ -636,6 +636,22 @@ impl Files {
         self.upstream.pass(Duration::from_secs(REUSE_SECS + 1));
     }
 
+    /// True if `sha` is a start this hub pinned for app `app_id`.
+    pub(crate) async fn is_pinned_start(&self, app_id: i64, sha: &str) -> bool {
+        is_commit(sha)
+            && git(
+                &self.app_cache(app_id),
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/decurion/start/{sha}^{{commit}}"),
+                ],
+            )
+            .await
+            .is_ok()
+    }
+
     /// The bare repo that only takes fetches from the app's git server.
     pub(crate) fn upstream_cache(&self, app_id: i64) -> PathBuf {
         self.app_cache(app_id)

@@ -1749,13 +1749,25 @@ async fn runner_base(
     }
 }
 
+/// Which of a goal's starts a helper's copy is made from.
+#[derive(Deserialize)]
+struct GoalBaseAt {
+    /// The start the helper job was claimed with. A later round may move the
+    /// goal's start between the claim and this download; the job still gets
+    /// the one it was given.
+    at: Option<String>,
+}
+
 /// The bundle of a goal's start commit, for its project lead's and
-/// designer's copies. Runner-only and PC-only, like the other helper routes:
-/// not in `cloud_reach`, and refused here too if that list ever grows.
+/// designer's copies: the one in `?at=`, if it is the goal's start or one
+/// the hub pinned for the app, else the goal's current start. Runner-only
+/// and PC-only, like the other helper routes: not in `cloud_reach`, and
+/// refused here too if that list ever grows.
 async fn runner_goal_base(
     State(st): State<AppState>,
     runner: Option<axum::Extension<RunnerId>>,
     Path(goal): Path<i64>,
+    Query(q): Query<GoalBaseAt>,
 ) -> Response {
     let r = match runner_only(runner, None) {
         Ok(r) => r,
@@ -1775,20 +1787,41 @@ async fn runner_goal_base(
         )
             .into_response();
     };
+    if q.at
+        .as_deref()
+        .is_some_and(|at| !checkpoints::is_commit(at))
+    {
+        return (StatusCode::BAD_REQUEST, "That is not a commit id.").into_response();
+    }
     let result = async {
-        let start = st
-            .store
-            .goal_start_commit(goal)
-            .await?
-            .ok_or(StoreError::NotFound)?;
+        let start = st.store.goal_start_commit(goal).await?;
         let app = st.store.app(st.store.goal(goal).await?.app_id).await?;
+        let want = match q.at {
+            None => start,
+            Some(at)
+                if start.as_deref() == Some(at.as_str())
+                    || files.is_pinned_start(app.id, &at).await =>
+            {
+                Some(at)
+            }
+            Some(_) => None,
+        };
+        let Some(want) = want else {
+            return Ok(None);
+        };
         files
-            .base_bundle(app.id, &app.repo_path, Some(&start))
+            .base_bundle(app.id, &app.repo_path, Some(&want))
             .await
+            .map(Some)
     }
     .await;
     match result {
-        Ok((sha, path)) => file_response(&path, Some(("x-decurion-base", sha))).await,
+        Ok(Some((sha, path))) => file_response(&path, Some(("x-decurion-base", sha))).await,
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            "This goal never started from that commit.",
+        )
+            .into_response(),
         Err(e) => ApiError(e).into_response(),
     }
 }

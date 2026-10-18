@@ -903,3 +903,49 @@ async fn a_fallback_only_ever_pins_a_commit_the_hub_holds() {
     );
     assert_eq!(start_of(&h, new_work(&h, app).await).await, x);
 }
+
+#[tokio::test]
+async fn a_helper_gets_the_start_it_was_claimed_with() {
+    let h = hub().await;
+    let s = setup(&h.dir);
+    let app = add_app(&h, &s.folder).await;
+    let g = ok(
+        &h.r,
+        "POST",
+        "/api/goals",
+        OWNER,
+        json!({"app_id": app, "text": "Add a page"}),
+    )
+    .await;
+    let goal = g["id"].as_i64().expect("goal id");
+    // A later round moves the goal's start between a helper job's claim
+    // (at b) and its download.
+    let b2 = s.advance("b2");
+    h.later();
+    assert_eq!(start_of(&h, new_work(&h, app).await).await, b2);
+    sqlx::query("UPDATE goals SET start_commit = ? WHERE id = ?")
+        .bind(&b2)
+        .bind(goal)
+        .execute(h.store.pool())
+        .await
+        .expect("move the start");
+    let at = |sha: &str| format!("/api/runner/goals/{goal}/base?at={sha}");
+    for want in [&s.b, &b2] {
+        let resp = send(&h.r, "GET", &at(want), RUNNER, Value::Null).await;
+        assert_eq!(resp.status, StatusCode::OK, "{}", resp.json());
+        assert_eq!(resp.headers["x-decurion-base"], want.as_str());
+    }
+    // Not a start this goal or app ever had, or not a commit id at all.
+    assert_eq!(
+        send(&h.r, "GET", &at(&"0".repeat(40)), RUNNER, Value::Null)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        send(&h.r, "GET", &at("HEAD"), RUNNER, Value::Null)
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+}
