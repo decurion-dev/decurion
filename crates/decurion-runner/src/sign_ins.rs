@@ -366,6 +366,7 @@ mod tests {
             profile: Profile::A,
             pay_per_use: false,
             monthly_cap_usd: None,
+            sites: Vec::new(),
         };
         let thread = Thread {
             id: 1,

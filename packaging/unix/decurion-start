@@ -96,6 +96,20 @@ if ! prepare_image decurion/pi-worker:dev pi-worker "the workspace for ChatGPT a
     echo
 fi
 
+# The gate is each agent's only way out to the web. Its image is rebuilt
+# when any file of the gate's source shipped with this version changes.
+gate_image=decurion/gate:dev
+gate_context="$share/docker/gate"
+gate_want=$(cd "$gate_context" && find . -type f | LC_ALL=C sort | while read -r f; do
+    printf '%s %s\n' "$f" "$(sha256 "$f")"
+done | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | cut -d' ' -f1)
+have=$(docker image inspect -f '{{ index .Config.Labels "org.decurion.source" }}' "$gate_image" 2>/dev/null)
+if [ "$have" != "$gate_want" ]; then
+    echo "Getting the agents' website gate ready. This happens once per version and takes a few minutes."
+    docker build --label "org.decurion.source=$gate_want" -t "$gate_image" "$gate_context" ||
+        fail "Could not prepare the agents' website gate. Check that Docker is running and you are online, then try again."
+fi
+
 start_logged decurion-hub hub
 hub=$pid
 runner=""

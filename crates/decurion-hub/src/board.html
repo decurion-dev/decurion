@@ -191,6 +191,21 @@
   .rows .who b { font-weight: 600; overflow-wrap: anywhere; }
   .rows .who .mono, .rows .who .hint { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
   .rows .empty { color: var(--muted); font-size: 14px; justify-content: center; padding: 18px; }
+  /* Websites an app's agents may use, under each app's row. */
+  .rows .sites { flex: 1 1 100%; display: grid; gap: 8px; margin-left: 44px; min-width: 0; }
+  .sites-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+  .sites-h svg.i { width: 14px; height: 14px; color: var(--muted); }
+  .sites-h .hint { font-size: 13px; }
+  .rows .chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .rows .chips > li { display: inline-flex; align-items: center; gap: 2px; flex-wrap: nowrap; min-height: 30px; padding: 0 1px 0 10px; border: 1px solid var(--line); border-radius: 99px; background: var(--surface-2); font: 13px/1.2 var(--mono); overflow-wrap: anywhere; }
+  .rows .chips > li .btn { border-radius: 99px; color: var(--muted); }
+  .rows .chips > li .btn:hover { color: var(--ink); background: var(--surface-3); }
+  .site-add { display: flex; gap: 8px; max-width: 440px; }
+  .site-add input { flex: 1; min-width: 0; font-size: 14px; }
+  .sites .field-error:empty { display: none; }
+  .sites-note { display: grid; gap: 6px; }
+  .sites-note summary { color: var(--muted); font-size: 13px; width: fit-content; }
+  .sites-note .builtin { list-style: none; margin: 6px 0 0 22px; padding: 0; display: flex; flex-wrap: wrap; gap: 2px 14px; font: 12.5px/1.6 var(--mono); color: var(--muted); }
   .acct { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); padding: 4px 10px; border-radius: 99px; background: var(--surface-2); white-space: nowrap; }
   .acct svg.i { width: 14px; height: 14px; }
   .acct .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
@@ -234,7 +249,7 @@
   .so-card p { color: var(--muted); }
 
   /* ---------- Offline ---------- */
-  body.offline .live .acts .btn, body.offline .live form .btn, body.offline .live .rows .btn, body.offline .live .notice .btn, body.offline #pair { pointer-events: none; opacity: .5; }
+  body.offline .live .acts .btn, body.offline .live form .btn, body.offline .live .rows .btn, body.offline .live .rows input, body.offline .live .notice .btn, body.offline #pair { pointer-events: none; opacity: .5; }
 
   /* ---------- Narrow screens ---------- */
   @media (min-width: 900px) and (max-width: 1199px) {
@@ -271,6 +286,7 @@
     .strip .ct { margin-left: auto; }
     .col-h .ghost svg.i { transform: rotate(90deg); }
     .settings { grid-template-columns: 1fr; }
+    .rows .sites { margin-left: 0; }
   }
   @media (max-width: 640px) {
     .side .brand span { font-size: 15px; }
@@ -363,6 +379,10 @@
         <section class="scard wide live" id="set-apps" aria-labelledby="h-apps">
           <header><span class="ic" data-icon="app"></span><div><h2 id="h-apps">Apps</h2><p>Each app is a git checkout on this PC. Agents work on their own copy and never touch yours. An app can also have its own monthly cap on pay-per-use money, across Claude, ChatGPT and Grok.</p></div></header>
           <ul class="rows" id="app-rows"></ul>
+          <div class="sites-note" id="sites-note" hidden>
+            <p class="hint" id="sites-hint">Claude and the package stores (npm, PyPI, crates.io) are always allowed. An entry like stripe.com also covers its subdomains. Changes apply to the next piece of work.</p>
+            <details class="fold" id="sites-builtin" hidden><summary></summary><ul class="builtin" aria-label="Always allowed websites"></ul></details>
+          </div>
           <form id="add-app" class="form-grid" novalidate>
             <h3 class="full">Add an app</h3>
             <div class="field">
@@ -448,6 +468,9 @@
   let apps = [], threads = [], spend = null, devices = null, limits = [], workers = [];
   let accounts = null;          // /accounts: Max plan meters and pay-per-use caps
   let hasCloud = false;
+  const siteDraft = {}, siteErr = {}, siteBusy = {}; // app id -> typed text, error, saving
+  const sitesSaved = new Map();  // app id -> list the hub just stored
+  let sitesSeq = 0, builtIn = null;
   const limitErr = {};          // profile -> message from a failed "Continue on pay-per-use"
   let loaded = false, loadErr = null, busy = false, timer = 0;
   const tails = new Map();      // thread id -> { key, ev }
@@ -490,10 +513,18 @@
 
   // Re-renders without losing keyboard focus: focus is restored by data-key.
   function keepFocus(fn) {
-    const key = document.activeElement?.dataset?.key;
+    const was = document.activeElement;
+    const key = was?.dataset?.key;
+    let caret = null;
+    try { if (was?.tagName === "INPUT" && was.selectionStart != null) caret = [was.selectionStart, was.selectionEnd]; } catch (_) { /* no caret */ }
     fn();
-    if (key && document.activeElement?.dataset?.key !== key) document.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
+    if (key && document.activeElement?.dataset?.key !== key) {
+      const now = document.querySelector(`[data-key="${CSS.escape(key)}"]`);
+      now?.focus({ preventScroll: true });
+      if (caret && now?.tagName === "INPUT") try { now.setSelectionRange(...caret); } catch (_) { /* no caret */ }
+    }
   }
+  const focusKey = (key) => document.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
   function changed(name, value) {
     const s = JSON.stringify(value);
     if (sigs[name] === s) return false;
@@ -562,10 +593,14 @@
     if (busy) return;
     busy = true;
     try {
+      const seq = sitesSeq;
       const [a, th, sp, lim, wk, ac] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/spend"),
         D.api("/limits").catch(() => []), // older hubs have no /limits
         D.api("/workers").catch(() => []),
         D.api("/accounts").catch(() => null)]);
+      // A website list saved while this was loading is newer than what came back.
+      if (seq !== sitesSeq) for (const x of a) { if (sitesSaved.has(x.id)) x.sites = sitesSaved.get(x.id); }
+      else sitesSaved.clear();
       apps = a; threads = th; spend = sp; limits = Array.isArray(lim) ? lim : [];
       accounts = Array.isArray(ac) ? ac : null;
       workers = Array.isArray(wk) ? wk : [];
@@ -988,8 +1023,13 @@
   // ---------- Settings ----------
   function renderSettings() {
     if (!loaded) return;
+    if (!builtIn) loadBuiltIn();
+    $("sites-note").hidden = !apps.length;
     const appSpend = Object.fromEntries((spend?.apps ?? []).map((x) => [x.app_id, x]));
-    if (!typingIn("app-rows") && changed("set-apps", [apps, spend?.apps, D.offline])) {
+    // A half-typed cap would be lost on redraw; a website being typed is kept
+    // in siteDraft and its field gets focus back.
+    const typingCap = typingIn("app-rows") && !document.activeElement.dataset.key?.startsWith("site-");
+    if (!typingCap && changed("set-apps", [apps, spend?.apps, D.offline, siteErr, siteBusy])) {
       keepFocus(() => {
         $("app-rows").replaceChildren(...(apps.length ? apps.map((a) => {
           const b = el("button", { type: "button", className: "btn sm", dataset: { key: `ppu-${a.id}` } },
@@ -1011,7 +1051,8 @@
               spent ? el("span", { className: "hint" }, spent) : null),
             el("span", { className: "acct" }, icon(a.pay_per_use ? "money" : "ai"), a.pay_per_use ? "Claude pay-per-use" : `Claude Max plan ${a.profile}`),
             b,
-            appCap(a));
+            appCap(a),
+            sitesBlock(a));
         }) : [el("li", { className: "empty" }, "No apps yet. Add one below.")]));
       });
     }
@@ -1057,6 +1098,97 @@
         ? accounts.map((a) => (isMax(a) ? maxRow(a) : paidRow(a)))
         : [el("li", { className: "empty" }, "Couldn't load the accounts. They show up again on the next refresh.")])));
     }
+  }
+
+  // ---------- Websites an app's agents may use ----------
+  // Every name goes in as text, never as HTML.
+  async function loadBuiltIn() {
+    builtIn = [];
+    let list;
+    try { list = await D.api("/sites/built-in"); } catch (_) { builtIn = null; return; }
+    if (!Array.isArray(list) || !list.length) return;
+    builtIn = list;
+    const det = $("sites-builtin");
+    det.querySelector("summary").replaceChildren(icon("right"), `See the ${D.plural(list.length, "website")} always allowed`);
+    det.querySelector("ul").replaceChildren(...list.map((h) => el("li", {}, String(h))));
+    det.hidden = false;
+  }
+
+  // Saves the whole list and shows what the hub stored, which is cleaned up:
+  // "https://Stripe.com/docs" comes back as stripe.com, built-in sites drop out.
+  async function saveSites(a, next, { added, removed }) {
+    siteBusy[a.id] = true;
+    delete siteErr[a.id];
+    renderSettings();
+    const before = a.sites ?? [];
+    try {
+      const stored = await D.api(`/apps/${a.id}/sites`, { method: "POST", body: JSON.stringify({ sites: next }) });
+      const list = Array.isArray(stored) ? stored : next;
+      sitesSeq++;
+      sitesSaved.set(a.id, list);
+      for (const x of apps) if (x.id === a.id) x.sites = list;
+      if (added) {
+        siteDraft[a.id] = "";
+        const fresh = list.filter((h) => !before.includes(h));
+        if (fresh.length) D.toast(`${a.name} can now use ${fresh.join(", ")}. This applies to its next piece of work.`);
+        else D.toast(`${added.join(", ")} ${added.length === 1 ? "is" : "are"} already allowed, so nothing changed.`);
+      } else {
+        D.toast(`${a.name} can no longer use ${removed}. This applies to its next piece of work.`);
+      }
+    } catch (e) {
+      if (e.signedOut) { signedOut(); return; }
+      if (added) siteErr[a.id] = e.message;
+      else D.toast(`Couldn't remove ${removed}. ${e.message}`, "alert");
+    } finally {
+      siteBusy[a.id] = false;
+      renderSettings();
+    }
+  }
+
+  function sitesBlock(a) {
+    const sites = a.sites ?? [];
+    const busy = !!siteBusy[a.id] || D.offline;
+    const inKey = `site-in-${a.id}`, errId = `site-err-${a.id}`;
+    const err = el("span", { className: "field-error", id: errId, role: "alert" }, siteErr[a.id] ?? "");
+    const input = el("input", { type: "text", id: inKey, autocomplete: "off", autocapitalize: "off", inputMode: "url", maxLength: 300,
+      placeholder: "Add a website, like stripe.com", value: siteDraft[a.id] ?? "", dataset: { key: inKey },
+      "aria-describedby": `sites-hint ${errId}`, "aria-invalid": siteErr[a.id] ? "true" : null });
+    input.spellcheck = false;
+    input.oninput = () => {
+      siteDraft[a.id] = input.value;
+      if (siteErr[a.id]) { delete siteErr[a.id]; err.textContent = ""; input.removeAttribute("aria-invalid"); }
+    };
+    const add = el("button", { type: "submit", className: "btn", dataset: { key: `site-add-${a.id}` }, disabled: busy }, icon("plus"), "Add");
+    const form = el("form", { className: "site-add", noValidate: true },
+      el("label", { className: "sr-only", for: inKey }, `Add a website for ${a.name}`), input, add);
+    const fail = (msg) => { siteErr[a.id] = msg; renderSettings(); focusKey(inKey); };
+    form.onsubmit = async (ev) => {
+      ev.preventDefault();
+      if (siteBusy[a.id]) return;
+      if (D.offline) return fail("Your PC isn't answering. Try again when it's back.");
+      // Several can go in at once, split by spaces or commas.
+      const entries = input.value.split(/[\s,]+/).filter(Boolean);
+      if (!entries.length) return fail("Type a website name, like stripe.com.");
+      const fresh = entries.filter((h) => !sites.includes(h.toLowerCase()));
+      if (!fresh.length) return fail(`${entries.join(", ")} ${entries.length === 1 ? "is" : "are"} already on the list.`);
+      siteDraft[a.id] = input.value;
+      await saveSites(a, [...sites, ...fresh], { added: fresh });
+      focusKey(inKey);
+    };
+    const list = sites.length ? el("ul", { className: "chips", "aria-label": `Websites ${a.name} can use` }, ...sites.map((h) => {
+      const x = el("button", { type: "button", className: "btn icon sm quiet", "aria-label": `Remove ${h} from ${a.name}`, title: "Remove",
+        dataset: { key: `site-rm-${a.id}-${h}` }, disabled: busy }, icon("close"));
+      x.onclick = async () => {
+        if (siteBusy[a.id] || D.offline) return;
+        await saveSites(a, sites.filter((s) => s !== h), { removed: h });
+        focusKey(inKey);
+      };
+      return el("li", {}, el("span", {}, h), x);
+    })) : null;
+    return el("div", { className: "sites", role: "group", "aria-label": `Websites for ${a.name}` },
+      el("div", { className: "sites-h" }, icon("globe"), el("span", { className: "label" }, "Websites"),
+        el("span", { className: "hint" }, sites.length ? "Built-in, plus these:" : "Built-in only")),
+      list, form, err);
   }
 
   // A Claude Max plan: this week's and the current five hours' allowance.

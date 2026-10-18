@@ -21,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Take over the test browser.** Watch an agent's test browser live from the board or your phone, take control, and hand it back. The browser now runs in a box of its own beside the agent's.
 - **Saved website sign-ins.** Sign in once to a site an app needs (a staging admin, a test dashboard) in a sign-in window. Decurion keeps the sign-in encrypted on your PC, never the password, gives it only to that app's runs, and puts a card in your inbox when it needs renewing.
 - Contribution guide, security policy, code of conduct, issue and pull request templates, and a cargo-deny configuration for dependency license and source checks.
+- **Website limits for agents.** Each agent's container is on its own closed network whose only way out is a small gate. The gate lets through only the AIs (Claude, ChatGPT, Grok), the package stores (npm, PyPI, crates.io) and the websites you add for each app in Settings. Anything else is turned away and shows in the work's activity as a blocked visit. Agents can no longer reach your PC, home network or Tailscale devices. Installers build the gate the first time Decurion starts.
+- **Protected parts.** An app can list the parts it wants you to look at yourself in `.decurion/protected-paths`. A piece of a goal that changes any of them waits for you even when the checker passes it. The hub reads the list from the code the work started from, so the agent cannot take anything off it, and holds the piece if it cannot tell. Coordinators and builders now also read an app's AGENTS.md or CLAUDE.md first.
 
 ## [0.1.0] - Unreleased
 

@@ -1,5 +1,6 @@
 # Sealed workspace for one Claude Code agent.
-# The agent sees only /work (its own copy of the code) and /home/agent.
+# The agent sees only /work (its own copy of the code) and /home/agent, and
+# reaches only the websites its gate lets through.
 FROM node:22-bookworm-slim
 
 RUN apt-get update \
@@ -29,6 +30,12 @@ RUN npm install -g @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} \
  && rm -rf /var/lib/apt/lists/* \
  && npm cache clean --force
 
+# The box reaches the web only through its gate. WebFetch's own pre-check of
+# each site goes to claude.ai, which is not on the gate's list; the gate does
+# that job instead.
+RUN mkdir -p /etc/claude-code \
+ && printf '{"skipWebFetchPreflight": true}\n' > /etc/claude-code/managed-settings.json
+
 # Decurion's MCP settings: only the browser. The runner passes
 # `--mcp-config /etc/decurion/mcp.json --strict-mcp-config`, so MCP servers a
 # repo brings along are never loaded.
@@ -38,6 +45,8 @@ RUN npm install -g @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} \
 # Screenshots without a name go to /tmp, not /work, so they never end up in a commit.
 # --no-webmcp: web pages cannot add their own tools to the agent.
 # Coordinator, design and review helpers use this browser.
+# The browser goes out through the box's gate like everything else; pages the
+# agent serves inside the box (localhost) are reached directly.
 COPY mcp.json /etc/decurion/mcp.json
 
 # A work run's browser is in a box of its own, started from this same image

@@ -210,7 +210,13 @@ async function launch() {
   // Over a pipe (Playwright's default): no debugging port to reach.
   // Chromium's own sandbox cannot start in a box with no capabilities; the
   // box is the sandbox.
-  browser = await chromium.launch({ headless: true, chromiumSandbox: false });
+  // A run's browser goes out through the run's gate like everything else in
+  // its box; pages the agent serves on localhost are reached directly. A
+  // sign-in window has no gate: the owner is the one browsing.
+  const proxy = process.argv.includes('--gate')
+    ? { server: 'http://gate:3128', bypass: 'localhost,127.0.0.1,[::1]' }
+    : undefined;
+  browser = await chromium.launch({ headless: true, chromiumSandbox: false, proxy });
   browser.on('disconnected', () => {
     if (!ending) void fail('The browser stopped.');
   });

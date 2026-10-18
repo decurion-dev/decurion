@@ -1,0 +1,52 @@
+# Decurion's walls. A piece of work that changes any of these waits for the
+# owner to look at it, even when the checker passes it. The hub reads this
+# list from the commit the work started from, so the work cannot change it
+# for itself. How patterns work: crates/decurion-hub/src/protected.rs.
+
+# The sealed box agents run in: how the runner starts each container, what it
+# may reach and which files it can see.
+crates/decurion-runner/src/
+
+# The gate: the only way out to the internet from inside a box.
+crates/decurion-gate/
+
+# The worker images and their settings, including the tools an agent gets
+# (mcp.json) and the cloud worker's firewall (cloud/walls.sh).
+docker/
+
+# The vault that keeps apps' test keys locked.
+crates/decurion-vault/
+
+# Money and limits: the spending cap, Max account limits and usage meters.
+crates/decurion-hub/src/spend.rs
+crates/decurion-hub/src/limits.rs
+crates/decurion-hub/src/usage.rs
+
+# Phone notifications: what leaves the hub for push services, and the key
+# that signs it.
+crates/decurion-hub/src/push.rs
+
+# Credentials: handing a run its one credential, and apps' test keys.
+crates/decurion-hub/src/secrets.rs
+crates/decurion-hub/src/test_keys.rs
+
+# This hold itself: how the hub decides what is protected, where the check
+# runs when a piece finishes, and the helpers' tool limits.
+crates/decurion-hub/src/protected.rs
+crates/decurion-hub/src/goals.rs
+crates/decurion-hub/src/coordinator.rs
+
+# The hub's database layout. A change here runs once on the owner's saved
+# data and cannot simply be taken back.
+crates/decurion-hub/migrations/
+
+# What builds, checks and publishes Decurion, and which dependencies and
+# licenses it accepts.
+.github/workflows/
+deny.toml
+
+# The installers people download.
+packaging/
+
+# Decurion's own settings for agents, this list included.
+.decurion/

@@ -2,6 +2,7 @@
 //! [`crate::coordinator`]; these only check who is calling.
 
 use crate::coordinator::News;
+use crate::protected::Hold;
 use crate::{forbidden, ApiError, AppState, Caller};
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
@@ -220,7 +221,14 @@ pub(crate) async fn helper_finish(
     if let Some(r) = runner_only(c) {
         return r;
     }
-    match st.store.finish_helper(id, &res).await {
+    // Before the answer is recorded, and outside its transaction: this runs
+    // git. A hub without a saved-work folder has no copy of any code to look
+    // at; the real hub always has one.
+    let hold = match &st.files {
+        Some(f) => crate::protected::hold_for(&st.store, f, id, &res).await,
+        None => Hold::Clear,
+    };
+    match st.store.finish_helper(id, &res, &hold).await {
         Ok(news) => {
             tell(&st, news);
             StatusCode::NO_CONTENT.into_response()

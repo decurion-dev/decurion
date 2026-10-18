@@ -1,0 +1,16 @@
+[package]
+name = "decurion-gate"
+description = "Decurion gate: the proxy that lets a sealed box reach only the websites on its list"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+decurion-proto = { path = "../decurion-proto" }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["net", "sync"] }
+
+[lints]
+workspace = true
