@@ -55,7 +55,7 @@ Only one app runs at a time. Starting another app, or another piece of work, sto
 ## Good to know
 
 - The app gets its own test keys, the ones in **Settings**, **Test keys**, so the parts that need a key can work. See [Give an app its test keys](add-test-keys.md).
-- The app can reach only the websites on its list, the same as agents. If part of the app stays blank or says it can't connect, add the website it loads from to the app's list in **Settings**.
+- The app can reach only the websites on its list, the same as agents. If part of the app stays blank or says it can't connect, add the website it loads from to the app's list. See [Choose which websites agents may use](choose-websites.md).
 - Saved website sign-ins are not used. If the app needs you signed in somewhere, sign in inside the picture with a test account.
 - Don't type real passwords or real customer details into it.
 - Nothing you do in it is saved into the code. If you want something changed, tell the agent: send the work back with a message, or give a new goal.

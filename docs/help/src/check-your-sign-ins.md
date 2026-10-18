@@ -4,8 +4,8 @@ This page helps you see, in one place, whether everything Decurion signs in with
 
 ## Open the Sign-ins list
 
-1. Open the board, or the Settings tab on your phone.
-2. Click **Settings**. **Sign-ins** is the first tab. When a sign-in needs you, the tab says so, such as "1 needs you".
+1. On the board, click **Settings**. On your phone, tap the **Settings** tab.
+2. Open **Sign-ins**. It is the first tab. When a sign-in needs you, the tab says so, such as "1 needs you".
 
 Each row is one account, with a light:
 
@@ -25,19 +25,14 @@ Where Decurion knows when a sign-in runs out, the row says so, such as "Runs out
 - **Cloud worker.** Whether it is online. See [Add the cloud worker](add-the-cloud-worker.md).
 - **Each website sign-in.** See [Save website sign-ins](save-website-sign-ins.md).
 
-## Sign in to Claude on this PC
+## Fix a sign-in
 
-1. In **Sign-ins**, click **Sign in on this PC** next to Claude A (or Claude B).
-2. Claude's own sign-in page opens in your PC's browser. Sign in with the Claude account for that plan, and allow access.
-3. Come back to Decurion. After a moment it says **Signed in**, and the light turns green.
+Each row that needs you has a button, such as **Sign in on this PC**, **Sign in again** or **Connect your phone**. Click it and follow the steps.
 
-You can also tap the button on your phone. The page still opens on your PC, so do this when you are at your PC.
-
-Decurion never sees your Claude password. It keeps only the sign-in Claude gives back, in Windows' secure store, and never shows it or writes it to a log.
-
-If the page did not open, click **The page didn't open?**, then **Open Claude's sign-in page**. Sign in, copy the code Claude's page shows, paste it into **Code from Claude's page** and click **Send code**.
-
-To change which account a plan uses, click **Sign in again** next to it.
+- For Claude A and Claude B, see [Connect your Claude accounts](connect-claude-accounts.md).
+- For GitHub, see [Review and merge work](review-and-merge.md#let-decurion-open-the-pull-request-for-you).
+- For a phone, see [Connect your phone](connect-your-phone.md).
+- For a website sign-in, see [Save website sign-ins](save-website-sign-ins.md).
 
 ## Reminders
 
@@ -45,9 +40,6 @@ A week before something with a known date runs out, your phone gets a notificati
 
 ## If something goes wrong
 
-- **"Claude Code is not installed on this PC."** Install Claude Code (the installer offers it), then click the button again.
-- **"A Claude sign-in is already open."** Finish it in the browser, or click **Cancel** at the top of Sign-ins, then start again.
-- **"Claude Code didn't start its sign-in on this PC."** Decurion waits up to 45 seconds for Claude's page. Update Claude Code, then click **Try again**. If the message ends with what Claude said, that line tells whoever helps you what went wrong.
-- **"The sign-in took too long."** Decurion waits 10 minutes. Click **Try again**.
-- **Claude B signs in as your Claude A account.** Your browser is still signed in to Claude A. Sign out of Claude in that browser, then click **Sign in on this PC** next to Claude B again.
-- **GitHub is red: "GitHub no longer takes this token."** Make a new token on GitHub and save it in Settings, GitHub. See [Review and merge work](review-and-merge.md).
+- **A Claude row is red: "Not signed in. Work on Claude A can't start until you sign in."** Click **Sign in on this PC** next to it. See [Connect your Claude accounts](connect-claude-accounts.md).
+- **GitHub is red: "GitHub no longer takes this token."** Make a new token on GitHub and save it in **Settings**, **GitHub**. See [Review and merge work](review-and-merge.md#let-decurion-open-the-pull-request-for-you).
+- **The cloud worker says "Offline."** Work placed there waits until it is back. See [Add the cloud worker](add-the-cloud-worker.md).

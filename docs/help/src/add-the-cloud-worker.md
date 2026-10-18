@@ -12,7 +12,7 @@ A cloud worker is a small server you rent from a hosting company. It runs the sa
 
 On the board, open **Settings**. Under **Computers**, click **Add cloud worker**. The page walks you through three steps, one at a time: **1 Key**, **2 Server** and **3 Connect**. Each step ends with a **Next** button, and you can tap a step's name to go back to it.
 
-1. **Make a Tailscale key.** Open your Tailscale keys page, click **Generate auth key**, keep the settings as they are, and paste the key into the page. The key stays on that page: Decurion never sends it anywhere.
+1. **Make a Tailscale key.** Open your Tailscale keys page and click **Generate auth key**. Keep the settings as they are, click **Generate key**, and paste the key into the page. The key stays on that page: Decurion never sends it anywhere.
 2. **Create a server.** At a hosting company such as Hetzner or DigitalOcean, create a server with **Ubuntu 24.04, 2 CPUs and 4 GB memory**. On the Decurion page, click **Make setup text**, then **Copy**. Paste it into the hosting company's **User data** (or **Cloud config**) box before you create the server. The setup text works once, within 24 hours. Don't share it.
 3. **Wait for it to connect.** The first time takes about 10 to 20 minutes, because the server builds Decurion. The page shows **Connected** with a green mark when it is ready. If nothing happens after 40 minutes, delete the server and start again with a new setup text.
 
@@ -30,6 +30,12 @@ To move work, open its card and click **Move to cloud** or **Move to PC**. The a
 - The server keeps no Claude sign-in or API key of its own. Your PC lends it the one a piece of work needs, only while that work runs there, and a pay-per-use key never enters an agent's box.
 - The server gets its code only from your PC and from Decurion's public GitHub page. It updates itself to match your PC.
 
+## What stays on your PC
+
+- **Test keys.** Work for an app that has test keys can't run in the cloud yet. Move it to your PC. See [Give an app its test keys](add-test-keys.md).
+- **Website sign-ins.** Work in the cloud runs without them. See [Save website sign-ins](save-website-sign-ins.md).
+- **Deploys.** A deploy always runs on your PC. See [Deploy your app in one tap](deploy-your-app.md).
+
 ## Remove it
 
-On the board, open **Settings**. Under **Computers**, click **Remove** next to the cloud worker. Work running there comes back to your PC and carries on. Then delete the server at the hosting company so you stop paying for it.
+On the board, open **Settings**. Under **Computers**, click **Remove** next to the cloud worker, then **Remove worker** to confirm. Work running there comes back to your PC and carries on. Then delete the server at the hosting company so you stop paying for it.

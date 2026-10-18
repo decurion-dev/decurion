@@ -61,7 +61,7 @@ Decurion does not read your app's data. It keeps what the deploy steps print so 
 
 Your deploy steps can run scripts from the app, such as `scripts/deploy-prod.mjs`. If one of those changed since the last release, the card says **Deploy steps changed** and names the file, and the button says **Deploy new steps**. Tapping it shows the steps first, so you can check them before they run.
 
-Work by agents that changes one of those files is also held for you at review, like a protected part. See [Choose your rules](choose-your-rules.md).
+Work by agents that changes one of those files is also held for you at review, like a protected part. See [Protected parts](improve-decurion-itself.md#protected-parts).
 
 ## When a deploy fails
 
