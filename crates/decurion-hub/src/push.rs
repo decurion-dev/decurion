@@ -212,13 +212,20 @@ impl Pusher {
         for (k, v) in parts.headers.iter() {
             r = r.header(k.as_str(), v.as_bytes());
         }
-        let resp = r
+        let mut resp = r
             .send()
             .await
             .map_err(|e| SendError::Other(e.to_string()))?;
         match resp.status().as_u16() {
             200..=299 => Ok(()),
             404 | 410 => Err(SendError::Gone),
+            // The push service will never take this subscription from us,
+            // most often because the phone made it with an older hub key.
+            // Retrying cannot help; the phone must subscribe again.
+            code @ (401 | 403) => Err(SendError::Refused {
+                code,
+                said: first_bytes(&mut resp, REFUSAL_SHOWN).await,
+            }),
             code => Err(SendError::Other(format!("push service returned {code}"))),
         }
     }
@@ -261,6 +268,15 @@ impl Pusher {
                 Err(SendError::Gone) => {
                     let _ = store.drop_push(device, &endpoint).await;
                 }
+                Err(SendError::Refused { code, said }) => {
+                    tracing::warn!(
+                        device,
+                        status = code,
+                        said = %said,
+                        "push service refused this phone's subscription; dropped it"
+                    );
+                    let _ = store.drop_push(device, &endpoint).await;
+                }
                 Err(SendError::Other(e)) => tracing::warn!(device, error = %e, "push failed"),
             }
         }
@@ -277,7 +293,35 @@ fn tap_url_ok(url: &str) -> bool {
 
 enum SendError {
     Gone,
+    /// 401 or 403: the subscription will never work again. `said` is the
+    /// start of the push service's answer, for the log.
+    Refused {
+        code: u16,
+        said: String,
+    },
     Other(String),
+}
+
+/// How much of a refusal's answer goes in the log. The answer comes from the
+/// push service, never holds the subscription's keys, and is cut short so a
+/// large one cannot flood the log.
+const REFUSAL_SHOWN: usize = 200;
+
+/// Up to `max` bytes of the answer, as text with control characters removed.
+/// Reads no further than needed, and an unreadable answer is just empty.
+async fn first_bytes(resp: &mut reqwest::Response, max: usize) -> String {
+    let mut got = Vec::new();
+    while got.len() < max {
+        match resp.chunk().await {
+            Ok(Some(c)) => got.extend_from_slice(&c),
+            _ => break,
+        }
+    }
+    got.truncate(max);
+    String::from_utf8_lossy(&got)
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect()
 }
 
 /// What an agent moving work means for the owner, if it is worth a buzz.

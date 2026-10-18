@@ -54,6 +54,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Apps with very long file names.** On Windows, a goal or piece of work on an app with a file whose full path passed 260 characters stopped with "Filename too long" before it started. Decurion now copies those apps whatever the PC's own Git settings say.
 - **Missing lines in a card's activity.** When the board was saving something else at the same moment, an agent's progress line could be turned away and lost. The board now waits its turn, and the runner sends a line again if the board could not save it.
+- **Phone alerts that stopped arriving.** A phone that turned on notifications before the hub's notification key changed kept its old setting, so alerts never reached it while Settings still said "Notifications on". The phone now notices the old setting and turns notifications on again by itself the next time you open the inbox. If an alert is refused, Settings shows that phone's notifications as off until then.
 
 ## [0.1.0] - Unreleased
 
