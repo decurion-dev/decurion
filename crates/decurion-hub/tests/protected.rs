@@ -47,11 +47,7 @@ async fn hub() -> Hub {
         )
         .with_files(dir.join("saved")),
     );
-    Hub {
-        r,
-        store,
-        dir,
-    }
+    Hub { r, store, dir }
 }
 
 async fn send(
