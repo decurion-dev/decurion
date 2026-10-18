@@ -49,11 +49,15 @@ pub(crate) async fn command_with(dir: &Path, owner_ssh: Option<&str>) -> Command
             &format!("core.hooksPath={null}"),
             "-c",
             "core.fsmonitor=false",
-            // Only the transports an app's server really uses.
+            // Only the transports an app's server really uses: no `ext::`
+            // or other remote helpers. Plain http stays allowed, since some
+            // owners run their own git server without TLS.
             "-c",
             "protocol.allow=never",
             "-c",
             "protocol.https.allow=always",
+            "-c",
+            "protocol.http.allow=always",
             "-c",
             "protocol.ssh.allow=always",
             "-c",
@@ -143,6 +147,7 @@ mod tests {
         for want in [
             "protocol.allow=never",
             "protocol.https.allow=always",
+            "protocol.http.allow=always",
             "protocol.ssh.allow=always",
             "protocol.git.allow=always",
             "protocol.file.allow=always",
