@@ -79,6 +79,8 @@ async fn main() -> anyhow::Result<()> {
         .with_github(github);
     decurion_hub::sign_ins::watch_dates(state.clone());
     decurion_hub::sign_in_lights::watch(state.clone());
+    // The pull requests Decurion opened, until each is merged or closed.
+    decurion_hub::pr_watch::watch(state.clone());
     // Anything accepted but not yet sent when the hub last stopped.
     let resume = state.clone();
     tokio::spawn(async move {

@@ -70,7 +70,7 @@ impl Store {
     /// A new one-time code for a cloud worker's setup text, and the name the
     /// worker will get.
     pub async fn new_join_code(&self) -> Result<(String, String)> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         let seq: String =
             sqlx::query_scalar("SELECT value FROM settings WHERE key = 'cloud_worker_seq'")
                 .fetch_one(&mut *tx)
@@ -98,7 +98,7 @@ impl Store {
     /// Swaps a setup code for the worker's own key. Works once, before the
     /// code expires; returns the worker's name and key.
     pub async fn join_cloud_worker(&self, code: &str) -> Result<Option<(String, String)>> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         let name: Option<String> = sqlx::query_scalar(
             "UPDATE runner_join_codes SET used_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE code_hash = ? AND used_at IS NULL
@@ -181,7 +181,7 @@ impl Store {
     /// Moves work without the saved-copy check, for when it has to move
     /// anyway because its computer is gone.
     async fn place_unchecked(&self, id: i64, place: Place, actor: &str) -> Result<Thread> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         let row: Option<(String, String)> =
             sqlx::query_as("SELECT state, place FROM threads WHERE id = ?")
                 .bind(id)
@@ -215,7 +215,7 @@ impl Store {
     /// queue, and if no cloud worker is left, all cloud work moves to the PC
     /// so nothing waits for a computer that is gone.
     pub async fn remove_cloud_worker(&self, id: i64) -> Result<()> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         let name: Option<String> = sqlx::query_scalar(
             "UPDATE runners SET removed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ? AND removed_at IS NULL RETURNING name",

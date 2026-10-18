@@ -123,6 +123,10 @@ impl Hub {
 /// mid-call does not hang the runner.
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// What the hub answers, with a 500, when its database failed and nothing
+/// was saved (`ApiError` in the hub's `lib.rs`).
+const HUB_DB_ERROR: &str = "database error";
+
 impl Hub {
     fn url(&self, path: &str) -> String {
         format!("{}/api{path}", self.base)
@@ -182,8 +186,22 @@ impl Hub {
         self.send(path, req).await
     }
 
+    /// Posts one line of the work's activity. When the hub itself answers
+    /// that its database failed, it rolled the line back and saved nothing,
+    /// so the line is sent once more rather than lost. Nothing else is
+    /// retried: a proxy's error or a lost answer may come after the hub saved
+    /// it, and a second copy would show twice. One short retry only, so a
+    /// struggling hub cannot hold up reading the agent's output for long.
     async fn event(&self, thread: i64, e: &RunEvent) {
-        if let Err(err) = self.post(&format!("/threads/{thread}/events"), e).await {
+        let path = format!("/threads/{thread}/events");
+        let mut r = self.post(&path, e).await;
+        if matches!(&r, Err(HubError::Refused(_, s, body))
+            if *s == StatusCode::INTERNAL_SERVER_ERROR && body == HUB_DB_ERROR)
+        {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            r = self.post(&path, e).await;
+        }
+        if let Err(err) = r {
             tracing::warn!(%err, thread, "could not post event");
         }
     }
@@ -3552,6 +3570,61 @@ mod tests {
             ],
         )
         .await
+    }
+
+    /// A fake hub whose events route answers with `answers` in turn (the
+    /// last one repeats), and how many times it was called.
+    async fn fake_hub(
+        answers: Vec<(u16, &'static str)>,
+    ) -> (Hub, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let app = axum::Router::new().route(
+            "/api/threads/{id}/events",
+            axum::routing::post(move || {
+                let n = seen.fetch_add(1, Ordering::SeqCst);
+                let (code, body) = answers[n.min(answers.len() - 1)];
+                async move { (StatusCode::from_u16(code).expect("status"), body) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let hub = Hub {
+            base: format!("http://{addr}"),
+            key: "k".into(),
+            http: reqwest::Client::new(),
+            name: "local".into(),
+            place: Place::Pc,
+        };
+        (hub, calls)
+    }
+
+    /// A line the hub said it could not save (its database failed) is sent
+    /// once more rather than lost. Any other failure, including a 500 from
+    /// something in front of the hub, is not: the line may already be saved.
+    #[tokio::test]
+    async fn an_activity_line_is_sent_again_after_a_server_error() {
+        use std::sync::atomic::Ordering;
+        let line = RunEvent::Message {
+            text: "still here".into(),
+        };
+        let (hub, calls) = fake_hub(vec![(500, HUB_DB_ERROR), (201, "1")]).await;
+        hub.event(7, &line).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let (hub, calls) = fake_hub(vec![(500, HUB_DB_ERROR)]).await;
+        hub.event(7, &line).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "only one retry");
+
+        for other in [(500, "bad gateway"), (502, ""), (409, "")] {
+            let (hub, calls) = fake_hub(vec![other]).await;
+            hub.event(7, &line).await;
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "{other:?} is not retried");
+        }
     }
 
     /// An app holding a file whose full path is past Windows' old

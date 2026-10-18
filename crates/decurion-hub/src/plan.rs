@@ -515,7 +515,7 @@ impl Store {
     /// with its steps, what it found and its pages.
     pub async fn plan_view(&self, app_id: i64) -> Result<PlanView> {
         let app = self.app(app_id).await?;
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin().await?; // read-only: a reader never waits on writers
         let rows = sqlx::query(&format!(
             "SELECT {ITEM_COLS} FROM plan_items WHERE app_id = ? ORDER BY position, id"
         ))

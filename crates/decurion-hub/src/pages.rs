@@ -359,7 +359,7 @@ async fn asked_in(tx: &mut Transaction<'_, Sqlite>, page: i64) -> Result<Option<
 impl Store {
     /// The questions a page asks, in order; none for most pages.
     pub async fn questions_of(&self, page: i64) -> Result<Vec<Question>> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin().await?; // read-only: a reader never waits on writers
         let asked = asked_in(&mut tx, page).await?;
         tx.commit().await?;
         Ok(asked.map(|a| a.questions).unwrap_or_default())
@@ -368,7 +368,7 @@ impl Store {
     /// A page as the library lists it, with its questions and any answers.
     pub async fn page_questions(&self, goal: i64, page: i64) -> Result<PageQuestions> {
         let info = self.library_page(goal, page).await?;
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin().await?; // read-only: a reader never waits on writers
         let asked = asked_in(&mut tx, page).await?;
         tx.commit().await?;
         Ok(match asked {

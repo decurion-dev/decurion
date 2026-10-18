@@ -35,6 +35,13 @@ struct Fake {
     seen: Vec<(String, String, String, Value)>,
     /// Pull requests opened: head branch and page.
     prs: Vec<(String, String)>,
+    /// Pull requests merged on GitHub, by number.
+    merged: Vec<i64>,
+    /// Comments on lines of code, plain comments and reviews, as GitHub
+    /// lists them.
+    line: Vec<Value>,
+    issue: Vec<Value>,
+    reviews: Vec<Value>,
 }
 
 type FakeState = Arc<Mutex<Fake>>;
@@ -59,7 +66,7 @@ async fn fake_list(
         .prs
         .iter()
         .filter(|(h, _)| format!("acme:{h}") == head)
-        .map(|(_, u)| json!({ "html_url": u }))
+        .map(|(_, u)| json!({ "html_url": u, "number": u.rsplit('/').next().and_then(|n| n.parse::<i64>().ok()) }))
         .collect();
     Json(Value::Array(list))
 }
@@ -77,7 +84,67 @@ async fn fake_open(
         b["head"].as_str().unwrap_or_default().to_owned(),
         url.clone(),
     ));
-    (StatusCode::CREATED, Json(json!({ "html_url": url })))
+    (
+        StatusCode::CREATED,
+        Json(json!({ "html_url": url, "number": f.prs.len() })),
+    )
+}
+
+/// The owner's login, as the fake says who opened each pull request.
+const ME: &str = "owner-me";
+
+async fn fake_pr(
+    State(f): State<FakeState>,
+    headers: HeaderMap,
+    axum::extract::Path(n): axum::extract::Path<i64>,
+) -> Json<Value> {
+    let mut f = f.lock().expect("fake");
+    f.seen.push((
+        "GET".into(),
+        format!("pulls/{n}"),
+        auth(&headers),
+        Value::Null,
+    ));
+    let merged = f.merged.contains(&n);
+    Json(json!({
+        "number": n,
+        "html_url": format!("https://github.com/acme/demo/pull/{n}"),
+        "state": if merged { "closed" } else { "open" },
+        "merged": merged,
+        "user": { "login": ME },
+    }))
+}
+
+async fn fake_comments(
+    State(f): State<FakeState>,
+    headers: HeaderMap,
+    axum::extract::Path((kind, n, list)): axum::extract::Path<(String, i64, String)>,
+) -> Json<Value> {
+    let mut f = f.lock().expect("fake");
+    f.seen.push((
+        "GET".into(),
+        format!("{kind}/{n}/{list}"),
+        auth(&headers),
+        Value::Null,
+    ));
+    Json(Value::Array(match (kind.as_str(), list.as_str()) {
+        ("pulls", "comments") => f.line.clone(),
+        ("issues", "comments") => f.issue.clone(),
+        ("pulls", "reviews") => f.reviews.clone(),
+        _ => Vec::new(),
+    }))
+}
+
+async fn fake_ask_review(
+    State(f): State<FakeState>,
+    headers: HeaderMap,
+    axum::extract::Path(n): axum::extract::Path<i64>,
+    Json(b): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    let mut f = f.lock().expect("fake");
+    f.seen
+        .push(("POST".into(), format!("reviewers/{n}"), auth(&headers), b));
+    (StatusCode::CREATED, Json(json!({ "number": n })))
 }
 
 async fn fake_repo(State(f): State<FakeState>, headers: HeaderMap) -> Json<Value> {
@@ -92,6 +159,12 @@ async fn fake_github(f: FakeState) -> String {
     let app = axum::Router::new()
         .route("/repos/acme/demo/pulls", get(fake_list).post(fake_open))
         .route("/repos/acme/demo", get(fake_repo))
+        .route("/repos/acme/demo/pulls/{n}", get(fake_pr))
+        .route(
+            "/repos/acme/demo/pulls/{n}/requested_reviewers",
+            axum::routing::post(fake_ask_review),
+        )
+        .route("/repos/acme/demo/{kind}/{n}/{list}", get(fake_comments))
         .with_state(f);
     let l = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -345,6 +418,11 @@ async fn reviewed_work(h: &Hub, repo: &Path) -> (i64, String) {
 }
 
 async fn save_work(h: &Hub, thread: i64, branch: &str) -> String {
+    save_work_with(h, thread, branch, "src/login.rs", "fn login() {}\n").await
+}
+
+/// Like [`save_work`], with one file of the test's choosing.
+async fn save_work_with(h: &Hub, thread: i64, branch: &str, file: &str, text: &str) -> String {
     let (s, bundle, headers) = send(
         &h.r,
         RUNNER,
@@ -372,7 +450,7 @@ async fn save_work(h: &Hub, thread: i64, branch: &str) -> String {
         ],
     );
     git(&wt, &["checkout", "--quiet", branch]);
-    write(&wt, "src/login.rs", "fn login() {}\n");
+    write(&wt, file, text);
     git(&wt, &["add", "-A"]);
     git(&wt, &["commit", "--quiet", "-m", "Fix the login page"]);
     let head = git(&wt, &["rev-parse", "HEAD"]);
@@ -934,6 +1012,359 @@ async fn cloud_workers_cannot_send_work_to_github() {
     }
 }
 
+// ---------- Reviewers and watching pull requests ----------
+
+/// An app whose work was accepted and sent as pull request 1, with `param`
+/// as its reviewer. Returns the app folder, its remote, the work, its
+/// commit and its branch.
+async fn sent_pr(h: &Hub) -> (PathBuf, PathBuf, i64, String, String) {
+    let (repo, bare) = app_repo(&h.dir, Origin::GitHub);
+    let (thread, head) = reviewed_work(h, &repo).await;
+    sqlx::query("UPDATE apps SET reviewer = 'param'")
+        .execute(h.store.pool())
+        .await
+        .expect("reviewer");
+    accept(h, thread, "accept-receipt-pr").await;
+    let t = settled(h, thread).await;
+    assert_eq!(t["github"]["state"], "sent", "{t}");
+    let branch = format!("decurion/demo-{thread}-fix-the-login-page");
+    (repo, bare, thread, head, branch)
+}
+
+fn comment(id: i64, login: &str, body: &str) -> Value {
+    json!({
+        "id": id, "user": { "login": login }, "body": body,
+        "created_at": format!("2026-10-18T0{id}:00:00Z"),
+        "html_url": format!("https://github.com/acme/demo/pull/1#c{id}"),
+    })
+}
+
+/// Param leaves a comment on a line and a review; the owner answers, and
+/// an approval says nothing.
+fn param_comments(h: &Hub) {
+    let mut f = h.fake.lock().expect("fake");
+    let mut line = comment(1, "param", "Call this check_login, please.");
+    line["path"] = json!("src/login.rs");
+    line["line"] = json!(1);
+    f.line.push(line);
+    f.issue
+        .push(comment(2, ME, "Thanks Param, Decurion will fix it."));
+    let mut review = comment(3, "param", "Also add a test.");
+    review["submitted_at"] = json!("2026-10-18T03:00:00Z");
+    f.reviews.push(review);
+    f.reviews.push(comment(4, "param", ""));
+}
+
+async fn watched(h: &Hub) -> Value {
+    ok(&h.r, OWNER, "GET", "/api/prs", Value::Null).await
+}
+
+#[tokio::test]
+async fn the_reviewer_is_asked_to_review_and_named_in_the_pull_request() {
+    let h = hub(Tok::Fixed).await;
+    let (_repo, _bare, thread, head, branch) = sent_pr(&h).await;
+    let seen = requests(&h);
+    let opened = seen
+        .iter()
+        .find(|s| s.0 == "POST" && s.1 == "pulls")
+        .expect("opened");
+    let text = opened.3["body"].as_str().expect("body");
+    assert!(text.contains("param reviews next."), "{text}");
+    let asked: Vec<_> = seen.iter().filter(|s| s.1 == "reviewers/1").collect();
+    assert_eq!(asked.len(), 1, "{seen:?}");
+    assert_eq!(asked[0].3, json!({ "reviewers": ["param"] }));
+    assert_eq!(asked[0].2, format!("Bearer {TOKEN}"));
+    // The pull request is now watched from the commit that was sent.
+    let w = watched(&h).await;
+    assert_eq!(w[0]["thread_id"], thread);
+    assert_eq!(w[0]["number"], 1);
+    assert_eq!(w[0]["state"], "open");
+    assert_eq!(w[0]["reviewer"], "param");
+    let (whead, wbranch): (String, String) =
+        sqlx::query_as("SELECT head, branch FROM pr_watches WHERE thread_id = ?")
+            .bind(thread)
+            .fetch_one(h.store.pool())
+            .await
+            .expect("watch");
+    assert_eq!((whead, wbranch), (head, branch));
+    // Only the owner sees them.
+    let (s, _) = call(&h.r, RUNNER, "GET", "/api/prs", Value::Null).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn decurion_watches_its_pull_request_until_it_is_merged() {
+    let h = hub(Tok::Fixed).await;
+    let (_repo, _bare, thread, _head, _branch) = sent_pr(&h).await;
+    assert_eq!(decurion_hub::pr_watch::poll(&h.state).await, 1);
+    let w = watched(&h).await;
+    assert_eq!(w[0]["open_comments"], 0, "{w}");
+
+    param_comments(&h);
+    assert_eq!(decurion_hub::pr_watch::poll(&h.state).await, 1);
+    let w = watched(&h).await;
+    // The owner's own answer and the empty approval are not asks.
+    assert_eq!(w[0]["open_comments"], 2, "{w}");
+    assert_eq!(w[0]["line"], "param left 2 comments");
+    assert_eq!(w[0]["event"], "param left 2 comments");
+    // Looking again finds nothing new.
+    decurion_hub::pr_watch::poll(&h.state).await;
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pr_comments")
+        .fetch_one(h.store.pool())
+        .await
+        .expect("count");
+    assert_eq!(n, 2);
+
+    h.fake.lock().expect("fake").merged.push(1);
+    assert_eq!(decurion_hub::pr_watch::poll(&h.state).await, 1);
+    let w = watched(&h).await;
+    assert_eq!(w[0]["state"], "merged");
+    assert_eq!(w[0]["event"], "Merged on GitHub");
+    assert_eq!(w[0]["open_comments"], 0);
+    // Watching ends with the merge: GitHub is not asked again.
+    let before = requests(&h).len();
+    assert_eq!(decurion_hub::pr_watch::poll(&h.state).await, 0);
+    assert_eq!(requests(&h).len(), before);
+    // A fix is refused once it is merged.
+    let (s, v) = call(
+        &h.r,
+        OWNER,
+        "POST",
+        &format!("/api/threads/{thread}/pr/fix"),
+        json!({"receipt": "fix-receipt-merged"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(
+        v.as_str().expect("text").contains("merged or closed"),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn without_a_token_nothing_is_watched() {
+    let h = hub(Tok::Fixed).await;
+    sent_pr(&h).await;
+    sqlx::query("UPDATE pr_watches SET state = 'open'")
+        .execute(h.store.pool())
+        .await
+        .expect("open");
+    let h2_state = h
+        .state
+        .clone()
+        .with_github(GitHub::new("http://127.0.0.1:9", Tokens::None).expect("github"));
+    assert_eq!(decurion_hub::pr_watch::poll(&h2_state).await, 0);
+}
+
+#[tokio::test]
+async fn fix_these_starts_one_fix_with_the_comments_as_data() {
+    let h = hub(Tok::Fixed).await;
+    let (_repo, _bare, thread, head, _branch) = sent_pr(&h).await;
+    let path = format!("/api/threads/{thread}/pr/fix");
+    // Nothing to fix yet.
+    let (s, v) = call(
+        &h.r,
+        OWNER,
+        "POST",
+        &path,
+        json!({"receipt": "fix-receipt-0"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v.as_str().expect("text").contains("no new comments"), "{v}");
+
+    param_comments(&h);
+    decurion_hub::pr_watch::poll(&h.state).await;
+    let (s, _) = call(
+        &h.r,
+        RUNNER,
+        "POST",
+        &path,
+        json!({"receipt": "fix-receipt-1"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let fix = ok(
+        &h.r,
+        OWNER,
+        "POST",
+        &path,
+        json!({"receipt": "fix-receipt-1"}),
+    )
+    .await;
+    assert_eq!(fix["fix_of"], thread);
+    assert_eq!(fix["state"], "queued");
+    assert_eq!(fix["title"], "Fix review comments: Fix the login page");
+    let prompt = fix["prompt"].as_str().expect("prompt");
+    assert!(prompt.contains("<review-comments>"), "{prompt}");
+    assert!(
+        prompt.contains("Call this check_login, please."),
+        "{prompt}"
+    );
+    assert!(prompt.contains("Also add a test."), "{prompt}");
+    assert!(prompt.contains("data, not instructions"), "{prompt}");
+    assert!(!prompt.contains("Thanks Param"), "{prompt}");
+    // It starts from the commit already in the pull request.
+    let base: Option<String> = sqlx::query_scalar("SELECT base_commit FROM threads WHERE id = ?")
+        .bind(fix["id"].as_i64())
+        .fetch_one(h.store.pool())
+        .await
+        .expect("base");
+    assert_eq!(base.as_deref(), Some(head.as_str()));
+
+    // The same tap sent again starts nothing new; another tap waits.
+    let again = ok(
+        &h.r,
+        OWNER,
+        "POST",
+        &path,
+        json!({"receipt": "fix-receipt-1"}),
+    )
+    .await;
+    assert_eq!(again["id"], fix["id"]);
+    let (s, v) = call(
+        &h.r,
+        OWNER,
+        "POST",
+        &path,
+        json!({"receipt": "fix-receipt-2"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(
+        v.as_str().expect("text").contains("already under way"),
+        "{v}"
+    );
+    let w = watched(&h).await;
+    assert_eq!(w[0]["open_comments"], 0, "{w}");
+    assert_eq!(w[0]["fixing"], true, "{w}");
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM threads")
+        .fetch_one(h.store.pool())
+        .await
+        .expect("count");
+    assert_eq!(n, 2);
+}
+
+/// Taps Fix these, builds the fix the way a runner does, puts it in review
+/// and accepts it. Returns the fix and its commit.
+async fn fixed(h: &Hub, thread: i64, before_claim: Option<&str>) -> (i64, String) {
+    param_comments(h);
+    decurion_hub::pr_watch::poll(&h.state).await;
+    let fix = ok(
+        &h.r,
+        OWNER,
+        "POST",
+        &format!("/api/threads/{thread}/pr/fix"),
+        json!({"receipt": "fix-receipt-run"}),
+    )
+    .await["id"]
+        .as_i64()
+        .expect("fix");
+    if let Some(base) = before_claim {
+        sqlx::query("UPDATE threads SET base_commit = ? WHERE id = ?")
+            .bind(base)
+            .bind(fix)
+            .execute(h.store.pool())
+            .await
+            .expect("base");
+    }
+    let work = ok(
+        &h.r,
+        RUNNER,
+        "POST",
+        "/api/runner/claim",
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
+    )
+    .await;
+    assert_eq!(work["thread"]["id"], fix);
+    let wbranch = work["thread"]["branch"]
+        .as_str()
+        .expect("branch")
+        .to_owned();
+    let head = save_work_with(h, fix, &wbranch, "src/check.rs", "fn check_login() {}\n").await;
+    ok(
+        &h.r,
+        RUNNER,
+        "POST",
+        &format!("/api/threads/{fix}/events"),
+        json!({"kind":"finished","ok":true,"summary":"Renamed it and added a test."}),
+    )
+    .await;
+    ok(
+        &h.r,
+        RUNNER,
+        "POST",
+        &format!("/api/threads/{fix}/move"),
+        json!({"to":"in_review"}),
+    )
+    .await;
+    accept(h, fix, "accept-receipt-fix").await;
+    (fix, head)
+}
+
+#[tokio::test]
+async fn an_accepted_fix_moves_the_same_branch_forward_and_opens_no_new_pull_request() {
+    let h = hub(Tok::Fixed).await;
+    let (_repo, bare, thread, head, branch) = sent_pr(&h).await;
+    let main_before = branch_at(&bare, "main");
+    let (fix, fix_head) = fixed(&h, thread, None).await;
+    let t = settled(&h, fix).await;
+    assert_eq!(t["github"]["state"], "sent", "{t}");
+    assert_eq!(t["github"]["branch"], branch.as_str());
+    assert_eq!(t["github"]["url"], "https://github.com/acme/demo/pull/1");
+    // A plain fast-forward on the same branch, on top of the sent work.
+    assert_eq!(
+        branch_at(&bare, &branch).as_deref(),
+        Some(fix_head.as_str())
+    );
+    assert_eq!(updates(&bare, &branch), 2);
+    assert_eq!(git(&bare, &["rev-parse", &format!("{fix_head}^")]), head);
+    assert_eq!(branch_at(&bare, "main"), main_before);
+    // Still one pull request; the reviewer is asked to look again.
+    let seen = requests(&h);
+    assert_eq!(
+        seen.iter()
+            .filter(|s| s.1 == "pulls" && s.0 == "POST")
+            .count(),
+        1
+    );
+    assert_eq!(seen.iter().filter(|s| s.1 == "reviewers/1").count(), 2);
+    // The watch moves on to the fix.
+    let w = watched(&h).await;
+    assert_eq!(w[0]["event"], "Fix sent for 2 comments", "{w}");
+    assert_eq!(w[0]["fixing"], false);
+    let whead: String = sqlx::query_scalar("SELECT head FROM pr_watches WHERE thread_id = ?")
+        .bind(thread)
+        .fetch_one(h.store.pool())
+        .await
+        .expect("head");
+    assert_eq!(whead, fix_head);
+}
+
+#[tokio::test]
+async fn a_fix_that_does_not_build_on_the_pull_request_is_never_sent() {
+    let h = hub(Tok::Fixed).await;
+    let (repo, bare, thread, head, branch) = sent_pr(&h).await;
+    // The fix is built on the app's main line instead of the sent work.
+    let main = git(&repo, &["rev-parse", "HEAD"]);
+    let (fix, _) = fixed(&h, thread, Some(&main)).await;
+    let t = settled(&h, fix).await;
+    assert_eq!(t["github"]["state"], "failed", "{t}");
+    let why = t["github"]["error"].as_str().expect("why");
+    assert!(why.contains("does not build on"), "{why}");
+    assert_eq!(branch_at(&bare, &branch), Some(head));
+    assert_eq!(updates(&bare, &branch), 1);
+}
+
+#[test]
+fn a_fix_goes_only_to_its_own_pull_requests_branch() {
+    use decurion_hub::github::check_fix_branch;
+    assert!(check_fix_branch("decurion/shop-7-fix", "decurion/shop-7-fix", Some("main")).is_ok());
+    assert!(check_fix_branch("decurion/shop-8", "decurion/shop-7-fix", Some("main")).is_err());
+    assert!(check_fix_branch("main", "main", Some("main")).is_err());
+    assert!(check_fix_branch("decurion/x", "decurion/x", Some("decurion/x")).is_err());
+}
+
 /// Runs one helper job the hub has queued, answering with `text`.
 async fn run_helper(h: &Hub, kind: &str, text: &str) {
     let claim = ok(
@@ -1081,4 +1512,18 @@ async fn a_piece_that_passes_its_check_goes_to_github_on_the_plans_approval() {
         why.iter().any(|n| n.contains("owner approved the plan")),
         "{why:?}"
     );
+
+    // When the owner merges it on GitHub, the watch sees it and the goal
+    // closes by itself.
+    h.fake.lock().expect("fake").merged.push(1);
+    assert_eq!(decurion_hub::pr_watch::poll(&h.state).await, 1);
+    let v = ok(
+        &h.r,
+        OWNER,
+        "GET",
+        &format!("/api/goals/{goal}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(v["goal"]["state"], "done", "{v}");
 }

@@ -271,6 +271,124 @@ async fn runner_restart_resumes_the_same_session() {
     assert_eq!(store.audit_count(id).await.expect("audit"), 3);
 }
 
+/// A progress line arriving while something else holds the database's write
+/// lock waits its turn. It used to be refused at once ("database is locked"),
+/// and the runner dropped the line. In-memory test hubs have one connection,
+/// so this needs a real file.
+#[tokio::test]
+async fn an_event_waits_for_another_writer_instead_of_failing() {
+    let dir = std::env::temp_dir().join(format!("decurion-busy-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let url = format!("sqlite://{}", dir.join("hub.db").display());
+    let store = Store::open(&url).await.expect("store");
+    let r = router(AppState::new(
+        store.clone(),
+        Keys {
+            owner: OWNER.into(),
+            runner: RUNNER.into(),
+        },
+        LOGIN.into(),
+        None,
+    ));
+    let id = seed(&r).await;
+    claim(&r).await;
+
+    // Another writer holds the lock for half a second.
+    use sqlx::Connection;
+    let mut other = sqlx::SqliteConnection::connect(&url)
+        .await
+        .expect("connect");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut other)
+        .await
+        .expect("lock");
+    sqlx::query("UPDATE settings SET value = value WHERE key = 'cloud_worker_seq'")
+        .execute(&mut other)
+        .await
+        .expect("write");
+    let started = std::time::Instant::now();
+    let posting = tokio::spawn({
+        let r = r.clone();
+        async move {
+            let answer = call(
+                &r,
+                "POST",
+                &format!("/api/threads/{id}/events"),
+                Some(RUNNER),
+                json!({"kind":"message","text":"still here"}),
+            )
+            .await;
+            (answer, started.elapsed())
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    sqlx::query("COMMIT")
+        .execute(&mut other)
+        .await
+        .expect("unlock");
+
+    let ((s, body), took) = posting.await.expect("task");
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+    // It really met the lock and waited for it to be let go.
+    assert!(took >= std::time::Duration::from_millis(400), "{took:?}");
+    let (_, events) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{id}/events"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert!(events.to_string().contains("still here"), "{events}");
+    drop(other);
+    drop(r);
+    store.pool().close().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Every transaction that may write takes the write lock when it starts.
+/// One that starts as a reader and then writes is refused at once whenever
+/// another writer is busy; waiting does not help it. A plain `begin()` is
+/// allowed only on a line marked `read-only`. This keeps new code from
+/// bringing the refusal back.
+#[test]
+fn every_transaction_takes_the_write_lock_up_front() {
+    fn scan(dir: &std::path::Path, found: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).expect("dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                scan(&path, found);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).expect("read");
+                for (at, _) in text.match_indices(".begin()") {
+                    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+                    let line_end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+                    let marked = text[line_start..line_end].contains("read-only");
+                    let awaited = text[at + ".begin()".len()..]
+                        .trim_start()
+                        .starts_with(".await");
+                    if awaited && !marked {
+                        let line = text[..at].matches('\n').count() + 1;
+                        found.push(format!("{}:{line}", path.display()));
+                    }
+                }
+                if text.contains("query(\"BEGIN\")") || text.contains("begin_with(\"BEGIN\")") {
+                    found.push(format!("{}: a bare BEGIN", path.display()));
+                }
+            }
+        }
+    }
+    let mut found = Vec::new();
+    scan(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut found,
+    );
+    assert!(
+        found.is_empty(),
+        "use begin_with(\"BEGIN IMMEDIATE\"), or mark a pure read `// read-only`: {found:?}"
+    );
+}
+
 #[tokio::test]
 async fn events_come_only_from_the_runner() {
     let (r, _) = hub().await;
@@ -3626,6 +3744,9 @@ async fn an_app_cap_limits_that_apps_paid_work_only() {
     let (_, c) = claim_one(&r).await;
     assert_eq!(c["app"]["name"], "other");
     assert_eq!(c["budget_usd"], 9.0);
+    // The capped app's turn: its work goes to the owner and nothing runs.
+    let (s, _) = claim_one(&r).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
     let (_, t) = call(
         &r,
         "GET",
@@ -3877,4 +3998,327 @@ async fn forged_usage_windows_cannot_grow_the_table() {
         .unwrap_or(-1);
     assert_eq!(n, 12);
     assert_eq!(accounts(&r).await[0]["week_pct"], 55.0);
+}
+
+// ---------- Apps take turns, go first today, and can be changed ----------
+
+async fn star(r: &axum::Router, app: i64, body: Value) -> (StatusCode, Value) {
+    call(
+        r,
+        "POST",
+        &format!("/api/apps/{app}/first"),
+        Some(OWNER),
+        body,
+    )
+    .await
+}
+
+async fn edit(r: &axum::Router, app: i64, body: Value) -> (StatusCode, Value) {
+    call(
+        r,
+        "POST",
+        &format!("/api/apps/{app}/edit"),
+        Some(OWNER),
+        body,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn apps_take_turns_in_the_queue() {
+    let (r, _) = hub().await;
+    let a = app_on(&r, "alpha", "A").await;
+    let b = app_on(&r, "beta", "A").await;
+    let a1 = add_work(&r, a, "a1").await;
+    let a2 = add_work(&r, a, "a2").await;
+    let a3 = add_work(&r, a, "a3").await;
+    let b1 = add_work(&r, b, "b1").await;
+    // First come, first served would hand out a1, a2, a3 before b1.
+    for want in [a1, b1, a2, a3] {
+        assert_eq!(claim_id(&r).await, Some(want));
+    }
+    assert_eq!(claim_id(&r).await, None);
+}
+
+#[tokio::test]
+async fn a_starred_app_goes_first_today() {
+    let (r, _) = hub().await;
+    let a = app_on(&r, "alpha", "A").await;
+    let b = app_on(&r, "beta", "A").await;
+    let a1 = add_work(&r, a, "a1").await;
+    let a2 = add_work(&r, a, "a2").await;
+    let b1 = add_work(&r, b, "b1").await;
+    let b2 = add_work(&r, b, "b2").await;
+    let (s, app) = star(&r, b, json!({"on": true})).await;
+    assert_eq!(s, StatusCode::OK, "{app}");
+    assert_eq!(app["first_today"], true);
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(apps[0]["first_today"], false);
+    assert_eq!(apps[1]["first_today"], true);
+    // The starred app's work comes before the other app's turn.
+    assert_eq!(claim_id(&r).await, Some(b1));
+    assert_eq!(claim_id(&r).await, Some(b2));
+    assert_eq!(claim_id(&r).await, Some(a1));
+    let (s, app) = star(&r, b, json!({"on": false})).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(app["first_today"], false);
+    assert_eq!(claim_id(&r).await, Some(a2));
+}
+
+#[tokio::test]
+async fn yesterdays_star_does_not_count() {
+    let (r, store) = hub().await;
+    let a = app_on(&r, "alpha", "A").await;
+    let b = app_on(&r, "beta", "A").await;
+    let a1 = add_work(&r, a, "a1").await;
+    add_work(&r, b, "b1").await;
+    star(&r, b, json!({"on": true})).await;
+    sqlx::query("UPDATE apps SET first_on = date('now', 'localtime', '-1 day') WHERE id = ?")
+        .bind(b)
+        .execute(store.pool())
+        .await
+        .expect("move the star to yesterday");
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(apps[1]["first_today"], false);
+    assert_eq!(claim_id(&r).await, Some(a1));
+}
+
+#[tokio::test]
+async fn only_the_owner_stars_an_app() {
+    let (r, _) = hub().await;
+    let a = app_on(&r, "alpha", "A").await;
+    let (s, _) = call(
+        &r,
+        "POST",
+        &format!("/api/apps/{a}/first"),
+        Some(RUNNER),
+        json!({"on": true}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(apps[0]["first_today"], false);
+    let (s, _) = star(&r, 99, json!({"on": true})).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_resent_star_does_nothing_twice() {
+    let (r, _) = hub().await;
+    let a = app_on(&r, "alpha", "A").await;
+    let b = app_on(&r, "beta", "A").await;
+    let (_, app) = star(&r, a, json!({"on": true, "receipt": "star-tap-0001"})).await;
+    assert_eq!(app["first_today"], true);
+    let (_, app) = star(&r, a, json!({"on": false, "receipt": "star-tap-0002"})).await;
+    assert_eq!(app["first_today"], false);
+    // The first tap arrives again: the star stays off.
+    let (s, app) = star(&r, a, json!({"on": true, "receipt": "star-tap-0001"})).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(app["first_today"], false);
+    // One tap is one action, for one app.
+    let (s, _) = star(&r, b, json!({"on": true, "receipt": "star-tap-0001"})).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = edit(&r, a, json!({"name": "gamma", "receipt": "star-tap-0001"})).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn the_owner_changes_an_apps_name_folder_plan_and_reviewer() {
+    let (r, store) = hub().await;
+    let a = app_on(&r, "refill", "A").await;
+    let (s, app) = edit(&r, a, json!({"name": "refill-tracker"})).await;
+    assert_eq!(s, StatusCode::OK, "{app}");
+    assert_eq!(app["name"], "refill-tracker");
+    assert_eq!(app["repo_path"], "C:\\repos\\x");
+    assert_eq!(app["profile"], "A");
+    assert_eq!(app["reviewer"], Value::Null);
+
+    let (_, app) = edit(&r, a, json!({"repo_path": "/home/me/refill"})).await;
+    assert_eq!(app["repo_path"], "/home/me/refill");
+    assert_eq!(app["name"], "refill-tracker");
+
+    let (_, app) = edit(&r, a, json!({"reviewer": " @Param-K "})).await;
+    assert_eq!(app["reviewer"], "Param-K");
+    // Left out, the reviewer stays.
+    let (_, app) = edit(&r, a, json!({"name": "refill"})).await;
+    assert_eq!(app["reviewer"], "Param-K");
+    let (_, app) = edit(&r, a, json!({"reviewer": ""})).await;
+    assert_eq!(app["reviewer"], Value::Null);
+    edit(&r, a, json!({"reviewer": "param-k"})).await;
+    let (_, app) = edit(&r, a, json!({"reviewer": null})).await;
+    assert_eq!(app["reviewer"], Value::Null);
+
+    // Running work keeps its plan; the next run uses the new one.
+    let first = add_work(&r, a, "first").await;
+    assert_eq!(claim_id(&r).await, Some(first));
+    let (s, app) = edit(&r, a, json!({"profile": "B"})).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(app["profile"], "B");
+    assert_eq!(
+        store.open_run_account(first).await.expect("account"),
+        Some("A".into())
+    );
+    add_work(&r, a, "second").await;
+    let (_, c) = claim_one(&r).await;
+    assert_eq!(c["account"], "B");
+    assert_eq!(c["app"]["profile"], "B");
+}
+
+#[tokio::test]
+async fn bad_app_changes_are_refused_in_plain_words() {
+    let (r, _) = hub().await;
+    let a = app_on(&r, "alpha", "A").await;
+    for body in [
+        json!({"name": "Smith, Inc"}),
+        json!({"name": ""}),
+        json!({"repo_path": "relative\\path"}),
+        json!({"repo_path": "C:\\repos\\a,b"}),
+    ] {
+        let (s, msg) = edit(&r, a, body.clone()).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+        assert!(msg.as_str().is_some_and(|m| !m.is_empty()), "{body}");
+    }
+    let long = "x".repeat(40);
+    for login in [
+        "-param",
+        "param-",
+        "pa--ram",
+        "has space",
+        "dot.name",
+        &long,
+    ] {
+        let (s, msg) = edit(&r, a, json!({"reviewer": login})).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{login}");
+        assert!(
+            msg.as_str()
+                .is_some_and(|m| m.contains("reviewer's GitHub name")),
+            "{login}: {msg}"
+        );
+    }
+    let (_, app) = edit(&r, a, json!({"reviewer": "x".repeat(39)})).await;
+    assert_eq!(app["reviewer"], "x".repeat(39));
+    // Nothing changed by the refused ones.
+    assert_eq!(app["name"], "alpha");
+    assert_eq!(app["repo_path"], "C:\\repos\\x");
+    let (s, _) = edit(&r, 99, json!({"name": "ghost"})).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn an_app_cannot_take_another_apps_name() {
+    let (r, _) = hub().await;
+    app_on(&r, "alpha", "A").await;
+    let b = app_on(&r, "beta", "A").await;
+    for name in ["alpha", "ALPHA"] {
+        let (s, msg) = edit(&r, b, json!({"name": name})).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{name}");
+        assert!(
+            msg.as_str().is_some_and(|m| m.contains("already called")),
+            "{msg}"
+        );
+    }
+    // Its own name, even in other capitals, is fine.
+    let (s, app) = edit(&r, b, json!({"name": "Beta"})).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(app["name"], "Beta");
+}
+
+async fn edit_refused(r: &axum::Router, app: i64, body: Value) -> String {
+    let (s, msg) = edit(r, app, body).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{msg}");
+    msg.as_str().unwrap_or_default().to_owned()
+}
+
+#[tokio::test]
+async fn an_app_keeps_its_name_and_folder_while_its_work_is_underway() {
+    let (r, _) = hub().await;
+    let a = app_on(&r, "alpha", "A").await;
+    let id = add_work(&r, a, "big job").await;
+    // Waiting work that never started does not hold up a rename.
+    let (s, _) = edit(&r, a, json!({"name": "alpha-1"})).await;
+    assert_eq!(s, StatusCode::OK);
+
+    assert_eq!(claim_id(&r).await, Some(id));
+    let msg = edit_refused(&r, a, json!({"name": "alpha-2"})).await;
+    assert!(msg.contains("then rename it"), "{msg}");
+    let msg = edit_refused(&r, a, json!({"repo_path": "/repos/alpha"})).await;
+    assert!(msg.contains("then change its folder"), "{msg}");
+    // The plan and the reviewer can change any time.
+    let (s, _) = edit(&r, a, json!({"profile": "B", "reviewer": "param-k"})).await;
+    assert_eq!(s, StatusCode::OK);
+    // The same name and folder are not a change.
+    let (s, _) = edit(
+        &r,
+        a,
+        json!({"name": "alpha-1", "repo_path": "C:\\repos\\x"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Paused partway by a runner restart: it resumes from its folders.
+    let said = event(&r, id, json!({"kind":"message","text":"working"})).await;
+    assert_eq!(said, StatusCode::CREATED);
+    let (s, _) = call(
+        &r,
+        "POST",
+        "/api/runner/hello",
+        Some(RUNNER),
+        json!({"runner":"local","rules_version":decurion_proto::RULES_VERSION}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    edit_refused(&r, a, json!({"name": "alpha-2"})).await;
+
+    // Once it is in review its saved copy is on the hub.
+    assert_eq!(claim_id(&r).await, Some(id));
+    finish(&r, id, None).await;
+    let (s, app) = edit(
+        &r,
+        a,
+        json!({"name": "alpha-2", "repo_path": "/repos/alpha"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{app}");
+    assert_eq!(app["name"], "alpha-2");
+    assert_eq!(app["repo_path"], "/repos/alpha");
+}
+
+#[tokio::test]
+async fn only_the_owner_changes_an_app() {
+    let (r, _) = hub().await;
+    let a = app_on(&r, "alpha", "A").await;
+    for body in [
+        json!({"name": "mine"}),
+        json!({"profile": "B"}),
+        json!({"reviewer": "param-k"}),
+    ] {
+        let (s, _) = call(
+            &r,
+            "POST",
+            &format!("/api/apps/{a}/edit"),
+            Some(RUNNER),
+            body,
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+    }
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(apps[0]["name"], "alpha");
+    assert_eq!(apps[0]["profile"], "A");
+    assert_eq!(apps[0]["reviewer"], Value::Null);
+}
+
+#[tokio::test]
+async fn a_resent_app_change_does_nothing_twice() {
+    let (r, _) = hub().await;
+    let a = app_on(&r, "alpha", "A").await;
+    let (_, app) = edit(&r, a, json!({"name": "beta", "receipt": "edit-tap-0001"})).await;
+    assert_eq!(app["name"], "beta");
+    let (_, app) = edit(&r, a, json!({"name": "gamma", "receipt": "edit-tap-0002"})).await;
+    assert_eq!(app["name"], "gamma");
+    let (s, app) = edit(&r, a, json!({"name": "beta", "receipt": "edit-tap-0001"})).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(app["name"], "gamma");
+    let (s, _) = edit(&r, a, json!({"name": "delta", "receipt": "bad"})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
 }

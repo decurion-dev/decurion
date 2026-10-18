@@ -45,9 +45,35 @@ pub struct Store {
     pool: SqlitePool,
 }
 
+/// The owner's changes to an app ([`Store::edit_app`]). A field left out
+/// stays as it is.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct AppEdit {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub repo_path: Option<String>,
+    #[serde(default)]
+    pub profile: Option<Profile>,
+    /// Left out: unchanged. `null` or empty: no one. A GitHub login: them.
+    #[serde(default, deserialize_with = "present")]
+    pub reviewer: Option<Option<String>>,
+    #[serde(default)]
+    pub receipt: Option<String>,
+}
+
+/// Tells a field sent as `null` (`Some(None)`) from one left out (`None`).
+fn present<'de, D, T>(d: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(d).map(Some)
+}
+
 const THREAD_COLS: &str =
     "id, app_id, title, prompt, state, ai, session_id, branch, place, updated_at, parent_id, background,
-     gh_state, gh_branch, gh_url, gh_pr, gh_error, research";
+     gh_state, gh_branch, gh_url, gh_pr, gh_error, fix_of, research";
 
 /// The actor recorded for the owner's own moves.
 pub const OWNER: &str = "owner";
@@ -59,7 +85,8 @@ pub const MAX_DEPTH: i64 = 5;
 pub(crate) const RECEIPT_REUSED: &str = "this receipt was already used for something else";
 
 pub(crate) const APP_COLS: &str =
-    "id, name, repo_path, profile, pay_per_use, monthly_cap_micros, sites";
+    "id, name, repo_path, profile, pay_per_use, monthly_cap_micros, sites, reviewer,
+     COALESCE(first_on = date('now', 'localtime'), 0) AS first_today";
 
 fn thread_from(row: &SqliteRow) -> Result<Thread> {
     let state: String = row.try_get("state")?;
@@ -79,6 +106,7 @@ fn thread_from(row: &SqliteRow) -> Result<Thread> {
         parent_id: row.try_get("parent_id")?,
         background: row.try_get("background")?,
         github: crate::github::send_from(row)?,
+        fix_of: row.try_get("fix_of")?,
         research: row.try_get("research")?,
     })
 }
@@ -96,6 +124,8 @@ pub(crate) fn app_from(row: &SqliteRow) -> Result<App> {
         monthly_cap_usd: row
             .try_get::<Option<i64>, _>("monthly_cap_micros")?
             .map(crate::spend::to_usd),
+        reviewer: row.try_get("reviewer")?,
+        first_today: row.try_get("first_today")?,
     })
 }
 
@@ -103,9 +133,14 @@ impl Store {
     /// Opens (creating if needed) the database at `url`, e.g. `sqlite://hub.db`
     /// or `sqlite::memory:`, and applies migrations.
     pub async fn open(url: &str) -> Result<Self> {
+        // A writer waits up to this long for another writer. That only works
+        // for transactions that take the write lock when they start (`BEGIN
+        // IMMEDIATE`): one that reads first and writes later is refused at
+        // once instead of waiting, so every transaction here starts that way.
         let opts = SqliteConnectOptions::from_str(url)?
             .create_if_missing(true)
             .foreign_keys(true)
+            .busy_timeout(std::time::Duration::from_secs(10))
             .journal_mode(SqliteJournalMode::Wal);
         // In-memory databases are per-connection, so tests use one connection.
         let max = if url.contains(":memory:") { 1 } else { 4 };
@@ -183,6 +218,132 @@ impl Store {
             return Err(StoreError::NotFound);
         }
         Ok(sites)
+    }
+
+    /// Changes an app the owner already added: its name, its folder, its Max
+    /// plan or who reviews its pull requests. Fields left out stay as they
+    /// are. This owner tap is the only way an app's Max plan ever changes;
+    /// nothing switches plans by itself (PLAN.md D1, D2). Work already
+    /// running keeps the plan it started with, and the next run uses the new
+    /// one.
+    ///
+    /// The runner keeps each piece of work's files in folders named after
+    /// the app, so a new name or folder waits until none of the app's work
+    /// is running or paused partway (queued or with the owner after its agent
+    /// already started), which would pick up from those files. Work in
+    /// review or finished is safe: its saved copy is on the hub.
+    ///
+    /// With a receipt already used for this, nothing changes and the app is
+    /// returned as it is now; the flag is false then.
+    pub async fn edit_app(&self, app_id: i64, e: &AppEdit) -> Result<(App, bool)> {
+        check_receipt(e.receipt.as_deref())?;
+        if let Some(n) = &e.name {
+            check_app_name(n)?;
+        }
+        if let Some(p) = &e.repo_path {
+            check_repo_path(p)?;
+        }
+        let reviewer = match &e.reviewer {
+            None => None,
+            Some(r) => Some(clean_reviewer(r.as_deref())?),
+        };
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(done) = receipt_result(&mut tx, e.receipt.as_deref(), "app_edit").await? {
+            if done != app_id {
+                return Err(StoreError::Duplicate(RECEIPT_REUSED.into()));
+            }
+            tx.commit().await?;
+            return Ok((self.app(app_id).await?, false));
+        }
+        let app = self.app_in(&mut tx, app_id).await?;
+        let name = e.name.as_ref().filter(|n| **n != app.name);
+        let folder = e.repo_path.as_ref().filter(|p| **p != app.repo_path);
+        if (name.is_some() || folder.is_some()) && work_in_progress(&mut tx, app_id).await? {
+            let what = if name.is_some() {
+                "rename it. Work that is running or paused partway keeps its files under the app's name."
+            } else {
+                "change its folder. Work that is running or paused partway still needs the folder it started from."
+            };
+            return Err(StoreError::Refused(format!(
+                "Wait until this app's running work finishes, then {what}"
+            )));
+        }
+        if let Some(n) = name {
+            // Folders on Windows ignore capitals, so two apps may not differ
+            // only by them.
+            let taken: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM apps WHERE id <> ? AND lower(name) = lower(?))",
+            )
+            .bind(app_id)
+            .bind(n)
+            .fetch_one(&mut *tx)
+            .await?;
+            if taken {
+                return Err(StoreError::Duplicate(taken_words(n)));
+            }
+        }
+        sqlx::query(
+            "UPDATE apps SET name = COALESCE(?, name), repo_path = COALESCE(?, repo_path),
+                 profile = COALESCE(?, profile),
+                 reviewer = CASE WHEN ? THEN ? ELSE reviewer END
+             WHERE id = ?",
+        )
+        .bind(name)
+        .bind(folder)
+        .bind(e.profile.map(Profile::as_str))
+        .bind(reviewer.is_some())
+        .bind(reviewer.flatten())
+        .bind(app_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| match err.as_database_error() {
+            Some(d) if d.is_unique_violation() => {
+                StoreError::Duplicate(taken_words(name.map_or("", String::as_str)))
+            }
+            _ => StoreError::Db(err),
+        })?;
+        save_receipt(&mut tx, e.receipt.as_deref(), "app_edit", app_id).await?;
+        let app = self.app_in(&mut tx, app_id).await?;
+        tx.commit().await?;
+        Ok((app, true))
+    }
+
+    /// Stars an app to go first in the queue today, or takes the star off.
+    /// The star is the hub's local date, so it ends by itself when the day
+    /// does. It only orders the queue: caps, Max limits and places still
+    /// apply to a starred app's work as to any other.
+    ///
+    /// With a receipt already used for this, nothing changes and the app is
+    /// returned as it is now; the flag is false then.
+    pub async fn set_first_today(
+        &self,
+        app_id: i64,
+        on: bool,
+        receipt: Option<&str>,
+    ) -> Result<(App, bool)> {
+        check_receipt(receipt)?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(done) = receipt_result(&mut tx, receipt, "app_first").await? {
+            if done != app_id {
+                return Err(StoreError::Duplicate(RECEIPT_REUSED.into()));
+            }
+            tx.commit().await?;
+            return Ok((self.app(app_id).await?, false));
+        }
+        let done = sqlx::query(
+            "UPDATE apps SET first_on = CASE WHEN ? THEN date('now', 'localtime') END WHERE id = ?",
+        )
+        .bind(on)
+        .bind(app_id)
+        .execute(&mut *tx)
+        .await?;
+        if done.rows_affected() != 1 {
+            return Err(StoreError::NotFound);
+        }
+        save_receipt(&mut tx, receipt, "app_first", app_id).await?;
+        let app = self.app_in(&mut tx, app_id).await?;
+        tx.commit().await?;
+        Ok((app, true))
     }
 
     /// Adds work. With a receipt already used for adding work, nothing is
@@ -353,10 +514,16 @@ impl Store {
         Ok((self.thread(id).await?, true))
     }
 
-    /// Hands the oldest queued thread to `runner` and marks it running. A thread
+    /// Hands the next queued thread to `runner` and marks it running. A thread
     /// whose agent already produced activity was paused mid-run, so the runner
     /// resumes that session; otherwise it starts it (reusing the session id if
     /// one was assigned before a failed start).
+    ///
+    /// Apps take turns, so one big goal never holds up every other app: apps
+    /// the owner starred today come first, then the app whose work was handed
+    /// out longest ago (never, first), then that app's oldest work. Handing
+    /// out work stamps its app in the same transaction; capped work that
+    /// moves to Needs you does not, since nothing ran.
     ///
     /// Pay-per-use work that no longer fits in the month's cap is moved to
     /// Needs you on the way, and the next thread is tried, so capped work never
@@ -377,7 +544,7 @@ impl Store {
             let Some(row) = sqlx::query(&format!(
                 "SELECT t.id, t.app_id, t.title, t.prompt, t.state, t.ai, t.session_id, t.branch,
                         t.place, t.updated_at, t.parent_id, t.background, t.pay_per_use AS thread_ppu,
-                        t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, t.research,
+                        t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, t.fix_of, t.research,
                         EXISTS (SELECT 1 FROM profile_limits l WHERE l.profile = a.profile
                             AND {ppu}) AS plan_ppu
                  FROM threads t JOIN apps a ON a.id = t.app_id
@@ -385,7 +552,9 @@ impl Store {
                    AND (t.ai <> 'claude' OR t.pay_per_use = 1 OR a.pay_per_use = 1 OR NOT EXISTS (
                         SELECT 1 FROM profile_limits l WHERE l.profile = a.profile
                             AND l.until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AND NOT {ppu}))
-                 ORDER BY t.id LIMIT 1",
+                 ORDER BY COALESCE(a.first_on = date('now', 'localtime'), 0) DESC,
+                          a.last_claim_at IS NOT NULL, a.last_claim_at, t.id
+                 LIMIT 1",
                 ppu = crate::limits::PAY_PER_USE_NOW
             ))
             .bind(place.as_str())
@@ -476,6 +645,17 @@ impl Store {
             if done.rows_affected() != 1 {
                 return Err(StoreError::Conflict);
             }
+            // Never earlier than any app's stamp, so a clock set back cannot
+            // send this app to the front again. A tie goes to the oldest work.
+            sqlx::query(
+                "UPDATE apps SET last_claim_at = (
+                     SELECT MAX(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), COALESCE(MAX(last_claim_at), ''))
+                     FROM apps)
+                 WHERE id = ?",
+            )
+            .bind(t.app_id)
+            .execute(&mut *tx)
+            .await?;
             let note = if resume { "resumed" } else { "started" };
             audit(
                 &mut tx,
@@ -573,7 +753,7 @@ impl Store {
             ));
         }
         self.thread(thread_id).await?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let holder: Option<String> = sqlx::query_scalar("SELECT runner FROM threads WHERE id = ?")
             .bind(thread_id)
             .fetch_one(&mut *tx)
@@ -705,6 +885,53 @@ fn check_app_name(name: &str) -> Result<()> {
             "app name must be 1-40 letters, digits, - or _".into(),
         ))
     }
+}
+
+fn taken_words(name: &str) -> String {
+    format!("Another app is already called {name}. Choose a different name.")
+}
+
+/// A GitHub login as GitHub allows them: 1 to 39 letters, digits and single
+/// dashes, not starting or ending with a dash. Capitals do not matter to
+/// GitHub, so anything comparing logins ignores them.
+pub(crate) fn check_reviewer(login: &str) -> Result<()> {
+    // The same rule the pull request side uses, so a saved reviewer is
+    // always one it will ask.
+    if crate::github::is_login(login) {
+        Ok(())
+    } else {
+        Err(StoreError::Invalid(
+            "Type the reviewer's GitHub name, like param-k. Only letters, digits and single dashes."
+                .into(),
+        ))
+    }
+}
+
+/// The reviewer as the owner typed it, without spaces around it or a leading
+/// @. Nothing, or only those, means no one.
+fn clean_reviewer(raw: Option<&str>) -> Result<Option<String>> {
+    let login = raw.unwrap_or("").trim();
+    let login = login.strip_prefix('@').unwrap_or(login);
+    if login.is_empty() {
+        return Ok(None);
+    }
+    check_reviewer(login)?;
+    Ok(Some(login.to_owned()))
+}
+
+/// Whether any of the app's work is running, or waits to pick up where its
+/// agent left off (the same test as `started` in [`Store::claim`]). That
+/// work depends on the runner's folders named after the app.
+async fn work_in_progress(tx: &mut Transaction<'_, Sqlite>, app_id: i64) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM threads t WHERE t.app_id = ? AND (t.state = 'running'
+             OR (t.state IN ('queued', 'needs_you') AND t.session_id IS NOT NULL
+                 AND EXISTS (SELECT 1 FROM events e WHERE e.thread_id = t.id
+                     AND json_extract(e.body, '$.kind') IN ('message', 'tool')))))",
+    )
+    .bind(app_id)
+    .fetch_one(&mut **tx)
+    .await?)
 }
 
 /// Cleans the owner's list of extra websites: each entry becomes a plain site

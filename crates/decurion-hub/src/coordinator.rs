@@ -1093,7 +1093,7 @@ impl Store {
 
     pub async fn goal_view(&self, id: i64) -> Result<GoalView> {
         let goal = self.goal(id).await?;
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin().await?; // read-only: a reader never waits on writers
         let app_name = app_name(&mut tx, goal.app_id).await?;
         let messages = messages_in(&mut tx, id).await?;
         let rows = sqlx::query(
@@ -1276,7 +1276,7 @@ impl Store {
     /// Records the owner's answers to one set of questions, checked against
     /// the questions actually asked.
     pub async fn goal_answer(&self, id: i64, a: &OwnerAnswers) -> Result<Goal> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         let row = sqlx::query(
             "SELECT id, goal_id, at, body FROM goal_messages WHERE id = ? AND goal_id = ?",
         )
