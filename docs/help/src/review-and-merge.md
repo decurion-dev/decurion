@@ -9,7 +9,8 @@ Work moves to **In review** only when the agent has finished and saved its chang
 1. On the board, click the card under **In review**. Or open it from the inbox on your phone.
 2. Read the activity log. It shows what the agent did, step by step, and its final summary.
 3. Choose one:
-   - **Accept** if you are happy with it. The work moves to **Done**, and Decurion sends it to GitHub for you. See the next part.
+   - **Accept** if you are happy with it. The work moves to **Done**, and Decurion sends it to GitHub for you. See the next part. Typing "yes", "push" or "do it" in the message box does the same, as long as the agent did not ask you a question.
+   - Pieces of a goal skip this step: when the checker passes one, your approval of the plan already counts as Accept, so it goes to GitHub by itself.
    - **Send back** if it needs more. The agent runs again and picks up where it left off. Today you cannot add a note when you send work back.
    - **Reject** if you do not want it. The work moves to **Failed**.
 

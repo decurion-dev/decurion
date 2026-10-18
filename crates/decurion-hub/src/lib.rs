@@ -47,8 +47,8 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use checkpoints::{Files, Part};
 use decurion_proto::{
-    HelloReply, JoinReply, JoinRequest, MoveRequest, NewApp, NewCheckpoint, NewMessage, NewThread,
-    Place, PlaceRequest, RunEvent, RunnerHello, RULES_VERSION,
+    HelloReply, JoinReply, JoinRequest, MessageKind, MoveRequest, NewApp, NewCheckpoint,
+    NewMessage, NewThread, Place, PlaceRequest, RunEvent, RunnerHello, RULES_VERSION,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -996,6 +996,16 @@ async fn add_message(
     if c != Caller::Owner {
         return forbidden("messaging an agent");
     }
+    // A plain yes ("do it", "push") on work waiting in review is its Accept,
+    // the tap it stands for: the work goes to GitHub instead of back to its
+    // agent. Only from review, and only when the owner's screen showed the
+    // Accept with no question from the agent; otherwise a yes is an answer.
+    if m.accept_on_yes && m.kind != MessageKind::Note && decurion_proto::goal::is_plain_yes(&m.text)
+    {
+        if let Some(r) = accept_by_yes(&st, id, &m).await {
+            return r;
+        }
+    }
     match st.store.add_message(id, &m).await {
         Ok((msg, fresh)) => {
             // A message can send a goal's piece back to its builder.
@@ -1010,6 +1020,43 @@ async fn add_message(
         }
         Err(e) => ApiError(e).into_response(),
     }
+}
+
+/// Accepts work in review for the owner's plain yes, with the message's
+/// receipt, so a resend accepts once. Answers with the thread, now Done.
+/// `None` when the work is not in review (or moved meanwhile): the yes is
+/// then sent as an ordinary message.
+async fn accept_by_yes(st: &AppState, id: i64, m: &NewMessage) -> Option<Response> {
+    use decurion_proto::ThreadState::{Done, InReview};
+    let t = st.store.thread(id).await.ok()?;
+    if t.state != InReview && !(t.state == Done && m.receipt.is_some()) {
+        return None;
+    }
+    let (t, fresh) = match st
+        .store
+        .request_move(
+            id,
+            Some(InReview),
+            Done,
+            store::OWNER,
+            Some("accepted by the owner's yes"),
+            m.receipt.as_deref(),
+        )
+        .await
+    {
+        Ok(out) => out,
+        Err(StoreError::Conflict | StoreError::BadMove { .. }) => return None,
+        Err(e) => return Some(ApiError(e).into_response()),
+    };
+    if fresh {
+        if let Err(e) = st.store.piece_thread_moved(&t).await {
+            tracing::error!(error = %e, thread = id, "could not update the goal");
+        }
+        if let Some(s) = st.sender() {
+            s.spawn(t.id);
+        }
+    }
+    Some(created_or_resent(t, fresh))
 }
 
 async fn live(

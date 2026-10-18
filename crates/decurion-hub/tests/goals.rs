@@ -457,6 +457,14 @@ async fn a_goal_becomes_reviewed_work() {
     let v = view(&r, goal).await;
     assert_eq!(v["pieces"][0]["review"], "passed");
     assert_eq!(v["pieces"][0]["rounds"], 2);
+    // The owner's approval of the plan covers a piece that passes: it is
+    // accepted and waits to go to GitHub, with no Accept tap.
+    assert_eq!(v["pieces"][0]["thread_state"], "done");
+    assert_eq!(v["pieces"][0]["github"]["state"], "waiting");
+    assert!(v["pieces"][0]["github"]["branch"]
+        .as_str()
+        .expect("branch")
+        .starts_with("decurion/"));
     assert_eq!(v["pages"][1]["kind"], "check");
     assert_eq!(v["pages"][1]["thread_id"], thread);
     assert_eq!(v["goal"]["busy"], true);
@@ -470,7 +478,7 @@ async fn a_goal_becomes_reviewed_work() {
     assert!(claim["prompt"]
         .as_str()
         .expect("prompt")
-        .contains("Reset link: built and passed"));
+        .contains("Reset link: built, passed the checker's review and went to GitHub"));
     let v = view(&r, goal).await;
     assert_eq!(v["goal"]["state"], "for_review");
     assert_eq!(last_message(&v)["body"]["kind"], "report");
@@ -1149,4 +1157,188 @@ async fn a_check_of_old_code_does_not_pass_the_new_code() {
     )
     .await;
     assert_eq!(view(&r, goal).await["pieces"][0]["review"], "passed");
+}
+
+async fn plan_on_screen(r: &axum::Router) -> (i64, i64) {
+    let app = app(r, false).await;
+    let g = ok(
+        r,
+        "POST",
+        "/api/goals",
+        OWNER,
+        json!({"app_id": app, "text": "Go"}),
+    )
+    .await;
+    let goal = g["id"].as_i64().expect("goal");
+    helper(r, "coordinator", PLAN, None).await;
+    helper(r, "design", "done", Some("<h1>x</h1>")).await;
+    let plan = last_message(&view(r, goal).await)["id"]
+        .as_i64()
+        .expect("plan");
+    (goal, plan)
+}
+
+const JUST_TALK: &str = r#"{"say": "Tap Approve when you are ready."}"#;
+
+#[tokio::test]
+async fn a_plain_yes_approves_only_the_plan_on_screen() {
+    let (r, _) = hub().await;
+    let (goal, plan) = plan_on_screen(&r).await;
+    let path = format!("/api/goals/{goal}/say");
+    let say = |body: Value| ok(&r, "POST", &path, OWNER, body);
+
+    // Without the plan the owner was looking at, a yes is words to the lead.
+    let g = say(json!({"text": "yes"})).await;
+    assert_eq!(
+        (g["state"].as_str(), g["busy"].as_bool()),
+        (Some("plan_ready"), Some(true))
+    );
+    helper(&r, "coordinator", JUST_TALK, None).await;
+    // So is a yes to a plan that is not the one waiting.
+    let g = say(json!({"text": "Yes, do it!", "plan_message_id": plan - 1})).await;
+    assert_eq!(
+        (g["state"].as_str(), g["busy"].as_bool()),
+        (Some("plan_ready"), Some(true))
+    );
+    helper(&r, "coordinator", JUST_TALK, None).await;
+    // And a yes that says more.
+    let g = say(json!({"text": "yes but make it blue", "plan_message_id": plan})).await;
+    assert_eq!(
+        (g["state"].as_str(), g["busy"].as_bool()),
+        (Some("plan_ready"), Some(true))
+    );
+    helper(&r, "coordinator", JUST_TALK, None).await;
+
+    // A plain yes to the plan on screen is its Approve: the work starts and
+    // the lead gets no turn.
+    let g = say(json!({"text": "Yes, do it!", "plan_message_id": plan})).await;
+    assert_eq!(g["state"], "working");
+    assert_eq!(g["busy"], false);
+    let v = view(&r, goal).await;
+    assert_eq!(v["pieces"].as_array().map(Vec::len), Some(1));
+    let msgs = v["messages"].as_array().expect("messages");
+    let n = msgs.len();
+    assert_eq!(msgs[n - 2]["body"]["text"], "Yes, do it!");
+    assert_eq!(
+        msgs[n - 1]["body"]["text"],
+        "Plan approved. The work has started."
+    );
+    no_helper(&r).await;
+    // Saying yes again starts nothing more.
+    let g = say(json!({"text": "yes", "plan_message_id": plan})).await;
+    assert_eq!(g["state"], "working");
+    assert_eq!(
+        view(&r, goal).await["pieces"].as_array().map(Vec::len),
+        Some(1)
+    );
+}
+
+#[tokio::test]
+async fn approving_while_the_lead_answers_starts_the_plan_shown() {
+    let (r, _) = hub().await;
+    let (goal, plan) = plan_on_screen(&r).await;
+    let g = ok(
+        &r,
+        "POST",
+        &format!("/api/goals/{goal}/say"),
+        OWNER,
+        json!({"text": "Could the button be blue?"}),
+    )
+    .await;
+    assert_eq!(g["busy"], true);
+    let g = ok(
+        &r,
+        "POST",
+        &format!("/api/goals/{goal}/approve"),
+        OWNER,
+        json!({"plan_message_id": plan}),
+    )
+    .await;
+    assert_eq!(g["state"], "working");
+    let v = view(&r, goal).await;
+    assert!(last_message(&v)["body"]["text"]
+        .as_str()
+        .expect("note")
+        .contains("will not change this plan"));
+    // The lead's answer arrives with a new plan: it cannot replace the one
+    // the owner approved.
+    helper(&r, "coordinator", PLAN, None).await;
+    let v = view(&r, goal).await;
+    assert_eq!(v["goal"]["state"], "working");
+    assert_eq!(v["pieces"].as_array().map(Vec::len), Some(1));
+    assert!(last_message(&v)["body"].get("plan").is_none());
+}
+
+#[tokio::test]
+async fn a_plain_yes_on_work_in_review_accepts_it_only_when_the_accept_is_on_screen() {
+    // With the Accept on screen, "push it" is the Accept, once.
+    let (r, _) = hub().await;
+    let (_, thread) = approved_one_piece(&r).await;
+    let msg = json!({"kind": "follow_up", "text": "Push it!", "receipt": "yes-accept-0001", "accept_on_yes": true});
+    let (s, t) = call(
+        &r,
+        "POST",
+        &format!("/api/threads/{thread}/messages"),
+        OWNER,
+        msg.clone(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{t}");
+    assert_eq!(t["state"], "done");
+    let (s, t) = call(
+        &r,
+        "POST",
+        &format!("/api/threads/{thread}/messages"),
+        OWNER,
+        msg,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "a resend accepts nothing more: {t}");
+    assert_eq!(t["state"], "done");
+
+    // Without it (the agent asked something), "yes" is an answer that goes
+    // back to the agent.
+    let (r, _) = hub().await;
+    let (_, thread) = approved_one_piece(&r).await;
+    let (s, m) = call(
+        &r,
+        "POST",
+        &format!("/api/threads/{thread}/messages"),
+        OWNER,
+        json!({"kind": "follow_up", "text": "yes"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{m}");
+    assert_eq!(m["text"], "yes");
+    let t = ok(
+        &r,
+        "GET",
+        &format!("/api/threads/{thread}"),
+        OWNER,
+        json!({}),
+    )
+    .await;
+    assert_eq!(t["state"], "queued");
+}
+
+#[tokio::test]
+async fn a_goal_closes_itself_once_every_pull_request_is_merged() {
+    let (r, store) = hub().await;
+    let (goal, thread) = approved_one_piece(&r).await;
+    helper(&r, "review", r#"{"pass": true, "summary": "Works."}"#, None).await;
+    helper(&r, "coordinator", r#"{"say": "Done and checked."}"#, None).await;
+    assert_eq!(view(&r, goal).await["goal"]["state"], "for_review");
+
+    let news = store.piece_merged(thread).await.expect("merged");
+    assert!(news.is_some_and(|(title, _)| title.contains("merged")));
+    let v = view(&r, goal).await;
+    assert_eq!(v["goal"]["state"], "done");
+    assert_eq!(v["pieces"][0]["merged"], true);
+    assert_eq!(
+        last_message(&v)["body"]["text"],
+        "Every pull request is merged, so this goal is done."
+    );
+    // Seen again, it changes nothing; a thread that is no piece is ignored.
+    assert!(store.piece_merged(thread).await.expect("again").is_none());
+    assert!(store.piece_merged(9999).await.expect("no piece").is_none());
 }

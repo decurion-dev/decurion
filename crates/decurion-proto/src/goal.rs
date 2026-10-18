@@ -116,6 +116,12 @@ pub struct PlanPiece {
     pub brief: String,
     /// How the owner will know it works, in plain words.
     pub done_when: String,
+    /// The project lead expects this piece to change a protected part of
+    /// the app, so the owner knows up front it will wait for their one tap
+    /// at the end. Only a forecast: whether a piece is held is decided by
+    /// the hub from what the work actually changed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub touches_protected: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -251,6 +257,71 @@ pub struct GoalMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OwnerSays {
     pub text: String,
+    /// The plan on the owner's screen when they wrote. A plain yes
+    /// ([`is_plain_yes`]) approves exactly this plan, if it is still the
+    /// latest; without it, a yes is only words to the project lead.
+    #[serde(default)]
+    pub plan_message_id: Option<i64>,
+}
+
+/// Longest message read as a plain yes. Anything longer says more than yes.
+const MAX_YES_CHARS: usize = 40;
+
+/// The short ways an owner says "go ahead", compared after lowering case,
+/// dropping marks at the ends and squeezing spaces. Kept to a fixed list,
+/// so "yes but change the colour" is never read as approval.
+const PLAIN_YES: &[&str] = &[
+    "yes",
+    "y",
+    "yep",
+    "yeah",
+    "yup",
+    "ok",
+    "okay",
+    "k",
+    "sure",
+    "go",
+    "go ahead",
+    "go for it",
+    "do it",
+    "yes do it",
+    "ok do it",
+    "yes go",
+    "yes go ahead",
+    "yes please",
+    "please do",
+    "approve",
+    "approved",
+    "accept",
+    "accepted",
+    "push",
+    "push it",
+    "ship it",
+    "send it",
+    "lgtm",
+    "looks good",
+    "sounds good",
+    "perfect",
+    "great do it",
+    "👍",
+    "✅",
+];
+
+/// True if `text` is nothing more than a yes, such as "Yes, do it!" or
+/// "go ahead". The hub treats such a message as the tap it stands for (the
+/// waiting plan's Approve, or work's Accept), and only where the owner's
+/// screen showed that exact thing.
+pub fn is_plain_yes(text: &str) -> bool {
+    if text.chars().count() > MAX_YES_CHARS {
+        return false;
+    }
+    let lower = text.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| c.is_whitespace() || matches!(c, ',' | '.' | '!' | ';' | ':' | '-'))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let squeezed = words.join(" ");
+    PLAIN_YES.contains(&squeezed.as_str())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -337,6 +408,12 @@ pub struct Piece {
     pub review_issues: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// Where the piece is on its way to GitHub, once accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<crate::GitHubSend>,
+    /// Its pull request was merged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub merged: bool,
 }
 
 /// What a visual page shows.
@@ -553,9 +630,42 @@ mod tests {
                     title: "Reset link".into(),
                     brief: "Build it".into(),
                     done_when: "The link works".into(),
+                    touches_protected: false,
                 }],
             }),
             remember: vec![],
+        }
+    }
+
+    #[test]
+    fn only_a_plain_yes_counts_as_yes() {
+        for yes in [
+            "yes",
+            "Yes, do it!",
+            "  go ahead. ",
+            "DO IT",
+            "push",
+            "ok",
+            "lgtm",
+            "👍",
+            "yes - do it",
+            "Ship it!!",
+        ] {
+            assert!(is_plain_yes(yes), "{yes:?} is a yes");
+        }
+        for not in [
+            "",
+            "no",
+            "yes but make the button blue",
+            "do it later",
+            "not yet",
+            "why?",
+            "yes?",
+            "go back",
+            "don't do it",
+            &"yes ".repeat(20),
+        ] {
+            assert!(!is_plain_yes(not), "{not:?} is not a plain yes");
         }
     }
 
