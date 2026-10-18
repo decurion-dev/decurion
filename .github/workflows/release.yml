@@ -71,12 +71,13 @@ jobs:
           $setup = "dist\Decurion-Setup-$env:VERSION-x64.exe"
           Start-Process -Wait -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$PWD\dist\install.log"
           $app = Join-Path $env:LOCALAPPDATA 'Programs\Decurion'
-          foreach ($f in 'decurion-hub.exe', 'decurion-runner.exe', 'start-decurion.ps1', 'docker\claude-worker\Dockerfile', 'docker\pi-worker\Dockerfile', 'docker\gate\Dockerfile', 'docker\gate\crates\decurion-gate\src\main.rs', 'LICENSE') {
+          foreach ($f in 'decurion-hub.exe', 'decurion-runner.exe', 'start-decurion.ps1', 'docker\claude-worker\Dockerfile', 'docker\pi-worker\Dockerfile', 'docker\gate\Dockerfile', 'docker\gate\crates\decurion-gate\src\main.rs', 'decurion.ico', 'LICENSE') {
             if (-not (Test-Path (Join-Path $app $f))) { Get-Content dist\install.log; throw "installer did not put $f in $app" }
           }
           $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Decurion.lnk'
           if (-not (Test-Path $lnk)) { throw "no Start menu shortcut at $lnk" }
           if (-not (Test-Path (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Decurion - Save a Claude sign-in.lnk'))) { throw 'no sign-in shortcut' }
+          if (-not (Test-Path (Join-Path ([Environment]::GetFolderPath('Startup')) 'Decurion.lnk'))) { throw 'no start-at-sign-in shortcut' }
           # The scripts must at least parse in Windows PowerShell 5.1.
           foreach ($ps in 'start-decurion.ps1', 'save-claude-sign-in.ps1') {
             powershell -NoProfile -Command "`$null = [scriptblock]::Create((Get-Content -Raw '$app\$ps'))"
@@ -178,6 +179,13 @@ jobs:
           test -f "$work/prefix/share/decurion/docker/pi-worker/Dockerfile"
           test -f "$work/prefix/share/decurion/docker/gate/crates/decurion-gate/src/main.rs"
           sh -n "$work/prefix/bin/decurion-start"
+          # Build the agent workspaces and the gate from the installed files,
+          # exactly as decurion-start does on a user's computer.
+          if [ "${{ matrix.name }}" = linux-x64 ]; then
+            for i in claude-worker pi-worker gate; do
+              docker build -q -t "decurion/$i:ci" "$work/prefix/share/decurion/docker/$i"
+            done
+          fi
           export DECURION_DATA="$work/data" DECURION_ADDR=127.0.0.1:0
           "$work/prefix/bin/decurion-hub" >"$work/hub.out" 2>"$work/hub.err" &
           hub=$!

@@ -35,9 +35,9 @@ Tap the card, or **Sign in again** on the board, and sign in once more. Agents g
 
 ## Good to know
 
-- Saved sign-ins stay on your PC, locked with a key kept in Windows' own secure store. They are never in Decurion's database, your app's folder or GitHub.
+- Saved sign-ins stay on your PC, locked with a key kept in Windows' own secure store (on a Mac or Linux, in a private folder that only your user can read). They are never in Decurion's database, your app's folder or GitHub.
 - Each piece of work gets only its own app's sign-ins.
-- Agents can only visit the websites on the app's list in **Settings**. Add the website the sign-in is for there too, or agents will be turned away from it.
+- Agents can only visit the websites on the app's list. Add the website the sign-in is for there too, or agents will be turned away from it. See [Choose which websites agents may use](choose-websites.md).
 - Saved sign-ins never leave your PC. Work running on a cloud worker goes without them.
 - An agent's own changes to a sign-in (signing out, say) are never saved. The next run starts from your saved sign-in again.
 - To stop agents being signed in, click **Remove**. The saved sign-in is deleted from your PC.

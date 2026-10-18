@@ -7,7 +7,7 @@ public until a maintainer presses **Publish** in step 5.
 
 | Download | For | What it does |
 | --- | --- | --- |
-| `Decurion-Setup-<version>-x64.exe` | Windows 10 (2004 or later) and 11 | Installs for the current user with no administrator prompt, adds **Decurion** and **Decurion - Save a Claude sign-in** to the Start menu, and offers to install missing helpers (Docker Desktop, Git, Claude Code, Tailscale) with winget. |
+| `Decurion-Setup-<version>-x64.exe` | Windows 10 (2004 or later) and 11 | Installs for the current user with no administrator prompt, adds **Decurion** and **Decurion - Save a Claude sign-in** to the Start menu, can start Decurion when you sign in to Windows, and offers to install missing helpers (Docker Desktop, Git, Claude Code, Tailscale) with winget. |
 | `decurion-<version>-macos-universal.tar.gz` | Apple Silicon and Intel Macs | `install.sh` copies the programs to `~/.local/bin`; `decurion-start` runs Decurion. |
 | `decurion-<version>-linux-x64.tar.gz`, `-linux-arm64.tar.gz` | Linux | Same as the Mac download. |
 | `SHA256SUMS.txt` | Everyone | Fingerprints to check a download was not changed. |
@@ -48,11 +48,13 @@ checks run on any pull request that changes `packaging/`.
   ("More info", then "Run anyway"). A code-signing certificate (or Azure
   Trusted Signing) removes the warning. Mac programs get only a local
   signature; Apple notarization needs a paid Apple Developer account.
-- **Mac and Linux sign-ins.** The runner reads Claude tokens from Windows
-  Credential Manager. On Mac and Linux it reads environment variables
-  (`DECURION_CLAUDE_TOKEN_A`, `DECURION_CLAUDE_TOKEN_B`,
-  `DECURION_ANTHROPIC_API_KEY`) until Keychain and Secret Service support lands.
-- **Start at sign-in and automatic updates.** Decurion runs while its window is
-  open. A background service and `decurion update` come later.
-- **App icon.** The Start menu entries use the PowerShell icon until the
-  design work provides one.
+- **Mac and Linux key storage.** On Windows, keys live in Credential Manager.
+  On Mac and Linux, Decurion keeps them in its own `vault` folder, readable
+  only by your user, not in Keychain or Secret Service. The pay-per-use key
+  there comes only from `DECURION_ANTHROPIC_API_KEY`.
+- **Automatic updates.** To update, run the newer installer over the old one.
+  Your boards and settings stay. A built-in update check comes later.
+- **Start at sign-in on Mac and Linux.** On Windows the installer offers it
+  (checked by default). On Mac and Linux, run `decurion-start` yourself.
+- **Computer use in a separate virtual machine.** Listed for Phase 5 in the
+  plan, not built yet.

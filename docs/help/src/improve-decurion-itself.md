@@ -15,7 +15,7 @@ Agents need a copy of Decurion's code that Git keeps track of. The folder where 
 ## Add it as an app
 
 1. Open the board at <http://decurion.localhost:7420> and click **Settings**.
-2. Under **Apps**, find **Add an app**.
+2. Open **Apps** and find the **Add an app** form under the list.
 3. In **Name**, type `decurion`.
 4. In **Repo path**, type the full path to the folder you just made, such as `C:\Users\you\code\decurion`.
 5. Under **Claude account**, choose **Max plan A** or **Max plan B**.
@@ -59,7 +59,7 @@ A cloud worker updates itself to match your PC, using the code on Decurion's Git
 
 ## If something goes wrong
 
-- **Work fails right away with a "git clone" message.** The path is not the folder you cloned. Check the path under **Settings**, **Apps**.
+- **Work fails right away with a "git clone" message.** The path is not the folder you cloned. Check the path on the app's **Name and folder** tab in **Settings**, **Apps**.
 - **A piece of work says Needs you · take a look.** It changed a protected part, or the checker still found problems. Read its notes, then accept it, send it back, or reject it.
 - **The agent says it could not run the checks.** The agent's workspace can build and test Decurion, but a few checks (the license check, the help book and a check of the cloud worker page) need tools it does not have. Those run on GitHub when the change goes there as a pull request. If the agent says the build or tests themselves could not run, or the work is not going to GitHub, ask someone who knows code to run Decurion's checks before you merge.
 

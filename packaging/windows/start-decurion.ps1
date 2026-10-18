@@ -3,6 +3,11 @@
 # and the runner, and opens the board. Closing this window stops Decurion.
 #
 # Written for Windows PowerShell 5.1, which every Windows 10 and 11 PC has.
+#
+# -Background is how it starts when you sign in to Windows: the window stays
+# minimized and the board does not open, since nobody asked to look at it.
+
+param([switch]$Background)
 
 $ErrorActionPreference = 'Continue'
 # Pick up programs installed since this window's parent started, such as
@@ -77,6 +82,7 @@ $probe = New-Object Net.Sockets.TcpClient
 try {
     $probe.Connect('127.0.0.1', $Port)
     $probe.Close()
+    if ($Background) { exit 0 }
     Start-Process "http://decurion.localhost:$Port/"
     Write-Host 'Decurion is already running. Your board is open in your browser.'
     Start-Sleep -Seconds 4
@@ -93,7 +99,8 @@ if (-not (Test-Docker)) {
         Write-Host 'Starting Docker Desktop. This can take a minute...'
         Start-Process $desktop
     }
-    $deadline = (Get-Date).AddMinutes(3)
+    # Right after you sign in, Docker Desktop is often still starting itself.
+    $deadline = (Get-Date).AddMinutes($(if ($Background) { 10 } else { 3 }))
     while (-not (Test-Docker)) {
         if ((Get-Date) -gt $deadline) {
             Stop-WithMessage 'Docker Desktop did not start. Open Docker Desktop, wait until it says it is running, then open Decurion again.'
@@ -144,10 +151,14 @@ while (-not $url) {
 }
 
 $runner = Start-Logged 'decurion-runner.exe' 'runner'
-Start-Process $url
+if (-not $Background) { Start-Process $url }
 
 Write-Host ''
-Write-Host 'Decurion is running. Your board is open in your browser.' -ForegroundColor Green
+if ($Background) {
+    Write-Host 'Decurion is running. Open the board from the Start menu with Decurion.' -ForegroundColor Green
+} else {
+    Write-Host 'Decurion is running. Your board is open in your browser.' -ForegroundColor Green
+}
 Write-Host 'Keep this window open. Close it to stop Decurion.'
 Write-Host "If the board did not open, paste this link into Edge or Chrome: $url"
 

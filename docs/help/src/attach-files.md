@@ -13,16 +13,16 @@ does not handle health or personal data.
 
 ## Add files to an app
 
-2. Under **Apps**, tap the app and open its **Files** tab.
-2. Under **Apps**, find the app and its **Files for agents**.
+1. Open **Settings**, then **Apps**, then the app.
+2. Open its **Files** tab.
 3. Click **Add files** and choose one or more files. On a PC you can also drag
    files onto that box.
 
-Each file shows **Adding…** while it goes up, then **added**.
+Each file shows **Adding** and its name while it goes up. Then it shows in the list.
 
 ## Add files to one goal
 
-1. Open the goal. On your phone, open the inbox and tap **Goals**.
+1. Open the goal on the **Goals** page. On your phone, tap the **Goals** tab.
 2. Tap the **Files** tab, then **Add files to this goal**. Or tap the paperclip
    next to the message box.
 3. Choose the files. On a phone you can also take a photo or pick one from your
@@ -31,7 +31,7 @@ Each file shows **Adding…** while it goes up, then **added**.
 On a wide screen there are no tabs: the files show under **Pieces of work**.
 
 The **Files** tab also shows the app's own files, under **For the whole app**.
-You add and remove those in Settings.
+You add and remove those on the app's **Files** tab in **Settings**.
 
 ## What agents can read
 
@@ -64,7 +64,7 @@ file you remove.
 ## Remove a file
 
 1. Next to the file, click **Remove**.
-2. Click **Remove** again to confirm.
+2. Click **Remove** in the box that asks you to confirm.
 
 ## If something goes wrong
 
@@ -74,7 +74,6 @@ file you remove.
   the new one.
 - **"Agents get a copy, but may not be able to read it."** Save the file as a
   PDF, .docx, .xlsx or .pptx and add it again.
-- **"Not signed in."** Open the sign-in link the hub printed when it started,
-  then try again.
+- **"Not signed in."** Close Decurion and open it again, then click **Sign in** on the page that opens.
 
 Next: [Give your first goal](give-your-first-goal.md).
