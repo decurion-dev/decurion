@@ -323,6 +323,7 @@ async fn review_comments_on_an_open_pull_request_ask_for_a_fix() {
         json!({
             "thread_id": t, "number": 88, "url": "https://github.com/me/app/pull/88",
             "state": "open", "event": "It is open", "event_at": "2026-10-18T08:00:00Z",
+            "can_merge": false,
         })
     );
 
@@ -357,6 +358,33 @@ async fn a_merged_pull_request_is_the_last_word() {
     assert_eq!(rows[0]["line"], "PR #12 merged");
     assert_eq!(rows[0]["last_pr"]["number"], 12);
     assert_eq!(rows[0]["waiting_on_reviewer"], 0);
+}
+
+#[tokio::test]
+async fn an_open_pull_request_says_where_the_owner_merges_it() {
+    let (r, store) = hub().await;
+    let app = add_app(&r, "pv-medispa").await;
+    let t = add_work(&r, app, "Fix refill dates").await;
+    set_state(&store, t, "done").await;
+    watch(&store, t, app, 42, "open", "2026-10-18T07:30:00Z").await;
+    let rows = today(&r).await;
+    assert_eq!(rows[0]["status"], "Your merge");
+    assert_eq!(rows[0]["line"], "PR #42 · yours to merge on GitHub");
+    assert_eq!(rows[0]["last_pr"]["can_merge"], false);
+
+    // Full control: the row's Merge button merges it here.
+    let (s, _) = call(
+        &r,
+        "POST",
+        &format!("/api/apps/{app}/rules"),
+        Some(OWNER),
+        json!({"merge": true}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let rows = today(&r).await;
+    assert_eq!(rows[0]["line"], "PR #42 · yours to merge");
+    assert_eq!(rows[0]["last_pr"]["can_merge"], true);
 }
 
 #[tokio::test]

@@ -32,7 +32,8 @@ pub enum Tone {
     /// A pull request is open and the app's reviewer has it.
     Reviewer,
     /// A pull request is open and the app names no reviewer, so merging it
-    /// on GitHub is the owner's (Decurion never merges).
+    /// is the owner's: on GitHub, or with the Merge tap where the app's rules
+    /// allow it (nothing merges by itself).
     Merge,
     /// The last pull request was merged.
     Done,
@@ -74,6 +75,9 @@ pub struct LastPr {
     /// Plain words for the last thing that happened to it, once known.
     pub event: Option<String>,
     pub event_at: Option<String>,
+    /// Still open, and the app's rules let the owner merge it from Decurion
+    /// (`POST /api/threads/{id}/pr/merge`).
+    pub can_merge: bool,
 }
 
 /// One app's row.
@@ -151,6 +155,8 @@ struct Facts {
     reviewer: Option<String>,
     open_prs: i64,
     newest_open: Option<i64>,
+    /// The app's rules let the owner merge its open pull requests here.
+    can_merge: bool,
     comments: Option<Comments>,
     last_pr: Option<LastPr>,
     /// The app's newest pull request has been looked at, whether or not it
@@ -241,6 +247,7 @@ fn words(f: &Facts) -> (Tone, &'static str, String) {
                 "With reviewer",
                 format!("{pr} · waiting on {r}"),
             ),
+            None if f.can_merge => (Tone::Merge, "Your merge", format!("{pr} · yours to merge")),
             None => (
                 Tone::Merge,
                 "Your merge",
@@ -340,8 +347,10 @@ impl Store {
         let mut watches = Vec::new();
         for r in sqlx::query(
             "SELECT w.thread_id, w.app_id, w.number, w.url, w.state, w.event, w.event_at,
-                    COALESCE(t.dismissed_at IS NOT NULL, 0) AS dismissed
+                    COALESCE(t.dismissed_at IS NOT NULL, 0) AS dismissed,
+                    (w.state = 'open' AND a.can_merge) AS can_merge
              FROM pr_watches w LEFT JOIN threads t ON t.id = w.thread_id
+                  JOIN apps a ON a.id = w.app_id
              ORDER BY COALESCE(w.event_at, w.created_at) DESC, w.created_at DESC, w.thread_id DESC",
         )
         .fetch_all(self.pool())
@@ -356,6 +365,7 @@ impl Store {
                     state: r.try_get("state")?,
                     event: r.try_get("event")?,
                     event_at: r.try_get("event_at")?,
+                    can_merge: r.try_get("can_merge")?,
                 },
                 dismissed: r.try_get("dismissed")?,
             });
@@ -372,6 +382,7 @@ impl Store {
                 }
             }
             if w.pr.state == "open" {
+                f.can_merge |= w.pr.can_merge;
                 f.open_prs += 1;
                 f.newest_open.get_or_insert(w.pr.number);
             }

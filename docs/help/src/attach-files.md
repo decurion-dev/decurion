@@ -13,7 +13,7 @@ does not handle health or personal data.
 
 ## Add files to an app
 
-1. Open the board and choose **Settings**.
+2. Under **Apps**, tap the app and open its **Files** tab.
 2. Under **Apps**, find the app and its **Files for agents**.
 3. Click **Add files** and choose one or more files. On a PC you can also drag
    files onto that box.

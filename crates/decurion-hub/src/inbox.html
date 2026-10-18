@@ -384,7 +384,7 @@ const EMPTY_ICON = { running: "pc", in_review: "in_review", needs_you: "done", q
 const BOARD_LIMIT = 40;
 
 const S = {
-  tab: "inbox", threads: null, goals: [], apps: {}, appList: [], limits: [], signIns: [], prs: [], err: null, signedOut: false, updated: null,
+  tab: "inbox", threads: null, goals: [], apps: {}, appList: [], limits: [], signIns: [], prs: [], merges: [], err: null, signedOut: false, updated: null,
   chip: null, actErr: null, open: new Set(), notifyOn: false, showDismissed: false,
   // The board tab's app filter, remembered like the PC board's; how many cards it shows; whether a cloud worker exists.
   app: D.store.get("decurion.board.app") || "all", limit: BOARD_LIMIT, hasCloud: false,
@@ -590,8 +590,11 @@ async function refresh() {
       D.api("/sign-ins").catch(() => []), D.api("/workers").catch(() => null),
       forSettings ? Promise.all([D.api("/spend"), D.api("/accounts").catch(() => null)]) : null,
       D.api("/prs").catch(() => [])]);
-    // Pull requests with review comments waiting for a fix.
-    S.prs = (Array.isArray(prs) ? prs : []).filter((p) => p.state === "open" && p.open_comments > 0 && !p.fixing);
+    // Pull requests with review comments waiting for a fix, and ones the
+    // owner may merge from here (their app's rules allow it) with none.
+    const open = (Array.isArray(prs) ? prs : []).filter((p) => p.state === "open" && !p.fixing);
+    S.prs = open.filter((p) => p.open_comments > 0);
+    S.merges = open.filter((p) => p.can_merge && !(p.open_comments > 0));
     // Work can run in the cloud only once a cloud worker is set up.
     if (Array.isArray(workers)) { S.hasCloud = workers.some((w) => w.place === "cloud"); D.setCloud(S.hasCloud); }
     if (more) D.settings.update({ apps, spend: more[0], accounts: more[1], workers: Array.isArray(workers) ? workers : [], seq });
@@ -669,7 +672,7 @@ function errorState(what) {
 }
 
 function renderShell() {
-  const n = inboxEntries().length + S.limits.filter((l) => !l.pay_per_use_until).length + S.signIns.length + S.prs.length;
+  const n = inboxEntries().length + S.limits.filter((l) => !l.pay_per_use_until).length + S.signIns.length + S.prs.length + S.merges.length;
   document.body.classList.toggle("signed-out", S.signedOut);
   $("title").textContent = S.signedOut ? "Decurion" : TITLES[S.tab];
   $("count").hidden = !(S.tab === "inbox" && n > 0 && !S.signedOut);
@@ -878,7 +881,46 @@ function reviewCard(p, anim) {
     el("div", { className: "err-slot", role: "alert" }));
   const b = el("button", { type: "button", className: "btn primary", disabled: D.offline }, D.icon("tool"), label);
   b.onclick = () => go(b);
-  card.append(el("div", { className: "iacts" }, b));
+  // The app's rules let the owner merge from here: a quiet Merge beside
+  // Answer the comments, for when the comments need no change.
+  card.append(el("div", { className: "iacts" }, b, p.can_merge ? mergeButton(p, card, "btn quiet") : null));
+  return card;
+}
+
+// Merge: one tap merges a pull request Decurion opened, for apps whose rules
+// allow it. The hub merges only once GitHub says the checks passed and
+// nothing conflicts; when it refuses, its plain words say why.
+function mergeButton(p, card, cls) {
+  const b = el("button", { type: "button", className: cls, disabled: D.offline }, D.icon("merge"), "Merge");
+  b.onclick = async () => {
+    if (D.offline) return;
+    b.disabled = true;
+    try {
+      await D.send(`/threads/${p.thread_id}/pr/merge`, {});
+      D.toast("Merged on GitHub.");
+      card.classList.add("leaving");
+      setTimeout(refresh, 180);
+    } catch (e) {
+      D.toast(e.message, "alert");
+      b.disabled = D.offline;
+    }
+  };
+  return b;
+}
+// A pull request ready for the owner to merge, with no comments waiting.
+function mergeCard(p, anim) {
+  const key = `merge-${p.thread_id}`;
+  const card = el("article", { className: "icard limit" + (anim === "still" ? " still" : ""), dataset: { state: "needs_you", key, anim } },
+    el("div", { className: "meta" },
+      el("span", { className: "pill needs_you" }, D.icon("merge"), "Ready to merge"),
+      el("span", { className: "app" }, p.app)));
+  const link = el("a", { href: p.url, target: "_blank", rel: "noopener" }, `Pull request #${p.number}`);
+  card.append(
+    el("h2", { className: "h" }, p.title),
+    el("p", { className: "means" }, link, p.reviewer ? ` waits on ${p.reviewer}'s review, or your Merge. ` : " is open on GitHub. ",
+      "Merge puts it into your main branch, only once GitHub says the checks passed and nothing conflicts."));
+  const open = el("a", { className: "btn", href: p.url, target: "_blank", rel: "noopener" }, "Open on GitHub");
+  card.append(el("div", { className: "iacts" }, mergeButton(p, card, "btn primary"), open));
   return card;
 }
 // A goal waiting on you: a plan to approve here in one tap, or the project
@@ -949,7 +991,7 @@ function renderInbox() {
   if (!S.threads) {
     if (S.err) setMode(box, "error", `${D.offline}|${S.err.message}`, () => errorState("inbox"));
     else setMode(box, "loading", "", skeletons);
-  } else if (!entries.length && !S.limits.length && !S.signIns.length && !S.prs.length) {
+  } else if (!entries.length && !S.limits.length && !S.signIns.length && !S.prs.length && !S.merges.length) {
     const c = counts();
     setMode(box, "empty", `${c.running}|${c.queued}|${S.notifyOn}`, () => {
       const granted = "Notification" in window && Notification.permission === "granted";
@@ -972,8 +1014,12 @@ function renderInbox() {
       build: (anim) => signInCard(x, anim),
     })), ...S.prs.map((p) => ({
       key: `pr-${p.thread_id}`,
-      sig: JSON.stringify([p.line, p.title, p.app, p.number, p.url, D.offline]),
+      sig: JSON.stringify([p.line, p.title, p.app, p.number, p.url, !!p.can_merge, D.offline]),
       build: (anim) => reviewCard(p, anim),
+    })), ...S.merges.map((p) => ({
+      key: `merge-${p.thread_id}`,
+      sig: JSON.stringify([p.title, p.app, p.number, p.url, p.reviewer, D.offline]),
+      build: (anim) => mergeCard(p, anim),
     })), ...entries.map(({ t, g, w }) => (t ? {
       key: t.id,
       sig: JSON.stringify([t.state, t.updated_at, t.title, t.github, D.appName(t.app_id), D.lastWords(tailNow(t, 20) ?? []), sinceLines(tailNow(t, 20) ?? []), D.offline]),
@@ -1320,7 +1366,7 @@ function renderSettings() {
 // #settings/accounts, at its top.
 function showSettings() {
   renderSettings();
-  D.settings.show(location.hash.split("/")[1]);
+  D.settings.show(location.hash.split("/").slice(1).join("/"));
   window.scrollTo(0, 0);
 }
 

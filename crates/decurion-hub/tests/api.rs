@@ -4505,3 +4505,164 @@ async fn a_resent_app_change_does_nothing_twice() {
     let (s, _) = edit(&r, a, json!({"name": "delta", "receipt": "bad"})).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn new_apps_start_at_pr_only_and_the_owner_raises_them() {
+    let (r, _) = hub().await;
+    seed(&r).await;
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(
+        apps[0]["rules"],
+        json!({"merge": false, "deploy": false, "deploy_steps": "", "deploy_site": null,
+               "send_checked": true, "patient_data": true})
+    );
+    // Full control for this app, with its deploy steps and live site.
+    let (s, app) = call(
+        &r,
+        "POST",
+        "/api/apps/1/rules",
+        Some(OWNER),
+        json!({"merge": true, "deploy": true,
+               "deploy_steps": "  npm ci\n\nnpm ci --prefix infra\r\nnode scripts/deploy-prod.mjs  \n",
+               "deploy_site": " https://app.pvmedispa.com ", "receipt": "rules-receipt-1"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{app}");
+    let rules = &app["rules"];
+    assert_eq!(rules["merge"], true);
+    assert_eq!(rules["deploy"], true);
+    assert_eq!(
+        rules["deploy_steps"],
+        "npm ci\nnpm ci --prefix infra\nnode scripts/deploy-prod.mjs"
+    );
+    assert_eq!(rules["deploy_site"], "https://app.pvmedispa.com");
+    let a: decurion_proto::App = serde_json::from_value(app.clone()).expect("app");
+    assert_eq!(a.rules.deploy_steps().map(|s| s.len()), Some(3));
+    assert_eq!(a.rules.level(), decurion_proto::RulesLevel::Full);
+    // The runner gets them with the work.
+    let c = claim(&r).await;
+    assert_eq!(c["app"]["rules"]["patient_data"], true);
+    assert_eq!(c["app"]["rules"]["merge"], true);
+
+    // Fields left out stay; a resent tap changes nothing again.
+    let (_, app) = call(
+        &r,
+        "POST",
+        "/api/apps/1/rules",
+        Some(OWNER),
+        json!({"patient_data": false, "deploy_site": null, "receipt": "rules-receipt-2"}),
+    )
+    .await;
+    assert_eq!(app["rules"]["patient_data"], false);
+    assert_eq!(app["rules"]["deploy_site"], Value::Null);
+    assert_eq!(app["rules"]["merge"], true);
+    let (s, again) = call(
+        &r,
+        "POST",
+        "/api/apps/1/rules",
+        Some(OWNER),
+        json!({"patient_data": true, "receipt": "rules-receipt-2"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(again["rules"]["patient_data"], false, "{again}");
+
+    // Back to PR only in one tap; the steps are kept for next time.
+    let (_, app) = call(
+        &r,
+        "POST",
+        "/api/apps/1/rules",
+        Some(OWNER),
+        json!({"merge": false, "deploy": false, "receipt": "rules-receipt-3"}),
+    )
+    .await;
+    let a: decurion_proto::App = serde_json::from_value(app.clone()).expect("app");
+    assert_eq!(a.rules.level(), decurion_proto::RulesLevel::PrOnly);
+    assert_eq!(a.rules.deploy_steps(), None, "no Deploy button");
+    assert!(a.rules.deploy_steps.contains("deploy-prod"));
+}
+
+#[tokio::test]
+async fn deploying_needs_steps_that_read_cleanly() {
+    let (r, _) = hub().await;
+    seed(&r).await;
+    let rules = |body: Value| {
+        let r = r.clone();
+        async move { call(&r, "POST", "/api/apps/1/rules", Some(OWNER), body).await }
+    };
+    let (s, msg) = rules(json!({"deploy": true})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert!(
+        msg.as_str()
+            .expect("text")
+            .contains("Add the deploy steps first"),
+        "{msg}"
+    );
+    let (s, msg) = rules(json!({"deploy": true, "deploy_steps": "npm ci && npm run deploy"})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert!(
+        msg.as_str().expect("text").contains("Step on line 1"),
+        "{msg}"
+    );
+    let (s, msg) =
+        rules(json!({"deploy_steps": "npm run deploy", "deploy_site": "http://shop.example.com"}))
+            .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{msg}");
+    let nine = (0..9)
+        .map(|i| format!("echo {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (s, _) = rules(json!({"deploy_steps": nine})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    // Nothing was saved by the refusals.
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(apps[0]["rules"]["deploy"], false);
+    assert_eq!(apps[0]["rules"]["deploy_steps"], "");
+    // Steps saved first can be turned on later; clearing them turns nothing off by surprise.
+    let (s, _) = rules(json!({"deploy_steps": "npm run deploy"})).await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, app) = rules(json!({"deploy": true})).await;
+    assert_eq!(s, StatusCode::OK, "{app}");
+    let (s, msg) = rules(json!({"deploy_steps": ""})).await;
+    assert_eq!(
+        s,
+        StatusCode::BAD_REQUEST,
+        "steps cannot go while deploying is on: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn only_the_owner_sets_an_apps_rules() {
+    let (r, _) = hub().await;
+    seed(&r).await;
+    let (s, msg) = call(
+        &r,
+        "POST",
+        "/api/apps/1/rules",
+        Some(RUNNER),
+        json!({"merge": true, "deploy": true, "deploy_steps": "npm run deploy"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert!(msg.as_str().is_some_and(|m| m.contains("owner-only")));
+    let (s, _) = call(
+        &r,
+        "POST",
+        "/api/apps/1/rules",
+        None,
+        json!({"merge": true}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(apps[0]["rules"]["merge"], false);
+    let (s, _) = call(
+        &r,
+        "POST",
+        "/api/apps/9/rules",
+        Some(OWNER),
+        json!({"merge": true}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}

@@ -481,6 +481,7 @@ async fn a_piece_touching_only_unprotected_files_passes() {
     assert_eq!(of["review"], "passed", "{of}");
     assert_eq!(of["by_plan"], true, "{of}");
     assert_eq!(of["held"], false, "{of}");
+    assert_eq!(of["sends_checked"], true, "{of}");
 }
 
 #[tokio::test]

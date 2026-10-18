@@ -7,7 +7,8 @@
 //! "Merged on GitHub" without opening GitHub. Rules that must stay true:
 //!
 //! - **Read only.** Watching only reads from GitHub. Nothing here pushes,
-//!   comments, merges or closes anything.
+//!   comments, merges or closes anything. The one merge, on the owner's
+//!   tap, is [`crate::merge`].
 //! - **The owner starts every fix.** New comments only make an inbox card.
 //!   A fix run starts on the owner's tap ([`Store::start_fix`]), with a
 //!   receipt, so a resent tap starts nothing twice.
@@ -364,6 +365,9 @@ pub struct Watched {
     pub line: Option<String>,
     /// A fix the owner started is still under way.
     pub fixing: bool,
+    /// Still open, and the app's rules let the owner merge it from Decurion
+    /// ([`crate::merge`]).
+    pub can_merge: bool,
 }
 
 /// A fix is under way while its work is unfinished, or accepted but not yet
@@ -469,6 +473,7 @@ impl Store {
         let rows = sqlx::query(&format!(
             "SELECT w.thread_id, w.app_id, a.name AS app, t.title, w.number, w.url, w.state,
                     a.reviewer, w.event, w.event_at, {FIX_UNDER_WAY} AS fixing,
+                    (w.state = 'open' AND a.can_merge) AS can_merge,
                     (SELECT json_group_array(c.author) FROM pr_comments c
                       WHERE c.thread_id = w.thread_id AND {OPEN_COMMENT}) AS authors
              FROM pr_watches w JOIN threads t ON t.id = w.thread_id JOIN apps a ON a.id = w.app_id
@@ -501,6 +506,7 @@ impl Store {
                     },
                     line: (state == "open" && !authors.is_empty()).then(|| left_words(&authors)),
                     fixing: r.try_get("fixing")?,
+                    can_merge: r.try_get("can_merge")?,
                     state,
                 })
             })
@@ -600,7 +606,7 @@ impl Store {
 /// (`Store::piece_merged`, which does nothing for work outside a goal and
 /// nothing twice); when that was its last open piece, the goal is done and
 /// the owner hears so.
-async fn merged(s: &Sender, thread_id: i64) {
+pub(crate) async fn merged(s: &Sender, thread_id: i64) {
     tracing::info!(thread = thread_id, "pull request merged on GitHub");
     match s.store.piece_merged(thread_id).await {
         Ok(Some(n)) => {

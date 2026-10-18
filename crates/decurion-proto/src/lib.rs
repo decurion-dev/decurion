@@ -2,6 +2,7 @@
 
 pub mod browser;
 pub mod context;
+pub mod deploy;
 pub mod goal;
 pub mod plan;
 pub mod preview;
@@ -15,7 +16,7 @@ use std::str::FromStr;
 /// built and how work is handed between computers. The hub refuses a runner
 /// built with a different number, so a PC and a cloud worker can never run
 /// the same work under different rules. Bump it whenever either changes.
-pub const RULES_VERSION: u32 = 9;
+pub const RULES_VERSION: u32 = 10;
 
 /// What every agent that may run an app's tests (builder, research, checker)
 /// is told about the private database in its box: `decurion-postgres` in the
@@ -308,6 +309,79 @@ pub struct App {
     /// itself when the day does.
     #[serde(default)]
     pub first_today: bool,
+    /// What Decurion may do for this app, as the owner set it on the app's
+    /// own Settings page.
+    #[serde(default)]
+    pub rules: AppRules,
+}
+
+/// The owner's rules for one app. Only the owner sets them (owner-only
+/// route, never a runner, agent or file in the repo). Merging and deploying
+/// still take one owner tap every time (PLAN.md D7): these only say whether
+/// Decurion shows that tap for this app. Every app starts at "PR only".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AppRules {
+    /// The owner may merge this app's pull requests from Decurion, one tap
+    /// each. Off: people merge on GitHub.
+    pub merge: bool,
+    /// The owner may deploy this app from Decurion, one tap each, running
+    /// [`AppRules::deploy_steps`].
+    pub deploy: bool,
+    /// The owner's deploy steps as typed, one command per line
+    /// ([`deploy::parse_steps`]). Empty when none are saved.
+    pub deploy_steps: String,
+    /// Where Open site goes once a deploy finishes ([`deploy::check_site`]).
+    pub deploy_site: Option<String>,
+    /// A goal's piece that passes its check goes to GitHub by itself. Off:
+    /// it waits in review for the owner's Accept.
+    pub send_checked: bool,
+    /// The app's live version holds patient or personal data, so agents are
+    /// told to use made-up data only. Decurion itself never handles it.
+    pub patient_data: bool,
+}
+
+impl Default for AppRules {
+    /// "PR only": Decurion pushes and opens pull requests, nothing more.
+    fn default() -> Self {
+        Self {
+            merge: false,
+            deploy: false,
+            deploy_steps: String::new(),
+            deploy_site: None,
+            send_checked: true,
+            patient_data: true,
+        }
+    }
+}
+
+impl AppRules {
+    /// The steps one Deploy tap runs: only when deploying is on and the
+    /// saved steps read cleanly. `None` means there is no Deploy button and
+    /// the hub refuses a deploy, whatever the request says.
+    pub fn deploy_steps(&self) -> Option<Vec<deploy::Step>> {
+        if !self.deploy {
+            return None;
+        }
+        deploy::parse_steps(&self.deploy_steps).ok()
+    }
+
+    /// "PR only" (merge and deploy off), "Full control" (both on), or a mix.
+    pub fn level(&self) -> RulesLevel {
+        match (self.merge, self.deploy) {
+            (false, false) => RulesLevel::PrOnly,
+            (true, true) => RulesLevel::Full,
+            _ => RulesLevel::Mix,
+        }
+    }
+}
+
+/// How far an app's rules go, for a one-word label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RulesLevel {
+    PrOnly,
+    Full,
+    Mix,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

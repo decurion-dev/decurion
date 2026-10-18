@@ -20,7 +20,7 @@ If the agent's summary lists problems it found along the way, tap **Fix what it 
 
 When you tap **Accept**, Decurion puts the work on your app's GitHub page as a new **branch**, a separate line of changes. Its name starts with `decurion/`, then the app, the number and a few words from the title, such as `decurion/shop-7-fix-login`. It uses this PC's own GitHub sign-in, the same one you use to push from this PC yourself, so you are not asked anything.
 
-Decurion only ever adds a new branch. It never changes your app's main branch, never overwrites a branch that is already there, and never merges. Merging is always yours.
+Decurion only ever adds a new branch. It never changes your app's main branch, never overwrites a branch that is already there, and never merges by itself. Merging is always yours: on GitHub, or, for an app whose rules are set to **Full control**, with one tap on **Merge** in Decurion (see [Merge from Decurion](#merge-from-decurion) below).
 
 1. Wait a moment. The card says **Sending to GitHub…** while it works.
 2. When it is done, you get a notice on your phone, and the card shows a button:
@@ -43,6 +43,16 @@ After a pull request is open, Decurion looks at it about every five minutes unti
 - **Review the fix like any other work.** When you accept it, Decurion adds it to the same pull request, on the same branch, and asks the reviewer to look again. It only ever adds on top of what is there: it never rewrites the branch, never opens a second pull request and never merges.
 
 Only one fix per pull request runs at a time. New comments that arrive while it runs wait for the next **Answer the comments**.
+
+## Merge from Decurion
+
+For an app you set to **Full control** (Settings, Apps, then the app), a pull request Decurion opened shows a **Merge** button on the board's Today row and on your phone. One tap merges it on GitHub. Nothing merges by itself, and no agent can tap it.
+
+Decurion merges only when GitHub says the pull request is ready: its checks passed, any review it needs is in, and nothing conflicts. Otherwise it tells you what it waits for, and you can still merge on GitHub. It merges exactly the version Decurion sent: if someone else added to the pull request since, merge it on GitHub instead.
+
+To merge, your GitHub token (Settings, GitHub) needs **Contents: Read and write** for that repo, as well as **Pull requests: Read and write**.
+
+Apps set to **PR only**, which is how every app starts, have no Merge button: you or your reviewer merge on GitHub.
 
 ## Let Decurion open the pull request for you
 
