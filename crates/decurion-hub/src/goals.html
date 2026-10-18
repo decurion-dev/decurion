@@ -896,6 +896,8 @@ D.setNewWork(fill => { openNewGoal(); newWork.fill(fill); });
 // Words left in the box from last time: show them rather than hide them (on a
 // phone, only on the list, so an open goal stays open).
 if ($("ng-prompt").value.trim() && (wide.matches || !location.hash.startsWith("#goal-"))) openNewGoal(false);
+// Other pages' New work buttons link here as /goals#new: open the one box.
+if (location.hash === "#new") openNewGoal();
 
 // ---------- selection ----------
 function selectFromHash() {
