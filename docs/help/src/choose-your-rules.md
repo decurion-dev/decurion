@@ -24,7 +24,9 @@ You will be able to change any rule later. When a request reaches your inbox, yo
 
 ## What is true today
 
-You do not set rules yet. Instead, every agent works in a sealed workspace:
+You set a few rules for each app on its page: whether Decurion may merge and deploy it, whether checked work goes to GitHub by itself, and whether its live version holds patient data. New apps start at **PR only**. See [Rules for each app](add-your-first-app.md#rules-for-each-app).
+
+You do not set the ask-me-first rules above yet. Instead, every agent works in a sealed workspace:
 
 - It sees only its own copy of your app's code.
 - It does not ask you for permission while it works.

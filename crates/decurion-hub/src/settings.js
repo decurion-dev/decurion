@@ -1,7 +1,7 @@
 // Decurion's settings, shared by the board and the phone: one Sign-ins list
 // with a light for every account (and "Sign in on this PC" for Claude), apps
-// (changing one, letting one go first today) and the websites their agents
-// may use, computers, accounts and caps, test keys,
+// (a short list, then one page per app with its rules, plan and money,
+// websites, files, name and folder), computers, accounts and caps, test keys,
 // the GitHub token, website sign-ins and paired phones, plus the usage
 // summary the board shows in its sidebar.
 //
@@ -17,19 +17,24 @@
 //   field with autofill and spellcheck off, are cleared after saving, and
 //   never come back except as their last four characters. They are never
 //   kept in the page's storage, put in a toast or logged.
-// - An app's Max plan changes only when the owner saves it in Edit; nothing
-//   here switches plans by itself.
+// - An app's Max plan changes only when the owner taps Save beside it on the
+//   app's page; nothing here switches plans by itself.
+// - An app's rules (merge, deploy, checked work going up by itself, patient
+//   data) change only on the owner's tap. The hub checks every change again,
+//   refuses Deploy without valid steps, and its words go next to the field.
 //
 // - Claude's sign-in never reaches this page: "Sign in on this PC" only
 //   starts it, shows Claude's own link if its page did not open, and sends
 //   the short code that page gives. Lights come from the hub as they are.
 //
 // Each area is its own tab (#settings/<tab>): a side list on the PC, a list
-// to tap into on the phone.
+// to tap into on the phone. Each app has its own page inside the Apps tab,
+// #settings/apps/<id>.
 //
 // Use: D.settings.mount(box, { refresh, onSignedOut, place, top }) once, then
 // D.settings.update({ apps, spend, accounts, workers }) after each load,
-// D.settings.show(tab) when the settings view opens or its address changes,
+// D.settings.show(part) when the settings view opens or its address changes
+// (part is what follows "#settings/": "apps" or "apps/3"),
 // D.settings.hide() when it closes, and D.settings.tick() on the page's
 // timer. top is shown above the phone's list of tabs.
 // D.settings.usage(el) draws the pay-per-use and Max plan summary into el.
@@ -44,8 +49,15 @@
   let apps = [], spend = null, accounts = null, workers = [], hasCloud = false;
   const siteDraft = {}, siteErr = {}, siteBusy = {}; // app id -> typed text, error, saving
   const sitesSaved = new Map();  // app id -> list the hub just stored
-  // An app's open Edit form: app id -> typed values, errors by field, saving.
+  const rulesSaved = new Map();  // app id -> rules the hub just stored
+  // An app's name and folder form: app id -> typed values (only once the
+  // owner types), errors by field, saving.
   const editing = {}, editErr = {}, editBusy = {}, starBusy = {};
+  // An app's rules: app id -> typed deploy steps, live site, reviewer and
+  // plan; errors by field; saving; the deploy steps opened before Deploy is on.
+  // saving holds what is on its way to the hub: "rules-3", "reviewer-3", "profile-3".
+  const rulesDraft = {}, rulesErr = {}, deployOpen = {};
+  const saving = new Set();
   let sitesSeq = 0, builtIn = null, devices = null;
   let conn = null;                // GET /phone/connection: the address phones use
   const sigs = {};
@@ -64,18 +76,19 @@
     return true;
   }
   // Nothing in a list is redrawn while the owner is typing in it.
-  const typingIn = (box) => { const a = document.activeElement; return a?.tagName === "INPUT" && box.contains(a); };
+  const typed = (e) => e?.tagName === "INPUT" || e?.tagName === "TEXTAREA";
+  const typingIn = (box) => { const a = document.activeElement; return typed(a) && box.contains(a); };
   // Re-renders without losing keyboard focus: focus is restored by data-key.
   function keepFocus(fn) {
     const was = document.activeElement;
     const key = was?.dataset?.key;
     let caret = null;
-    try { if (was?.tagName === "INPUT" && was.selectionStart != null) caret = [was.selectionStart, was.selectionEnd]; } catch (_) { /* no caret */ }
+    try { if (typed(was) && was.selectionStart != null) caret = [was.selectionStart, was.selectionEnd]; } catch (_) { /* no caret */ }
     fn();
     if (key && document.activeElement?.dataset?.key !== key) {
       const now = document.querySelector(`[data-key="${CSS.escape(key)}"]`);
       now?.focus({ preventScroll: true });
-      if (caret && now?.tagName === "INPUT") try { now.setSelectionRange(...caret); } catch (_) { /* no caret */ }
+      if (caret && typed(now)) try { now.setSelectionRange(...caret); } catch (_) { /* no caret */ }
     }
   }
   const focusKey = (key) => document.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
@@ -173,14 +186,15 @@
   const loading = (tag = "li") => (tag === "li" ? el("li", { className: "empty" }, "Loading…") : el("p", { className: "hint" }, "Loading…"));
 
   function build() {
-    // Apps
-    parts.appRows = el("ul", { className: "rows", id: "app-rows" }, loading());
+    // Apps: a short list, and one page per app (#settings/apps/<id>).
+    parts.appRows = el("ul", { className: "rows app-list", id: "app-rows" }, loading());
     parts.builtIn = el("details", { className: "fold", id: "sites-builtin", hidden: true },
       el("summary"), el("ul", { className: "builtin", "aria-label": "Always allowed websites" }));
     parts.sitesNote = el("div", { className: "sites-note", id: "sites-note", hidden: true },
       el("p", { className: "hint", id: "sites-hint" }, "Claude and the package stores (npm, PyPI, crates.io) are always allowed. An entry like stripe.com also covers its subdomains. Changes apply to the next piece of work."),
       parts.builtIn);
     parts.addApp = addAppForm();
+    parts.appPage = el("div", { className: "app-page", id: "app-page", hidden: true });
     // Computers
     parts.workerRows = el("ul", { className: "rows", id: "worker-rows" }, loading());
     parts.addCloud = el("a", { className: "btn", id: "add-cloud", href: "/cloud" });
@@ -215,9 +229,13 @@
       "sign-ins": card("sign-ins", "shield", "Sign-ins",
         "Every account Decurion signs in with, in one place. Green is fine, amber needs you soon, red needs you now. You get a reminder on your phone a week before a sign-in runs out.",
         parts.lightsNote, parts.claude, parts.lights),
-      apps: card("apps", "app", "Apps",
-        `Each app is a git checkout on ${here()}. Agents work on their own copy and never touch yours. An app can also have its own monthly cap on pay-per-use money, across Claude, ChatGPT and Grok.`,
-        parts.appRows, parts.sitesNote, parts.addApp),
+      // The list and the open app's page share the Apps tab, so the tab stays
+      // selected while an app's page is open.
+      apps: el("div", { className: "set-apps" },
+        parts.appList = card("apps", "app", "Apps",
+          `Tap an app to see and change its rules. Each app is a git checkout on ${here()}. Agents work on their own copy and never touch yours.`,
+          parts.appRows, parts.addApp),
+        parts.appPage),
       computers: card("computers", "cloud", "Computers",
         "Where agents work. Each piece of work runs on your PC or on a cloud worker, under the same rules, and can move between them at any time.",
         parts.workerRows, el("div", {}, parts.addCloud)),
@@ -228,7 +246,7 @@
         "Test keys reach this app's agents while they work. They are kept in Windows' secure store and shown again only as their last four characters. Live keys are refused.",
         parts.keys),
       github: card("github", "branch", "GitHub",
-        `When you accept work, Decurion sends it to the app's GitHub page as a new branch, using ${here()}'s own GitHub sign-in. With a GitHub token saved here, it also opens the pull request for you. Without one, you get a button that opens it in one tap. Decurion never merges: you do that on GitHub.`,
+        `When you accept work, Decurion sends it to the app's GitHub page as a new branch, using ${here()}'s own GitHub sign-in. With a GitHub token saved here, it also opens the pull request for you. Without one, you get a button that opens it in one tap. Decurion merges only when you tap Merge, for apps whose rules allow it. Otherwise you merge on GitHub.`,
         parts.github),
       "site-sign-ins": card("site-sign-ins", "globe", "Website sign-ins",
         "Let this app's agents check pages that need a sign-in. You sign in once, in a sign-in window on your PC or phone; the sign-in is kept on your PC and your password is never saved. Use test accounts only: an agent may be able to read part of what a website keeps.",
@@ -248,7 +266,7 @@
   // while hidden, so moving between tabs never loses what the owner typed.
   const TABS = [
     { id: "sign-ins", icon: "shield", name: "Sign-ins", about: "Every account Decurion uses" },
-    { id: "apps", icon: "app", name: "Apps", about: "Your apps, their websites and caps" },
+    { id: "apps", icon: "app", name: "Apps", about: "Your apps and the rules for each" },
     { id: "computers", icon: "cloud", name: "Computers", about: "Your PC and cloud workers" },
     { id: "accounts", icon: "money", name: "Accounts", about: "Max plans and pay-per-use money" },
     { id: "keys", icon: "key", name: "Test keys", about: "Keys agents use while testing" },
@@ -259,7 +277,14 @@
   ];
   // Older links used other names for some tabs.
   const OLD_NAMES = { spending: "accounts" };
-  let tabList = [], current = null, fromList = false;
+  // appOpen is the id of the app whose page is open (#settings/apps/<id>),
+  // as typed in the address; fromApps is true when the owner tapped into it
+  // from the list, so its way back steps back in history.
+  let tabList = [], current = null, fromList = false, appOpen = null, fromApps = false;
+  // From an app's page back to the list it was opened from, past the tabs
+  // stepped through on the way (pickTab counts them), or from a tab back to
+  // Settings' list on the phone.
+  const backToList = () => history.go(-1 - (appOpen != null ? history.state?.appDepth ?? 0 : 0));
   const tabIds = () => tabList.map((t) => t.id);
 
   function tabs(cards) {
@@ -280,8 +305,10 @@
       el("nav", { "aria-label": "Settings" }, el("ul", { className: "set-tabs" }, ...links)));
     // The phone's way back to the list. Coming from the list, it steps back
     // in history, so the back button and this link agree.
-    const back = phone() ? el("a", { className: "set-back", href: "#settings" }, icon("left"), "Settings") : null;
-    if (back) back.onclick = (e) => { if (fromList) { e.preventDefault(); history.back(); } };
+    // Inside an app's page it leads back to the list of apps instead.
+    const back = phone() ? el("a", { className: "set-back", href: "#settings" }, icon("left"), el("span", {}, "Settings")) : null;
+    if (back) back.onclick = (e) => { if (appOpen != null ? fromApps : fromList) { e.preventDefault(); backToList(); } };
+    parts.back = back;
     parts.panel = el("div", { className: "set-panel" }, back, ...tabList.map((t) => cards[t.id]));
     const box = el("div", { className: `settings${phone() ? " on-phone" : ""}` }, parts.index, parts.panel);
     parts.box = box;
@@ -291,17 +318,41 @@
   // Opens one tab, or on the phone the list when id is null. The PC always
   // has a tab open: the first one when none is asked for. stepped is true
   // when the owner moved here from inside Settings, not from a link elsewhere.
-  function select(id, stepped = false) {
+  // want is what follows "#settings/": a tab's id, "apps/<id>" for one
+  // app's page, or "apps/<id>/<tab>" for one tab of it.
+  function select(want, stepped = false) {
+    let [id, sub, part] = typeof want === "string" ? want.split("/") : [want];
     id = OLD_NAMES[id] ?? id;
-    if (!tabIds().includes(id)) id = phone() ? null : tabList[0]?.id ?? null;
+    if (!tabIds().includes(id)) { id = phone() ? null : tabList[0]?.id ?? null; sub = null; }
+    const app = id === "apps" && sub ? sub : null;
+    // Its tab: #settings/apps/<id> opens Rules.
+    if (app != null) {
+      appTab = appTabOf(part);
+      if (page && String(page.id) === app) page.tabs.select(appTab);
+    }
+    const wasApp = appOpen;
     if (id !== current) fromList = stepped && phone() && current === null && id !== null;
+    if (app !== appOpen) fromApps = stepped && current === "apps" && appOpen === null && app !== null;
     current = id;
+    appOpen = app;
     for (const t of tabList) {
       parts.cards[t.id].hidden = t.id !== id;
       if (t.id === id) parts.links[t.id].setAttribute("aria-current", "page");
       else parts.links[t.id].removeAttribute("aria-current");
     }
     parts.box?.classList.toggle("tab-open", id !== null);
+    if (parts.appList) { parts.appList.hidden = app != null; parts.appPage.hidden = app == null; }
+    if (parts.back) {
+      parts.back.href = app != null ? "#settings/apps" : "#settings";
+      parts.back.lastChild.textContent = app != null ? "Apps" : "Settings";
+    }
+    if (app !== wasApp) {
+      render();
+      // Focus follows the owner: to the app's name on its page, or back to
+      // its row in the list.
+      if (stepped && app != null) parts.appPage.querySelector("h2")?.focus({ preventScroll: true });
+      else if (stepped && wasApp != null) focusKey(`app-go-${wasApp}`);
+    }
     return id;
   }
   // A short status beside a tab's name, such as "2 need you" on Sign-ins.
@@ -368,7 +419,7 @@
       field(el("span", { className: "label" }, "Billing"),
         el("label", { className: "check" }, ppu, " Pay-per-use instead of a Max plan"),
         el("span", { className: "hint" }, "Billed by use, under the Claude pay-per-use cap. Switch any time.")),
-      el("div", { className: "full actions" }, btn, err));
+      el("div", { className: "full actions" }, btn, el("span", { className: "hint" }, "New apps start at PR only."), err));
     form.onsubmit = async (e) => {
       e.preventDefault();
       const n = name.value.trim(), p = path.value.trim();
@@ -381,7 +432,7 @@
       try {
         await D.api("/apps", { method: "POST", body: JSON.stringify({ name: n, repo_path: p, profile: profile.value, pay_per_use: ppu.checked }) });
         form.reset();
-        D.toast(`Added ${n}. You can start work on it now.`);
+        D.toast(`Added ${n} at PR only. You can start work on it now.`);
         await opts.refresh();
         loadKeys();
         loadSignIns();
@@ -428,16 +479,18 @@
     return b;
   }
 
-  // ---------- Change an app ----------
+  // ---------- An app's name and folder ----------
   // Only what changed is sent. The hub checks everything again and says in
   // plain words what to fix; its answer goes next to the field it is about.
+  // What the owner types is kept in editing, so a redraw never loses it.
   function editForm(a) {
-    const d = editing[a.id], errs = editErr[a.id] ?? {};
+    const d = editing[a.id] ?? { name: a.name, repo_path: a.repo_path };
+    const errs = editErr[a.id] ?? {};
     const busy = !!editBusy[a.id] || D.offline;
     const key = (k) => `edit-${k}-${a.id}`;
     const errEl = (k) => el("span", { className: "field-error", id: `${key(k)}-err`, role: "alert" }, errs[k] ?? "");
     const cleared = (k, input, err) => () => {
-      d[k] = input.value;
+      editing[a.id] = { ...(editing[a.id] ?? d), [k]: input.value };
       if (errs[k]) { delete errs[k]; err.textContent = ""; input.removeAttribute("aria-invalid"); }
     };
     const text = (k, attrs) => {
@@ -453,12 +506,6 @@
     name.oninput = cleared("name", name, nameErr);
     const path = text("repo_path", {}), pathErr = errEl("repo_path");
     path.oninput = cleared("repo_path", path, pathErr);
-    const reviewer = text("reviewer", { maxLength: 40, placeholder: "GitHub name, like param-k" }), reviewerErr = errEl("reviewer");
-    reviewer.oninput = cleared("reviewer", reviewer, reviewerErr);
-    const profile = el("select", { id: key("profile"), dataset: { key: key("profile") }, "aria-describedby": `${key("profile")}-hint` },
-      el("option", { value: "A" }, "Max plan A"), el("option", { value: "B" }, "Max plan B"));
-    profile.value = d.profile;
-    profile.onchange = () => { d.profile = profile.value; };
     const pick = el("button", { type: "button", className: "btn", dataset: { key: key("pick") }, hidden: typeof D.pickFolder !== "function" }, icon("app"), "Choose folder");
     pick.onclick = async () => {
       if (typeof D.pickFolder !== "function") return;
@@ -471,36 +518,27 @@
     };
     const save = el("button", { type: "submit", className: "btn primary", disabled: busy, dataset: { key: key("save") } }, busy && !D.offline ? "Saving…" : "Save");
     const cancel = el("button", { type: "button", className: "btn", dataset: { key: key("cancel") } }, "Cancel");
-    cancel.onclick = () => { delete editing[a.id]; delete editErr[a.id]; render(); focusKey(`open-edit-${a.id}`); };
+    cancel.onclick = () => { delete editing[a.id]; delete editErr[a.id]; sigs["app-name"] = ""; render(); focusKey(key("name")); };
 
-    const form = el("form", { className: "form-grid row-edit", id: `app-edit-${a.id}`, noValidate: true, "aria-label": `Change ${a.name}` },
+    const form = el("form", { className: "form-grid", id: `app-edit-${a.id}`, noValidate: true, "aria-label": `Change ${a.name}'s name and folder` },
       field(el("label", { htmlFor: key("name") }, "Name"), name, hint("name", "1 to 40 letters, digits, - or _. No spaces."), nameErr),
       field(el("label", { htmlFor: key("repo_path") }, "Folder"), el("div", { className: "path-row" }, path, pick),
         hint("repo_path", `The full path to the app's git folder on ${here()}.`), pathErr),
-      field(el("label", { htmlFor: key("profile") }, "Claude Max plan"), profile,
-        hint("profile", a.pay_per_use
-          ? "This app uses pay-per-use now. This is the plan it goes back to when you switch it."
-          : "New work uses this plan. Work already running keeps its plan.")),
-      field(el("label", { htmlFor: key("reviewer") }, "Who reviews its pull requests"), reviewer,
-        hint("reviewer", "Optional. They are asked to review each pull request. Leave it empty for no one."), reviewerErr),
       el("div", { className: "full actions" }, save, cancel, errs.all ? el("span", { className: "field-error", role: "alert" }, errs.all) : null));
 
     form.onsubmit = async (ev) => {
       ev.preventDefault();
       if (editBusy[a.id]) return;
       if (D.offline) { editErr[a.id] = { all: "Your PC isn't answering. Try again when it's back." }; render(); return; }
-      const n = name.value.trim(), p = path.value.trim(), rv = reviewer.value.trim().replace(/^@/, "");
+      const n = name.value.trim(), p = path.value.trim();
       const bad = {};
       if (!/^[A-Za-z0-9_-]{1,40}$/.test(n)) bad.name = n ? "Use only letters, digits, - or _, up to 40." : "Give the app a name.";
       if (!/^([A-Za-z]:[\\/]|\/)/.test(p) || /[,"]/.test(p)) bad.repo_path = p ? "Use the full path, like C:\\path\\to\\repo, without commas or quotes." : "Enter the folder's full path.";
-      if (rv && !(rv.length <= 39 && /^[A-Za-z0-9](-?[A-Za-z0-9])*$/.test(rv))) bad.reviewer = "Type their GitHub name, like param-k. Only letters, digits and single dashes.";
       const first = Object.keys(bad)[0];
       if (first) { editErr[a.id] = bad; render(); focusKey(key(first)); return; }
       const body = {};
       if (n !== a.name) body.name = n;
       if (p !== a.repo_path) body.repo_path = p;
-      if (profile.value !== a.profile) body.profile = profile.value;
-      if (rv !== (a.reviewer ?? "")) body.reviewer = rv || null;
       if (!Object.keys(body).length) {
         delete editing[a.id]; delete editErr[a.id]; render();
         D.toast(`Nothing to save. ${a.name} is as it was.`);
@@ -512,6 +550,7 @@
       try {
         const saved = await D.send(`/apps/${a.id}/edit`, body);
         delete editing[a.id];
+        keepSaved(a, saved);
         D.toast(savedText(a, saved ?? { ...a, ...body }, body));
         await opts.refresh();
         // Test keys and sign-ins list apps by name.
@@ -519,7 +558,7 @@
       } catch (e) {
         if (e.signedOut) { signedOut(); return; }
         const m = e.message;
-        const k = /already called|rename/i.test(m) ? "name" : /reviewer/i.test(m) ? "reviewer"
+        const k = /already called|rename/i.test(m) ? "name"
           : /folder|repo_path/i.test(m) ? "repo_path" : /name/i.test(m) ? "name" : "all";
         const words = k === "all" ? `Couldn't save ${a.name}. ${m}`
           : k === "repo_path" && /^repo_path/.test(m) ? "Use the full path, without commas or quotes."
@@ -533,6 +572,13 @@
       }
     };
     return form;
+  }
+
+  // The hub answers a change with the whole app: show it straight away,
+  // before the next load.
+  function keepSaved(a, saved) {
+    if (!saved || saved.id !== a.id) return;
+    for (const x of apps) if (x.id === a.id) Object.assign(x, saved);
   }
 
   // What the owner gets from a saved change, in their words.
@@ -549,59 +595,439 @@
     return `Saved. ${said.join(" ")}`;
   }
 
+  // The reviewer and the Max plan, saved from the app's page through the
+  // same change as the name and folder (POST /apps/{id}/edit).
+  async function saveField(a, k, body) {
+    const tag = `${k}-${a.id}`;
+    if (saving.has(tag)) return;
+    const errs = (rulesErr[a.id] ??= {});
+    if (D.offline) { errs[k] = "Your PC isn't answering. Try again when it's back."; render(); return; }
+    saving.add(tag);
+    delete errs[k];
+    render();
+    try {
+      const saved = await D.send(`/apps/${a.id}/edit`, body);
+      if (rulesDraft[a.id]) delete rulesDraft[a.id][k];
+      keepSaved(a, saved);
+      D.toast(savedText(a, saved ?? { ...a, ...body }, body));
+      await opts.refresh();
+    } catch (e) {
+      if (e.signedOut) { signedOut(); return; }
+      errs[k] = k === "reviewer" ? e.message : `Couldn't change the plan. ${e.message}`;
+    } finally {
+      saving.delete(tag);
+      render();
+      if (errs[k]) focusKey(`rule-${k}-${a.id}`);
+    }
+  }
+
+  // ---------- Rules for each app ----------
+  // What Decurion may do for one app, set only by the owner's tap. PR only
+  // is where every app starts: Decurion pushes and opens pull requests,
+  // nothing more. Full control adds a Merge button on its pull requests and
+  // a Deploy button after a merge, each one tap at a time. The hub checks
+  // every change again; Deploy needs saved steps it accepts.
+  const RULES_START = { merge: false, deploy: false, deploy_steps: "", deploy_site: null, send_checked: true, patient_data: true };
+  const rulesOf = (a) => ({ ...RULES_START, ...(a.rules ?? {}) });
+  const modeOf = (r) => (r.merge && r.deploy ? "full" : !r.merge && !r.deploy ? "pr" : "mix");
+  const MODE = { pr: ["branch", "PR only"], full: ["done", "Full control"], mix: ["settings", "Your own mix"] };
+  const ruleChip = (r) => { const [ic, words] = MODE[modeOf(r)]; return el("span", { className: `pill rule-${modeOf(r)}` }, icon(ic), words); };
+  const dataChip = () => el("span", { className: "pill" }, icon("shield"), "Patient data");
+  const hasSteps = (r) => /\S/.test(r.deploy_steps ?? "");
+
+  // Sends a change to the app's rules. The hub answers with the whole app;
+  // its rules are kept until a load newer than the change arrives.
+  async function setRules(a, body, words) {
+    const tag = `rules-${a.id}`;
+    if (saving.has(tag)) return false;
+    if (D.offline) { D.toast("Your PC isn't answering. Try again when it's back.", "alert"); return false; }
+    const errs = (rulesErr[a.id] ??= {});
+    const deploying = "deploy_steps" in body || "deploy_site" in body;
+    saving.add(tag);
+    if (deploying) { delete errs.steps; delete errs.site; }
+    render();
+    try {
+      const saved = await D.send(`/apps/${a.id}/rules`, body);
+      const rules = saved?.rules ?? { ...rulesOf(a), ...body };
+      sitesSeq++;
+      rulesSaved.set(a.id, rules);
+      for (const x of apps) if (x.id === a.id) x.rules = rules;
+      D.toast(words(rules));
+      opts.refresh();
+      return true;
+    } catch (e) {
+      if (e.signedOut) { signedOut(); return false; }
+      if (deploying) errs[/site|https|address/i.test(e.message) && !/step|line/i.test(e.message) ? "site" : "steps"] = e.message;
+      else D.toast(`Couldn't change ${a.name}'s rules. ${e.message}`, "alert");
+      return false;
+    } finally {
+      saving.delete(tag);
+      render();
+    }
+  }
+
+  function prOnly(a) {
+    delete deployOpen[a.id];
+    return setRules(a, { merge: false, deploy: false },
+      () => `${a.name} is at PR only. Decurion opens pull requests, and you or your reviewer merge on GitHub.`);
+  }
+  // Full control needs deploy steps first: without saved ones, Merge goes
+  // on and the steps open, asking for them.
+  async function fullControl(a, r) {
+    if (hasSteps(r)) {
+      return setRules(a, { merge: true, deploy: true },
+        () => `${a.name} has full control. Its finished pull requests get a Merge button, and merged work a Deploy button.`);
+    }
+    deployOpen[a.id] = true;
+    if (!r.merge) await setRules(a, { merge: true }, () => `Merge is on for ${a.name}. Add its deploy steps below to turn Deploy on too.`);
+    else render();
+    focusKey(`rule-steps-${a.id}`);
+  }
+  function tapDeploy(a, r) {
+    if (r.deploy) {
+      delete deployOpen[a.id];
+      return setRules(a, { deploy: false }, () => `${a.name} has no Deploy button now. Its steps are kept.`);
+    }
+    if (deployOpen[a.id]) { delete deployOpen[a.id]; delete rulesErr[a.id]?.steps; delete rulesErr[a.id]?.site; render(); return; }
+    if (hasSteps(r)) return setRules(a, { deploy: true }, () => `${a.name} can be deployed from Decurion now. After a merge, one tap runs its steps.`);
+    deployOpen[a.id] = true;
+    render();
+    focusKey(`rule-steps-${a.id}`);
+  }
+
+  // One rule: its name, why it matters, and a switch.
+  function ruleSwitch(a, k, title, why, on, busy, onTap) {
+    const id = `rule-${k}-${a.id}`;
+    const b = el("button", { type: "button", className: "switch rule-sw", role: "switch", "aria-checked": on ? "true" : "false",
+      "aria-labelledby": `${id}-l`, "aria-describedby": `${id}-d`, dataset: { key: id }, disabled: busy }, el("span", { className: "track" }));
+    b.onclick = onTap;
+    return el("div", { className: "rule-row" },
+      el("div", { className: "rule-txt" }, el("b", { id: `${id}-l` }, title), el("span", { className: "hint", id: `${id}-d` }, why)),
+      b);
+  }
+
+  function rulesCard(a) {
+    const r = rulesOf(a);
+    const mode = modeOf(r);
+    const busy = saving.has(`rules-${a.id}`) || D.offline;
+    const errs = rulesErr[a.id] ?? {};
+    const draft = (rulesDraft[a.id] ??= {});
+    const opt = (m) => {
+      const b = el("button", { type: "button", className: "rules-opt", "aria-pressed": mode === m ? "true" : "false",
+        dataset: { key: `rule-mode-${m}-${a.id}` }, disabled: busy }, MODE[m][1]);
+      b.onclick = () => (m === "pr" ? prOnly(a) : fullControl(a, r));
+      return b;
+    };
+    const top = el("div", { className: "rules-top" },
+      el("div", { className: "rules-seg", role: "group", "aria-label": `Rules for ${a.name}` }, opt("pr"), opt("full")),
+      el("span", { className: mode === "mix" ? "rules-mix" : "hint" }, mode === "mix" ? "Your own mix"
+        : mode === "pr" ? "Decurion pushes and opens pull requests. Nothing more."
+          : "Decurion may also merge and deploy, one tap each."));
+
+    const merge = ruleSwitch(a, "merge", "Merge from Decurion", r.merge
+      ? "Finished pull requests get a Merge button. One tap merges, only once GitHub says the checks passed and nothing conflicts."
+      : "Off: you or your reviewer merge on GitHub. On: finished pull requests get a Merge button.", r.merge, busy,
+    () => setRules(a, { merge: !r.merge }, () => (r.merge
+      ? `You or your reviewer merge ${a.name}'s pull requests on GitHub now.`
+      : `${a.name}'s finished pull requests get a Merge button now.`)));
+
+    const open = r.deploy || !!deployOpen[a.id];
+    const deploy = ruleSwitch(a, "deploy", "Deploy from Decurion", r.deploy
+      ? `After a merge you get a Ready to deploy card. One tap runs the steps below on ${here()}.`
+      : "Off: no Deploy button. On: after a merge, one tap runs the steps you save here.", r.deploy, busy, () => tapDeploy(a, r));
+    let steps = null;
+    if (open) {
+      const sk = `rule-steps-${a.id}`, wk = `rule-site-${a.id}`;
+      const ta = el("textarea", { id: sk, className: "mono steps", rows: 4, autocomplete: "off", autocapitalize: "off", maxLength: 2000,
+        value: draft.steps ?? r.deploy_steps ?? "", placeholder: "npm ci\nnpm run deploy", dataset: { key: sk },
+        "aria-describedby": `${sk}-hint ${sk}-err`, "aria-invalid": errs.steps ? "true" : null });
+      ta.spellcheck = false;
+      const site = el("input", { id: wk, type: "url", inputMode: "url", autocomplete: "off", autocapitalize: "off", maxLength: 300,
+        value: draft.site ?? r.deploy_site ?? "", placeholder: "https://app.example.com", dataset: { key: wk },
+        "aria-describedby": `${wk}-hint ${wk}-err`, "aria-invalid": errs.site ? "true" : null });
+      site.spellcheck = false;
+      const stepsErr = el("span", { className: "field-error", id: `${sk}-err`, role: "alert" }, errs.steps ?? "");
+      const siteErrEl = el("span", { className: "field-error", id: `${wk}-err`, role: "alert" }, errs.site ?? "");
+      const clear = (k, input, err) => () => {
+        draft[k] = input.value;
+        if (errs[k]) { delete errs[k]; err.textContent = ""; input.removeAttribute("aria-invalid"); }
+      };
+      ta.oninput = clear("steps", ta, stepsErr);
+      site.oninput = clear("site", site, siteErrEl);
+      const save = el("button", { type: "submit", className: "btn primary", dataset: { key: `rule-deploy-save-${a.id}` }, disabled: busy },
+        saving.has(`rules-${a.id}`) ? "Saving…" : r.deploy ? "Save" : "Save and turn on");
+      let cancel = null;
+      if (!r.deploy) {
+        cancel = el("button", { type: "button", className: "btn", dataset: { key: `rule-deploy-cancel-${a.id}` } }, "Cancel");
+        cancel.onclick = () => { delete deployOpen[a.id]; delete draft.steps; delete draft.site; delete errs.steps; delete errs.site; render(); focusKey(`rule-deploy-${a.id}`); };
+      }
+      steps = el("form", { className: "deploy-steps", noValidate: true, "aria-label": `Deploy steps for ${a.name}` },
+        r.deploy ? null : el("div", { className: "notice" }, icon("tool"),
+          el("span", { className: "grow" }, "Type the steps that deploy this app, then tap Save and turn on. Decurion can't deploy without them.")),
+        el("div", { className: "field" }, el("label", { htmlFor: sk }, "Deploy steps"), ta,
+          el("span", { className: "hint", id: `${sk}-hint` }, "One command per line, the same ones you'd type in the app's folder. Up to 8."), stepsErr),
+        el("div", { className: "field" }, el("label", { htmlFor: wk }, "Live site"), site,
+          el("span", { className: "hint", id: `${wk}-hint` }, "Where Open site goes when a deploy finishes. Optional."), siteErrEl),
+        el("div", { className: "actions" }, save, cancel));
+      steps.onsubmit = async (ev) => {
+        ev.preventDefault();
+        const text = ta.value.replace(/\r/g, "").replace(/\s+$/, "");
+        const live = site.value.trim();
+        if (!/\S/.test(text)) { errs.steps = "Type at least one step, such as npm run deploy."; rulesErr[a.id] = errs; render(); focusKey(sk); return; }
+        if (live && !/^https:\/\//i.test(live)) { errs.site = "The live site must start with https://, like https://app.example.com."; rulesErr[a.id] = errs; render(); focusKey(wk); return; }
+        const was = r.deploy;
+        const ok = await setRules(a, { deploy: true, deploy_steps: text, deploy_site: live || null }, () => (was
+          ? `Saved ${a.name}'s deploy steps.`
+          : `${a.name} can be deployed from Decurion now. After a merge, one tap runs these steps.`));
+        if (ok) { delete deployOpen[a.id]; delete draft.steps; delete draft.site; render(); }
+        else focusKey(rulesErr[a.id]?.site ? wk : sk);
+      };
+    }
+
+    const sent = ruleSwitch(a, "send", "Checked work goes to GitHub by itself",
+      "A piece of a goal you approved goes up as a pull request once the checker passes it. Off: it waits for your Accept.", r.send_checked, busy,
+      () => setRules(a, { send_checked: !r.send_checked }, () => (r.send_checked
+        ? `Checked pieces of ${a.name}'s goals wait for your Accept now.`
+        : `Checked pieces of ${a.name}'s goals go to GitHub by themselves now.`)));
+    const data = ruleSwitch(a, "data", "Its live version holds patient data",
+      "Agents are told to use made-up data only and never real records. Decurion never sees patient data either way.", r.patient_data, busy,
+      () => setRules(a, { patient_data: !r.patient_data }, () => (r.patient_data
+        ? `${a.name} is marked as holding no patient data.`
+        : `${a.name}'s agents are told to use made-up data only.`)));
+
+    return tabCard("What Decurion may do for this app. Agents can never change these.",
+      top, merge, deploy, steps, sent, data, reviewerField(a), alwaysOn());
+  }
+
+  // Who reviews the app's pull requests: asked to review each one.
+  function reviewerField(a) {
+    const k = `rule-reviewer-${a.id}`, tag = `reviewer-${a.id}`;
+    const errs = rulesErr[a.id] ?? {};
+    const draft = (rulesDraft[a.id] ??= {});
+    const busy = saving.has(tag) || D.offline;
+    const input = el("input", { id: k, type: "text", autocomplete: "off", autocapitalize: "off", maxLength: 40,
+      placeholder: "GitHub name, like param-k", value: draft.reviewer ?? a.reviewer ?? "", dataset: { key: k },
+      "aria-describedby": `${k}-hint ${k}-err`, "aria-invalid": errs.reviewer ? "true" : null });
+    input.spellcheck = false;
+    const err = el("span", { className: "field-error", id: `${k}-err`, role: "alert" }, errs.reviewer ?? "");
+    const same = () => input.value.trim().replace(/^@/, "") === (a.reviewer ?? "");
+    const save = el("button", { type: "submit", className: "btn", dataset: { key: `${k}-save` }, disabled: busy || same() },
+      saving.has(tag) ? "Saving…" : "Save");
+    input.oninput = () => {
+      draft.reviewer = input.value;
+      save.disabled = D.offline || saving.has(tag) || same();
+      if (errs.reviewer) { delete errs.reviewer; err.textContent = ""; input.removeAttribute("aria-invalid"); }
+    };
+    const form = el("form", { className: "rule-field", noValidate: true },
+      el("div", { className: "field" }, el("label", { htmlFor: k }, "Who reviews its pull requests"),
+        el("div", { className: "cap-row" }, input, save),
+        el("span", { className: "hint", id: `${k}-hint` }, "Optional. They are asked to review each pull request. Leave it empty for no one."), err));
+    form.onsubmit = (ev) => {
+      ev.preventDefault();
+      const rv = input.value.trim().replace(/^@/, "");
+      if (rv && !(rv.length <= 39 && /^[A-Za-z0-9](-?[A-Za-z0-9])*$/.test(rv))) {
+        (rulesErr[a.id] ??= {}).reviewer = "Type their GitHub name, like param-k. Only letters, digits and single dashes.";
+        render(); focusKey(k); return;
+      }
+      if (rv === (a.reviewer ?? "")) return;
+      saveField(a, "reviewer", { reviewer: rv || null });
+    };
+    return form;
+  }
+
+  // ---------- An app's page ----------
+  // The style guide's rule: one thing at a time. Under the app's name sits a
+  // row of tabs (D.tabs), one per part, Rules first; each tab has its own
+  // link, #settings/apps/<id>/<tab>. The page is built once while the app is
+  // open: switching tabs only hides and shows panels, and new data redraws
+  // only the panel it changes, so nothing the owner typed is lost.
+  const APP_TABS = [
+    { id: "rules", label: "Rules" },
+    { id: "money", label: "Plan and money" },
+    { id: "websites", label: "Websites" },
+    { id: "files", label: "Files" },
+    { id: "name", label: "Name and folder" },
+  ];
+  const appTabOf = (t) => (APP_TABS.some((x) => x.id === t) ? t : "rules");
+  let page = null;        // the open app's { id, head, panels, tabs }
+  let appTab = "rules";   // the open tab, as the address says
+
+  // One tab's box, with a line saying what it holds.
+  function tabCard(about, ...body) {
+    return el("section", { className: "scard live tab-card" }, about ? el("p", { className: "tab-about" }, about) : null, ...body);
+  }
+
+  function pageFor(id) {
+    if (page?.id === id) return page;
+    const panels = Object.fromEntries(APP_TABS.map((t) => [t.id, el("div", { className: "app-tab" })]));
+    const head = el("div", { className: "app-head-box" });
+    const tabs = D.tabs(APP_TABS.map((t) => ({ id: t.id, label: t.label, panel: panels[t.id] })),
+      { label: "Parts of this app", selected: appTab, onPick: pickTab });
+    page = { id, head, panels, tabs };
+    for (const k of Object.keys(sigs)) if (k.startsWith("app-")) delete sigs[k];
+    fill(parts.appPage, head, tabs.el, ...Object.values(panels));
+    return page;
+  }
+
+  // The owner tapped a tab: give it its own address, so the back button
+  // comes back to it. appDepth counts the tabs stepped through since the
+  // app's page opened, so "‹ Apps" can step back past them to the list.
+  function pickTab(tab) {
+    if (tab === appTab) return;
+    appTab = tab;
+    const at = `#settings/apps/${appOpen}/${tab}`;
+    try { history.pushState({ appDepth: (history.state?.appDepth ?? 0) + 1 }, "", at); } catch (_) { location.hash = at; }
+    // A tab opens at its top.
+    window.scrollTo(0, 0);
+  }
+
+  function appHead(a) {
+    let back = null;
+    // The phone has its own way back above the page.
+    if (!phone()) {
+      back = el("a", { className: "set-back", href: "#settings/apps", dataset: { key: "app-back" } }, icon("left"), "Apps");
+      back.onclick = (e) => { if (fromApps) { e.preventDefault(); backToList(); } };
+    }
+    const r = rulesOf(a);
+    return el("header", { className: "app-head" }, back,
+      el("div", { className: "app-title" }, el("h2", { id: "h-app-page", tabIndex: -1 }, a.name),
+        el("span", { className: "rule-chips" }, ruleChip(r), r.patient_data ? dataChip() : null)),
+      el("span", { className: "mono app-path" }, a.repo_path));
+  }
+
+  // The Max plan, pay-per-use, the app's own cap and going first today.
+  function moneyCard(a, sp) {
+    const k = `rule-profile-${a.id}`, tag = `profile-${a.id}`;
+    const errs = rulesErr[a.id] ?? {};
+    const draft = (rulesDraft[a.id] ??= {});
+    const busy = saving.has(tag) || D.offline;
+    const plan = el("select", { id: k, dataset: { key: k }, "aria-describedby": `${k}-hint ${k}-err` },
+      el("option", { value: "A" }, "Max plan A"), el("option", { value: "B" }, "Max plan B"));
+    plan.value = draft.profile ?? a.profile;
+    const save = el("button", { type: "button", className: "btn", dataset: { key: `${k}-save` }, disabled: busy || plan.value === a.profile },
+      saving.has(tag) ? "Saving…" : "Save plan");
+    plan.onchange = () => { draft.profile = plan.value; save.disabled = D.offline || saving.has(tag) || plan.value === a.profile; };
+    save.onclick = () => { if (plan.value !== a.profile) saveField(a, "profile", { profile: plan.value }); };
+
+    const ppu = el("button", { type: "button", className: "btn", dataset: { key: `ppu-${a.id}` } },
+      icon(a.pay_per_use ? "ai" : "money"), a.pay_per_use ? `Switch to Max plan ${a.profile}` : "Switch to pay-per-use");
+    ppu.disabled = D.offline;
+    ppu.onclick = async () => {
+      ppu.disabled = true;
+      try {
+        await D.api(`/apps/${a.id}/pay-per-use`, { method: "POST", body: JSON.stringify({ on: !a.pay_per_use }) });
+        D.toast(a.pay_per_use ? `${a.name} now uses Max plan ${a.profile}.` : `${a.name} now uses pay-per-use.`);
+        await opts.refresh();
+      } catch (e) { if (e.signedOut) { signedOut(); return; } D.toast(`Couldn't switch ${a.name}. ${e.message}`, "alert"); ppu.disabled = false; }
+    };
+    const spent = sp && (sp.spent_usd > 0 || sp.cap_usd != null)
+      ? `Pay-per-use this month: ${D.money(sp.spent_usd)}${sp.cap_usd != null ? ` of its own ${D.money(sp.cap_usd)} cap` : ""}.` : null;
+    return tabCard(a.pay_per_use
+      ? `Uses Claude pay-per-use now, under its caps. An app can have its own monthly cap on pay-per-use money, across Claude, ChatGPT and Grok.`
+      : `Uses Max plan ${a.profile} now. An app can have its own monthly cap on pay-per-use money, across Claude, ChatGPT and Grok.`,
+      el("div", { className: "plan-grid" },
+        el("div", { className: "field" }, el("label", { htmlFor: k }, "Claude Max plan"),
+          el("div", { className: "cap-row" }, plan, save),
+          el("span", { className: "hint", id: `${k}-hint` }, a.pay_per_use
+            ? "This app uses pay-per-use now. This is the plan it goes back to when you switch it."
+            : "New work uses this plan. Work already running keeps its plan."),
+          el("span", { className: "field-error", id: `${k}-err`, role: "alert" }, errs.profile ?? "")),
+        appCap(a)),
+      spent ? el("p", { className: "hint" }, spent) : null,
+      el("div", { className: "app-acts" }, ppu, starButton(a)));
+  }
+
+  function websitesCard(a) {
+    parts.sitesNote.hidden = false;
+    return tabCard("Agents on this app reach only the built-in websites and the ones you add here.",
+      sitesBlock(a), parts.sitesNote);
+  }
+
+  // Files for agents, drawn by /files.js when the page loads it. Without it
+  // the card is left out. The panel is the same element on every redraw.
+  function filesCard(a) {
+    if (!window.DFiles?.panel) return tabCard("Files can't be added from this screen. Open Settings on your PC.");
+    return tabCard("Briefs, specs and pictures agents read while they work on this app.",
+      window.DFiles.panel({ appId: a.id }));
+  }
+
+  // Walls that hold for every app, whatever its rules. Read only.
+  const ALWAYS = [
+    "Each piece of work runs in its own sealed box.",
+    "Agents never hold your GitHub, AWS or deploy sign-ins.",
+    "Agents reach only Claude, the package stores and this app's websites.",
+    "Nothing merges or deploys without your tap, and agents can never do either.",
+    "Nothing is ever pushed straight to your main branch.",
+    "Pay-per-use spending stops at your caps.",
+  ];
+  function alwaysOn() {
+    return el("div", { className: "always-on", role: "group", "aria-labelledby": "h-always-on" },
+      el("h3", { id: "h-always-on" }, "Always on, for every app"),
+      el("p", { className: "hint" }, "These can't be switched off."),
+      el("ul", { className: "locks" }, ...ALWAYS.map((t) => el("li", {}, icon("lock"), el("span", {}, t)))));
+  }
+
+  // The list of apps: one row each, a link to its page.
+  function appRow(a) {
+    const r = rulesOf(a);
+    return el("li", { className: "go-row" },
+      el("a", { href: `#settings/apps/${a.id}`, dataset: { key: `app-go-${a.id}` } },
+        el("span", { className: "ic" }, icon("app")),
+        el("span", { className: "who" }, el("b", {}, a.name),
+          el("span", { className: "rule-chips" },
+            el("span", { className: "pill queued" }, icon(a.pay_per_use ? "money" : "ai"), a.pay_per_use ? "Pay-per-use" : `Max plan ${a.profile}`),
+            ruleChip(r), r.patient_data ? dataChip() : null,
+            a.reviewer ? el("span", { className: "pill queued" }, `${a.reviewer} reviews`) : null)),
+        icon("right")));
+  }
+
+  function drawAppPage() {
+    const box = parts.appPage;
+    const a = apps.find((x) => String(x.id) === appOpen) ?? null;
+    if (!a) {
+      page = null;
+      if (changed("app-gone", [appOpen])) {
+        fill(box, el("section", { className: "scard wide app-gone" },
+          el("h2", { tabIndex: -1 }, "This app isn't here any more."),
+          el("p", {}, el("a", { className: "btn", href: "#settings/apps" }, icon("left"), "Back to Apps"))));
+      }
+      return;
+    }
+    delete sigs["app-gone"];
+    const pg = pageFor(a.id);
+    const id = a.id;
+    const sp = (spend?.apps ?? []).find((x) => x.app_id === id) ?? null;
+    // Each part redraws only when its own data changed. A cap being typed
+    // would be lost on redraw, so its tab waits; anything else being typed
+    // is kept in a draft, and its field gets focus back.
+    const draw = (name, sig, build) => {
+      const box = name === "head" ? pg.head : pg.panels[name];
+      const key = document.activeElement?.dataset?.key ?? "";
+      if (typingIn(box) && !/^(site-|edit-|rule-)/.test(key)) return;
+      if (!changed(`app-${name}`, [id, D.offline, ...sig])) return;
+      keepFocus(() => fill(box, build()));
+    };
+    draw("head", [a.name, a.rules, a.repo_path], () => appHead(a));
+    draw("rules", [a.name, a.rules, a.reviewer, rulesErr[id], [...saving], deployOpen[id]], () => rulesCard(a));
+    draw("money", [a.name, a.profile, a.pay_per_use, a.monthly_cap_usd, a.first_today, sp, starBusy[id], rulesErr[id]?.profile,
+      saving.has(`profile-${id}`)], () => moneyCard(a, sp));
+    draw("websites", [a.name, a.sites, siteErr[id], siteBusy[id]], () => websitesCard(a));
+    draw("files", [!!window.DFiles], () => filesCard(a));
+    draw("name", [a.name, a.repo_path, !!editing[id], editErr[id], editBusy[id]], () => tabCard(null, editForm(a)));
+  }
+
   // ---------- Drawing from the page's data ----------
   function render() {
     if (!root || !shown || !loaded) return;
     if (!builtIn) loadBuiltIn();
-    parts.sitesNote.hidden = !apps.length;
     parts.addApp.querySelector("#app-path-pick").hidden = typeof D.pickFolder !== "function";
-    const appSpend = Object.fromEntries((spend?.apps ?? []).map((x) => [x.app_id, x]));
-    // A half-typed cap would be lost on redraw; a website or an app change
-    // being typed is kept in siteDraft or editing and its field gets focus back.
-    const typingKey = document.activeElement?.dataset?.key ?? "";
-    const typingCap = typingIn(parts.appRows) && !typingKey.startsWith("site-") && !typingKey.startsWith("edit-");
-    if (!typingCap && changed("set-apps", [apps, spend?.apps, D.offline, siteErr, siteBusy, Object.keys(editing), editErr, editBusy, starBusy])) {
-      keepFocus(() => {
-        parts.appRows.replaceChildren(...(apps.length ? apps.map((a) => {
-          const b = el("button", { type: "button", className: "btn sm", dataset: { key: `ppu-${a.id}` } },
-            a.pay_per_use ? `Switch to Max plan ${a.profile}` : "Switch to pay-per-use");
-          b.disabled = D.offline;
-          b.onclick = async () => {
-            b.disabled = true;
-            try {
-              await D.api(`/apps/${a.id}/pay-per-use`, { method: "POST", body: JSON.stringify({ on: !a.pay_per_use }) });
-              D.toast(a.pay_per_use ? `${a.name} now uses Max plan ${a.profile}.` : `${a.name} now uses pay-per-use.`);
-              await opts.refresh();
-            } catch (e) { if (e.signedOut) { signedOut(); return; } D.toast(`Couldn't switch ${a.name}. ${e.message}`, "alert"); b.disabled = false; }
-          };
-          const sp = appSpend[a.id];
-          const spent = sp && (sp.spent_usd > 0 || sp.cap_usd != null)
-            ? `Pay-per-use this month: ${D.money(sp.spent_usd)}${sp.cap_usd != null ? ` of its own ${D.money(sp.cap_usd)} cap` : ""}` : "";
-          const open = !!editing[a.id];
-          const edit = el("button", { type: "button", className: "btn quiet sm", "aria-expanded": open ? "true" : "false",
-            "aria-controls": `app-edit-${a.id}`, dataset: { key: `open-edit-${a.id}` } }, open ? "Close" : "Edit");
-          edit.onclick = () => {
-            if (editing[a.id]) { delete editing[a.id]; delete editErr[a.id]; render(); return; }
-            editing[a.id] = { name: a.name, repo_path: a.repo_path, profile: a.profile, reviewer: a.reviewer ?? "" };
-            render();
-            focusKey(`edit-name-${a.id}`);
-          };
-          return el("li", {},
-            el("span", { className: "ic" }, icon("app")),
-            el("div", { className: "who" }, el("b", {}, a.name), el("span", { className: "mono" }, a.repo_path),
-              a.reviewer ? el("span", { className: "hint" }, `${a.reviewer} reviews its pull requests`) : null,
-              spent ? el("span", { className: "hint" }, spent) : null),
-            el("span", { className: "acct" }, icon(a.pay_per_use ? "money" : "ai"), a.pay_per_use ? "Claude pay-per-use" : `Claude Max plan ${a.profile}`),
-            b,
-            starButton(a),
-            edit,
-            open ? editForm(a) : null,
-            appCap(a),
-            sitesBlock(a),
-            filesBlock(a));
-        }) : [el("li", { className: "empty" }, "No apps yet. Add one below.")]));
-      });
+    if (changed("set-apps", [apps, D.offline])) {
+      keepFocus(() => parts.appRows.replaceChildren(...(apps.length ? apps.map(appRow)
+        : [el("li", { className: "empty" }, "No apps yet. Add one below.")])));
     }
+    parts.appList.hidden = appOpen != null;
+    parts.appPage.hidden = appOpen == null;
+    if (appOpen != null) drawAppPage();
     if (changed("set-computers", [workers, D.offline])) {
       parts.addCloud.replaceChildren(icon("cloud"), hasCloud ? "Add another cloud worker" : "Add cloud worker");
       keepFocus(() => {
@@ -733,18 +1159,9 @@
       return el("li", {}, el("span", {}, h), x);
     })) : null;
     return el("div", { className: "sites", role: "group", "aria-label": `Websites for ${a.name}` },
-      el("div", { className: "sites-h" }, icon("globe"), el("span", { className: "label" }, "Websites"),
-        el("span", { className: "hint" }, sites.length ? "Built-in, plus these:" : "Built-in only")),
+      el("div", { className: "sites-h" },
+        el("span", { className: "label" }, sites.length ? "Added for this app:" : "None added yet.")),
       list, form, err);
-  }
-
-  // Files for agents, drawn by /files.js when the page loads it. Without it
-  // the slot is left out.
-  function filesBlock(a) {
-    if (!window.DFiles?.panel) return null;
-    return el("div", { className: "sites", role: "group", "aria-label": `Files for ${a.name}` },
-      el("div", { className: "sites-h" }, icon("app"), el("span", { className: "label" }, "Files for agents")),
-      window.DFiles.panel({ appId: a.id }));
   }
 
   // ---------- Accounts ----------
@@ -1189,7 +1606,7 @@
     const form = el("form", { className: "form-grid", noValidate: true, autocomplete: "off" },
       el("div", { className: "field" }, el("label", { htmlFor: "gh-token" }, s.token ? "Replace the token" : "GitHub token"),
         el("div", { className: "secret-row" }, value, showButton(value))),
-      el("p", { className: "hint", id: "gh-token-hint", style: "align-self:center" }, "Make a fine-grained token on GitHub with Pull requests: Read and write for your apps' repos. See Help, Review and merge work."),
+      el("p", { className: "hint", id: "gh-token-hint", style: "align-self:center" }, "Make a fine-grained token on GitHub with Pull requests: Read and write for your apps' repos. To merge from Decurion, it also needs Contents: Read and write. See Help, Review and merge work."),
       el("div", { className: "full actions" }, el("button", { className: "btn primary", type: "submit" }, "Save token"), err));
     form.onsubmit = async (e) => {
       e.preventDefault();
@@ -1303,16 +1720,20 @@
       box.replaceChildren(build());
       render();
     },
-    // Taken before loading, and passed back to update, so a website list
-    // saved while the load was on its way is not overwritten by older data.
+    // Taken before loading, and passed back to update, so a website list or
+    // rules saved while the load was on its way are not overwritten by older data.
     seq: () => sitesSeq,
     // The page's latest data. Any field left out keeps its last value.
     update(data = {}) {
       if (Array.isArray(data.apps)) {
         const a = data.apps;
-        const newer = data.seq == null ? sitesSaved.size > 0 : data.seq !== sitesSeq;
-        if (newer) for (const x of a) { if (sitesSaved.has(x.id)) x.sites = sitesSaved.get(x.id); }
-        else sitesSaved.clear();
+        const newer = data.seq == null ? sitesSaved.size + rulesSaved.size > 0 : data.seq !== sitesSeq;
+        if (newer) {
+          for (const x of a) {
+            if (sitesSaved.has(x.id)) x.sites = sitesSaved.get(x.id);
+            if (rulesSaved.has(x.id)) x.rules = rulesSaved.get(x.id);
+          }
+        } else { sitesSaved.clear(); rulesSaved.clear(); }
         apps = a;
         loaded = true;
       }
@@ -1325,7 +1746,8 @@
       render();
     },
     // The settings view opened, or its address changed: open the tab asked
-    // for ("accounts", "apps", ...), and load what only settings needs.
+    // for ("accounts", "apps", "apps/3" for one app's page, ...), and load
+    // what only settings needs.
     // Gives back the open tab's id, or null for the phone's list.
     show(part) {
       const was = shown;

@@ -3,8 +3,8 @@
 //! in the same transaction.
 
 use decurion_proto::{
-    sites, Account, Ai, App, Claim, EventRecord, Interrupted, NewApp, NewThread, Place, Profile,
-    RunEvent, Thread, ThreadState,
+    deploy, sites, Account, Ai, App, AppRules, Claim, EventRecord, Interrupted, NewApp, NewThread,
+    Place, Profile, RunEvent, Thread, ThreadState,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
@@ -62,6 +62,27 @@ pub struct AppEdit {
     pub receipt: Option<String>,
 }
 
+/// The owner's changes to an app's rules ([`Store::set_rules`]). A field
+/// left out stays as it is.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct RulesEdit {
+    #[serde(default)]
+    pub merge: Option<bool>,
+    #[serde(default)]
+    pub deploy: Option<bool>,
+    #[serde(default)]
+    pub deploy_steps: Option<String>,
+    /// Left out: unchanged. `null` or empty: none. An https address: it.
+    #[serde(default, deserialize_with = "present")]
+    pub deploy_site: Option<Option<String>>,
+    #[serde(default)]
+    pub send_checked: Option<bool>,
+    #[serde(default)]
+    pub patient_data: Option<bool>,
+    #[serde(default)]
+    pub receipt: Option<String>,
+}
+
 /// Tells a field sent as `null` (`Some(None)`) from one left out (`None`).
 fn present<'de, D, T>(d: D) -> std::result::Result<Option<T>, D::Error>
 where
@@ -86,7 +107,8 @@ pub(crate) const RECEIPT_REUSED: &str = "this receipt was already used for somet
 
 pub(crate) const APP_COLS: &str =
     "id, name, repo_path, profile, pay_per_use, monthly_cap_micros, sites, reviewer,
-     COALESCE(first_on = date('now', 'localtime'), 0) AS first_today";
+     COALESCE(first_on = date('now', 'localtime'), 0) AS first_today,
+     can_merge, can_deploy, deploy_steps, deploy_site, send_checked, patient_data";
 
 fn thread_from(row: &SqliteRow) -> Result<Thread> {
     let state: String = row.try_get("state")?;
@@ -127,6 +149,14 @@ pub(crate) fn app_from(row: &SqliteRow) -> Result<App> {
             .map(crate::spend::to_usd),
         reviewer: row.try_get("reviewer")?,
         first_today: row.try_get("first_today")?,
+        rules: AppRules {
+            merge: row.try_get("can_merge")?,
+            deploy: row.try_get("can_deploy")?,
+            deploy_steps: row.try_get("deploy_steps")?,
+            deploy_site: row.try_get("deploy_site")?,
+            send_checked: row.try_get("send_checked")?,
+            patient_data: row.try_get("patient_data")?,
+        },
     })
 }
 
@@ -304,6 +334,70 @@ impl Store {
             _ => StoreError::Db(err),
         })?;
         save_receipt(&mut tx, e.receipt.as_deref(), "app_edit", app_id).await?;
+        let app = self.app_in(&mut tx, app_id).await?;
+        tx.commit().await?;
+        Ok((app, true))
+    }
+
+    /// Changes an app's rules, as the owner set them on its Settings page.
+    /// Fields left out stay as they are. Deploy steps and the live site are
+    /// checked whenever they are given, and deploying cannot be on without
+    /// steps that read cleanly, so a Deploy button never runs something the
+    /// owner did not plainly write. Only the owner reaches this (owner-only
+    /// route); nothing in an app's repo or an agent's answer can set it.
+    ///
+    /// With a receipt already used for this, nothing changes and the app is
+    /// returned as it is now; the flag is false then.
+    pub async fn set_rules(&self, app_id: i64, e: &RulesEdit) -> Result<(App, bool)> {
+        check_receipt(e.receipt.as_deref())?;
+        let steps = e.deploy_steps.as_deref().map(clean_steps).transpose()?;
+        let site = match &e.deploy_site {
+            None => None,
+            Some(s) => Some(
+                match s.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    None => None,
+                    Some(s) => Some(deploy::check_site(s).map_err(StoreError::Invalid)?),
+                },
+            ),
+        };
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(done) = receipt_result(&mut tx, e.receipt.as_deref(), "app_rules").await? {
+            if done != app_id {
+                return Err(StoreError::Duplicate(RECEIPT_REUSED.into()));
+            }
+            tx.commit().await?;
+            return Ok((self.app(app_id).await?, false));
+        }
+        let now = self.app_in(&mut tx, app_id).await?.rules;
+        let rules = AppRules {
+            merge: e.merge.unwrap_or(now.merge),
+            deploy: e.deploy.unwrap_or(now.deploy),
+            deploy_steps: steps.unwrap_or(now.deploy_steps),
+            deploy_site: site.unwrap_or(now.deploy_site),
+            send_checked: e.send_checked.unwrap_or(now.send_checked),
+            patient_data: e.patient_data.unwrap_or(now.patient_data),
+        };
+        if rules.deploy && rules.deploy_steps().is_none() {
+            return Err(StoreError::Invalid(
+                "Add the deploy steps first, one command per line, then turn on Deploy from Decurion."
+                    .into(),
+            ));
+        }
+        sqlx::query(
+            "UPDATE apps SET can_merge = ?, can_deploy = ?, deploy_steps = ?, deploy_site = ?,
+                 send_checked = ?, patient_data = ?
+             WHERE id = ?",
+        )
+        .bind(rules.merge)
+        .bind(rules.deploy)
+        .bind(&rules.deploy_steps)
+        .bind(&rules.deploy_site)
+        .bind(rules.send_checked)
+        .bind(rules.patient_data)
+        .bind(app_id)
+        .execute(&mut *tx)
+        .await?;
+        save_receipt(&mut tx, e.receipt.as_deref(), "app_rules", app_id).await?;
         let app = self.app_in(&mut tx, app_id).await?;
         tx.commit().await?;
         Ok((app, true))
@@ -911,6 +1005,28 @@ pub(crate) fn check_reviewer(login: &str) -> Result<()> {
                 .into(),
         ))
     }
+}
+
+/// Deploy steps as the owner typed them, without blank lines or spaces
+/// around each line. Empty clears them; anything else must read cleanly.
+fn clean_steps(raw: &str) -> Result<String> {
+    // Far more than eight full steps: a guard before reading line by line.
+    if raw.len() > 4 * deploy::MAX_STEPS * deploy::MAX_STEP_LEN {
+        return Err(StoreError::Invalid(format!(
+            "There are too many steps. Keep it to {} short commands.",
+            deploy::MAX_STEPS
+        )));
+    }
+    let text = raw
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !text.is_empty() {
+        deploy::parse_steps(&text).map_err(StoreError::Invalid)?;
+    }
+    Ok(text)
 }
 
 /// The reviewer as the owner typed it, without spaces around it or a leading

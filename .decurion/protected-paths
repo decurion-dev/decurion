@@ -26,6 +26,9 @@ crates/decurion-hub/src/usage.rs
 # that signs it.
 crates/decurion-hub/src/push.rs
 
+# Merging: the owner's Merge tap, the only code that asks GitHub to merge.
+crates/decurion-hub/src/merge.rs
+
 # Credentials: handing a run its one credential, and apps' test keys.
 crates/decurion-hub/src/secrets.rs
 crates/decurion-hub/src/test_keys.rs

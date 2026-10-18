@@ -92,6 +92,7 @@ mod tests {
                 monthly_cap_usd: None,
                 reviewer: None,
                 first_today: false,
+                rules: Default::default(),
             },
             thread: Some(PreviewThread {
                 thread_id: 7,
