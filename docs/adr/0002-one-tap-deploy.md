@@ -39,7 +39,7 @@ The owner asked for this to be built ahead of the first real run, starting with 
 - **Changed steps are shown, not approved separately.** Files the steps name (such as `scripts/deploy-prod.mjs`) are hashed at each release. When one changed since the last release, the card names it and the button says "Deploy new steps", which shows the steps before the one tap that runs them. The run refuses if the file changed again after the card was drawn. Agent work that touches those files is held for the owner like a protected part (`protected.rs`).
 - **Not built yet:** Go back to the last good release, provider APIs (Netlify, Vercel and the rest), and checking the site after the release (the EMR's own script checks it).
 
-Code: `crates/decurion-hub/src/deploy.rs` (cards, the run, routes), `migrations/0100_deploys.sql` (`deploys`, `deploy_audit`), the Today strip (`today.rs`), and the deploy box on the board and the phone (`ui.js`). Help: `docs/help/src/deploy-your-app.md`. Tests: `crates/decurion-hub/tests/deploy.rs`.
+Code: `crates/decurion-hub/src/deploy.rs` (cards, the run, routes), `migrations/0105_deploys.sql` (`deploys`, `deploy_audit`), the Today strip (`today.rs`), and the deploy box on the board and the phone (`ui.js`). Help: `docs/help/src/deploy-your-app.md`. Tests: `crates/decurion-hub/tests/deploy.rs`.
 
 ## Context
 
