@@ -454,6 +454,11 @@ impl PreviewBrowser {
         ended_why(&end)
     }
 
+    /// The box has ended on its own: nothing more can be shown in it.
+    pub(crate) fn gone(&self) -> bool {
+        self.task.is_none()
+    }
+
     /// Removes the box, and tells the owner's screen `why` it ended.
     pub(crate) async fn stop(mut self, why: &str) {
         self.remover.remove().await;

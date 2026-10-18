@@ -152,7 +152,15 @@ async fn run_preview(hub: &Hub, data: &Path, claim: &PreviewClaim) -> (String, b
         Ok(why) => (why, false),
         Err(err) => {
             tracing::warn!(err = %format!("{err:#}"), sid, "preview failed");
-            (owner_words(&err), true)
+            let why = owner_words(&err);
+            match parts.browser.as_mut().filter(|b| !b.gone()) {
+                // The app's box is no use any more; the page says why.
+                Some(b) => {
+                    let _ = remove_named(sid, &[preview_container_name(sid)]).await;
+                    (hold_failure(hub, sid, b, &why).await, true)
+                }
+                None => (why, true),
+            }
         }
     };
     parts.clean(&why).await;
@@ -382,32 +390,70 @@ async fn follow(
                 return Err(ForOwner(format!("The preview's browser stopped. {why}")).into());
             },
             _ = alive.tick() => {
-                if WINDING_DOWN.load(std::sync::atomic::Ordering::SeqCst) {
-                    return Ok("Stopped while Decurion updates on your PC. Tap Run it again in a minute.".to_owned());
-                }
-                match hub
-                    .post(&format!("/runner/preview/{sid}/alive"), &PreviewAlive::default())
-                    .await
-                {
-                    Ok(resp) => {
-                        hub_ok = Instant::now();
-                        match resp.json::<PreviewState>().await {
-                            Ok(PreviewState { open: false }) => return Ok("Stopped.".to_owned()),
-                            Ok(_) => {}
-                            Err(err) => tracing::debug!(%err, sid, "odd answer from the hub"),
-                        }
-                    }
-                    Err(super::HubError::Refused(_, s, _)) if s.is_client_error() => {
-                        return Ok("Stopped.".to_owned());
-                    }
-                    Err(err) => {
-                        if hub_ok.elapsed() > HUB_GONE {
-                            return Ok("Stopped because your PC's hub stopped answering.".to_owned());
-                        }
-                        tracing::debug!(%err, sid, "could not reach the hub about a preview");
-                    }
+                if let Some(why) = still_wanted(hub, sid, &mut hub_ok).await {
+                    return Ok(why);
                 }
             },
+        }
+    }
+}
+
+/// Tells the hub the preview is alive. `Some(why)` once it should stop: the
+/// hub said so, the runner is winding down, or the hub has been out of
+/// reach too long.
+async fn still_wanted(hub: &Hub, sid: i64, hub_ok: &mut Instant) -> Option<String> {
+    if WINDING_DOWN.load(std::sync::atomic::Ordering::SeqCst) {
+        return Some(
+            "Stopped while Decurion updates on your PC. Tap Run it again in a minute.".to_owned(),
+        );
+    }
+    match hub
+        .post(
+            &format!("/runner/preview/{sid}/alive"),
+            &PreviewAlive::default(),
+        )
+        .await
+    {
+        Ok(resp) => {
+            *hub_ok = Instant::now();
+            match resp.json::<PreviewState>().await {
+                Ok(PreviewState { open: false }) => return Some("Stopped.".to_owned()),
+                Ok(_) => {}
+                Err(err) => tracing::debug!(%err, sid, "odd answer from the hub"),
+            }
+        }
+        Err(super::HubError::Refused(_, s, _)) if s.is_client_error() => {
+            return Some("Stopped.".to_owned());
+        }
+        Err(err) => {
+            if hub_ok.elapsed() > HUB_GONE {
+                return Some("Stopped because your PC's hub stopped answering.".to_owned());
+            }
+            tracing::debug!(%err, sid, "could not reach the hub about a preview");
+        }
+    }
+    None
+}
+
+/// Shows why the app could not start on the preview's own page, and keeps
+/// it there until the owner stops it (or nobody is looking), so the reason
+/// is still there when the owner's screen catches up.
+async fn hold_failure(hub: &Hub, sid: i64, browser: &mut PreviewBrowser, why: &str) -> String {
+    browser.send(ToBrowser::Note {
+        text: why.to_owned(),
+        stopped: true,
+    });
+    let mut hub_ok = Instant::now();
+    let mut alive = tokio::time::interval(Duration::from_secs(PREVIEW_ALIVE_SECS));
+    alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = browser.ended() => return why.to_owned(),
+            _ = alive.tick() => {
+                if let Some(stop) = still_wanted(hub, sid, &mut hub_ok).await {
+                    return stop;
+                }
+            }
         }
     }
 }
