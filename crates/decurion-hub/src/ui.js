@@ -1177,11 +1177,30 @@
     return el("section", {}, el("div", { className: "section-title" }, "What next?"), el("div", { className: "next" }, ...rows));
   }
 
+  // A piece of a goal says why it did or didn't wait for your Accept: the
+  // plan's approval covers each piece that passes its check, except one
+  // held for the app's protected parts (finish_helper in coordinator.rs).
+  // Work added straight to the board has no line: Accept is always yours.
+  function pieceLine(c) {
+    const t = c.t, g = c.goal;
+    if (!g) return null;
+    const goal = `“${g.goal_title}”`;
+    const held = g.held && t.state === "in_review";
+    const checking = t.state === "in_review" && !t.research && ["building", "reviewing", "fixing"].includes(g.review);
+    const text = g.by_plan ? `Sent to GitHub by itself because you approved the plan for ${goal}.`
+      : held ? `Held for you: it may change a part of the app you protect, so approving the plan for ${goal} doesn't cover it. Look it over, then tap Accept.`
+      : checking ? `Part of your goal ${goal}. A checker looks at it first. If it passes, it goes to GitHub by itself, because you approved the plan.`
+      : t.state === "done" && !t.research ? `Part of your goal ${goal}. You accepted it yourself.`
+      : `Part of your goal ${goal}.`;
+    return el("div", { className: `notice${held ? " warn" : ""}` }, icon(held ? "shield" : "plan"),
+      el("span", { className: "grow" }, text, " ", el("a", { href: `/goals#goal-${g.goal_id}` }, "Open the goal")));
+  }
+
   function draw(c) {
     const t = c.t, ev = c.ev, app = apps[t.app_id];
     const kids = kidsOf(t.id), parent = t.parent_id != null ? all.find((p) => p.id === t.parent_id) : null;
     const waiting = c.msgs ? c.msgs.filter((m) => m.delivered_at == null).length : 0;
-    const sig = JSON.stringify([t.state, t.place, cloud, t.updated_at, t.title, t.github, ev.length, D.pro, D.offline, waiting, parent?.title,
+    const sig = JSON.stringify([t.state, t.place, cloud, t.updated_at, t.title, t.github, c.goal, ev.length, D.pro, D.offline, waiting, parent?.title,
       kids.map((k) => [k.id, k.state, k.title, k.background])]);
     if (sig === c.sig) return;
     c.sig = sig;
@@ -1232,8 +1251,9 @@
     p.head.replaceWith(head);
     p.head = head;
 
-    // What the agent asks comes first, then GitHub, then its words in full,
-    // then what the owner can do next.
+    // What the agent asks comes first, then for a goal's piece why it did or
+    // didn't wait for Accept, then GitHub, then its words in full, then what
+    // the owner can do next.
     const { questions, rest, fromBlock } = D.questions(D.rawWords(ev));
     const asks = IDLE.has(t.state) ? questions : [];
     const upper = [];
@@ -1244,6 +1264,8 @@
         guessed: !fromBlock,
       }));
     }
+    const why = pieceLine(c);
+    if (why) upper.push(why);
     if (t.github) {
       upper.push(el("section", {}, el("div", { className: "section-title" }, "GitHub"),
         D.github(t, () => { c.sig = ""; c.changed(); c.load(); })));
@@ -1440,7 +1462,8 @@
           onEnded: back,
           onStopped: () => back("Stopped. Tap Run it to start it again."),
         });
-        box.replaceChildren(el("section", {}, el("div", { className: "section-title" }, "Try it"), c.runView.el));
+        box.replaceChildren(el("section", {}, el("div", { className: "section-title" }, "Try it"),
+          el("p", { className: "hint" }, "This piece of work, as the agent last saved it."), c.runView.el));
       } catch (e) {
         b.disabled = D.offline;
         err.textContent = `Couldn't start it. ${e.message}`;
@@ -1451,7 +1474,7 @@
     box.replaceChildren(el("section", {},
       el("div", { className: "section-title" }, "Try it"),
       el("div", { className: "bv-start" },
-        el("p", { className: "hint" }, said || "Start this version of the app on your PC and try it here. Nothing you do in it changes the code."),
+        el("p", { className: "hint" }, said || "Start this piece of work, as the agent last saved it, on your PC and try it here. Nothing you do in it changes the code."),
         b),
       err));
   }
@@ -1475,12 +1498,17 @@
     c.load = async () => {
       if (cur !== c) return;
       try {
-        const [thread, more, msgs] = await Promise.all([D.api(`/threads/${t.id}`), D.events(t.id, c.ev.length ? c.ev[c.ev.length - 1].id : 0),
-          D.api(`/threads/${t.id}/messages`).catch(() => null)]);
+        // Which goal it is a piece of: asked until the answer is "none"
+        // (work added straight to the board never becomes a piece), since a
+        // piece's check and hold change while it sits in review.
+        const [thread, more, msgs, goal] = await Promise.all([D.api(`/threads/${t.id}`), D.events(t.id, c.ev.length ? c.ev[c.ev.length - 1].id : 0),
+          D.api(`/threads/${t.id}/messages`).catch(() => null),
+          c.goal === null ? null : D.api(`/threads/${t.id}/goal`).catch(() => c.goal)]);
         if (cur !== c) return;
         c.ev = c.ev.concat(more);
         c.t = thread;
         if (msgs) c.msgs = msgs;
+        c.goal = goal;
         draw(c);
       } catch (e) {
         if (cur === c && !c.parts) {
@@ -1893,7 +1921,10 @@
       el("header", { className: "work-head" },
         el("div", { className: "top" }, el("span", { className: "grow" }), close),
         el("h2", { id: "run-title" }, app.name),
-        el("div", { className: "meta" }, el("span", { className: "tag" }, icon("pc"), "Running on your PC"))),
+        // Which version this is: the folder, not the newest work. Work not
+        // merged and pulled into the folder yet is tried from its own panel.
+        el("div", { className: "meta" }, el("span", { className: "tag" }, icon("pc"), "Your PC's copy")),
+        el("p", { className: "hint" }, "Your app as it is in its folder on this PC. Work not merged yet isn't in it.")),
       body);
 
     const show = (sid) => {

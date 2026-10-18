@@ -325,6 +325,7 @@ pub fn router(state: AppState) -> Router {
         .route("/push/subscribe", post(push_subscribe))
         .route("/threads/{id}/place", post(set_place))
         .route("/threads/{id}/github", post(github::retry))
+        .route("/threads/{id}/goal", get(goals::piece_of))
         .route("/threads/{id}/pr/fix", post(pr_watch::fix))
         .route("/prs", get(pr_watch::list))
         .route("/github", get(github::settings))
