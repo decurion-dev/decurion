@@ -24,6 +24,7 @@ pub mod limits;
 pub mod messages;
 pub mod push;
 pub mod secrets;
+pub mod sign_ins;
 pub mod spend;
 pub mod store;
 pub mod test_keys;
@@ -231,6 +232,8 @@ pub fn router(state: AppState) -> Router {
                 decurion_proto::goal::MAX_PAGE_BYTES * 2 + (1 << 20),
             )),
         )
+        // Saved website sign-ins: owner and runner routes (sign_ins.rs).
+        .merge(sign_ins::routes())
         .layer(middleware::from_fn_with_state(state.clone(), require_key));
     Router::new()
         .route("/", get(board))

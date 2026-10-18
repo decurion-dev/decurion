@@ -489,6 +489,55 @@ pub struct Claim {
     /// which is how work continues on another computer.
     #[serde(default)]
     pub checkpoint: Option<i64>,
+    /// The app's saved website sign-ins that still work. The runner opens
+    /// them from the vault on this PC; the hub never holds them.
+    #[serde(default)]
+    pub sign_ins: Vec<SignInRef>,
+}
+
+/// A saved website sign-in named in a claim: which one to open from the
+/// vault, and what the run needs to know about it. Never the sign-in itself.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SignInRef {
+    pub id: i64,
+    /// The owner's name for it, such as "Staging admin".
+    pub label: String,
+    /// A page that needs the sign-in, checked before the agent starts.
+    #[serde(default)]
+    pub check_url: Option<String>,
+    /// Where the site sends someone who is not signed in.
+    #[serde(default)]
+    pub login_url: Option<String>,
+    /// Which saved copy in the vault is current.
+    pub version: i64,
+}
+
+/// A sign-in window the PC runner picked up: the owner tapped "Sign in" and
+/// a fresh browser should open at `start_url`. What the owner signs in to is
+/// sealed in the vault as `version` of sign-in `sign_in_id` of `app_id`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SignInSession {
+    pub session_id: i64,
+    pub sign_in_id: i64,
+    pub app_id: i64,
+    pub start_url: String,
+    pub version: i64,
+}
+
+/// What the runner reports once a sign-in is sealed in the vault.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SignInSaved {
+    pub session_id: i64,
+    /// The sites it covers, as the browser saw them.
+    #[serde(default)]
+    pub domains: Vec<String>,
+    /// When its first lasting cookie ends, in Unix seconds.
+    #[serde(default)]
+    pub expires_at: Option<i64>,
+    #[serde(default)]
+    pub login_url: Option<String>,
+    /// The version it was sealed as: the one in its [`SignInSession`].
+    pub version: i64,
 }
 
 /// A saved test key as the board sees it. The value itself is never shown
