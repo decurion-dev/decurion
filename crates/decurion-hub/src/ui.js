@@ -55,6 +55,8 @@
     menu: ["M4 6h16", "M4 12h16", "M4 18h16"],
     sun: ["c12,12,4", "M12 2v2", "M12 20v2", "m4.9 4.9 1.4 1.4", "m17.7 17.7 1.4 1.4", "M2 12h2", "M20 12h2", "m6.3 17.7-1.4 1.4", "m19.1 4.9-1.4 1.4"],
     moon: ["M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"],
+    globe: ["c12,12,10", "M2 12h20", "M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"],
+    expand: ["M15 3h6v6", "M9 21H3v-6", "M21 3l-7 7", "M3 21l7-7"],
   };
   const SVG = "http://www.w3.org/2000/svg";
   D.icon = (name, cls = "") => {
@@ -371,6 +373,7 @@
     document.body.append(panel);
     panel.addEventListener("close", () => {
       clearInterval(timer);
+      cur?.view?.close();
       cur = null;
       if (history.state?.work) history.back();
     });
@@ -494,8 +497,10 @@
         err: el("div", { className: "notice bad", role: "alert", hidden: true }),
         upper: el("div", { className: "part" }), lower: el("div", { className: "part" }),
         talk: talkBox(c),
+        // Kept across refreshes, so a live view of the browser stays open.
+        browser: el("div", { className: "part" }),
       };
-      p.body = el("div", { className: "work-body live" }, p.err, p.upper, p.talk.box, p.lower);
+      p.body = el("div", { className: "work-body live" }, p.err, p.upper, p.browser, p.talk.box, p.lower);
       panel.replaceChildren(p.head, p.body, p.foot);
     }
     const p = c.parts;
@@ -519,6 +524,7 @@
       upper.push(el("section", {}, el("div", { className: "section-title" }, label), el("div", { className: `callout ${t.state}` }, said)));
     }
     p.upper.replaceChildren(...upper);
+    browserPart(c);
     p.talk.update(t, waiting);
 
     const open = (k, key) => {
@@ -593,10 +599,57 @@
     if (focusKey && document.activeElement?.dataset?.key !== focusKey) panel.querySelector(`[data-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
   }
 
+  // ---------- The test browser, for running Claude work ----------
+  // Only Claude's runs have a test browser to watch. The live view stays
+  // open while the work runs, and closes (handing the browser back) when it
+  // stops or the panel closes.
+  function browserPart(c) {
+    const t = c.t, box = c.parts.browser;
+    if (t.state !== "running" || (t.ai ?? "claude") !== "claude") {
+      c.view?.close();
+      c.view = null;
+      c.browserShown = false;
+      box.replaceChildren();
+      return;
+    }
+    if (c.browserShown) return;
+    c.browserShown = true;
+    watchButton(c);
+  }
+
+  function watchButton(c, said) {
+    const box = c.parts.browser;
+    const err = el("p", { className: "field-error", role: "alert" });
+    const b = el("button", { type: "button", className: "btn", dataset: { key: "wk-watch" } }, icon("globe"), "Watch the browser");
+    b.onclick = async () => {
+      if (D.offline) return;
+      b.disabled = true;
+      err.textContent = "";
+      try {
+        const s = await D.api(`/threads/${c.id}/browser/watch`, { method: "POST" });
+        if (cur !== c) return;
+        c.view = D.browserView(s.id, {
+          onEnded: (why) => { if (cur !== c) return; c.view = null; watchButton(c, why); },
+        });
+        box.replaceChildren(el("section", {}, el("div", { className: "section-title" }, "Test browser"), c.view.el));
+      } catch (e) {
+        b.disabled = false;
+        err.textContent = `Couldn't open the browser. ${e.message}`;
+      }
+    };
+    box.replaceChildren(el("section", {},
+      el("div", { className: "section-title" }, "Test browser"),
+      el("div", { className: "bv-start" },
+        el("p", { className: "hint" }, said || "See the agent's test browser live. You can take it over to click and type in it yourself."),
+        b),
+      err));
+  }
+
   // D.openWork(thread, changed, { talk: true }) opens the panel; talk puts the cursor in the message box.
   D.openWork = async (t, changed, opts = {}) => {
     ensurePanel();
     clearInterval(timer);
+    cur?.view?.close();
     const c = cur = { id: t.id, t, ev: [], msgs: null, sig: "", parts: null, changed: changed ?? (() => {}) };
     panel.replaceChildren(el("div", { className: "work-head" }, D.pill(t.state), el("h2", { id: "wk-title" }, t.title)),
       el("div", { className: "work-body" }, ...[0, 1, 2].map(() => el("div", { className: "skeleton", style: "height:64px" }))));
@@ -631,4 +684,285 @@
   };
   D.onPro(() => { if (cur?.parts) { cur.sig = ""; draw(cur); } });
   D.onOffline(() => { if (cur?.parts) { cur.sig = ""; draw(cur); } });
+})();
+
+// ---------- The live test browser ----------
+// A live picture of a test browser, passed along by the hub. Used by the work
+// panel for running Claude work (watch, Take over, Hand back) and by the
+// sign-in window, which adds its own button. Only the picture, the page's
+// real address and who is driving come down; taps, drags and typing go up,
+// and only while you have the browser.
+(() => {
+  const { el, icon } = D;
+  // The most one piece of input may weigh (MAX_INPUT_BYTES in the hub).
+  const MAX_INPUT = 4096;
+  const KEYS = [["Enter", "Enter", "Press Enter"], ["Tab", "Tab", "Press Tab"], ["Backspace", "Backspace", "Delete the letter before the cursor"]];
+  const bytes = (s) => new TextEncoder().encode(s).length;
+
+  // D.browserView(sessionId, opts) → { el, close() }. Put `el` on the page
+  // straight away; it connects once it is there.
+  //   opts.takeOver  false for a window you drive from the start (no Take over / Hand back)
+  //   opts.extra     { label, kind, onClick(view) }: one more button, e.g. "I'm signed in, save"
+  //   opts.hint      the line under the picture, in place of the usual one
+  //   opts.onEnded   called with the reason once the view is over for good
+  D.browserView = (sid, opts = {}) => {
+    const takeOver = opts.takeOver !== false;
+    let ws = null, who = takeOver ? "agent" : "owner", over = false, ended = null, closing = false;
+    let frameW = 0, frameH = 0, gotFrame = false, slow = null, handing = false;
+
+    const dot = el("span", { className: "dot", "aria-hidden": "true" });
+    const status = el("span", { className: "grow" });
+    const takeBtn = el("button", { type: "button", className: "btn primary sm" }, "Take over");
+    const backBtn = el("button", { type: "button", className: "btn primary sm" }, "Hand back");
+    const bigBtn = el("button", { type: "button", className: "btn quiet sm bv-bigger", "aria-pressed": "false" }, icon("expand"), "Bigger");
+    const url = el("span", { className: "addr" }, "Opening…");
+    const canvas = el("canvas", { tabIndex: 0, "aria-label": "Live picture of the test browser" });
+    const ctx = canvas.getContext("2d");
+    const overText = el("p", {}, "Connecting to your PC…");
+    const again = el("button", { type: "button", className: "btn sm", hidden: true }, "Try again");
+    const veil = el("div", { className: "bv-over" }, overText, again);
+    const stage = el("div", { className: "bv-stage" }, canvas, veil);
+    const typed = el("input", { type: "text", autocomplete: "off", autocapitalize: "off",
+      enterKeyHint: "send", placeholder: "Type here, then Send", "aria-label": "Text to type into the page" });
+    typed.setAttribute("autocorrect", "off");
+    typed.setAttribute("spellcheck", "false");
+    const sendBtn = el("button", { type: "button", className: "btn sm" }, icon("send"), "Send");
+    const keyBtns = KEYS.map(([key, label, aria]) => {
+      const b = el("button", { type: "button", className: "btn sm", "aria-label": aria }, label);
+      b.onclick = () => input({ kind: "key", key });
+      return b;
+    });
+    const back = el("button", { type: "button", className: "btn sm", "aria-label": "Go back a page" }, icon("left"), "Back");
+    back.onclick = () => input({ kind: "back" });
+    const drive = el("div", { className: "bv-drive" },
+      el("div", { className: "bv-type" }, typed, sendBtn),
+      el("div", { className: "bv-keys" }, ...keyBtns, back));
+    const hint = el("p", { className: "hint" }, opts.hint ?? (takeOver
+      ? "Tap to click, drag to scroll. Don't type real passwords here: use a sign-in window for that."
+      : "Tap to click, drag to scroll. Use the box above the keys to type."));
+    const nudge = el("p", { className: "hint bv-nudge", role: "status", "aria-live": "polite" });
+    const extra = opts.extra
+      ? el("button", { type: "button", className: `btn ${opts.extra.kind ?? "primary"}` }, opts.extra.label)
+      : null;
+    const root = el("div", { className: "bv", dataset: { who } },
+      el("div", { className: "bv-bar" }, dot, status, takeOver && takeBtn, takeOver && backBtn, bigBtn),
+      el("div", { className: "bv-url", title: "The page the browser is on" }, icon("globe"), url),
+      stage, drive, hint, nudge, extra && el("div", { className: "bv-extra" }, extra));
+
+    function paint() {
+      root.dataset.who = who;
+      const mine = who === "owner";
+      status.textContent = over ? "The live view has ended."
+        : !takeOver ? "You have the browser."
+        : mine ? "You have the browser. The agent is waiting."
+        : "The agent is using the browser. You're watching.";
+      takeBtn.hidden = over || mine;
+      backBtn.hidden = over || !mine;
+      takeBtn.disabled = backBtn.disabled = handing || D.offline;
+      drive.hidden = over || !mine;
+      if (mine) nudge.textContent = "";
+      for (const b of [sendBtn, back, ...keyBtns]) b.disabled = over;
+      if (extra) extra.disabled = over;
+    }
+
+    function cover(text, retry = false) {
+      overText.textContent = text;
+      again.hidden = !retry;
+      veil.hidden = false;
+    }
+
+    function say(text) {
+      nudge.textContent = text;
+      clearTimeout(say.t);
+      say.t = setTimeout(() => (nudge.textContent = ""), 5000);
+    }
+
+    // Sends one piece of input, if you have the browser.
+    function input(i) {
+      if (who !== "owner") { say("Tap Take over first to use the browser yourself."); return false; }
+      if (!ws || ws.readyState !== 1) return false;
+      const msg = JSON.stringify({ type: "input", input: i });
+      if (bytes(msg) > MAX_INPUT) return false;
+      ws.send(msg);
+      return true;
+    }
+
+    // Typed text goes in pieces small enough for the hub to pass on.
+    function sendText(text) {
+      const chars = Array.from(text);
+      for (let i = 0; i < chars.length;) {
+        let n = Math.min(500, chars.length - i);
+        while (n > 1 && bytes(JSON.stringify({ type: "input", input: { kind: "text", text: chars.slice(i, i + n).join("") } })) > MAX_INPUT) n = Math.ceil(n / 2);
+        if (!input({ kind: "text", text: chars.slice(i, i + n).join("") })) return false;
+        i += n;
+      }
+      return true;
+    }
+    const sendTyped = () => {
+      if (!typed.value) { typed.focus(); return; }
+      if (sendText(typed.value)) typed.value = "";
+    };
+    sendBtn.onclick = sendTyped;
+    typed.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); sendTyped(); }
+    });
+
+    // Where on the picture, as fractions of it.
+    const spot = (x, y) => {
+      const r = canvas.getBoundingClientRect();
+      const f = (v) => Math.min(1, Math.max(0, v));
+      return { x: f((x - r.left) / r.width), y: f((y - r.top) / r.height) };
+    };
+    // Picture pixels per screen pixel, so a drag moves the page as far as your finger.
+    const scale = () => (frameW ? frameW / canvas.getBoundingClientRect().width : 1);
+
+    // Scrolls are gathered and sent at most every 50 ms.
+    let pend = null;
+    function scroll(x, y, dx, dy) {
+      if (!pend) { pend = { ...spot(x, y), dx: 0, dy: 0 }; setTimeout(flush, 50); }
+      pend.dx += dx; pend.dy += dy;
+    }
+    function flush() {
+      const p = pend;
+      pend = null;
+      if (p && (Math.abs(p.dx) >= 1 || Math.abs(p.dy) >= 1)) input({ kind: "scroll", x: p.x, y: p.y, dx: Math.round(p.dx), dy: Math.round(p.dy) });
+    }
+
+    let press = null;
+    canvas.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || over) return;
+      if (who !== "owner") { if (takeOver) say("Tap Take over first to use the browser yourself."); return; }
+      press = { x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, drag: false };
+      try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* already gone */ }
+    });
+    canvas.addEventListener("pointermove", (e) => {
+      if (!press) return;
+      if (!press.drag && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 8) press.drag = true;
+      if (press.drag) {
+        const k = scale();
+        scroll(e.clientX, e.clientY, -(e.clientX - press.lx) * k, -(e.clientY - press.ly) * k);
+      }
+      press.lx = e.clientX; press.ly = e.clientY;
+    });
+    canvas.addEventListener("pointerup", (e) => {
+      if (!press) return;
+      if (!press.drag) input({ kind: "click", ...spot(e.clientX, e.clientY) });
+      press = null;
+    });
+    canvas.addEventListener("pointercancel", () => { press = null; });
+    canvas.addEventListener("wheel", (e) => {
+      if (who !== "owner" || over) return;
+      e.preventDefault();
+      const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
+      scroll(e.clientX, e.clientY, e.deltaX * k, e.deltaY * k);
+    }, { passive: false });
+    // On a computer, typing with the picture selected goes to the page.
+    canvas.addEventListener("keydown", (e) => {
+      if (who !== "owner" || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key.length === 1) { e.preventDefault(); sendText(e.key); }
+      else if (["Enter", "Tab", "Backspace", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+        e.preventDefault();
+        input({ kind: "key", key: e.key });
+      }
+    });
+
+    async function show(m) {
+      const img = new Image();
+      img.src = "data:image/jpeg;base64," + m.jpeg;
+      try { await img.decode(); } catch (_) { ack(m.seq); return; }
+      if (closing) return;
+      const w = m.width || img.naturalWidth, h = m.height || img.naturalHeight;
+      if (w !== frameW || h !== frameH) {
+        frameW = w; frameH = h;
+        canvas.width = w; canvas.height = h;
+        stage.style.setProperty("--ar", `${w} / ${h}`);
+        stage.style.setProperty("--arn", String(w / h));
+      }
+      ctx.drawImage(img, 0, 0, w, h);
+      if (!gotFrame) { gotFrame = true; clearTimeout(slow); }
+      veil.hidden = true;
+      ack(m.seq);
+    }
+    // Lets the next picture come.
+    const ack = (seq) => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: "frame_ack", seq })); };
+
+    function connect() {
+      if (closing) return;
+      const width = Math.round(Math.min(Math.max(stage.clientWidth || window.innerWidth, 320), 1280) * Math.min(window.devicePixelRatio || 1, 2));
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      ended = null;
+      cover("Connecting to your PC…");
+      ws = new WebSocket(`${proto}://${location.host}/api/browser/${encodeURIComponent(sid)}/ws?max_width=${width}`);
+      clearTimeout(slow);
+      slow = setTimeout(() => {
+        if (!gotFrame && !over) cover("Still waiting for the test browser. It starts when the agent first uses it, so it may not be open yet.");
+      }, 20000);
+      ws.onmessage = (e) => {
+        let m;
+        try { m = JSON.parse(e.data); } catch (_) { return; }
+        if (m.type === "frame") show(m);
+        else if (m.type === "page") { url.textContent = m.url || "about:blank"; url.title = m.title || ""; }
+        else if (m.type === "control") {
+          const was = who;
+          who = m.who === "owner" ? "owner" : "agent";
+          if (takeOver && was === "owner" && who === "agent" && !handing) say("The browser went back to the agent.");
+          paint();
+        } else if (m.type === "ended") { ended = m.why; cover(m.why); }
+      };
+      ws.onclose = () => {
+        ws = null;
+        if (closing) return;
+        if (ended != null) finish(ended);
+        else cover("Lost the connection to your PC.", true);
+      };
+    }
+    again.onclick = () => connect();
+
+    function finish(why) {
+      over = true;
+      clearTimeout(slow);
+      root.classList.remove("big");
+      cover(why || "The live view has ended.");
+      paint();
+      opts.onEnded?.(why);
+    }
+
+    async function hand(path, to) {
+      handing = true;
+      paint();
+      try {
+        const s = await D.api(`/browser/${encodeURIComponent(sid)}/${path}`, { method: "POST" });
+        who = s.controller === "owner" ? "owner" : "agent";
+        if (to === "owner") canvas.focus({ preventScroll: true });
+      } catch (e) {
+        say(`That didn't go through. ${e.message}`);
+      } finally {
+        handing = false;
+        paint();
+      }
+    }
+    takeBtn.onclick = () => hand("take", "owner");
+    backBtn.onclick = () => hand("give-back", "agent");
+    bigBtn.onclick = () => {
+      const big = root.classList.toggle("big");
+      bigBtn.setAttribute("aria-pressed", big ? "true" : "false");
+      bigBtn.lastChild.textContent = big ? "Smaller" : "Bigger";
+    };
+    root.addEventListener("keydown", (e) => { if (e.key === "Escape" && root.classList.contains("big") && document.activeElement !== canvas) bigBtn.click(); });
+    const view = {
+      el: root,
+      sid,
+      // Closing the view hands the browser back to the agent.
+      close() {
+        closing = true;
+        clearTimeout(slow);
+        if (ws) { try { ws.close(); } catch (_) { /* already closed */ } }
+        ws = null;
+      },
+    };
+    if (extra) extra.onclick = () => opts.extra.onClick?.(view);
+    paint();
+    setTimeout(connect, 0);
+    return view;
+  };
 })();

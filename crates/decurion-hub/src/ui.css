@@ -326,3 +326,36 @@ details.fold[open] > summary svg.i { transform: rotate(90deg); }
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   .spin { animation: none !important; }
 }
+
+/* ---------- Live test browser (D.browserView in ui.js) ---------- */
+.bv-start { display: grid; gap: 10px; justify-items: start; }
+.bv { display: grid; gap: 10px; min-width: 0; }
+.bv-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; }
+.bv-bar .grow { flex: 1 1 180px; min-width: 0; }
+.bv-bar .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex: none; }
+.bv[data-who="owner"] .bv-bar .dot { background: var(--accent); }
+.bv-url { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 10px; border-radius: var(--radius-s); background: var(--surface-2); color: var(--ink); font: 12.5px/1.4 var(--mono); }
+.bv-url svg.i { color: var(--muted); width: 14px; height: 14px; }
+.bv-url .addr { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bv-stage { --ar: 16 / 10; position: relative; aspect-ratio: var(--ar); border-radius: var(--radius-s); overflow: hidden; background: var(--surface-3); border: 1px solid var(--line); }
+.bv-stage canvas { display: block; width: 100%; height: 100%; touch-action: pan-y; }
+.bv-stage canvas:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: 0; }
+.bv[data-who="owner"] .bv-stage { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.bv[data-who="owner"] .bv-stage canvas { touch-action: none; cursor: pointer; }
+.bv-over { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 10px; padding: 16px; text-align: center; font-size: 14px; color: #fff; background: rgba(15, 18, 24, 0.62); }
+.bv-over .btn { color: var(--ink); }
+.bv-drive { display: grid; gap: 8px; }
+.bv-type { display: flex; gap: 8px; }
+.bv-type input { flex: 1; min-width: 0; }
+.bv-keys { display: flex; gap: 6px; flex-wrap: wrap; }
+.bv-nudge:empty { display: none; }
+.bv-extra { display: flex; }
+.bv-extra .btn { flex: 1 1 auto; }
+/* Bigger: the view fills the window, the picture as big as fits. */
+.bv.big { position: fixed; inset: 0; z-index: 50; padding: 16px 20px; background: var(--surface); overflow: auto; align-content: start; }
+.bv.big .bv-stage { width: min(100%, calc((100dvh - 250px) * var(--arn, 1.6))); justify-self: center; }
+@media (max-width: 640px) {
+  .bv-bigger { display: none; }
+  .bv-keys .btn { flex: 1 1 0; padding: 0 8px; }
+  .bv-bar .btn.sm { min-height: var(--control-h); }
+}
