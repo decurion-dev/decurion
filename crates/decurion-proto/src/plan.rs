@@ -327,7 +327,10 @@ mod tests {
         assert!(validate_page_questions(&[q("q1", &["Only"])]).is_err());
         assert!(validate_page_questions(&[q("q1", &[]), q("q1", &[])]).is_err());
         assert!(validate_page_questions(&[q("q 1", &[])]).is_err(), "spaces");
-        assert!(validate_page_questions(&[q("q\"><b>", &[])]).is_err(), "marks");
+        assert!(
+            validate_page_questions(&[q("q\"><b>", &[])]).is_err(),
+            "marks"
+        );
         let mut r = q("q1", &["a", "b"]);
         r.recommended = Some(2);
         assert!(validate_page_questions(&[r]).is_err());
