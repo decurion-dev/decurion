@@ -37,6 +37,10 @@ struct Fake {
     prs: Vec<(String, String)>,
     /// Pull requests merged on GitHub, by number.
     merged: Vec<i64>,
+    /// What GitHub says about merging each pull request ("clean" when left
+    /// out) and the commit at its head, by number.
+    merge_state: HashMap<i64, String>,
+    heads: HashMap<i64, String>,
     /// Comments on lines of code, plain comments and reviews, as GitHub
     /// lists them.
     line: Vec<Value>,
@@ -106,13 +110,40 @@ async fn fake_pr(
         Value::Null,
     ));
     let merged = f.merged.contains(&n);
+    let state = f.merge_state.get(&n).cloned().unwrap_or("clean".into());
     Json(json!({
         "number": n,
         "html_url": format!("https://github.com/acme/demo/pull/{n}"),
         "state": if merged { "closed" } else { "open" },
         "merged": merged,
         "user": { "login": ME },
+        "head": { "sha": f.heads.get(&n) },
+        "mergeable": state != "unknown",
+        "mergeable_state": state,
     }))
+}
+
+async fn fake_merge(
+    State(f): State<FakeState>,
+    headers: HeaderMap,
+    axum::extract::Path(n): axum::extract::Path<i64>,
+    Json(b): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    let mut f = f.lock().expect("fake");
+    f.seen.push((
+        "PUT".into(),
+        format!("merge/{n}"),
+        auth(&headers),
+        b.clone(),
+    ));
+    if f.heads.get(&n).map(String::as_str) != b["sha"].as_str() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"message": "Head branch was modified"})),
+        );
+    }
+    f.merged.push(n);
+    (StatusCode::OK, Json(json!({ "merged": true })))
 }
 
 async fn fake_comments(
@@ -160,6 +191,10 @@ async fn fake_github(f: FakeState) -> String {
         .route("/repos/acme/demo/pulls", get(fake_list).post(fake_open))
         .route("/repos/acme/demo", get(fake_repo))
         .route("/repos/acme/demo/pulls/{n}", get(fake_pr))
+        .route(
+            "/repos/acme/demo/pulls/{n}/merge",
+            axum::routing::put(fake_merge),
+        )
         .route(
             "/repos/acme/demo/pulls/{n}/requested_reviewers",
             axum::routing::post(fake_ask_review),
@@ -1397,9 +1432,10 @@ async fn run_helper(h: &Hub, kind: &str, text: &str) {
     assert_eq!(s, StatusCode::NO_CONTENT);
 }
 
-#[tokio::test]
-async fn a_piece_that_passes_its_check_goes_to_github_on_the_plans_approval() {
-    let h = hub(Tok::Fixed).await;
+/// A goal for app `demo` whose one piece the owner approved, built and
+/// ready for its check. `rules` are set on the app first. Returns the goal,
+/// the piece's thread, its commit and `origin`'s bare repo with its main.
+async fn approved_piece(h: &Hub, rules: Value) -> (i64, i64, String, PathBuf, String) {
     let (repo, bare) = app_repo(&h.dir, Origin::GitHub);
     let main_before = branch_at(&bare, "main").expect("main");
     let app = ok(
@@ -1412,6 +1448,14 @@ async fn a_piece_that_passes_its_check_goes_to_github_on_the_plans_approval() {
     .await["id"]
         .as_i64()
         .expect("app id");
+    ok(
+        &h.r,
+        OWNER,
+        "POST",
+        &format!("/api/apps/{app}/rules"),
+        rules,
+    )
+    .await;
     let goal = ok(
         &h.r,
         OWNER,
@@ -1422,7 +1466,7 @@ async fn a_piece_that_passes_its_check_goes_to_github_on_the_plans_approval() {
     .await["id"]
         .as_i64()
         .expect("goal");
-    run_helper(&h, "coordinator", r#"{"say": "Plan.", "plan": {"summary": "Fix it.", "pieces": [{"title": "Fix the login page", "brief": "Fix src/login.rs.", "done_when": "You can sign in."}]}}"#).await;
+    run_helper(h, "coordinator", r#"{"say": "Plan.", "plan": {"summary": "Fix it.", "pieces": [{"title": "Fix the login page", "brief": "Fix src/login.rs.", "done_when": "You can sign in."}]}}"#).await;
     let v = ok(
         &h.r,
         OWNER,
@@ -1445,7 +1489,7 @@ async fn a_piece_that_passes_its_check_goes_to_github_on_the_plans_approval() {
         json!({"plan_message_id": plan}),
     )
     .await;
-    run_helper(&h, "design", "Drawn.").await;
+    run_helper(h, "design", "Drawn.").await;
     let work = ok(
         &h.r,
         RUNNER,
@@ -1459,7 +1503,7 @@ async fn a_piece_that_passes_its_check_goes_to_github_on_the_plans_approval() {
         .as_str()
         .expect("branch")
         .to_owned();
-    let head = save_work(&h, thread, &branch).await;
+    let head = save_work(h, thread, &branch).await;
     ok(
         &h.r,
         RUNNER,
@@ -1477,6 +1521,13 @@ async fn a_piece_that_passes_its_check_goes_to_github_on_the_plans_approval() {
     )
     .await;
 
+    (goal, thread, head, bare, main_before)
+}
+
+#[tokio::test]
+async fn a_piece_that_passes_its_check_goes_to_github_on_the_plans_approval() {
+    let h = hub(Tok::Fixed).await;
+    let (goal, thread, head, bare, main_before) = approved_piece(&h, json!({})).await;
     // The checker passes it: no Accept tap, and it goes to GitHub.
     run_helper(
         &h,
@@ -1526,4 +1577,185 @@ async fn a_piece_that_passes_its_check_goes_to_github_on_the_plans_approval() {
     )
     .await;
     assert_eq!(v["goal"]["state"], "done", "{v}");
+}
+
+#[tokio::test]
+async fn with_the_rule_off_a_passed_piece_waits_for_the_owners_accept() {
+    let h = hub(Tok::Fixed).await;
+    let (goal, thread, _head, _bare, _main) =
+        approved_piece(&h, json!({"send_checked": false})).await;
+    run_helper(
+        &h,
+        "review",
+        r#"{"pass": true, "summary": "Sign-in works."}"#,
+    )
+    .await;
+    let t = ok(
+        &h.r,
+        OWNER,
+        "GET",
+        &format!("/api/threads/{thread}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(t["state"], "in_review", "{t}");
+    assert!(t["github"].is_null(), "{t}");
+    assert!(requests(&h).iter().all(|s| s.0 != "POST"), "nothing opened");
+    let v = ok(
+        &h.r,
+        OWNER,
+        "GET",
+        &format!("/api/goals/{goal}"),
+        Value::Null,
+    )
+    .await;
+    assert!(v.to_string().contains("waits for your Accept"), "{v}");
+    // The owner's Accept sends it, as for any work.
+    accept(&h, thread, "accept-after-check").await;
+    let t = settled(&h, thread).await;
+    assert_eq!(t["github"]["state"], "sent", "{t}");
+}
+
+/// A sent pull request whose app may be merged from Decurion, with GitHub
+/// showing Decurion's commit at its head.
+async fn mergeable_pr(h: &Hub, merge: bool) -> (i64, String) {
+    let (_repo, _bare, thread, head, _branch) = sent_pr(h).await;
+    ok(
+        &h.r,
+        OWNER,
+        "POST",
+        "/api/apps/1/rules",
+        json!({"merge": merge, "receipt": format!("rules-{merge}")}),
+    )
+    .await;
+    h.fake.lock().expect("fake").heads.insert(1, head.clone());
+    (thread, head)
+}
+
+fn merges(h: &Hub) -> Vec<(String, String, String, Value)> {
+    requests(h).into_iter().filter(|s| s.0 == "PUT").collect()
+}
+
+#[tokio::test]
+async fn an_app_at_pr_only_never_merges_from_decurion() {
+    let h = hub(Tok::Fixed).await;
+    let (thread, _) = mergeable_pr(&h, false).await;
+    assert_eq!(watched(&h).await[0]["can_merge"], false);
+    let (s, v) = call(
+        &h.r,
+        OWNER,
+        "POST",
+        &format!("/api/threads/{thread}/pr/merge"),
+        json!({"receipt": "merge-receipt-1"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(
+        v.as_str()
+            .expect("text")
+            .contains("merge its pull requests on GitHub"),
+        "{v}"
+    );
+    assert!(merges(&h).is_empty());
+    assert_eq!(watched(&h).await[0]["state"], "open");
+}
+
+#[tokio::test]
+async fn the_owners_merge_tap_merges_decurions_commit_once() {
+    let h = hub(Tok::Fixed).await;
+    let (thread, head) = mergeable_pr(&h, true).await;
+    let w = watched(&h).await;
+    assert_eq!(w[0]["can_merge"], true, "{w}");
+    let today = ok(&h.r, OWNER, "GET", "/api/today", Value::Null).await;
+    assert_eq!(today[0]["last_pr"]["can_merge"], true, "{today}");
+
+    // Only the owner taps it.
+    let path = format!("/api/threads/{thread}/pr/merge");
+    let (s, _) = call(
+        &h.r,
+        RUNNER,
+        "POST",
+        &path,
+        json!({"receipt": "merge-receipt-r"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert!(merges(&h).is_empty());
+
+    let v = ok(
+        &h.r,
+        OWNER,
+        "POST",
+        &path,
+        json!({"receipt": "merge-receipt-1"}),
+    )
+    .await;
+    assert_eq!(v["state"], "merged", "{v}");
+    assert_eq!(v["event"], "Merged from Decurion");
+    assert_eq!(v["can_merge"], false);
+    let m = merges(&h);
+    assert_eq!(m.len(), 1, "{m:?}");
+    assert_eq!(m[0].1, "merge/1");
+    assert_eq!(m[0].2, format!("Bearer {TOKEN}"));
+    assert_eq!(m[0].3, json!({"sha": head, "merge_method": "squash"}));
+
+    // A resent tap merges nothing twice, and watching is over.
+    let again = ok(
+        &h.r,
+        OWNER,
+        "POST",
+        &path,
+        json!({"receipt": "merge-receipt-1"}),
+    )
+    .await;
+    assert_eq!(again["state"], "merged");
+    assert_eq!(merges(&h).len(), 1);
+    assert_eq!(decurion_hub::pr_watch::poll(&h.state).await, 0);
+}
+
+#[tokio::test]
+async fn merge_waits_until_github_says_the_pull_request_is_ready() {
+    let h = hub(Tok::Fixed).await;
+    let (thread, _) = mergeable_pr(&h, true).await;
+    let path = format!("/api/threads/{thread}/pr/merge");
+    for (state, says) in [
+        ("unstable", "checks"),
+        ("blocked", "review"),
+        ("dirty", "conflicts"),
+        ("unknown", "still checking"),
+    ] {
+        h.fake
+            .lock()
+            .expect("fake")
+            .merge_state
+            .insert(1, state.into());
+        let (s, v) = call(
+            &h.r,
+            OWNER,
+            "POST",
+            &path,
+            json!({"receipt": format!("merge-{state}")}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT, "{state}: {v}");
+        assert!(v.as_str().expect("text").contains(says), "{state}: {v}");
+    }
+    // Someone pushed to it after Decurion did.
+    {
+        let mut f = h.fake.lock().expect("fake");
+        f.merge_state.insert(1, "clean".into());
+        f.heads.insert(1, "f".repeat(40));
+    }
+    let (s, v) = call(
+        &h.r,
+        OWNER,
+        "POST",
+        &path,
+        json!({"receipt": "merge-moved"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v.as_str().expect("text").contains("pushed"), "{v}");
+    assert!(merges(&h).is_empty(), "never asked GitHub to merge");
+    assert_eq!(watched(&h).await[0]["state"], "open");
 }

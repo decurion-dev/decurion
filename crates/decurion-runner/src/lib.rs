@@ -579,6 +579,19 @@ fn size_words(bytes: u64) -> String {
     }
 }
 
+/// What every agent on an app whose live version holds patient or personal
+/// data is told (the app's rule, on until the owner turns it off). Decurion
+/// never handles such data; this keeps it out of the work as well.
+pub const PATIENT_DATA: &str = "This app's live version holds patient or personal data. \
+Use made-up data only, in code, tests, fixtures, examples and messages. Never ask for, copy, \
+print or commit real records, and never connect to the app's live database or live services.";
+
+/// The [`PATIENT_DATA`] line for this app, or nothing when its rules say it
+/// holds no such data. Added on every start, resumes too.
+pub fn patient_data_prompt(app: &decurion_proto::App) -> Option<&'static str> {
+    app.rules.patient_data.then_some(PATIENT_DATA)
+}
+
 /// What the agent is told about the files the owner attached, or nothing
 /// when there are none. Appended to the prompt on every start, resumes too,
 /// because the files may have changed since the agent last looked.
@@ -3990,5 +4003,19 @@ mod tests {
         let all = format!("{events:?} {:?}", run.finished());
         assert!(!all.contains(&secret));
         assert!(all.contains(HIDDEN));
+    }
+
+    #[test]
+    fn agents_on_an_app_with_patient_data_are_told_to_use_made_up_data() {
+        let mut app: decurion_proto::App = serde_json::from_value(serde_json::json!({
+            "id": 1, "name": "emr", "repo_path": "C:/apps/emr", "profile": "A"
+        }))
+        .expect("an app from an older hub still reads");
+        // Every app starts with the rule on, older hubs' apps too.
+        assert_eq!(patient_data_prompt(&app), Some(PATIENT_DATA));
+        assert!(PATIENT_DATA.contains("made-up data only"));
+        assert!(!PATIENT_DATA.contains('\u{2014}'), "no long dashes");
+        app.rules.patient_data = false;
+        assert_eq!(patient_data_prompt(&app), None);
     }
 }
