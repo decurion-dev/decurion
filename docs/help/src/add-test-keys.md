@@ -16,7 +16,7 @@ The key now shows in the list as its name and its last four characters. Decurion
 
 ## Good to know
 
-- Keys are kept in Windows' own secure store on your PC, not in Decurion's files, your app's folder or GitHub.
+- Keys are kept in Windows' own secure store on your PC, not in Decurion's database, your app's folder or GitHub. On a Mac or Linux, they are kept in a private folder that only your user can read.
 - Each piece of work gets only its own app's keys, from its next run.
 - If an agent writes a key into what it says, the board hides it.
 - Before work goes to review, Decurion checks the agent's new commits for the keys. If it finds one, the work stops instead. Click **Retry**, and the agent is asked to take the key out of its commits. A key that was already in your app's code before the agent started does not count.

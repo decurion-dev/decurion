@@ -11,8 +11,8 @@ Work moves to **In review** only when the agent has finished and saved its chang
 3. Choose one:
    - **Accept** if you are happy with it. The work moves to **Done**, and Decurion sends it to GitHub for you. See the next part. Typing "yes", "push" or "do it" in the message box does the same, as long as the agent did not ask you a question.
    - Pieces of a goal skip this step: when the checker passes one, your approval of the plan already counts as Accept, so it goes to GitHub by itself. Its **Overview** says so: "Sent to GitHub by itself because you approved the plan", with a link to the goal. One that changes a protected part of the app says **Held for you** instead, and waits for your **Accept**. Work you started with **Just do it** always waits for you.
-   - **Send back** if it needs more. The agent runs again and picks up where it left off. Today you cannot add a note when you send work back.
-   - **Reject** if you do not want it. The work moves to **Failed**.
+   - **Send back** if it needs more. The agent runs again and picks up where it left off. To say what to change, type it under **Tell the agent something** and click **Send back with this answer** instead.
+   - **Reject** if you do not want it. Click **Reject work** to confirm. The work moves to **Failed**, and its changes stay on its branch.
 
 If the agent's summary lists problems it found along the way, tap **Fix what it found**. It opens the "What do you want?" box filled in with that summary, so you can start new work from it. The work you are looking at stays as it is.
 
@@ -62,7 +62,7 @@ This is optional. Without it, you make each pull request yourself with one tap.
 2. Under **Repository access**, choose your apps' repos.
 3. Under **Permissions**, set **Pull requests** to **Read and write**. It needs nothing else. The same token lets Decurion ask your reviewer to look and watch for their comments.
 4. Click **Generate token** and copy it.
-5. On the board, open **Settings**, find **GitHub**, paste it into **GitHub token**, and click **Save token**.
+5. On the board, open **Settings**, then **GitHub**. Paste it into **GitHub token** and click **Save token**.
 
 Decurion keeps the token in this PC's password store and shows only its last four characters. It is never given to an agent. To stop using it, click **Remove** next to it.
 

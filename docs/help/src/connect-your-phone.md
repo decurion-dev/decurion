@@ -13,7 +13,7 @@ That is all you do outside Decurion. Decurion sets up the rest itself.
 
 ## Pair your phone
 
-1. On the board on your PC, open **Settings** and go to **Phones**.
+1. On the board on your PC, click **Settings**, then **Phones**.
 2. Click **Connect your phone**. Decurion asks Tailscale for your PC's private `https://` address and remembers it.
 3. The first time, Decurion may say **Tailscale needs HTTPS turned on once**. Open the link it shows, turn HTTPS on, then click **Connect your phone** again.
 4. A square code (QR code) appears.
@@ -29,19 +29,20 @@ On a Mac or Linux, `decurion-start` works the same way. On Linux, run `sudo tail
 
 ## What you can do on your phone
 
-Everything you can do on the board. The phone has four tabs at the bottom:
+Everything you can do on the board. The phone has five tabs at the bottom:
 
 - **Inbox:** what needs you. Questions from agents show first, with answers you tap. Plans waiting for your approval and your project lead's questions show here too, with the app's name, **Approve** and **Open plan**.
 - **Board:** all your work, by state and by app. Tap **New work** to ask for something: send it to your project lead, or pick **Just do it** for a small change. Tap a card to accept it, send it back, stop it, move it between your PC and the cloud, talk to its agent, or take over its test browser.
 - **Goals:** talk with your project lead, answer its questions, open the visual plan and approve it.
-- **Settings:** a list of tabs to tap into, one for each area: sign-ins, apps (with **Choose folder** to pick an app's folder on your PC), websites, test keys, website sign-ins, your GitHub token, caps, usage, computers and phones. **‹ Settings** at the top takes you back to the list. Keys and tokens you type are hidden, never shown again except their last four characters, and never kept on the phone.
+- **Plan:** each app's master plan. See [Follow your master plan](follow-your-master-plan.md).
+- **Settings:** a list to tap into, with the same tabs as on the PC: **Sign-ins**, **Apps**, **Computers**, **Accounts**, **Test keys**, **GitHub**, **Website sign-ins**, **Phones** and **Voice**. In **Apps**, **Choose folder** picks an app's folder on your PC. **Settings** at the top takes you back to the list. Keys and tokens you type are hidden, never shown again except their last four characters, and never kept on the phone.
 
 ## Turn on notifications
 
 1. Add the inbox to your home screen:
    - **iPhone:** tap the Share button, then **Add to Home Screen**. Open Decurion from the new icon. On iPhone, notifications work only from the home screen icon.
    - **Android:** in Chrome, tap the menu, then **Add to Home screen**.
-2. In the inbox, tap **Turn on notifications**.
+2. In the inbox, find **Get a notification when an agent needs you.** and tap **Turn on**.
 3. When your phone asks, tap **Allow**.
 
 Your phone now alerts you when a plan is ready, your project lead has a question, work is ready for review, needs you, or stopped, and when work is ready to merge on GitHub. It also alerts you when the pay-per-use spending cap is reached. Each notice starts with the app's name, like "Refill tracker: ready for review". Notifications show only a short line, never the agent's work.
@@ -60,7 +61,7 @@ The notice then changes to say what happened, such as "Refill tracker: plan appr
 
 1. In Settings, on the board or your phone, go to **Phones**.
 2. Find the phone in the list and click **Remove**.
-3. Click **OK** to confirm. That phone is signed out and needs a new code to come back.
+3. Click **Remove phone** to confirm. That phone is signed out and needs a new code to come back.
 
 ## If something goes wrong
 
@@ -73,6 +74,6 @@ The notice then changes to say what happened, such as "Refill tracker: plan appr
 - **The phone cannot open the link.** Check that Tailscale is on, on both the phone and the PC.
 - **"This pairing code is used or expired."** Click **Pair a phone** on the board again and scan the new code.
 - **"This phone is signed out."** The phone was removed from the board. Pair it again.
-- **There is no Turn on notifications button.** You may have blocked notifications for this site before. Allow them in your phone's settings. On iPhone, open Decurion from the home screen icon.
+- **There is no Turn on button.** You may have blocked notifications for this site before. Allow them in your phone's settings. On iPhone, open Decurion from the home screen icon.
 
 Next: [Give your first goal](give-your-first-goal.md).

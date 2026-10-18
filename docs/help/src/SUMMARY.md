@@ -7,9 +7,11 @@
 - [Install Decurion](install.md)
 - [Connect your Claude accounts](connect-claude-accounts.md)
 - [Add your first app](add-your-first-app.md)
+- [Choose your rules](choose-your-rules.md)
+- [Choose which websites agents may use](choose-websites.md)
 - [Give an app its test keys](add-test-keys.md)
 - [Save website sign-ins](save-website-sign-ins.md)
-- [Choose your rules](choose-your-rules.md)
+- [Change an app's plan, name or folder](change-an-app.md)
 - [Connect your phone](connect-your-phone.md)
 - [Check your sign-ins](check-your-sign-ins.md)
 

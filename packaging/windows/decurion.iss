@@ -42,9 +42,11 @@ SolidCompression=yes
 WizardStyle=modern
 CloseApplications=yes
 UninstallDisplayName=Decurion
-UninstallDisplayIcon={sys}\WindowsPowerShell\v1.0\powershell.exe
+SetupIconFile=decurion.ico
+UninstallDisplayIcon={app}\decurion.ico
 
 [Tasks]
+Name: "startup"; Description: "Start Decurion when I sign in to Windows, so your work keeps going after a restart"
 Name: "desktopicon"; Description: "Put a Decurion shortcut on my desktop"; Flags: unchecked
 
 [Files]
@@ -52,6 +54,7 @@ Source: "{#BinDir}\decurion-hub.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\decurion-runner.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "start-decurion.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "save-claude-sign-in.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "decurion.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; The whole folder: the image copies its other files (the browser host, the
 ; MCP settings, decurion-postgres) in, so the Dockerfile alone cannot build.
 Source: "{#RepoRoot}\docker\claude-worker\*"; DestDir: "{app}\docker\claude-worker"; Flags: ignoreversion recursesubdirs
@@ -69,13 +72,17 @@ Source: "{#RepoRoot}\README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
 [Icons]
 Name: "{autoprograms}\Decurion"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\start-decurion.ps1"""; \
-  WorkingDir: "{app}"; Comment: "Start Decurion and open your board"
+  WorkingDir: "{app}"; IconFilename: "{app}\decurion.ico"; Comment: "Start Decurion and open your board"
 Name: "{autoprograms}\Decurion - Save a Claude sign-in"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\save-claude-sign-in.ps1"""; \
-  WorkingDir: "{app}"; Comment: "Save a Claude account sign-in or API key for Decurion"
+  WorkingDir: "{app}"; IconFilename: "{app}\decurion.ico"; Comment: "Save a Claude account sign-in or API key for Decurion"
 Name: "{autodesktop}\Decurion"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\start-decurion.ps1"""; \
-  WorkingDir: "{app}"; Comment: "Start Decurion and open your board"; Tasks: desktopicon
+  WorkingDir: "{app}"; IconFilename: "{app}\decurion.ico"; Comment: "Start Decurion and open your board"; Tasks: desktopicon
+Name: "{userstartup}\Decurion"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\start-decurion.ps1"" -Background"; \
+  WorkingDir: "{app}"; IconFilename: "{app}\decurion.ico"; Comment: "Start Decurion in the background"; \
+  Flags: runminimized; Tasks: startup
 
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
