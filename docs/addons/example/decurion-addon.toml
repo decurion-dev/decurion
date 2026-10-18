@@ -1,7 +1,9 @@
 # decurion-addon.toml: example manifest (decurion_api 1).
 #
-# Design: docs/adr/0001-add-on-system.md (status: Proposed). Field names may
-# still change before the add-on system ships.
+# The FULL DESIGN in docs/adr/0001-add-on-system.md, including parts that do
+# not run yet: Decurion today refuses this file, because it has an agent
+# type and checks. For a manifest that works now (tools only), see
+# ../word-count/decurion-addon.toml and ../README.md.
 #
 # Most real add-ons declare a single component. This example declares one of
 # each kind (agent type, tool, check) so every field is shown in one place.

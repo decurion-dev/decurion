@@ -449,6 +449,7 @@ mod tests {
             checkpoint: None,
             sign_ins,
             context: vec![],
+            addons: vec![],
         }
     }
 

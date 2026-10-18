@@ -10,6 +10,7 @@ use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub mod addons;
 pub mod handover;
 pub mod identity;
 

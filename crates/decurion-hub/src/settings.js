@@ -251,6 +251,8 @@
       "site-sign-ins": card("site-sign-ins", "globe", "Website sign-ins",
         "Let this app's agents check pages that need a sign-in. You sign in once, in a sign-in window on your PC or phone; the sign-in is kept on your PC and your password is never saved. Use test accounts only: an agent may be able to read part of what a website keeps.",
         parts.signIns),
+      // Add-ons: drawn by addons.js (window.DAddons), in a tab of their own.
+      addons: window.DAddons?.card({ onSignedOut: signedOut }) ?? null,
       phones,
       voice: voiceCard(),
     };
@@ -272,6 +274,7 @@
     { id: "keys", icon: "key", name: "Test keys", about: "Keys agents use while testing" },
     { id: "github", icon: "branch", name: "GitHub", about: "Where accepted work goes" },
     { id: "site-sign-ins", icon: "globe", name: "Website sign-ins", about: "Pages agents may sign in to" },
+    { id: "addons", icon: "tool", name: "Add-ons", about: "Extra tools for your agents" },
     { id: "phones", icon: "phone", name: "Phones", about: "Pair a phone, see paired ones" },
     { id: "voice", icon: "mic", name: "Voice", about: "Talk and hear replies on this device" },
   ];
@@ -1762,6 +1765,7 @@
       loadKeys();
       loadGitHub();
       loadSignIns();
+      window.DAddons?.load();
       return id;
     },
     hide() { shown = false; },

@@ -9,6 +9,8 @@ version.workspace = true
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+# An add-on's files arrive from the hub as base64 inside JSON (addons.rs).
+base64 = "0.22"
 decurion-proto = { path = "../decurion-proto" }
 decurion-vault = { path = "../decurion-vault" }
 futures-util = "0.3"

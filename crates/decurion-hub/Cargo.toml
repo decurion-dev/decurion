@@ -31,6 +31,8 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# Reading add-on manifests (addon_manifest.rs): parsing only, no writing.
+toml = { version = "1", default-features = false, features = ["std", "parse", "serde"] }
 url = "2"
 uuid.workspace = true
 web-push-native = "0.5"

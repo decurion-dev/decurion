@@ -1,5 +1,6 @@
 //! Types shared by the hub, the runner and the web board.
 
+pub mod addon;
 pub mod browser;
 pub mod context;
 pub mod deploy;
@@ -689,6 +690,11 @@ pub struct Claim {
     /// [`context::BOX_DIR`] before the agent starts.
     #[serde(default)]
     pub context: Vec<context::ContextRef>,
+    /// Add-ons the owner turned on for this app. The runner fetches each
+    /// one's files from the hub, checks their hash and starts its tools in
+    /// boxes of their own beside the agent's (see [`addon`]).
+    #[serde(default)]
+    pub addons: Vec<addon::AddonUse>,
 }
 
 /// A saved website sign-in named in a claim: which one to open from the

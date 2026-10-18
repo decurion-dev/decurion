@@ -19,6 +19,7 @@ use decurion_runner::identity::{
     hub_url, place_from_env, write_atomic, CloudRunner, PC_HUB, PC_NAME,
 };
 use decurion_runner::sign_ins::{self, HubAccess};
+mod addon_box;
 mod browser_box;
 mod preview_box;
 
@@ -1755,11 +1756,21 @@ async fn run(
     site_secrets: Vec<String>,
 ) -> anyhow::Result<()> {
     // A pay-per-use box reaches the gatekeeper through its site gate, which
-    // passes that one address through and nothing else on the PC.
+    // passes that one address through and nothing else on the PC. The
+    // websites of the app's add-on tools join the list for this run only;
+    // pi runs get no add-on tools.
+    let mut app = c.app.clone();
+    if c.thread.ai == decurion_proto::Ai::Claude {
+        for s in decurion_runner::addons::sites(&c.addons) {
+            if !app.sites.contains(&s) {
+                app.sites.push(s);
+            }
+        }
+    }
     let exit = start_site_gate(
         hub,
         BoxNet::work(c.thread.id),
-        &c.app,
+        &app,
         Some(c.thread.id),
         gate.relay(Credential::for_account(c.account)).as_deref(),
     )
@@ -1905,6 +1916,27 @@ make sure Docker Desktop is running and delete that container there",
     } else {
         Some(browser_box::start_run(hub, id, states, given, &secrets).await?)
     };
+    // The app's add-on tools, each in a box of its own on the browser box's
+    // network, never in the agent's. pi runs get none.
+    let tools = if pi {
+        None
+    } else {
+        let t = addon_box::start(
+            hub,
+            data,
+            id,
+            &browser_container_name(id),
+            &c.addons,
+            keys,
+            &secrets,
+        )
+        .await;
+        if let Some(more) = &t.prompt {
+            prompt.push_str("\n\n");
+            prompt.push_str(more);
+        }
+        Some(t)
+    };
     // Tell the hub before launching: from here the run may cost money, and if
     // the hub cannot be told, the run does not start.
     hub.post(&format!("/threads/{id}/events"), &RunEvent::Started)
@@ -1913,7 +1945,7 @@ make sure Docker Desktop is running and delete that container there",
     let args = if pi {
         pi_run_args(id, &wt, &session, cred, &c.test_keys)?
     } else {
-        run_args(
+        let mut a = run_args(
             id,
             &wt,
             &session,
@@ -1921,7 +1953,11 @@ make sure Docker Desktop is running and delete that container there",
             cred,
             c.budget_usd,
             &c.test_keys,
-        )?
+        )?;
+        if let Some(config) = tools.as_ref().and_then(|t| t.config.as_deref()) {
+            decurion_runner::addons::add_to_run(&mut a, config)?;
+        }
+        a
     };
     let mut child = cmd
         .args(args)
@@ -1969,12 +2005,18 @@ make sure Docker Desktop is running and delete that container there",
             tracing::info!(id, "stopped by the owner");
             kill(hub, &mut child, id).await;
             browser_box::stop(browser).await;
+            if let Some(t) = &tools {
+                addon_box::stop(t).await;
+            }
             let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
             return Ok(());
         }
         Ended::Moved(to) => {
             hand_over(hub, data, id, &wt, &branch, to, &mut child).await;
             browser_box::stop(browser).await;
+            if let Some(t) = &tools {
+                addon_box::stop(t).await;
+            }
             let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
             return Ok(());
         }
@@ -1986,8 +2028,11 @@ make sure Docker Desktop is running and delete that container there",
     };
     reader.await.context("stdout reader")??;
     let status = child.wait().await?;
-    // The agent is done with its browser.
+    // The agent is done with its browser and its add-on tools.
     browser_box::stop(browser).await;
+    if let Some(t) = &tools {
+        addon_box::stop(t).await;
+    }
     // The container is gone; its token goes with it.
     // For pay-per-use, the gatekeeper's count is the cost: it saw every call,
     // including any the agent made itself, and runs outside the container.
@@ -3813,6 +3858,7 @@ async fn run_one(hub: &Hub, data: &Path, gate: &Gate, claim: Claim) {
     let id = claim.thread.id;
     run_claimed(hub, data, gate, claim).await;
     browser_box::settle(id).await;
+    addon_box::clear(id).await;
     if !remove_container(id).await {
         // Only logged: the run is over, so the board no longer takes this
         // piece's activity. The next attempt at it refuses to start while the
