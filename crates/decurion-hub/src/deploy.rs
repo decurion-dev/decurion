@@ -908,6 +908,17 @@ impl Store {
         .await?)
     }
 
+    /// When deploy `id` started.
+    async fn deploy_started(&self, id: i64) -> Result<Option<String>> {
+        Ok(
+            sqlx::query_scalar("SELECT started_at FROM deploys WHERE id = ?")
+                .bind(id)
+                .fetch_optional(self.pool())
+                .await?
+                .flatten(),
+        )
+    }
+
     /// When app `app_id`'s last release from Decurion started.
     async fn last_live_start(&self, app_id: i64) -> Result<Option<String>> {
         Ok(sqlx::query_scalar(
@@ -1074,12 +1085,19 @@ impl Deployer {
         ) else {
             return;
         };
+        self.mark_held(app_id, dir, &live, start).await;
+    }
+
+    /// [`Deployer::mark_live`] for a release of commit `live` that started at
+    /// `start`, before it is recorded, so the card never says Live while its
+    /// goals still say ready to deploy.
+    async fn mark_held(&self, app_id: i64, dir: &Path, live: &str, start: Option<String>) {
         let Ok(waiting) = self.store.not_yet_live(app_id).await else {
             return;
         };
         for (thread_id, merge, seen) in waiting {
             let held = match merge.filter(|m| is_sha(m)) {
-                Some(m) => run_git(dir, &["merge-base", "--is-ancestor", &m, &live])
+                Some(m) => run_git(dir, &["merge-base", "--is-ancestor", &m, live])
                     .await
                     .is_ok(),
                 None => matches!((&seen, &start), (Some(seen), Some(start)) if seen <= start),
@@ -1186,6 +1204,15 @@ impl Deployer {
             Err((why, tail)) => (false, Some(why), tail),
         };
         let tail = (!tail.is_empty()).then(|| tail.join("\n"));
+        if ok {
+            if let (Ok(c), Ok(start)) = (
+                self.store.deploy_card(id).await,
+                self.store.deploy_started(id).await,
+            ) {
+                self.mark_held(c.app_id, &self.copy_dir(c.app_id), &c.commit, start)
+                    .await;
+            }
+        }
         if let Err(e) = self
             .store
             .end_deploy(id, ok, error.as_deref(), tail.as_deref())
@@ -1196,9 +1223,6 @@ impl Deployer {
         }
         tracing::info!(deploy = id, live = ok, "deploy finished");
         if let Ok(c) = self.store.deploy_card(id).await {
-            if ok {
-                self.mark_live(c.app_id, &self.copy_dir(c.app_id)).await;
-            }
             let n = if ok {
                 notice(&c, "live", &format!("{} is live", c.short))
             } else {
