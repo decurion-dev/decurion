@@ -170,6 +170,17 @@ impl SignIns {
         }
     }
 
+    /// Types `bytes` into Claude's window, if this sign-in still has one.
+    fn type_in(&self, seq: u64, bytes: &[u8]) {
+        let mut g = self.lock();
+        if g.seq != seq {
+            return;
+        }
+        if let Some(w) = g.writer.as_mut() {
+            let _ = w.write_all(bytes).and_then(|_| w.flush());
+        }
+    }
+
     fn progress(&self, seq: u64, link: Option<String>, wants_code: bool) {
         let mut g = self.lock();
         if g.seq == seq && g.status.phase == Phase::Waiting {
@@ -409,6 +420,34 @@ fn last_words(text: &str) -> Option<String> {
     Some(line.chars().take(200).collect())
 }
 
+/// The terminal's question "where is the cursor?" (ESC [ 6 n).
+const CURSOR_ASK: &[u8] = b"\x1b[6n";
+/// The answer: top left, as a fresh terminal would say.
+const CURSOR_AT_START: &[u8] = b"\x1b[1;1R";
+
+/// Counts cursor questions in output that arrives in pieces, including one
+/// split across two pieces.
+#[derive(Default)]
+struct CursorAsks {
+    tail: Vec<u8>,
+}
+
+impl CursorAsks {
+    fn asks(&mut self, chunk: &[u8]) -> usize {
+        let mut seen = std::mem::take(&mut self.tail);
+        let old = seen.len();
+        seen.extend_from_slice(chunk);
+        let n = seen
+            .windows(CURSOR_ASK.len())
+            .enumerate()
+            .filter(|(i, w)| *w == CURSOR_ASK && i + CURSOR_ASK.len() > old)
+            .count();
+        let keep = seen.len().min(CURSOR_ASK.len() - 1);
+        self.tail = seen[seen.len() - keep..].to_vec();
+        n
+    }
+}
+
 /// Whether what Windows printed says Claude could not run at all.
 fn could_not_run(text: &str) -> bool {
     text.contains("is not recognized") || text.contains("Terminate batch job")
@@ -644,6 +683,7 @@ async fn watch(
     });
 
     let mut screen = Screen::default();
+    let mut cursor = CursorAsks::default();
     let give_up = tokio::time::sleep(GIVE_UP);
     tokio::pin!(give_up);
     let starting = tokio::time::sleep(STARTING);
@@ -668,6 +708,12 @@ async fn watch(
             } => break Err(STOPPED),
             ev = rx.recv() => match ev {
                 Some(Event::Out(b)) => {
+                    // Windows' pseudo-terminal asks where the cursor is before
+                    // it passes on anything Claude prints, and waits for the
+                    // answer a real terminal would give.
+                    for _ in 0..cursor.asks(&b) {
+                        st.claude.type_in(seq, CURSOR_AT_START);
+                    }
                     screen.push(&b);
                     let (text, links) = screen.read();
                     if let Some(t) = find_token(&text) {
@@ -897,6 +943,16 @@ mod tests {
         );
         assert_eq!(last_words("Your token:\nsk-ant-oat01-abc\nbye\n"), None);
         assert_eq!(last_words("\n \n"), None);
+    }
+
+    #[test]
+    fn cursor_questions_are_counted_once_even_when_split() {
+        let mut c = CursorAsks::default();
+        assert_eq!(c.asks(b"\x1b[?25l\x1b[6n"), 1);
+        assert_eq!(c.asks(b"hello \x1b["), 0);
+        assert_eq!(c.asks(b"6n and \x1b[6n"), 2);
+        assert_eq!(c.asks(b"n"), 0, "an old question is not counted again");
+        assert_eq!(c.asks(b""), 0);
     }
 
     #[test]

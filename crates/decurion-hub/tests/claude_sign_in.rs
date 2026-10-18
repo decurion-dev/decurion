@@ -129,6 +129,29 @@ async fn signing_in_on_the_pc_saves_the_sign_in_for_that_plan() {
 }
 
 #[tokio::test]
+async fn claude_s_output_held_back_until_the_cursor_question_is_answered_still_arrives() {
+    // Windows' pseudo-terminal asks where the cursor is and passes on
+    // nothing until it hears back; this stand-in does the same.
+    let t = token();
+    let h = hub(&format!(
+        "stty raw -echo\n         printf '\\033[6n'\n         answer=$(dd bs=1 count=6 2>/dev/null)\n         [ \"$answer\" = \"$(printf '\\033[1;1R')\" ] || exit 3\n         printf 'Opening browser\\r\\n{t}\\r\\n'\n         sleep 5"
+    ))
+    .await;
+    let (s, _) = call(
+        &h.r,
+        "POST",
+        "/api/claude/sign-in",
+        OWNER,
+        json!({ "profile": "A" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let v = wait_for(&h.r, |v| v["phase"] != "waiting").await;
+    assert_eq!(v["phase"], "saved", "{v}");
+    assert_eq!(h.vault.get_claude(Profile::A).expect("read"), Some(t));
+}
+
+#[tokio::test]
 async fn when_the_page_does_not_open_the_owner_gives_claude_its_code() {
     let h = hub(
         "printf 'Browser didn'\"'\"'t open? Use the url below\\r\\n'\n\
