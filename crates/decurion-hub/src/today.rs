@@ -124,6 +124,9 @@ pub struct TodayRow {
     /// What the app waits on, in a few plain words: "Approve the plan",
     /// "2 of 4 pieces built", "PR #88 · param left 3 comments".
     pub line: String,
+    /// Tokens the app's agents used today, once any did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_today: Option<decurion_proto::tokens::TokenLine>,
 }
 
 /// A watched pull request, as read.
@@ -458,6 +461,7 @@ impl Store {
             facts.entry(app_id).or_default().deploy = Some(d);
         }
 
+        let mut used = crate::tokens::today_by_app(self.pool()).await?;
         let mut rows: Vec<TodayRow> = apps
             .into_iter()
             .map(|a| {
@@ -487,6 +491,7 @@ impl Store {
                     tone,
                     status: status.to_owned(),
                     line,
+                    used_today: used.remove(&a.id),
                 }
             })
             .collect();

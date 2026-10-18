@@ -1179,8 +1179,16 @@ impl Store {
                     .unwrap_or_default(),
                 review_claims: serde_json::from_str(&r.try_get::<String, _>("review_claims")?)
                     .unwrap_or_default(),
+                usage: None,
             });
         }
+        let mut piece_tokens = Vec::with_capacity(pieces.len());
+        for p in &mut pieces {
+            let t = crate::tokens::piece(&mut tx, p.thread_id).await?;
+            p.usage = crate::tokens::piece_line(t);
+            piece_tokens.push(t);
+        }
+        let usage = crate::tokens::goal(&mut tx, id, &piece_tokens).await?;
         let page_rows = sqlx::query(
             "SELECT id, kind, message_id, thread_id, created_at FROM goal_pages WHERE goal_id = ? ORDER BY id",
         )
@@ -1225,6 +1233,7 @@ impl Store {
             pages,
             drawing,
             live,
+            usage,
         })
     }
 
@@ -1804,7 +1813,7 @@ impl Store {
             };
             sqlx::query(
                 "UPDATE helper_jobs SET state = 'running', runner = ?, account = ?, reserved_micros = ?,
-                     prior_micros = ?, session_id = ?, prompt = ?, upto_message_id = ?,
+                     prior_micros = ?, resumed = ?, session_id = ?, prompt = ?, upto_message_id = ?,
                      started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                  WHERE id = ? AND state = 'queued'",
             )
@@ -1812,6 +1821,7 @@ impl Store {
             .bind(&account)
             .bind(reserved)
             .bind(prior)
+            .bind(resume)
             .bind(&session_id)
             .bind(&prompt)
             .bind(upto)
@@ -2637,18 +2647,23 @@ async fn close_job(
         "UPDATE helper_jobs SET state = ?, result = ?,
              finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
              cost_micros = CASE WHEN ? IS NOT NULL THEN MAX(? - prior_micros, 0)
-                                WHEN container_started = 1 THEN reserved_micros ELSE 0 END,
-             input_tokens = ?, output_tokens = ?
+                                WHEN container_started = 1 THEN reserved_micros ELSE 0 END
          WHERE id = ?",
     )
     .bind(if ok { "done" } else { "failed" })
     .bind(text)
     .bind(reported)
     .bind(reported)
-    .bind(res.and_then(|r| r.input_tokens).map(|n| n as i64))
-    .bind(res.and_then(|r| r.output_tokens).map(|n| n as i64))
     .bind(job_id)
     .execute(&mut **tx)
+    .await?;
+    crate::tokens::record_job(
+        tx,
+        job_id,
+        res.and_then(|r| r.input_tokens),
+        res.and_then(|r| r.output_tokens),
+        res.and_then(|r| r.tokens.as_ref()),
+    )
     .await?;
     Ok(())
 }

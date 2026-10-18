@@ -28,8 +28,8 @@ use decurion_runner::{
     helper_tool_container_name, hide, hide_cut, home_volume, is_interrupted_turn, is_turn_start,
     parse_line_hiding, parse_result, part_done, patient_data_prompt, pi_run_args, prompt_for,
     read_page, read_report, redact, research_outcome, retriable, run_args, sibling, valid_branch,
-    Acks, Action, Conversation, Credential, FirstResult, LeakScanner, PiRun, Sandbox, Start, Step,
-    BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
+    Acks, Action, ContextMeter, Conversation, Credential, FirstResult, LeakScanner, PiRun, Sandbox,
+    Start, Step, BUDGET_STOP, DOCKER_CLI_ENV, LIMIT_STOP,
 };
 use decurion_runner::{gate_args, parse_gate_line, BoxNet, GateLine, GATE_IMAGE, RELAY_URL};
 use decurion_vault::{check_name, Vault};
@@ -1429,6 +1429,7 @@ async fn follow(
     // tool inside a turn is never cut short by the idle watchdog.
     let mut between_turns = false;
     let mut last_line = Instant::now();
+    let mut meter = ContextMeter::default();
     let ended = loop {
         tokio::select! {
             line = lines.recv() => {
@@ -1452,7 +1453,9 @@ async fn follow(
                     conv.on_turn_start();
                     between_turns = false;
                 }
-                let events = parse_line_hiding(&line, guard.secrets);
+                meter.see(&line);
+                let mut events = parse_line_hiding(&line, guard.secrets);
+                events.iter_mut().for_each(|e| meter.stamp_event(e));
                 let is_result = events.iter().any(|e| matches!(e, RunEvent::Finished { .. }));
                 if turn_start || is_result {
                     // Claude has read what was written before this line.
@@ -2011,6 +2014,7 @@ make sure Docker Desktop is running and delete that container there",
             cost_usd,
             input_tokens,
             output_tokens,
+            tokens,
         }) => {
             // The runner stopped a pi run at its budget itself, so its
             // container does not exit cleanly, but what pi reported until
@@ -2037,6 +2041,7 @@ make sure Docker Desktop is running and delete that container there",
                     cost_usd: cost,
                     input_tokens,
                     output_tokens,
+                    tokens,
                 },
             )
             .await;
@@ -2059,6 +2064,7 @@ make sure Docker Desktop is running and delete that container there",
                         cost_usd: Some(cost),
                         input_tokens: None,
                         output_tokens: None,
+                        tokens: None,
                     },
                 )
                 .await;
@@ -2256,6 +2262,7 @@ async fn fail(hub: &Hub, id: i64, note: &str) {
             cost_usd: None,
             input_tokens: None,
             output_tokens: None,
+            tokens: None,
         },
     )
     .await;
@@ -2630,6 +2637,7 @@ fn helper_failed(text: String) -> HelperResult {
         cost_usd: None,
         input_tokens: None,
         output_tokens: None,
+        tokens: None,
         page_html: None,
     }
 }
@@ -2747,8 +2755,13 @@ async fn helper_container(
     // only counts from Claude's one result in a container that exited cleanly.
     let ran = tokio::time::timeout(HELPER_TIME_LIMIT, async {
         let mut watch = FirstResult::default();
+        let mut meter = ContextMeter::default();
         while let Some((line, _)) = read_capped_line(&mut out).await? {
-            let parsed = parse_result(&line);
+            meter.see(&line);
+            let parsed = parse_result(&line).map(|mut r| {
+                meter.stamp(&mut r.tokens);
+                r
+            });
             watch.push(&line, parsed);
         }
         let status = child.wait().await?;

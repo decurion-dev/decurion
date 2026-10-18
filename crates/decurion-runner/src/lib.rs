@@ -3,6 +3,7 @@
 
 use decurion_proto::context::{text_name, ContextRef, FileKind, BOX_DIR};
 use decurion_proto::goal::{HelperResult, MAX_PAGE_BYTES};
+use decurion_proto::tokens::TokenUse;
 use decurion_proto::{Account, Interrupted, Message, MessageKind, Profile, RunEvent, ThreadState};
 use serde_json::{json, Value};
 use std::collections::{HashSet, VecDeque};
@@ -1000,6 +1001,9 @@ pub fn run_args(
         .map(str::to_owned),
     );
     session_and_budget(&mut a, session_id, resume, budget_usd);
+    lean_flags(&mut a);
+    a.push("--disallowedTools".into());
+    a.push(UNUSED_TOOLS.join(","));
     Ok(a)
 }
 
@@ -1078,6 +1082,56 @@ const MCP_CONFIG: &str = "/etc/decurion/mcp.json";
 /// The same for a work run: the test browser in the browser box next door,
 /// reached over the network the two boxes share.
 pub const MCP_BOX_CONFIG: &str = "/etc/decurion/mcp-box.json";
+
+/// Claude Code tools a sealed box has no use for. They are taken out of every
+/// Claude agent's tool list, so their instructions (about 7,000 tokens,
+/// measured on Claude Code 2.1.289) are not sent with every turn: timers and
+/// wake-ups (a run ends when its task does), git worktrees (the box works on
+/// its one branch), remote triggers and agent lists (the box reaches no other
+/// session), multi-agent workflows (the project lead plans the pieces), and
+/// review reports for a host that is not there. Keep the list the same on
+/// every start of a session: a changed tool list makes Claude read its whole
+/// conversation afresh instead of from the prompt cache.
+pub const UNUSED_TOOLS: &[&str] = &[
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "Workflow",
+];
+
+/// The conversation size, in tokens, at which Claude Code compacts it when a
+/// new turn starts (an owner message, a resumed run, a fix round). Claude Code
+/// gives a 1M-token model nearly all of it by default; 200,000 is the window
+/// Claude Code itself uses for most models. Compacting much earlier, such as
+/// at 40%, has no support in Claude Code's documentation and loses detail
+/// each time. See docs/agents/lean-prompts.md.
+pub const AUTOCOMPACT_WINDOW: &str = "200000";
+
+/// Flags that keep every Claude agent's starting prompt small and the same in
+/// every box, so a new piece of work reads what an earlier one already put in
+/// the prompt cache: no skills (Claude Code's own skills are for people at a
+/// terminal, and a repo's own never load, like its MCP servers); the parts
+/// that differ per box (the folder, git status) go in the first message
+/// instead of the system prompt; and the compaction window above. Auto
+/// memory is off too (`CLAUDE_CODE_DISABLE_AUTO_MEMORY` in [`box_args`]): the
+/// project lead keeps the app's notes.
+fn lean_flags(a: &mut Vec<String>) {
+    a.extend(
+        [
+            "--disable-slash-commands",
+            "--exclude-dynamic-system-prompt-sections",
+            "--autocompact",
+            AUTOCOMPACT_WINDOW,
+        ]
+        .map(str::to_owned),
+    );
+}
 
 /// The program the browser box runs (`docker/claude-worker/browser-host.mjs`).
 pub const BROWSER_HOST: &str = "/opt/decurion/browser-host.mjs";
@@ -1215,10 +1269,15 @@ pub fn helper_run_args(
         .map(str::to_owned),
     );
     session_and_budget(&mut a, session_id, resume, budget_usd);
-    if !disallowed_tools.is_empty() {
-        a.push("--disallowedTools".into());
-        a.push(disallowed_tools.join(","));
+    lean_flags(&mut a);
+    let mut off: Vec<&str> = disallowed_tools.iter().map(String::as_str).collect();
+    for t in UNUSED_TOOLS {
+        if !off.contains(t) {
+            off.push(t);
+        }
     }
+    a.push("--disallowedTools".into());
+    a.push(off.join(","));
     // The code in /work was written by an agent. Its project settings, hooks
     // and MCP servers must not steer the helper that reads or checks it; the
     // only MCP server is Decurion's own browser.
@@ -1293,6 +1352,10 @@ fn box_args(
             // No update checks or telemetry: they would only be blocked.
             "-e",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+            // No auto memory: its instructions would ride along on every
+            // turn, and the project lead keeps the app's notes (`app_notes`).
+            "-e",
+            "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1",
         ]
         .iter()
         .map(|s| s.to_string()),
@@ -1571,6 +1634,7 @@ pub fn parse_line_hiding(line: &str, secrets: &[String]) -> Vec<RunEvent> {
                 cost_usd: o.cost_usd,
                 input_tokens: o.input_tokens,
                 output_tokens: o.output_tokens,
+                tokens: o.tokens,
             });
             out
         }
@@ -1647,6 +1711,8 @@ pub struct PiRun {
     streaming_usd: f64,
     input_tokens: u64,
     output_tokens: u64,
+    /// The same input split up, and how full the conversation got.
+    tokens: TokenUse,
     /// The latest answer's text, why it stopped, and its error if any.
     answer: Option<(String, String, Option<String>)>,
     /// Set once pi says it is done: whether it was aborted.
@@ -1699,6 +1765,16 @@ impl PiRun {
             .filter_map(|k| u[*k].as_u64())
             .sum::<u64>();
         self.output_tokens += u["output"].as_u64().unwrap_or(0);
+        let n = |k: &str| u[k].as_u64().unwrap_or(0);
+        let this = TokenUse {
+            fresh: n("input"),
+            cache_read: n("cacheRead"),
+            cache_write: n("cacheWrite"),
+            output: n("output"),
+            ..TokenUse::default()
+        };
+        self.tokens.peak_context = self.tokens.peak_context.max(this.input());
+        self.tokens.add(&this);
     }
 
     /// Takes in one line of pi's output and returns the board events in it.
@@ -1728,8 +1804,11 @@ impl PiRun {
                     _ => vec![],
                 }
             }
-            Some("compaction_end") if v["result"]["usage"].is_object() => {
-                self.add_usage(&v["result"]["usage"]);
+            Some("compaction_end") => {
+                self.tokens.compactions += 1;
+                if v["result"]["usage"].is_object() {
+                    self.add_usage(&v["result"]["usage"]);
+                }
                 vec![]
             }
             Some("agent_settled") => {
@@ -1818,6 +1897,7 @@ impl PiRun {
             cost_usd: (!self.after_settled && !self.unreadable).then(|| self.cost_usd()),
             input_tokens: Some(self.input_tokens),
             output_tokens: Some(self.output_tokens),
+            tokens: Some(self.tokens),
         })
     }
 
@@ -1832,6 +1912,7 @@ impl PiRun {
                 cost_usd: None,
                 input_tokens: Some(self.input_tokens),
                 output_tokens: Some(self.output_tokens),
+                tokens: Some(self.tokens),
             };
         }
         RunEvent::Finished {
@@ -1840,6 +1921,7 @@ impl PiRun {
             cost_usd: Some(self.cost_usd()),
             input_tokens: Some(self.input_tokens),
             output_tokens: Some(self.output_tokens),
+            tokens: Some(self.tokens),
         }
     }
 }
@@ -1852,19 +1934,44 @@ struct Outcome {
     cost_usd: Option<f64>,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
+    tokens: Option<TokenUse>,
+}
+
+/// What a `result` line says the whole session used so far. Checked against
+/// Claude Code 2.1.289: `modelUsage` is the session's running total, every
+/// model and subagent included, and carries on across a resume the same way
+/// `total_cost_usd` does; `usage` is only the turn that just ended. A line
+/// without `modelUsage` gives no split.
+fn session_tokens(v: &Value) -> Option<TokenUse> {
+    let models = v["modelUsage"].as_object().filter(|m| !m.is_empty())?;
+    let mut t = TokenUse::default();
+    for m in models.values() {
+        let n = |k: &str| m[k].as_u64().unwrap_or(0);
+        t.add(&TokenUse {
+            fresh: n("inputTokens"),
+            cache_read: n("cacheReadInputTokens"),
+            cache_write: n("cacheCreationInputTokens"),
+            output: n("outputTokens"),
+            ..TokenUse::default()
+        });
+    }
+    Some(t)
 }
 
 fn outcome(v: &Value) -> Outcome {
+    let tokens = session_tokens(v);
     let u = &v["usage"];
     // Cached input is most of the input on long runs; count all of it.
-    let input = [
-        "input_tokens",
-        "cache_read_input_tokens",
-        "cache_creation_input_tokens",
-    ]
-    .iter()
-    .filter_map(|k| u[*k].as_u64())
-    .reduce(|a, b| a + b);
+    let input = tokens.map(|t| t.input()).or_else(|| {
+        [
+            "input_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ]
+        .iter()
+        .filter_map(|k| u[*k].as_u64())
+        .reduce(|a, b| a + b)
+    });
     let budget_stop = v["subtype"] == "error_max_budget_usd";
     // A crashed run can report $0 after doing paid work; only a clean
     // finish or a budget stop has a cost worth believing.
@@ -1874,7 +1981,62 @@ fn outcome(v: &Value) -> Outcome {
         budget_stop,
         cost_usd: v["total_cost_usd"].as_f64().filter(|_| cost_known),
         input_tokens: input,
-        output_tokens: u["output_tokens"].as_u64(),
+        output_tokens: tokens
+            .map(|t| t.output)
+            .or_else(|| u["output_tokens"].as_u64()),
+        tokens,
+    }
+}
+
+/// Watches a Claude Code stream for how full the conversation gets and how
+/// often Claude Code compacts it, which no result line reports. Only the
+/// main conversation counts: a subagent's turns are in a context of its own.
+#[derive(Debug, Default)]
+pub struct ContextMeter {
+    peak: u64,
+    compactions: u64,
+}
+
+impl ContextMeter {
+    pub fn see(&mut self, line: &str) {
+        // Most lines are neither; skip parsing them a second time.
+        if !line.contains("\"usage\"") && !line.contains("compact_boundary") {
+            return;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            return;
+        };
+        match v["type"].as_str() {
+            Some("assistant") if v["parent_tool_use_id"].is_null() => {
+                let u = &v["message"]["usage"];
+                let input: u64 = [
+                    "input_tokens",
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                ]
+                .iter()
+                .filter_map(|k| u[*k].as_u64())
+                .sum();
+                self.peak = self.peak.max(input);
+            }
+            Some("system") if v["subtype"] == "compact_boundary" => self.compactions += 1,
+            _ => {}
+        }
+    }
+
+    /// Adds what it saw to a finished run's or job's tokens.
+    pub fn stamp(&self, tokens: &mut Option<TokenUse>) {
+        if let Some(t) = tokens {
+            t.peak_context = t.peak_context.max(self.peak);
+            t.compactions = self.compactions;
+        }
+    }
+
+    /// The same, for a run's `Finished` event.
+    pub fn stamp_event(&self, e: &mut RunEvent) {
+        if let RunEvent::Finished { tokens, .. } = e {
+            self.stamp(tokens);
+        }
     }
 }
 
@@ -1918,6 +2080,7 @@ pub fn parse_result(line: &str) -> Option<HelperResult> {
         cost_usd: o.cost_usd,
         input_tokens: o.input_tokens,
         output_tokens: o.output_tokens,
+        tokens: o.tokens,
         page_html: None,
     })
 }
@@ -2055,6 +2218,7 @@ impl FirstResult<HelperResult> {
                 cost_usd: None,
                 input_tokens: None,
                 output_tokens: None,
+                tokens: None,
                 page_html: None,
             });
         }
@@ -2216,6 +2380,61 @@ mod tests {
         assert!(mcp > image && a[mcp + 1] == "/etc/decurion/mcp-box.json");
         let strict = a.iter().position(|x| x == "--strict-mcp-config");
         assert!(strict.is_some_and(|i| i > image));
+    }
+
+    #[test]
+    fn every_claude_agent_starts_lean_and_the_same_in_every_box() {
+        let w = Path::new("/w");
+        let sb = Sandbox {
+            name: "decurion-helper-1",
+            src: w,
+            read_only: true,
+            home_volume: "decurion-helper-home-1",
+            network: "decurion-net-h1",
+            out: None,
+        };
+        let work =
+            run_args(7, w, "sid", true, Credential::Max(Profile::A), None, &[]).unwrap_or_default();
+        let helper = helper_run_args(
+            &sb,
+            "sid",
+            false,
+            Credential::Max(Profile::B),
+            None,
+            &["Write".into(), "Workflow".into()],
+        )
+        .unwrap_or_default();
+        for a in [&work, &helper] {
+            let image = a.iter().position(|x| x == IMAGE).unwrap_or(usize::MAX);
+            let after = |flag: &str| a.iter().position(|x| x == flag).filter(|i| *i > image);
+            assert!(after("--disable-slash-commands").is_some());
+            assert!(after("--exclude-dynamic-system-prompt-sections").is_some());
+            assert!(after("--autocompact").is_some_and(|i| a[i + 1] == AUTOCOMPACT_WINDOW));
+            let off = after("--disallowedTools").map(|i| a[i + 1].clone());
+            let off: Vec<String> = off
+                .unwrap_or_default()
+                .split(',')
+                .map(str::to_owned)
+                .collect();
+            for t in UNUSED_TOOLS {
+                assert_eq!(off.iter().filter(|o| o == t).count(), 1, "{t}");
+            }
+            assert_eq!(a.iter().filter(|x| *x == "--disallowedTools").count(), 1);
+            // Auto memory is off for the box, set before the image.
+            let mem = a
+                .windows(2)
+                .position(|w| w[0] == "-e" && w[1] == "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1");
+            assert!(mem.is_some_and(|i| i < image));
+        }
+        // The helper's own list comes first and is kept whole.
+        assert!(helper
+            .iter()
+            .any(|x| x.starts_with("Write,Workflow,CronCreate,")));
+        // pi loads no skills already, and takes none of Claude Code's flags.
+        let pi = pi_run_args(7, w, "sid", Credential::Xai, &[]).unwrap_or_default();
+        assert!(!pi
+            .iter()
+            .any(|x| x == "--autocompact" || x == "--disable-slash-commands"));
     }
 
     #[test]
@@ -2448,10 +2667,8 @@ mod tests {
             &[],
         )
         .unwrap_or_default();
-        assert_eq!(
-            a[a.len() - 2..],
-            ["--resume".to_string(), "sid".to_string()]
-        );
+        assert!(a.windows(2).any(|w| w == ["--resume", "sid"]));
+        assert!(!a.iter().any(|x| x == "--session-id"));
     }
 
     #[test]
@@ -2595,6 +2812,7 @@ mod tests {
                 cost_usd: Some(0.0421),
                 input_tokens: Some(51200),
                 output_tokens: Some(340),
+                tokens: None,
             }]
         );
         let bad = r#"{"type":"result","subtype":"success","is_error":true,"result":"Failed to authenticate"}"#;
@@ -3351,9 +3569,8 @@ mod tests {
                 && !joined.contains(".ssh")
                 && !joined.contains("docker.sock")
         );
-        assert!(a
-            .windows(2)
-            .any(|w| w[0] == "--disallowedTools" && w[1] == "Bash,Edit,Write,mcp__x__*"));
+        assert!(a.windows(2).any(|w| w[0] == "--disallowedTools"
+            && w[1] == format!("Bash,Edit,Write,mcp__x__*,{}", UNUSED_TOOLS.join(","))));
         assert!(joined.ends_with(
             "--setting-sources user --mcp-config /etc/decurion/mcp.json --strict-mcp-config"
         ));
@@ -3384,7 +3601,10 @@ mod tests {
         }
         assert!(coordinator_args(&["Bash(git:*)"]).is_ok());
         let none = coordinator_args(&[]).unwrap_or_default();
-        assert!(!none.is_empty() && !none.iter().any(|x| x == "--disallowedTools"));
+        // Without the hub's own list, only the tools no box uses are off.
+        assert!(none
+            .windows(2)
+            .any(|w| w[0] == "--disallowedTools" && w[1] == UNUSED_TOOLS.join(",")));
     }
 
     #[test]
@@ -3465,11 +3685,70 @@ mod tests {
                 cost_usd: Some(0.5),
                 input_tokens: Some(15),
                 output_tokens: Some(7),
+                tokens: None,
                 page_html: None,
             })
         );
         assert!(parse_result(r#"{"type":"assistant","message":{"content":[]}}"#).is_none());
         assert!(parse_result("not json").is_none());
+    }
+
+    /// A result line as Claude Code 2.1.289 writes it after a resumed run:
+    /// `usage` is only the last turn, `modelUsage` the whole session.
+    const SESSION_RESULT: &str = r#"{"type":"result","subtype":"success","is_error":false,"result":"DONE","num_turns":2,"total_cost_usd":0.0025,"usage":{"input_tokens":200,"cache_creation_input_tokens":100,"cache_read_input_tokens":2000,"output_tokens":20},"modelUsage":{"claude-opus-5-5":{"inputTokens":400,"outputTokens":40,"cacheReadInputTokens":4000,"cacheCreationInputTokens":200,"costUSD":0.002,"contextWindow":1000000},"claude-haiku-5-5":{"inputTokens":10,"outputTokens":2,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.0005}}}"#;
+
+    #[test]
+    fn tokens_are_the_whole_sessions_from_model_usage() {
+        let [RunEvent::Finished {
+            input_tokens,
+            output_tokens,
+            tokens,
+            ..
+        }] = &parse_line(SESSION_RESULT)[..]
+        else {
+            panic!("not one result");
+        };
+        let want = TokenUse {
+            fresh: 410,
+            cache_read: 4000,
+            cache_write: 200,
+            output: 42,
+            ..TokenUse::default()
+        };
+        assert_eq!(*tokens, Some(want));
+        assert_eq!((*input_tokens, *output_tokens), (Some(4610), Some(42)));
+        assert_eq!(
+            parse_result(SESSION_RESULT).and_then(|r| r.tokens),
+            Some(want)
+        );
+    }
+
+    #[test]
+    fn the_meter_sees_how_full_the_main_conversation_got() {
+        let mut m = ContextMeter::default();
+        for l in [
+            r#"{"type":"assistant","parent_tool_use_id":null,"message":{"usage":{"input_tokens":5,"cache_read_input_tokens":120000,"cache_creation_input_tokens":300,"output_tokens":9}}}"#,
+            // A subagent's turn is in a context of its own.
+            r#"{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"usage":{"input_tokens":5,"cache_read_input_tokens":900000}}}"#,
+            r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":190183}}"#,
+            r#"{"type":"assistant","parent_tool_use_id":null,"message":{"usage":{"input_tokens":5,"cache_read_input_tokens":2000}}}"#,
+            "not json",
+        ] {
+            m.see(l);
+        }
+        let mut e = parse_line(SESSION_RESULT).remove(0);
+        m.stamp_event(&mut e);
+        let RunEvent::Finished {
+            tokens: Some(t), ..
+        } = e
+        else {
+            panic!("no tokens");
+        };
+        assert_eq!((t.peak_context, t.compactions), (120_305, 1));
+        // Nothing reported, nothing made up.
+        let mut none = None;
+        m.stamp(&mut none);
+        assert_eq!(none, None);
     }
 
     #[test]
@@ -3830,6 +4109,7 @@ mod tests {
             cost_usd,
             input_tokens,
             output_tokens,
+            tokens,
         }) = run.finished()
         else {
             panic!("not a result");
@@ -3839,6 +4119,17 @@ mod tests {
         assert!((cost_usd.unwrap_or(0.0) - 0.0065).abs() < 1e-12);
         assert_eq!(input_tokens, Some(2500));
         assert_eq!(output_tokens, Some(100));
+        assert_eq!(
+            tokens,
+            Some(TokenUse {
+                fresh: 500,
+                cache_read: 2000,
+                cache_write: 0,
+                output: 100,
+                peak_context: 1300,
+                compactions: 0,
+            })
+        );
     }
 
     #[test]

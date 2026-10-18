@@ -7,6 +7,7 @@ pub mod goal;
 pub mod plan;
 pub mod preview;
 pub mod sites;
+pub mod tokens;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -16,7 +17,7 @@ use std::str::FromStr;
 /// built and how work is handed between computers. The hub refuses a runner
 /// built with a different number, so a PC and a cloud worker can never run
 /// the same work under different rules. Bump it whenever either changes.
-pub const RULES_VERSION: u32 = 11;
+pub const RULES_VERSION: u32 = 12;
 
 /// What every agent that may run an app's tests (builder, research, checker)
 /// is told about the private database in its box: `decurion-postgres` in the
@@ -913,6 +914,12 @@ pub enum RunEvent {
         input_tokens: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output_tokens: Option<u64>,
+        /// The same tokens split into fresh input, cache reads and cache
+        /// writes, with how full the conversation got. For Claude Code, the
+        /// counts are the whole session so far (its `modelUsage`), like the
+        /// cost; the peak and compactions are this run's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tokens: Option<tokens::TokenUse>,
     },
     /// Claude reported how much of a Max plan's allowance is used. The hub
     /// keeps the latest reading per plan and window for the meters; it is
@@ -1035,6 +1042,7 @@ mod tests {
             cost_usd: None,
             input_tokens: None,
             output_tokens: None,
+            tokens: None,
         };
         let v = serde_json::to_value(&e).unwrap_or_default();
         assert_eq!(v["kind"], "finished");
