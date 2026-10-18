@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **One box for new work, on the board and the phone.** "What do you want?" sends it to your project lead, who asks, plans and waits for your approval; or choose **Just do it** for a small change that one agent starts right away. On the phone, tap **New work** on the Board tab. The phone's Board tab also gains an app filter (with two apps or more) and **Show more** in place of the 40-card limit.
 - Installers and a release workflow that builds them into a draft GitHub release.
 - Built-in help pages that explain each part of Decurion in plain language.
 - A design for add-ons, so new kinds of agents and tools can plug in later.

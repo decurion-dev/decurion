@@ -294,7 +294,12 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/settings.js",
-            get(|| async { asset("text/javascript; charset=utf-8", include_str!("settings.js")) }),
+            get(|| async {
+                asset(
+                    "text/javascript; charset=utf-8",
+                    include_str!("settings.js"),
+                )
+            }),
         )
         .route(
             "/icon.svg",

@@ -23,9 +23,10 @@ You can also send a message to work that is waiting for you, in review, or stopp
 
 A big task can have smaller tasks inside it.
 
-1. On the board, go to the form where you add new work.
-2. Under **Part of**, pick the bigger task this one belongs to.
-3. Write the task and click **Add work**.
+1. Open **What do you want?**: at the top of the board, or **New work** on your phone's Board tab.
+2. Write the task and choose **Just do it**.
+3. Under **Part of other work**, pick the bigger task this one belongs to.
+4. Click **Start work**.
 
 The bigger task's card lists its smaller tasks.
 
