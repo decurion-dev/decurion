@@ -7,8 +7,8 @@
 //! prints is checked and capped before the runner acts on it or passes it on.
 
 use decurion_proto::browser::{
-    BrowserMode, FromBrowser, Input, RelayDown, RelayUp, SiteState, ToBrowser, MAX_FRAME_BYTES,
-    MAX_INPUT_BYTES, MAX_STATE_BYTES,
+    BrowserMode, FromBrowser, Input, RelayDown, RelayUp, SiteState, ToBrowser, KEYS,
+    MAX_FRAME_BYTES, MAX_INPUT_BYTES, MAX_STATE_BYTES,
 };
 
 /// The most saved sign-ins one run's browser takes.
@@ -35,17 +35,6 @@ pub const MAX_TITLE: usize = 1 << 10;
 pub const MAX_WHY: usize = 2000;
 /// Most sites one saved sign-in may cover.
 pub const MAX_DOMAINS: usize = 500;
-/// The named keys the owner's screen may send.
-pub const KEYS: [&str; 8] = [
-    "Enter",
-    "Tab",
-    "Backspace",
-    "Escape",
-    "ArrowUp",
-    "ArrowDown",
-    "ArrowLeft",
-    "ArrowRight",
-];
 
 /// The first line for a run's browser, with the app's saved sign-ins.
 pub fn start_run(states: Vec<SiteState>) -> ToBrowser {
@@ -298,6 +287,26 @@ mod tests {
     }
 
     #[test]
+    fn the_box_presses_exactly_the_keys_the_hub_lets_through() {
+        // browser-host.mjs keeps its own copy of the list (it cannot read
+        // Rust), as quoted names in a Set; it must be this list, in order.
+        let host = include_str!("../../../docker/claude-worker/browser-host.mjs");
+        let start = host
+            .find("const KEYS = new Set([")
+            .expect("browser-host.mjs lists its keys");
+        let list = &host[start..];
+        let list = &list[..list.find("]);").expect("the list ends")];
+        let names: Vec<&str> = list
+            .lines()
+            .skip(1)
+            .flat_map(|l| l.split(','))
+            .map(|n| n.trim().trim_matches('\''))
+            .filter(|n| !n.is_empty())
+            .collect();
+        assert_eq!(names, KEYS);
+    }
+
+    #[test]
     fn oversized_sign_ins_are_not_sent() {
         let big = "x".repeat(MAX_STATE_BYTES);
         assert!(encode(&start_run(vec![state(1, &big)])).is_err());
@@ -407,6 +416,17 @@ mod tests {
         assert!(!input_ok(&Input::Key {
             key: "Control".into()
         }));
+        for ok in ["Control+a", "Shift+Tab"] {
+            assert!(input_ok(&Input::Key { key: ok.into() }), "{ok}");
+        }
+        for refused in ["Control+w", "Control+t", "Alt+F4", "F12"] {
+            assert!(
+                !input_ok(&Input::Key {
+                    key: refused.into()
+                }),
+                "{refused}"
+            );
+        }
         assert!(input_ok(&Input::Go {
             url: "https://example.com/".into()
         }));

@@ -20,6 +20,44 @@ pub const MAX_STATE_BYTES: usize = 2 << 20;
 /// The owner's control ends on its own after this long without input.
 pub const IDLE_HAND_BACK_SECS: u64 = 10 * 60;
 
+/// The named keys the owner's screen may press, as Playwright names them:
+/// "Control+" before "Shift+", then the key. The hub, the runner and the
+/// browser box each refuse any other name, so the owner can type, edit and
+/// move around a page but never press a key the browser itself acts on
+/// (close a tab, open a new one, open its developer tools). The browser box
+/// keeps a copy of this list (`KEYS` in `browser-host.mjs`); a runner test
+/// checks the two match.
+pub const KEYS: &[&str] = &[
+    "Enter",
+    "Tab",
+    "Shift+Tab",
+    "Backspace",
+    "Delete",
+    "Escape",
+    "ArrowUp",
+    "ArrowDown",
+    "ArrowLeft",
+    "ArrowRight",
+    "Shift+ArrowUp",
+    "Shift+ArrowDown",
+    "Shift+ArrowLeft",
+    "Shift+ArrowRight",
+    "Home",
+    "End",
+    "Shift+Home",
+    "Shift+End",
+    "PageUp",
+    "PageDown",
+    "Control+a",
+    "Control+z",
+    "Control+y",
+    "Control+Shift+z",
+    "Control+Backspace",
+    "Control+Delete",
+    "Control+ArrowLeft",
+    "Control+ArrowRight",
+];
+
 /// What the browser box is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -77,8 +115,8 @@ pub enum Input {
     Text {
         text: String,
     },
-    /// One of a few named keys: Enter, Tab, Backspace, Escape, ArrowUp,
-    /// ArrowDown, ArrowLeft, ArrowRight.
+    /// One of the named keys in [`KEYS`], such as "Enter", "Shift+Tab" or
+    /// "Control+a". Any other name is refused.
     Key {
         key: String,
     },
@@ -276,5 +314,21 @@ mod tests {
             serde_json::from_str::<FromBrowser>(out).ok(),
             Some(FromBrowser::SignedOut { sign_in_id: 3 })
         );
+    }
+
+    #[test]
+    fn keys_are_named_once_each_with_control_before_shift() {
+        let mut seen = std::collections::HashSet::new();
+        for k in KEYS {
+            assert!(seen.insert(*k), "{k} is listed twice");
+            assert!(!k.contains("Shift+Control"), "{k}: Control comes first");
+            assert!(!k.contains("Meta") && !k.contains("Alt"), "{k}");
+        }
+        for ok in ["Control+a", "Shift+Tab", "Enter", "Control+Shift+z"] {
+            assert!(KEYS.contains(&ok), "{ok}");
+        }
+        for refused in ["Control+w", "Control+t", "Alt+F4", "F12", "Control+Shift+i"] {
+            assert!(!KEYS.contains(&refused), "{refused}");
+        }
     }
 }
