@@ -3418,12 +3418,12 @@ mod tests {
             git(&src, &["add", "."]).await?;
             commit(&src, "t <t@example.invalid>", "deep").await?;
             let listed = git(&src, &["ls-files"]).await?;
-            assert!(listed.ends_with("notes.md"), "not committed: {listed:?}");
+            anyhow::ensure!(listed.ends_with("notes.md"), "not committed: {listed:?}");
             let from = src.to_string_lossy().into_owned();
 
             let copy = root.join("copy");
             clone_into(&from, &copy).await?;
-            assert!(copy.join(&rel).is_file());
+            anyhow::ensure!(copy.join(&rel).is_file(), "work copy is missing the file");
 
             let checked = root.join("check");
             let to = checked.to_string_lossy().into_owned();
@@ -3433,7 +3433,10 @@ mod tests {
                 null_device(),
             )
             .await?;
-            assert!(checked.join(&rel).is_file());
+            anyhow::ensure!(
+                checked.join(&rel).is_file(),
+                "check copy is missing the file"
+            );
             anyhow::Ok(())
         }
         .await;
