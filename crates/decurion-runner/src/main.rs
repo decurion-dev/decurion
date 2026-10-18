@@ -560,6 +560,10 @@ async fn workspace(
         ],
     )
     .await?;
+    // A Bring up to date run gets main from the same bundle.
+    if let Some(m) = c.merge_from.as_deref() {
+        prepare_main(&tmp, m).await?;
+    }
     // The bundle file is about to be deleted; leave no remote pointing at it.
     git(&tmp, &["remote", "remove", "origin"]).await?;
     match c.checkpoint {
@@ -624,6 +628,32 @@ async fn workspace(
     std::fs::rename(&tmp, &dir)?;
     let _ = remove_all(&xfer);
     Ok((dir, true))
+}
+
+/// Makes the local branch `decurion-main` at exactly `merge_from`, in a copy
+/// just cloned from the hub's starting bundle, for a Bring up to date run.
+/// The bundle must have named that commit as `refs/heads/decurion-main`;
+/// anything else stops the run before the agent starts.
+async fn prepare_main(copy: &Path, merge_from: &str) -> anyhow::Result<()> {
+    let given = git(
+        copy,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "refs/remotes/origin/decurion-main^{commit}",
+        ],
+    )
+    .await
+    .ok();
+    if !is_sha(merge_from) || given.as_deref() != Some(merge_from) {
+        bail!(
+            "The starting copy from the hub did not hold the newest main this work is to merge, \
+so it did not start. Tap Bring up to date again on the pull request."
+        );
+    }
+    git(copy, &["branch", "--no-track", "decurion-main", merge_from]).await?;
+    Ok(())
 }
 
 /// Moves an out-of-date workspace (and its checkpoint and starting-commit
@@ -723,11 +753,76 @@ fn read_base(dir: &Path) -> anyhow::Result<String> {
 }
 
 /// Commits the agent added on its branch, counted in the runner-owned bare
-/// repo against the recorded starting commit.
-async fn new_commits(data: &Path, dir: &Path, branch: &str) -> anyhow::Result<u64> {
-    let base = read_base(dir)?;
+/// repo against the recorded starting commit and, for a Bring up to date
+/// run, the main commit it merged in ([`new_revs`]). A merge commit counts.
+async fn new_commits(
+    data: &Path,
+    dir: &Path,
+    branch: &str,
+    merge_from: Option<&str>,
+) -> anyhow::Result<u64> {
+    let revs = new_revs(dir, branch, merge_from)?;
     let bare = fetch_branch(data, dir, branch).await?;
-    count_since(&bare, &base, branch).await
+    let mut args = vec!["rev-list", "--count"];
+    args.extend(revs.iter().map(String::as_str));
+    args.push("--");
+    Ok(git(&bare, &args).await?.parse()?)
+}
+
+/// The agent's own work on its branch, as `git rev-list` arguments: the
+/// branch, without anything the recorded start reaches and, for a Bring up
+/// to date run, anything `merge_from` reaches. Main's own history came with
+/// the merge; it is not the agent's to count or scan.
+fn new_revs(dir: &Path, branch: &str, merge_from: Option<&str>) -> anyhow::Result<Vec<String>> {
+    let base = read_base(dir)?;
+    let mut revs = vec![format!("refs/heads/{branch}"), "--not".to_owned(), base];
+    if let Some(m) = merge_from {
+        if !is_sha(m) {
+            bail!("the commit to merge is not a commit id");
+        }
+        revs.push(m.to_owned());
+    }
+    Ok(revs)
+}
+
+/// Whether a Bring up to date run merged `merge_from` the way it was
+/// asked: its branch descends from both the start and `merge_from`, and
+/// its new commits pass [`decurion_proto::merged_as_asked`]. Read in the
+/// runner-owned bare repo; anything git cannot answer counts as no.
+async fn merged_main(
+    data: &Path,
+    dir: &Path,
+    branch: &str,
+    merge_from: &str,
+) -> anyhow::Result<bool> {
+    let base = read_base(dir)?;
+    if !is_sha(merge_from) {
+        bail!("the commit to merge is not a commit id");
+    }
+    let bare = fetch_branch(data, dir, branch).await?;
+    let head = format!("refs/heads/{branch}");
+    for from in [base.as_str(), merge_from] {
+        if git(&bare, &["merge-base", "--is-ancestor", from, &head])
+            .await
+            .is_err()
+        {
+            return Ok(false);
+        }
+    }
+    let list = git(
+        &bare,
+        &[
+            "rev-list",
+            "--parents",
+            &head,
+            "--not",
+            &base,
+            merge_from,
+            "--",
+        ],
+    )
+    .await?;
+    Ok(decurion_proto::merged_as_asked(&list, merge_from))
 }
 
 async fn count_since(bare: &Path, base: &str, branch: &str) -> anyhow::Result<u64> {
@@ -989,13 +1084,6 @@ fn review_repo(data: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
     Ok(sibling(&data.join("review").join(name), "git"))
 }
 
-/// The agent's commits in the review repo: from the recorded start to its
-/// branch.
-fn new_range(dir: &Path, branch: &str) -> anyhow::Result<String> {
-    let base = std::fs::read_to_string(base_file(dir)).context("missing base commit")?;
-    Ok(format!("{}..refs/heads/{branch}", base.trim()))
-}
-
 fn no_hooks() -> String {
     format!("core.hooksPath={}", null_device())
 }
@@ -1019,22 +1107,26 @@ fn null_device() -> &'static str {
 /// A key whose value was already in the code the agent started from is not
 /// counted: the app's repo holds it anyway (publishable keys often are), and
 /// any change to the file it sits in would otherwise stop the work.
+///
+/// For a Bring up to date run, `merge_from` is left out too ([`new_revs`]):
+/// what main already held is not the agent's, while a file the merge
+/// made new (a resolved conflict) is scanned like any other.
 async fn leaked_keys(
     data: &Path,
     dir: &Path,
     branch: &str,
+    merge_from: Option<&str>,
     keys: &[(String, String)],
 ) -> anyhow::Result<Vec<String>> {
     if keys.is_empty() {
         return Ok(vec![]);
     }
     let bare = review_repo(data, dir)?;
-    let range = new_range(dir, branch)?;
-    let objects = git(
-        &bare,
-        &["rev-list", "--objects", "--no-object-names", &range, "--"],
-    )
-    .await?;
+    let revs = new_revs(dir, branch, merge_from)?;
+    let mut args = vec!["rev-list", "--objects", "--no-object-names"];
+    args.extend(revs.iter().map(String::as_str));
+    args.push("--");
+    let objects = git(&bare, &args).await?;
     let found = scan_objects(&bare, &objects, keys).await?;
     if found.is_empty() {
         return Ok(found);
@@ -2228,34 +2320,22 @@ async fn outcome(
         Some((true, summary)) if status.success() && c.thread.research => {
             research_outcome(read_report(wt).is_some(), &summary)
         }
-        Some((true, _)) if status.success() => match new_commits(data, wt, branch).await {
-            Ok(0) => (
-                ThreadState::Failed,
-                "agent said it finished but saved no commits".to_owned(),
-            ),
-            Ok(n) => match leaked_keys(data, wt, branch, keys).await {
-                Ok(found) if found.is_empty() => (
-                    ThreadState::InReview,
-                    format!("agent finished with {n} new commit(s); ready for review"),
-                ),
-                Ok(found) => (
-                    ThreadState::Failed,
-                    format!(
-                        "found the test key{} {} in the agent's commits, so the work was not \
-sent for review. Retry it and the agent will be asked to rewrite its branch without {}.",
-                        if found.len() == 1 { "" } else { "s" },
-                        found.join(", "),
-                        if found.len() == 1 { "it" } else { "them" },
-                    ),
-                ),
-                // Fail closed: unchecked work does not go to review.
-                Err(e) => (
-                    ThreadState::Failed,
-                    format!("could not check commits for test keys: {e}"),
-                ),
-            },
-            Err(e) => (ThreadState::Failed, format!("could not check commits: {e}")),
-        },
+        Some((true, _)) if status.success() => {
+            let merge_from = c.merge_from.as_deref();
+            if let Some(m) = merge_from {
+                match merged_main(data, wt, branch, m).await {
+                    Ok(true) => {}
+                    Ok(false) => return (ThreadState::Failed, NOT_MERGED.to_owned()),
+                    Err(e) => {
+                        return (
+                            ThreadState::Failed,
+                            format!("could not check how main was merged: {e}"),
+                        )
+                    }
+                }
+            }
+            checked_commits(data, wt, branch, merge_from, keys).await
+        }
         Some((true, summary)) => (
             ThreadState::Failed,
             format!("container exited with {status} after the agent reported: {summary}"),
@@ -2289,6 +2369,50 @@ sent for review. Retry it and the agent will be asked to rewrite its branch with
                 redact(stderr.trim())
             ),
         ),
+    }
+}
+
+/// Said when a Bring up to date run did not merge main as it was asked.
+const NOT_MERGED: &str = "The update did not merge main in the expected way, so it was not \
+sent for review. Retry it, and the agent will merge decurion-main into the branch with one \
+plain merge.";
+
+/// Where finished work with commits goes: review if it saved any and none
+/// holds a test key, otherwise failed with the reason.
+async fn checked_commits(
+    data: &Path,
+    wt: &Path,
+    branch: &str,
+    merge_from: Option<&str>,
+    keys: &[(String, String)],
+) -> (ThreadState, String) {
+    match new_commits(data, wt, branch, merge_from).await {
+        Ok(0) => (
+            ThreadState::Failed,
+            "agent said it finished but saved no commits".to_owned(),
+        ),
+        Ok(n) => match leaked_keys(data, wt, branch, merge_from, keys).await {
+            Ok(found) if found.is_empty() => (
+                ThreadState::InReview,
+                format!("agent finished with {n} new commit(s); ready for review"),
+            ),
+            Ok(found) => (
+                ThreadState::Failed,
+                format!(
+                    "found the test key{} {} in the agent's commits, so the work was not \
+sent for review. Retry it and the agent will be asked to rewrite its branch without {}.",
+                    if found.len() == 1 { "" } else { "s" },
+                    found.join(", "),
+                    if found.len() == 1 { "it" } else { "them" },
+                ),
+            ),
+            // Fail closed: unchecked work does not go to review.
+            Err(e) => (
+                ThreadState::Failed,
+                format!("could not check commits for test keys: {e}"),
+            ),
+        },
+        Err(e) => (ThreadState::Failed, format!("could not check commits: {e}")),
     }
 }
 
@@ -4333,10 +4457,14 @@ mod tests {
             )?;
             git(&dir, &["add", "."]).await?;
             commit(&dir, "t <t@example.invalid>", "clean").await?;
-            assert_eq!(new_commits(&data, &dir, branch).await?, 1);
+            assert_eq!(new_commits(&data, &dir, branch, None).await?, 1);
             let all = keys(&["STRIPE", "BLOB", "FILE", "AUTHOR", "UNUSED", "PUBLIC"]);
-            assert!(leaked_keys(&data, &dir, branch, &all).await?.is_empty());
-            assert!(leaked_keys(&data, &dir, branch, &[]).await?.is_empty());
+            assert!(leaked_keys(&data, &dir, branch, None, &all)
+                .await?
+                .is_empty());
+            assert!(leaked_keys(&data, &dir, branch, None, &[])
+                .await?
+                .is_empty());
 
             std::fs::write(dir.join("config.env"), "KEY=stripe-test-value-1234\n")?;
             let mut blob = vec![0u8, 159, 146, 150];
@@ -4345,9 +4473,9 @@ mod tests {
             std::fs::write(dir.join("file-test-value-1234-é"), "x")?;
             git(&dir, &["add", "."]).await?;
             commit(&dir, "author-test-value-1234 <a@example.invalid>", "leak").await?;
-            assert_eq!(new_commits(&data, &dir, branch).await?, 2);
+            assert_eq!(new_commits(&data, &dir, branch, None).await?, 2);
             assert_eq!(
-                leaked_keys(&data, &dir, branch, &all).await?,
+                leaked_keys(&data, &dir, branch, None, &all).await?,
                 ["STRIPE", "BLOB", "FILE", "AUTHOR"]
             );
 
@@ -4380,12 +4508,263 @@ mod tests {
             let out = p.wait_with_output()?;
             let id = String::from_utf8_lossy(&out.stdout).trim().to_owned();
             git(&dir, &["update-ref", &format!("refs/heads/{branch}"), &id]).await?;
-            assert_eq!(new_commits(&data, &dir, branch).await?, 3);
+            assert_eq!(new_commits(&data, &dir, branch, None).await?, 3);
             let with_message = keys(&["STRIPE", "MESSAGE"]);
             assert_eq!(
-                leaked_keys(&data, &dir, branch, &with_message).await?,
+                leaked_keys(&data, &dir, branch, None, &with_message).await?,
                 ["STRIPE", "MESSAGE"]
             );
+            anyhow::Ok(())
+        }
+        .await;
+        let _ = std::fs::remove_dir_all(&data);
+        r
+    }
+
+    /// git with a fixed author, for the tests' own commits and merges.
+    async fn tgit(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
+        let mut all = vec![
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ];
+        all.extend_from_slice(args);
+        git(dir, &all).await
+    }
+
+    fn temp_root(what: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        std::env::temp_dir().join(format!("decurion-{what}-{}-{nanos}", std::process::id()))
+    }
+
+    /// A Bring up to date run's copy gets the local branch decurion-main at
+    /// exactly the commit the claim names, from the starting bundle; a
+    /// bundle without it, or with another commit, stops the run plainly.
+    #[tokio::test]
+    async fn an_update_copy_gets_decurion_main_from_the_bundle_or_does_not_start(
+    ) -> anyhow::Result<()> {
+        let root = temp_root("main-copy");
+        std::fs::create_dir_all(&root)?;
+        let r = async {
+            let src = root.join("src");
+            std::fs::create_dir_all(&src)?;
+            git(&src, &["init", "--quiet"]).await?;
+            commit(&src, "t <t@example.invalid>", "a").await?;
+            let a = git(&src, &["rev-parse", "HEAD"]).await?;
+            commit(&src, "t <t@example.invalid>", "main").await?;
+            let m = git(&src, &["rev-parse", "HEAD"]).await?;
+            git(&src, &["update-ref", "refs/heads/decurion-base", &a]).await?;
+            git(&src, &["update-ref", "refs/heads/decurion-main", &m]).await?;
+            let both = root.join("both.bundle").to_string_lossy().into_owned();
+            let one = root.join("one.bundle").to_string_lossy().into_owned();
+            git(
+                &src,
+                &[
+                    "bundle",
+                    "create",
+                    "--quiet",
+                    &both,
+                    "refs/heads/decurion-base",
+                    "refs/heads/decurion-main",
+                ],
+            )
+            .await?;
+            git(
+                &src,
+                &[
+                    "bundle",
+                    "create",
+                    "--quiet",
+                    &one,
+                    "refs/heads/decurion-base",
+                ],
+            )
+            .await?;
+            let clone = |bundle: String, name: &str| {
+                let to = root.join(name).to_string_lossy().into_owned();
+                async move {
+                    git(
+                        Path::new("."),
+                        &["clone", "--quiet", "--no-checkout", "--", &bundle, &to],
+                    )
+                    .await?;
+                    anyhow::Ok(PathBuf::from(to))
+                }
+            };
+            let good = clone(both.clone(), "good").await?;
+            prepare_main(&good, &m).await?;
+            assert_eq!(
+                git(&good, &["rev-parse", "refs/heads/decurion-main"]).await?,
+                m
+            );
+            let missing = clone(one, "missing").await?;
+            let err = prepare_main(&missing, &m).await.expect_err("no main");
+            assert!(err.to_string().contains("did not start"), "{err}");
+            let other = clone(both, "other").await?;
+            assert!(prepare_main(&other, &a).await.is_err());
+            assert!(git(
+                &other,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    "refs/heads/decurion-main"
+                ]
+            )
+            .await
+            .is_err());
+            anyhow::Ok(())
+        }
+        .await;
+        let _ = std::fs::remove_dir_all(&root);
+        r
+    }
+
+    /// The checks at the end of a Bring up to date run, against real git.
+    /// Main brings a test key of its own and the agent resolves a conflict
+    /// in the merge: only the agent's commits are counted and scanned, so
+    /// nothing is reported. A key the merge itself adds, in a resolved
+    /// file, a binary file or the merge's message, is. A merge of anything
+    /// but main, an octopus merge, or no merge at all fails the shape check.
+    #[tokio::test]
+    async fn after_a_merge_only_the_agents_own_work_is_counted_and_scanned() -> anyhow::Result<()> {
+        let data = temp_root("merge-check");
+        let dir = data.join("workspaces").join("demo-8");
+        std::fs::create_dir_all(&dir)?;
+        let branch = "decurion/8";
+        let r = async {
+            git(&dir, &["init", "--quiet", "-b", "main"]).await?;
+            std::fs::write(dir.join("app.txt"), "one\ntwo\n")?;
+            tgit(&dir, &["add", "."]).await?;
+            tgit(&dir, &["commit", "--quiet", "-m", "base"]).await?;
+            let base = git(&dir, &["rev-parse", "HEAD"]).await?;
+            std::fs::write(base_file(&dir), &base)?;
+            // Main moves on: a conflicting line, and a key of its own.
+            std::fs::write(dir.join("app.txt"), "one on main\ntwo\n")?;
+            std::fs::write(dir.join("main.env"), "KEY=mainkey-test-value-1234\n")?;
+            tgit(&dir, &["add", "."]).await?;
+            tgit(&dir, &["commit", "--quiet", "-m", "main"]).await?;
+            let m = git(&dir, &["rev-parse", "HEAD"]).await?;
+            // The pull request's work.
+            tgit(&dir, &["switch", "--quiet", "-c", branch, &base]).await?;
+            std::fs::write(dir.join("app.txt"), "one on the branch\ntwo\n")?;
+            tgit(&dir, &["commit", "--quiet", "-am", "feature"]).await?;
+            let feature = git(&dir, &["rev-parse", "HEAD"]).await?;
+            let keys = |names: &[&str]| -> Vec<(String, String)> {
+                names
+                    .iter()
+                    .map(|n| {
+                        (
+                            n.to_string(),
+                            format!("{}-test-value-1234", n.to_lowercase()),
+                        )
+                    })
+                    .collect()
+            };
+            let all = keys(&["MAINKEY", "RESOLVED", "BLOB", "MESSAGE", "UNUSED"]);
+            // A merge whose conflict is resolved by the agent.
+            let merge = |resolved: &'static str, extra: bool, message: &'static str| {
+                let dir = dir.clone();
+                let m = m.clone();
+                let feature = feature.clone();
+                async move {
+                    tgit(&dir, &["reset", "--quiet", "--hard", &feature]).await?;
+                    let _ = tgit(&dir, &["merge", "--no-ff", "--no-edit", &m]).await;
+                    std::fs::write(dir.join("app.txt"), resolved)?;
+                    if extra {
+                        let mut blob = vec![0u8, 159, 146, 150];
+                        blob.extend_from_slice(b"blob-test-value-1234");
+                        std::fs::write(dir.join("data.bin"), blob)?;
+                    }
+                    tgit(&dir, &["add", "-A"]).await?;
+                    tgit(&dir, &["commit", "--quiet", "-m", message]).await?;
+                    git(&dir, &["rev-parse", "HEAD"]).await
+                }
+            };
+            merge("one on main\nand the branch\ntwo\n", false, "Merge main").await?;
+            assert!(merged_main(&data, &dir, branch, &m).await?);
+            // The feature and the merge; main's own commit is not the agent's.
+            assert_eq!(new_commits(&data, &dir, branch, Some(&m)).await?, 2);
+            assert_eq!(new_commits(&data, &dir, branch, None).await?, 3);
+            assert!(leaked_keys(&data, &dir, branch, Some(&m), &all)
+                .await?
+                .is_empty());
+            // Scanned as ordinary work, main's key would stop it: the
+            // difference is only what main already held.
+            assert_eq!(
+                leaked_keys(&data, &dir, branch, None, &all).await?,
+                ["MAINKEY"]
+            );
+
+            merge(
+                "one on main\nresolved-test-value-1234\ntwo\n",
+                true,
+                "Merge main message-test-value-1234",
+            )
+            .await?;
+            assert!(merged_main(&data, &dir, branch, &m).await?);
+            let mut found = leaked_keys(&data, &dir, branch, Some(&m), &all).await?;
+            found.sort();
+            assert_eq!(found, ["BLOB", "MESSAGE", "RESOLVED"]);
+
+            // No merge at all: the branch does not hold main.
+            tgit(&dir, &["reset", "--quiet", "--hard", &feature]).await?;
+            assert!(!merged_main(&data, &dir, branch, &m).await?);
+            // Holds main, but through a merge of something else on top of it.
+            tgit(&dir, &["switch", "--quiet", "-c", "later", &m]).await?;
+            tgit(&dir, &["commit", "--quiet", "--allow-empty", "-m", "later"]).await?;
+            let later = git(&dir, &["rev-parse", "HEAD"]).await?;
+            tgit(&dir, &["switch", "--quiet", branch]).await?;
+            let tree = git(&dir, &["rev-parse", &format!("{later}^{{tree}}")]).await?;
+            let sideways = tgit(
+                &dir,
+                &[
+                    "commit-tree",
+                    &tree,
+                    "-p",
+                    &feature,
+                    "-p",
+                    &later,
+                    "-m",
+                    "merge",
+                ],
+            )
+            .await?;
+            tgit(
+                &dir,
+                &["update-ref", &format!("refs/heads/{branch}"), &sideways],
+            )
+            .await?;
+            assert!(!merged_main(&data, &dir, branch, &m).await?);
+            // An octopus merge that includes main.
+            let octopus = tgit(
+                &dir,
+                &[
+                    "commit-tree",
+                    &tree,
+                    "-p",
+                    &feature,
+                    "-p",
+                    &m,
+                    "-p",
+                    &later,
+                    "-m",
+                    "octopus",
+                ],
+            )
+            .await?;
+            tgit(
+                &dir,
+                &["update-ref", &format!("refs/heads/{branch}"), &octopus],
+            )
+            .await?;
+            assert!(!merged_main(&data, &dir, branch, &m).await?);
             anyhow::Ok(())
         }
         .await;

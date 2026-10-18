@@ -552,6 +552,25 @@ pub fn check_receipt(r: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// Whether a Bring up to date run merged main the way it was asked to,
+/// read from `git rev-list --parents <head> --not <start> <merge_from>`:
+/// the commits it added, each with its parents. No commit may have more
+/// than two parents (no octopus merge), and at least one of them must be a
+/// merge with `merge_from` as a parent. The runner checks this when the run
+/// ends and the hub again before sending, along with the head descending
+/// from both the start and `merge_from`.
+pub fn merged_as_asked(rev_list_parents: &str, merge_from: &str) -> bool {
+    let mut merged = false;
+    for line in rev_list_parents.lines().filter(|l| !l.trim().is_empty()) {
+        let parents: Vec<&str> = line.split_whitespace().skip(1).collect();
+        if parents.len() > 2 {
+            return false;
+        }
+        merged |= parents.len() == 2 && parents.contains(&merge_from);
+    }
+    merged
+}
+
 /// How a message from the owner reaches an agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -987,6 +1006,24 @@ pub struct EventRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_update_must_merge_main_with_one_plain_merge() {
+        let (m, x, y, a) = (
+            "m".repeat(40),
+            "x".repeat(40),
+            "y".repeat(40),
+            "a".repeat(40),
+        );
+        // A fix after the merge, then the merge of main into the branch.
+        assert!(merged_as_asked(&format!("{a} {x}\n{x} {y} {m}\n"), &m));
+        // No merge at all, or one that is not of main.
+        assert!(!merged_as_asked(&format!("{x} {y}\n"), &m));
+        assert!(!merged_as_asked(&format!("{x} {y} {a}\n"), &m));
+        assert!(!merged_as_asked("", &m));
+        // An octopus merge, even one that includes main.
+        assert!(!merged_as_asked(&format!("{x} {y} {m} {a}\n"), &m));
+    }
 
     #[test]
     fn terminal_states_cannot_move_except_retry() {
