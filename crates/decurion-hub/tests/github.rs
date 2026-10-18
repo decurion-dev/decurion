@@ -2398,10 +2398,14 @@ async fn bring_up_to_date_starts_one_run_on_the_pull_request_with_main_pinned() 
     assert_eq!(
         git(
             &cache,
-            &["rev-parse", &format!("refs/decurion/start/{main}")]
+            &["rev-parse", &format!("refs/decurion/merge/{main}")]
         ),
         main
     );
+    // Not as a start, which a goal's helpers could then ask for.
+    assert!(git(&cache, &["for-each-ref", "refs/decurion/start"])
+        .lines()
+        .all(|l| !l.contains(&main)));
 
     // The same tap again starts nothing new, even with the server gone.
     server_gone(&h, &repo, &bare);

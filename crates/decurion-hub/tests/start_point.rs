@@ -996,6 +996,15 @@ async fn a_late_update_request_still_gets_main_with_the_start_that_won() {
         files.base_bundle(app, &folder, None).await.expect("main").0,
         s.b
     );
+    let cache = h
+        .dir
+        .join("saved")
+        .join("repos")
+        .join(format!("app-{app}.git"));
+    git(
+        &cache,
+        &["update-ref", &format!("refs/decurion/merge/{}", s.b), &s.b],
+    );
     let late = files
         .base_bundle_with(app, &folder, Some(&s.a), Some(&s.b))
         .await

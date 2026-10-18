@@ -192,7 +192,7 @@ pub(crate) async fn for_next_round(
 }
 
 /// The tip of `branch` on the app's git server, brought into the hub's copy
-/// and pinned at `refs/decurion/start/<sha>`, for Bring up to date
+/// and pinned at `refs/decurion/merge/<sha>`, for Bring up to date
 /// ([`crate::pr_watch`]): the newest commit of the branch a pull request
 /// merges into. The same network path as [`start_commit`] (the folder's
 /// `origin` by name, read-only, into the server copy first), but with no
@@ -254,7 +254,7 @@ was started. Check this PC's internet connection, then tap Bring up to date agai
         }
         git(
             &cache,
-            &["update-ref", &format!("refs/decurion/start/{got}"), &got],
+            &["update-ref", &format!("refs/decurion/merge/{got}"), &got],
         )
         .await
         .map_err(|e| failed(&e))?;
@@ -808,6 +808,24 @@ impl Files {
             .is_ok()
     }
 
+    /// True if `sha` is a base-branch commit this hub pinned for app
+    /// `app_id` for Bring up to date ([`branch_tip`]). Kept apart from the
+    /// starts, so it never counts as one.
+    pub(crate) async fn is_pinned_merge(&self, app_id: i64, sha: &str) -> bool {
+        is_commit(sha)
+            && git(
+                &self.app_cache(app_id),
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/decurion/merge/{sha}^{{commit}}"),
+                ],
+            )
+            .await
+            .is_ok()
+    }
+
     /// The bare repo that only takes fetches from the app's git server.
     pub(crate) fn upstream_cache(&self, app_id: i64) -> PathBuf {
         self.app_cache(app_id)
@@ -1164,14 +1182,18 @@ mod tests {
                 .expect("tip"),
             first
         );
-        assert!(files.is_pinned_start(1, &first).await);
+        // Pinned for merging only: never a start a goal's helpers may ask
+        // for with `?at=`.
+        assert!(files.is_pinned_merge(1, &first).await);
+        assert!(!files.is_pinned_start(1, &first).await);
         // The server moved on, the owner's folder did not: the server's wins.
         let next = r.advance("b2");
         let tip = branch_tip(&files, 1, &r.path(), "trunk")
             .await
             .expect("tip");
         assert_eq!(tip, next);
-        assert!(files.is_pinned_start(1, &tip).await);
+        assert!(files.is_pinned_merge(1, &tip).await);
+        assert!(!files.is_pinned_start(1, &tip).await);
         assert_ne!(sh(&r.folder, &["rev-parse", "HEAD"]), next);
         // No such branch, an odd name, or no server: refused in plain words.
         for b in ["nope", "-x"] {

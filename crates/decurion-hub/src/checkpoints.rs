@@ -216,10 +216,11 @@ impl Files {
                 ));
             }
         }
-        // Pinned in the hub's copy when the run was created; never read
-        // from the owner's folder, which may not have it.
+        // Pinned in the hub's copy when the run was created
+        // (`refs/decurion/merge/`); never read from the owner's folder,
+        // which may not have it, and never any other commit.
         if let Some(m) = merge_from {
-            if !has_commit(&cache, m).await {
+            if !self.is_pinned_merge(app_id, m).await {
                 return Err(StoreError::Refused(
                     "The newest main this work was to merge is no longer in Decurion's copy of the app. Tap Bring up to date again."
                         .into(),
@@ -588,6 +589,20 @@ mod tests {
         let path = folder.to_string_lossy().into_owned();
         // The hub's copy has main's commits pinned, as Bring up to date does.
         files.base_bundle(1, &path, Some(&pr)).await.expect("plain");
+        let cache = files.app_cache(1);
+        // Held but not pinned for merging: refused, not bundled.
+        assert!(matches!(
+            files
+                .base_bundle_with(1, &path, Some(&pr), Some(&main1))
+                .await,
+            Err(StoreError::Refused(_))
+        ));
+        for m in [&main1, &main2] {
+            sh(
+                &cache,
+                &["update-ref", &format!("refs/decurion/merge/{m}"), m],
+            );
+        }
         let (sha, b1) = files
             .base_bundle_with(1, &path, Some(&pr), Some(&main1))
             .await
