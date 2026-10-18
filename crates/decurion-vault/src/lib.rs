@@ -10,10 +10,16 @@
 //! hub uses to open pull requests for accepted work. That one is never
 //! handed to a run, and its entry is apart from every app's test keys.
 //!
+//! The Max plans' Claude sign-ins live here as well, under the same names
+//! the runner has always read (`decurion/claude-profile-A` and `-B`). The hub
+//! saves one when the owner taps "Sign in on this PC"; only the runner reads
+//! it back, to hand that run's box its one token by name.
+//!
 //! Saved website sign-ins are kept here too (see [`sealed`]): a random key
 //! per site in the same key store, and the sign-in itself sealed with it in
 //! a private file.
 
+use decurion_proto::Profile;
 use std::path::{Path, PathBuf};
 
 pub mod sealed;
@@ -207,6 +213,31 @@ pub fn check_github_token(value: &str) -> Result<()> {
     Ok(())
 }
 
+/// The Credential Manager entry for a Max plan's Claude sign-in. The runner
+/// reads the same entry, so a sign-in saved by the old Start-menu helper and
+/// one saved from the board are the same thing.
+pub fn claude_target(p: Profile) -> String {
+    format!("decurion/claude-profile-{}", p.as_str())
+}
+
+/// A Claude sign-in from `claude setup-token`: one line of letters, digits,
+/// `-` and `_`, starting `sk-ant-oat`. Anything else is refused, so a pay-per-use
+/// API key can never be saved as a Max plan's sign-in.
+pub fn check_claude_token(value: &str) -> Result<()> {
+    let n = value.len();
+    if !value.starts_with("sk-ant-oat")
+        || !(40..=MAX_VALUE).contains(&n)
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(VaultError::Invalid(
+            "this is not a Claude sign-in. It should start with sk-ant-oat".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 enum Backend {
     #[cfg(windows)]
@@ -369,6 +400,55 @@ impl Vault {
     }
 }
 
+impl Vault {
+    /// Saves a Max plan's Claude sign-in, replacing any saved before.
+    pub fn put_claude(&self, p: Profile, token: &str) -> Result<()> {
+        check_claude_token(token)?;
+        match &self.backend {
+            #[cfg(windows)]
+            Backend::CredentialManager => claude_entry(p)?
+                .set_password(token)
+                .map_err(|e| VaultError::Store(e.to_string())),
+            Backend::Folder(dir) => {
+                let owner = dir.join("owner");
+                private_dir(dir)?;
+                private_dir(&owner)?;
+                let name = format!("claude-{}", p.as_str());
+                let tmp = owner.join(format!("{name}.{}.tmp", std::process::id()));
+                write_private(&tmp, token.as_bytes())?;
+                std::fs::rename(&tmp, owner.join(name)).map_err(store)
+            }
+        }
+    }
+
+    /// A Max plan's Claude sign-in, or `None` if none is saved here.
+    pub fn get_claude(&self, p: Profile) -> Result<Option<String>> {
+        match &self.backend {
+            #[cfg(windows)]
+            Backend::CredentialManager => match claude_entry(p)?.get_password() {
+                Ok(v) => Ok(Some(v.trim().to_owned())),
+                Err(keyring::Error::NoEntry) => Ok(None),
+                Err(e) => Err(VaultError::Store(e.to_string())),
+            },
+            Backend::Folder(dir) => {
+                let path = dir.join("owner").join(format!("claude-{}", p.as_str()));
+                match std::fs::read_to_string(path) {
+                    Ok(v) => Ok(Some(v.trim().to_owned())),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Err(e) => Err(store(e)),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn claude_entry(p: Profile) -> Result<keyring::Entry> {
+    // The user name matches what the runner and the Start-menu helper use.
+    keyring::Entry::new_with_target(&claude_target(p), "decurion", "claude")
+        .map_err(|e| VaultError::Store(e.to_string()))
+}
+
 #[cfg(windows)]
 fn github_entry() -> Result<keyring::Entry> {
     keyring::Entry::new_with_target(GITHUB_TARGET, "decurion", "github")
@@ -421,6 +501,25 @@ mod tests {
 
     fn tmp() -> PathBuf {
         std::env::temp_dir().join(format!("decurion-vault-{}", uuid::Uuid::new_v4().simple()))
+    }
+
+    #[test]
+    fn claude_sign_ins_are_kept_apart_and_checked() {
+        let v = Vault::in_folder(tmp());
+        let a = format!("sk-ant-oat01-{}", "a".repeat(80));
+        assert!(v.get_claude(Profile::A).expect("read").is_none());
+        v.put_claude(Profile::A, &a).expect("save");
+        assert_eq!(v.get_claude(Profile::A).expect("read").as_deref(), Some(a.as_str()));
+        assert!(v.get_claude(Profile::B).expect("read").is_none());
+        for bad in [
+            "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789abcd",
+            "sk-ant-oat01-short",
+            &format!("sk-ant-oat01-{} x", "a".repeat(40)),
+            &format!("sk-ant-oat01-{}\n", "a".repeat(40)),
+        ] {
+            assert!(v.put_claude(Profile::B, bad).is_err(), "{bad}");
+        }
+        assert_eq!(claude_target(Profile::B), "decurion/claude-profile-B");
     }
 
     #[test]

@@ -19,6 +19,7 @@
 
 pub mod browser;
 pub mod checkpoints;
+pub mod claude_sign_in;
 pub mod context;
 pub mod coordinator;
 pub mod devices;
@@ -118,6 +119,8 @@ pub struct AppState {
     pub(crate) browser: browser::Relays,
     /// Where the folder picker may look. Without it, the picker refuses.
     pub(crate) folders: Option<Arc<folders::Places>>,
+    /// The "Sign in on this PC" for a Max plan going on now, if any.
+    pub(crate) claude: claude_sign_in::SignIns,
 }
 
 impl AppState {
@@ -136,7 +139,14 @@ impl AppState {
             seen: Arc::default(),
             browser: browser::Relays::default(),
             folders: None,
+            claude: claude_sign_in::SignIns::default(),
         }
+    }
+
+    /// Runs `program` in place of Claude Code for "Sign in on this PC" (tests).
+    pub fn with_claude_program(mut self, program: std::path::PathBuf) -> Self {
+        self.claude = claude_sign_in::SignIns::with_program(program);
+        self
     }
 
     /// Turns on the folder picker, limited to the places in `p`.
@@ -298,6 +308,7 @@ pub fn router(state: AppState) -> Router {
         .route("/runner/helper/{id}/context", get(context::runner_helper))
         // Saved website sign-ins: owner and runner routes (sign_ins.rs).
         .merge(sign_ins::routes())
+        .merge(claude_sign_in::routes())
         .layer(middleware::from_fn_with_state(state.clone(), require_key));
     Router::new()
         .route("/", get(board))
@@ -1534,7 +1545,7 @@ async fn runner_credential(
         Ok(None) => return (StatusCode::CONFLICT, "that work has no open run").into_response(),
         Err(e) => return ApiError(e).into_response(),
     };
-    match secrets::read(&account) {
+    match secrets::read(st.vault.as_ref(), &account) {
         Some(c) => Json(c).into_response(),
         None => (
             StatusCode::NOT_FOUND,

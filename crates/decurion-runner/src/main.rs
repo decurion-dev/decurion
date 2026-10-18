@@ -287,6 +287,14 @@ fn data_dir() -> anyhow::Result<PathBuf> {
 /// gatekeeper, or the OpenAI or xAI key (`decurion/openai-api`,
 /// `decurion/xai-api`).
 fn secret(cred: Credential) -> anyhow::Result<String> {
+    // A Max plan's sign-in saved from the board ("Sign in on this PC") is in
+    // the vault: the same Credential Manager entry on Windows, Decurion's own
+    // private folder on Mac and Linux.
+    if let Credential::Max(p) = cred {
+        if let Some(t) = Vault::system(&data_dir()?).get_claude(p)? {
+            return Ok(t);
+        }
+    }
     let target = cred.target();
     #[cfg(windows)]
     {

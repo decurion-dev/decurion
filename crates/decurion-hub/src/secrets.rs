@@ -1,7 +1,8 @@
 //! The one credential a run needs, for a cloud worker that has no copy
 //! of its own. On the PC it is read from Windows Credential Manager under the
 //! same names the PC runner uses, falling back to environment variables
-//! (tests, a hub on Linux). It is handed out only for work running on the
+//! (tests, a hub on Linux). A Max plan's sign-in saved from the board is
+//! read from the vault first. It is handed out only for work running on the
 //! asking runner, and never stored by the hub.
 
 use decurion_proto::RunCredential;
@@ -34,8 +35,19 @@ pub fn names(account: &str) -> Option<(&'static str, String, String)> {
     }
 }
 
-pub fn read(account: &str) -> Option<RunCredential> {
+pub fn read(vault: Option<&decurion_vault::Vault>, account: &str) -> Option<RunCredential> {
     let (var, target, fallback) = names(account)?;
+    let board = account
+        .parse::<decurion_proto::Profile>()
+        .ok()
+        .zip(vault)
+        .and_then(|(p, v)| v.get_claude(p).ok().flatten());
+    if let Some(value) = board.filter(|v| !v.is_empty()) {
+        return Some(RunCredential {
+            var: var.to_owned(),
+            value,
+        });
+    }
     #[cfg(windows)]
     let saved = keyring::Entry::new_with_target(&target, "decurion", "claude")
         .and_then(|e| e.get_password())
