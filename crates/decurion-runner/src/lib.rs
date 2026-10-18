@@ -291,6 +291,9 @@ pub fn parse_gate_line(line: &str) -> Option<GateLine> {
     }
 }
 
+// The questions block the agent is asked for is read by the work panel and
+// the phone inbox (D.questions in the hub's ui.js), which turn it into answer
+// buttons; keep its shape in step with that reader.
 const RULES: &str = "You are working in your own copy of the code on its own branch. \
 Commit your work to this branch as you go. Do not push and do not open pull requests; \
 Decurion does that after review. \
@@ -299,7 +302,15 @@ It runs in a box of its own that shares your network, so it can open servers you
 but it cannot see your files: serve a page to test it, and its snapshots and screenshots come back in the tools' answers. \
 The owner may take over the browser for a while; if a browser tool says so, wait or do something else. \
 You can reach only the websites on this app's list; others are blocked. If the work needs a \
-blocked site, carry on without it and say so in your final summary.";
+blocked site, carry on without it and say so in your final summary.\n\n\
+If you need the owner to decide something, end your final message with a fenced block tagged \
+questions that holds a JSON list, like this:\n\
+```questions\n\
+[{\"text\": \"Should MAs get their own role?\", \"choices\": [\"Yes, add an MA role\", \"No, use the clinical role\"]}]\n\
+```\n\
+Ask at most 3 questions, in plain words for someone who is not a programmer. Give 2 to 4 short \
+choices when the answer is one of a few options, and leave choices out otherwise. Still say in your \
+summary what you assumed, so the work makes sense before the owner answers.";
 
 /// How a run begins, which decides what the agent is told.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2432,6 +2443,28 @@ mod tests {
             prompt_for("Fix it", Start::Restarted, &[], &[], None),
             RESUME
         );
+    }
+
+    #[test]
+    fn the_agent_is_shown_the_questions_block_the_screens_read() {
+        // The example must be exactly what ui.js accepts: a JSON list of at
+        // most 3 questions, each with text and 2 to 4 choices or none.
+        let start = RULES
+            .find("```questions\n")
+            .expect("RULES shows a questions block")
+            + 13;
+        let len = RULES[start..].find("\n```").expect("the block is closed");
+        let v: Value =
+            serde_json::from_str(&RULES[start..start + len]).expect("the example is JSON");
+        let qs = v.as_array().expect("a list of questions");
+        assert!((1..=3).contains(&qs.len()));
+        for q in qs {
+            assert!(!q["text"].as_str().expect("text").trim().is_empty());
+            let n = q["choices"].as_array().map_or(0, Vec::len);
+            assert!(n == 0 || (2..=4).contains(&n));
+        }
+        assert!(RULES.contains("at most 3 questions"));
+        assert!(RULES.contains("not a programmer"));
     }
 
     #[test]

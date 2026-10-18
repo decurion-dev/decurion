@@ -22,6 +22,7 @@ pub mod checkpoints;
 pub mod context;
 pub mod coordinator;
 pub mod devices;
+pub mod folders;
 pub mod github;
 pub mod limits;
 pub mod messages;
@@ -115,6 +116,8 @@ pub struct AppState {
     seen: Arc<Mutex<HashMap<String, Instant>>>,
     /// Live views of test browsers going on now.
     pub(crate) browser: browser::Relays,
+    /// Where the folder picker may look. Without it, the picker refuses.
+    pub(crate) folders: Option<Arc<folders::Places>>,
 }
 
 impl AppState {
@@ -132,7 +135,14 @@ impl AppState {
             github: None,
             seen: Arc::default(),
             browser: browser::Relays::default(),
+            folders: None,
         }
+    }
+
+    /// Turns on the folder picker, limited to the places in `p`.
+    pub fn with_folders(mut self, p: folders::Places) -> Self {
+        self.folders = Some(Arc::new(p));
+        self
     }
 
     /// Where saved copies of work are kept. Without it, work cannot move
@@ -220,6 +230,8 @@ pub fn router(state: AppState) -> Router {
         .route("/sites/built-in", get(built_in_sites))
         .route("/apps/{id}/cap", post(set_app_cap))
         .route("/accounts", get(list_accounts))
+        // The folder picker: owner only, never cloud workers (folders.rs).
+        .route("/folders", get(folders::list))
         .route(
             "/apps/{id}/test-keys",
             get(list_test_keys).post(add_test_key),
@@ -304,6 +316,20 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/ui.js",
             get(|| async { asset("text/javascript; charset=utf-8", include_str!("ui.js")) }),
+        )
+        // The new-work form and the settings, shared by the board and the phone.
+        .route(
+            "/compose.js",
+            get(|| async { asset("text/javascript; charset=utf-8", include_str!("compose.js")) }),
+        )
+        .route(
+            "/settings.js",
+            get(|| async {
+                asset(
+                    "text/javascript; charset=utf-8",
+                    include_str!("settings.js"),
+                )
+            }),
         )
         .route(
             "/files.js",
@@ -723,15 +749,33 @@ async fn new_pairing(
     .into_response()
 }
 
+/// A paired device as Settings lists it: `this_device` marks the phone or
+/// browser asking, so Settings can say "This phone" next to it.
+#[derive(serde::Serialize)]
+struct DeviceRow {
+    #[serde(flatten)]
+    device: devices::Device,
+    this_device: bool,
+}
+
 async fn list_devices(
     State(st): State<AppState>,
     axum::Extension(c): axum::Extension<Caller>,
+    axum::Extension(DeviceId(me)): axum::Extension<DeviceId>,
 ) -> Response {
     if c != Caller::Owner {
         return forbidden("listing devices");
     }
     match st.store.devices().await {
-        Ok(d) => Json(d).into_response(),
+        Ok(d) => Json(
+            d.into_iter()
+                .map(|device| DeviceRow {
+                    this_device: me == Some(device.id),
+                    device,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
         Err(e) => ApiError(e).into_response(),
     }
 }

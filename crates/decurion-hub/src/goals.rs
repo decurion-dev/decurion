@@ -4,7 +4,7 @@
 use crate::coordinator::News;
 use crate::protected::Hold;
 use crate::{forbidden, ApiError, AppState, Caller};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
@@ -129,27 +129,59 @@ pub(crate) async fn stop(
     reply(st.store.stop_goal(id).await)
 }
 
+#[derive(Deserialize)]
+pub(crate) struct PageQuery {
+    /// Set by the phone, which opens the page in place of the goal and so
+    /// needs a way back to it.
+    back: Option<String>,
+}
+
+/// The phone's way back from a page an agent drew. The page can run no
+/// script, so this is a plain link with fixed words that points only at the
+/// goal the page belongs to and loads nothing; the page's CSP stays as it is.
+/// It goes after the agent's HTML, where the browser still puts it in the
+/// page's body, and its inline `!important` style wins over the page's own.
+fn back_link(goal: i64) -> String {
+    format!(
+        "<a href=\"/goals#goal-{goal}\" style=\"all:initial !important;\
+         position:fixed !important;z-index:2147483647 !important;left:16px !important;\
+         bottom:calc(16px + env(safe-area-inset-bottom)) !important;\
+         display:inline-flex !important;align-items:center !important;\
+         min-height:48px !important;padding:0 20px !important;border-radius:999px !important;\
+         background:#2553d6 !important;color:#fff !important;\
+         font:600 16px/1 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif !important;\
+         text-decoration:none !important;cursor:pointer !important;\
+         box-shadow:0 6px 20px rgba(0,0,0,.28) !important\">&lsaquo;&nbsp;Back to the goal</a>"
+    )
+}
+
 /// A page an agent drew, for the owner only.
 pub(crate) async fn page(
     State(st): State<AppState>,
     Extension(c): Extension<Caller>,
     Path((goal, page)): Path<(i64, i64)>,
+    Query(q): Query<PageQuery>,
 ) -> Response {
     if let Some(r) = owner_only(c, "opening a plan page") {
         return r;
     }
     match st.store.page_html(goal, page).await {
-        Ok(html) => (
-            [
-                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-                (header::CONTENT_SECURITY_POLICY, PAGE_CSP),
-                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-                (header::CACHE_CONTROL, "no-store"),
-                (header::REFERRER_POLICY, "no-referrer"),
-            ],
-            html,
-        )
-            .into_response(),
+        Ok(mut html) => {
+            if q.back.is_some() {
+                html.push_str(&back_link(goal));
+            }
+            (
+                [
+                    (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                    (header::CONTENT_SECURITY_POLICY, PAGE_CSP),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                    (header::CACHE_CONTROL, "no-store"),
+                    (header::REFERRER_POLICY, "no-referrer"),
+                ],
+                html,
+            )
+                .into_response()
+        }
         Err(e) => ApiError(e).into_response(),
     }
 }
