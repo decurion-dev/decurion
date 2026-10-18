@@ -52,7 +52,9 @@ Source: "{#BinDir}\decurion-hub.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\decurion-runner.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "start-decurion.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "save-claude-sign-in.ps1"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#RepoRoot}\docker\claude-worker\Dockerfile"; DestDir: "{app}\docker\claude-worker"; Flags: ignoreversion
+; The whole folder: the image copies its other files (the browser host, the
+; MCP settings, decurion-postgres) in, so the Dockerfile alone cannot build.
+Source: "{#RepoRoot}\docker\claude-worker\*"; DestDir: "{app}\docker\claude-worker"; Flags: ignoreversion recursesubdirs
 Source: "{#RepoRoot}\docker\pi-worker\Dockerfile"; DestDir: "{app}\docker\pi-worker"; Flags: ignoreversion
 ; The gate is built on the PC from its own source, like the agent image.
 Source: "{#RepoRoot}\docker\gate\Dockerfile"; DestDir: "{app}\docker\gate"; Flags: ignoreversion

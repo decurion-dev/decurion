@@ -1,0 +1,165 @@
+#!/bin/bash
+# A private PostgreSQL for one agent, inside its own sealed box, so an app's
+# tests can run against a real database. It listens only on 127.0.0.1 in the
+# box, so nothing outside the box can reach it, and it accepts any password
+# (trust), so the app's usual development passwords just work. Its data lives
+# in the agent's home volume and is kept between runs of the same piece of
+# work; each piece has its own.
+#
+#   decurion-postgres start [--port 5432] [--user NAME] [--db NAME] [--init DIR]
+#       Starts it. The first time it also sets it up the way the official
+#       postgres image does with docker-compose: --user is POSTGRES_USER (a
+#       superuser; "postgres" is always there too), --db is POSTGRES_DB
+#       (default: the user's name), and DIR is the folder mounted at
+#       /docker-entrypoint-initdb.d, whose *.sql, *.sql.gz and *.sh files run
+#       in name order. If setting up fails, nothing is kept, so the next start
+#       tries again from scratch.
+#   decurion-postgres stop [--port 5432]
+#   decurion-postgres status [--port 5432]
+#   decurion-postgres reset [--port 5432]   stops it and deletes its data
+set -euo pipefail
+
+die() { echo "decurion-postgres: $*" >&2; exit 2; }
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+port=5432
+user=""
+db=""
+init=""
+while [ $# -gt 0 ]; do
+  [ $# -ge 2 ] || die "$1 needs a value"
+  case "$1" in
+    --port) port="$2" ;;
+    --user) user="$2" ;;
+    --db) db="$2" ;;
+    --init) init="$2" ;;
+    *) die "unknown option $1" ;;
+  esac
+  shift 2
+done
+[[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] && [ "$port" -le 65535 ] || die "--port must be a number from 1 to 65535"
+name_ok() { [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_-]{0,62}$ ]]; }
+[ -z "$user" ] || name_ok "$user" || die "--user may hold only letters, digits, _ and -"
+[ -z "$db" ] || name_ok "$db" || die "--db may hold only letters, digits, _ and -"
+[ -z "$init" ] || [ -d "$init" ] || die "--init folder $init does not exist"
+
+bin="$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)"
+data="$HOME/.decurion-postgres/$port"
+log="$data.log"
+ready_mark="$data/.decurion-ready"
+
+# Whether the server answers. Starting up or recovering, it may not yet.
+up() { "$bin/pg_isready" -q -h 127.0.0.1 -p "$port" -t 2; }
+# Whether this cluster's server process is alive, answering or not. The lock
+# file alone is not enough: a box that was removed leaves postmaster.pid
+# behind, and in a new box that process id may belong to anything else.
+alive() {
+  local pid
+  pid="$(head -n 1 "$data/postmaster.pid" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = postgres ]
+}
+# Stops this cluster's server if it is alive, and makes sure it is gone.
+halt() {
+  if alive; then "$bin/pg_ctl" -D "$data" -w -t 60 -m "${1:-fast}" stop >/dev/null 2>&1 || true; fi
+  if alive; then echo "decurion-postgres: the server on port $port would not stop" >&2; exit 1; fi
+}
+# The superuser goes through the unix socket in the data folder.
+psql_su() { "$bin/psql" -h "$data" -p "$port" -U postgres -v ON_ERROR_STOP=1 -q "$@"; }
+# (A later -U in the arguments wins, for running init scripts as the app's user.)
+
+start_server() {
+  if alive; then
+    "$bin/pg_ctl" -D "$data" -w -t 60 status >/dev/null 2>&1 || true
+    for _ in $(seq 60); do up && return 0; sleep 1; done
+    echo "decurion-postgres: the server on port $port is running but not answering" >&2
+    return 1
+  fi
+  rm -f "$data/postmaster.pid"
+  "$bin/pg_ctl" -D "$data" -l "$log" -w -t 60 start >/dev/null
+}
+
+set_up() {
+  mkdir -p "$data"
+  "$bin/initdb" -D "$data" -U postgres --auth=trust --encoding=UTF8 --locale=C.UTF-8 >/dev/null
+  {
+    echo "listen_addresses = '127.0.0.1'"
+    echo "port = $port"
+    echo "unix_socket_directories = '$data'"
+    echo "max_connections = 50"
+    echo "shared_buffers = 64MB"
+    echo "fsync = off"
+  } >>"$data/postgresql.conf"
+  start_server
+  local u="${user:-postgres}" d="${db:-${user:-postgres}}"
+  if [ "$u" != postgres ]; then
+    # psql fills in :"name" only in what it reads, not in -c.
+    echo 'CREATE ROLE :"name" SUPERUSER LOGIN;' | psql_su -d postgres -v name="$u"
+  fi
+  if [ "$d" != postgres ]; then
+    echo 'CREATE DATABASE :"name" OWNER :"owner";' | psql_su -d postgres -v name="$d" -v owner="$u"
+  fi
+  if [ -n "$init" ]; then
+    # Passed on only if the caller set one: logins here need no password.
+    : "${POSTGRES_PASSWORD:=}"
+    export POSTGRES_USER="$u" POSTGRES_DB="$d" POSTGRES_PASSWORD
+    # As the postgres image does: scripts run as POSTGRES_USER.
+    export PGHOST="$data" PGPORT="$port" PGUSER="$u" PGDATABASE="$d"
+    local f
+    for f in "$init"/*; do
+      [ -e "$f" ] || continue
+      case "$f" in
+        *.sql) psql_su -U "$u" -d "$d" -f "$f" ;;
+        *.sql.gz) gunzip -c "$f" | psql_su -U "$u" -d "$d" ;;
+        *.sh)
+          # As the postgres image does: run it if it is executable, else
+          # read it into this shell (which stops at the first error), so
+          # what one script sets, the next one sees.
+          if [ -x "$f" ]; then "$f"; else . "$f"; fi ;;
+        *) echo "decurion-postgres: skipping $f (not .sql, .sql.gz or .sh)" >&2 ;;
+      esac
+    done
+  fi
+  touch "$ready_mark"
+}
+
+case "$cmd" in
+  start)
+    if [ ! -e "$ready_mark" ]; then
+      # Never set up, or setting up failed part way: start over.
+      halt immediate
+      rm -rf "$data" "$log"
+      # Not inside an `if`: there bash ignores set -e, and a failed step
+      # would look like success. A subshell keeps -e, and its exit says.
+      set +e
+      (set -e; set_up)
+      ok=$?
+      set -e
+      if [ "$ok" -ne 0 ]; then
+        halt immediate
+        rm -rf "$data"
+        echo "decurion-postgres: setting up failed; nothing was kept. The log: $log" >&2
+        exit 1
+      fi
+    else
+      [ -z "$user$db$init" ] || echo "decurion-postgres: already set up; --user, --db and --init apply only the first time (reset to start over)." >&2
+      start_server
+    fi
+    echo "PostgreSQL is running on 127.0.0.1:$port (superuser postgres, any password)."
+    ;;
+  stop)
+    halt
+    echo "PostgreSQL on port $port is stopped."
+    ;;
+  status)
+    if up; then echo "running on 127.0.0.1:$port"; else echo "not running on port $port"; exit 3; fi
+    ;;
+  reset)
+    halt immediate
+    rm -rf "$data" "$log"
+    echo "PostgreSQL on port $port is stopped and its data deleted. Start it again to set it up afresh."
+    ;;
+  *)
+    die "usage: decurion-postgres start|stop|status|reset [--port N] [--user NAME] [--db NAME] [--init DIR]"
+    ;;
+esac

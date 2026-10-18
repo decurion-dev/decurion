@@ -108,6 +108,27 @@ COPY mcp-box.json /etc/decurion/mcp-box.json
 RUN chmod a+r /opt/decurion/browser-host.mjs /etc/decurion/mcp-box.json \
  && node /opt/decurion/browser-host.mjs --self-check
 
+# PostgreSQL, so an app's tests that need a database can run inside the box
+# (decurion-postgres starts a private one; see that script). It comes from
+# PostgreSQL's own Debian repository, set up the way PostgreSQL recommends:
+# Debian's postgresql-common package ships that repository's signing key and
+# the script that adds it, so the key is vouched for by Debian's own signed
+# archive. PG_MAJOR is pinned; the minor version is whatever that repository
+# serves, as it keeps only the newest (security fixes included), the same as
+# the Debian packages above. Only the server and client are kept; the box
+# reaches no package site for it at run time. The image's own cluster is
+# removed: agents make theirs in their home volume.
+ARG PG_MAJOR=16
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-common \
+ && /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y \
+ && apt-get install -y --no-install-recommends "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" \
+ && { pg_dropcluster --stop "${PG_MAJOR}" main || true; } \
+ && rm -rf /var/lib/apt/lists/* \
+ && "/usr/lib/postgresql/${PG_MAJOR}/bin/postgres" --version
+COPY decurion-postgres /usr/local/bin/decurion-postgres
+RUN chmod a+rx /usr/local/bin/decurion-postgres
+
 # On Linux the agent must have the same user id as the runner, or neither can
 # write the other's files in the shared work folder. The cloud worker builds
 # with --build-arg AGENT_UID=<its runner's id>; Docker Desktop on Windows does
@@ -122,4 +143,28 @@ ENV CLAUDE_CONFIG_DIR=/home/agent/.claude
 # root. The pinned toolchain stays ahead of it on PATH.
 ENV CARGO_HOME=/home/agent/.cargo \
     PATH=$PATH:/home/agent/.cargo/bin
+# Proves decurion-postgres works for the agent user, and leaves no data
+# behind in the image: a setup script that fails keeps nothing, so the next
+# start sets up afresh; then a setup like docker-compose's (POSTGRES_USER,
+# POSTGRES_DB, init scripts) and a query as the app's own role.
+RUN mkdir -p /tmp/pg-init \
+ && printf "CREATE ROLE app_user LOGIN;\nCREATE DATABASE app_test;\n" > /tmp/pg-init/01-init.sql \
+ && printf "SELECT broken;\n" > /tmp/pg-init/02-broken.sql \
+ && if decurion-postgres start --port 5499 --user app --init /tmp/pg-init 2>/dev/null; then \
+      echo "a failed setup was reported as success" >&2; exit 1; \
+    fi \
+ && test ! -e "$HOME/.decurion-postgres/5499" \
+ && rm /tmp/pg-init/02-broken.sql \
+ && printf 'CREATE TABLE who AS SELECT current_user AS u;\n' > /tmp/pg-init/02-who.sql \
+ && printf 'export FROM_EARLIER=yes\n' > /tmp/pg-init/03-set.sh \
+ && printf 'echo "$FROM_EARLIER for $POSTGRES_USER in $POSTGRES_DB" > "$HOME/pg-env"\n' > /tmp/pg-init/04-use.sh \
+ && decurion-postgres start --port 5499 --user app --init /tmp/pg-init \
+ && grep -qx "yes for app in app" "$HOME/pg-env" \
+ && psql -h 127.0.0.1 -p 5499 -U app -d app -tAc "select u from who" | grep -qx app \
+ && psql -h 127.0.0.1 -p 5499 -U app_user -d app_test -tAc "select 1" | grep -qx 1 \
+ && psql -h 127.0.0.1 -p 5499 -U app -d app -tAc "select current_user" | grep -qx app \
+ && decurion-postgres stop --port 5499 \
+ && decurion-postgres start --port 5499 \
+ && decurion-postgres reset --port 5499 \
+ && rm -rf /tmp/pg-init "$HOME/.decurion-postgres" "$HOME/pg-env"
 ENTRYPOINT ["claude"]
