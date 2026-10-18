@@ -6,6 +6,7 @@
 <meta name="theme-color" content="#f5f4f0" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#151513" media="(prefers-color-scheme: dark)">
 <link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg">
 <title>Decurion goals</title>
 <style>
   :root {
@@ -70,7 +71,7 @@
   .gi-meta { display:flex; flex-wrap:wrap; gap:6px 8px; align-items:center; margin-top:6px; font-size:12.5px; color:var(--muted); }
   .gi-hint { font-size:12.5px; font-weight:600; display:inline-flex; align-items:center; gap:6px; }
   .gi-hint.thinking { color:var(--accent-ink); }
-  .gi-hint.retry { color:var(--warn-ink); }
+  .gi-hint.retry, .gi-hint.turn { color:var(--warn-ink); }
   .empty { color:var(--muted); padding:20px 8px; margin:0; }
 
   /* New goal */
@@ -300,11 +301,68 @@
     .top { padding-left:12px; padding-right:12px; gap:8px; }
     .choice { width:100%; }
     .owner .stack { max-width:88%; }
-    .lead .avatar { width:28px; height:28px; font-size:11px; }
+    /* The "Project lead" line names who speaks; questions and plans get the full width. */
+    .lead .avatar { display:none; }
+    .brand { min-height:44px; }
     .composer .hint { display:none; }
   }
   @media (pointer: coarse), (max-width: 759px) {
     .btn, .top nav a, .goal-item, .brief summary { min-height:44px; }
+  }
+
+  /* Notes on an app: what the project lead remembers, each one removable. */
+  dialog.notes { width:min(520px, calc(100vw - 24px)); max-height:min(80vh, 640px); padding:0; border:1px solid var(--line-strong); border-radius:var(--radius);
+                 background:var(--card); color:var(--ink); box-shadow:0 12px 40px rgba(0,0,0,.22); }
+  dialog.notes::backdrop { background:rgba(15,18,24,.45); }
+  dialog.notes[open] { display:flex; flex-direction:column; }
+  .notes-head { flex:none; display:flex; align-items:center; gap:8px; padding:12px 12px 10px 16px; border-bottom:1px solid var(--line); }
+  .notes-head h2 { flex:1; min-width:0; margin:0; font-size:17px; letter-spacing:-.01em; overflow-wrap:anywhere; }
+  .notes-body { overflow-y:auto; padding:12px 16px 16px; }
+  .notes-body > p { margin:0 0 12px; }
+  .note-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
+  .note-list li { display:flex; align-items:flex-start; gap:8px; padding:6px 6px 6px 12px; border:1px solid var(--line); border-radius:12px; background:var(--panel); }
+  .note-list .nt { flex:1; min-width:0; padding:8px 0; overflow-wrap:anywhere; }
+
+  /* Phone bottom tabs: the inbox's tabs (D.phoneTabs in ui.js) in this page's colors. Only on
+     the goals list; inside a goal the message box sits at the bottom and Back returns to the list. */
+  .tabbar { display:none; flex:none; padding-bottom:env(safe-area-inset-bottom); background:var(--card); border-top:1px solid var(--line); }
+  /* Also undoes the goal's own .tabs and .tab (Conversation, Pieces of work), which share the names. */
+  .tabbar .tabs { display:flex; gap:0; max-width:480px; margin:0 auto; padding:0; border:0; }
+  .tabbar .tab { flex:1; height:64px; min-height:0; padding:0; border:0; background:none; display:grid; justify-items:center; align-content:center; gap:4px; position:relative;
+                 color:var(--muted); text-decoration:none; font-size:12px; font-weight:600; line-height:1; }
+  .tabbar .ind { position:relative; width:60px; height:30px; border-radius:99px; display:grid; place-items:center; }
+  .tabbar svg.i { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
+  .tabbar .tab[aria-current="page"] { color:var(--accent-ink); }
+  .tabbar .tab[aria-current="page"] .ind { background:var(--accent-soft); }
+  .tabbar .tab:focus-visible { outline-offset:-4px; }
+  .tabbar .badge { display:none; }
+  @media (max-width: 759px) {
+    body:not(.has-goal) .tabbar { display:block; }
+    body:not(.has-goal) .side { padding-bottom:20px; }
+    /* The tabs and the goal's own Back replace the top links. */
+    .top nav { display:none; }
+    body.has-goal .top { display:none; }
+    body.has-goal .goal-head { padding-top:max(6px, env(safe-area-inset-top)); }
+    dialog.notes { width:100vw; max-width:100vw; max-height:85dvh; margin:auto 0 0; border-radius:var(--radius) var(--radius) 0 0; border-width:1px 0 0;
+                   padding-bottom:env(safe-area-inset-bottom); }
+  }
+  /* Files for agents (files.js): a third tab; on wide screens, under the pieces */
+  .files-panel { min-height:0; overflow-y:auto; padding:16px 20px calc(20px + env(safe-area-inset-bottom)); }
+  .clip { flex:none; width:44px; height:44px; margin-left:-11px; border-radius:50%; border:0; background:transparent; color:var(--muted); display:grid; place-items:center; cursor:pointer; }
+  .clip:hover { color:var(--ink); background:var(--neutral-soft); }
+  .clip:disabled { opacity:.5; cursor:not-allowed; background:transparent; }
+  @media (min-width: 1280px) {
+    .goal-body { grid-template-rows:minmax(0, 1fr) auto; }
+    .goal-body > .convo { grid-row:1 / span 2; }
+    .files-panel { grid-column:2; max-height:45vh; border-left:1px solid var(--line); border-top:1px solid var(--line); background:var(--panel); }
+  }
+  @media (max-width: 1279px) {
+    .goal-body[data-tab="files"] .convo, .goal-body[data-tab="files"] .pieces-panel, .goal-body:not([data-tab="files"]) .files-panel { display:none; }
+  }
+  @media (max-width: 759px) {
+    .files-panel { padding:12px 12px calc(20px + env(safe-area-inset-bottom)); }
+    .tabs { overflow-x:auto; scrollbar-width:none; }
+    .tab { flex:none; padding-left:8px; padding-right:8px; }
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; }
@@ -344,7 +402,7 @@
         <p class="hint" style="margin-top:10px">Your project lead reads the app, asks a few questions, then shows you a plan to approve.</p>
         <p class="err-line" id="new-err" role="alert"></p>
       </form>
-      <p id="no-apps" hidden>Add an app on the board first. <a href="/">Open the board</a></p>
+      <p id="no-apps" hidden><span id="no-apps-text">Add an app on the board first.</span> <a id="no-apps-link" href="/">Open the board</a></p>
     </section>
     <div id="goal-groups"><p class="empty">Loading your goals…</p></div>
   </aside>
@@ -370,6 +428,7 @@
       <div class="tabs" aria-label="Show">
         <button class="tab" id="tab-chat" type="button" aria-pressed="true" aria-controls="convo">Conversation</button>
         <button class="tab" id="tab-pieces" type="button" aria-pressed="false" aria-controls="pieces">Pieces of work<span class="count" id="pieces-count"></span></button>
+        <button class="tab" id="tab-files" type="button" aria-pressed="false" aria-controls="files">Files<span class="count" id="files-count"></span></button>
       </div>
       <p class="err-line goal-err" id="goal-err" role="alert"></p>
       <div class="goal-body" id="goal-body" data-tab="chat">
@@ -385,6 +444,9 @@
             <div class="column">
               <p class="hint" id="composer-note" hidden></p>
               <div class="composer-box">
+                <button class="clip" id="clip" type="button" aria-label="Add files to this goal" title="Add files to this goal" hidden>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>
+                </button>
                 <label class="sr-only" for="say">Message your project lead</label>
                 <textarea id="say" rows="1" placeholder="Reply to your project lead…"></textarea>
                 <button class="send" id="send" type="submit" aria-label="Send" disabled>
@@ -397,8 +459,12 @@
           </form>
         </section>
         <section class="pieces-panel" id="pieces" aria-labelledby="pieces-h">
-          <div class="pp-head"><h3 id="pieces-h">Pieces of work</h3><a class="btn ghost" href="/">Open the board</a></div>
+          <div class="pp-head"><h3 id="pieces-h">Pieces of work</h3><a class="btn ghost" href="/" data-board>Open the board</a></div>
           <div id="pieces-body"></div>
+        </section>
+        <section class="files-panel" id="files" aria-labelledby="files-h">
+          <div class="pp-head"><h3 id="files-h">Files for agents</h3></div>
+          <div id="files-body"></div>
         </section>
       </div>
     </div>
@@ -406,6 +472,9 @@
 </div>
 <div class="sr-only" id="live" aria-live="polite"></div>
 
+<!-- For the phone's bottom tabs (D.phoneTabs). This page keeps its own look and helpers. -->
+<script src="/ui.js"></script>
+<script src="/files.js"></script>
 <script>
 "use strict";
 const POLL_MS = 2500;
@@ -433,6 +502,13 @@ const THREAD_STATES = {
 const CLOSED = new Set(["done", "stopped"]);
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 const wide = matchMedia("(min-width: 760px)");
+// Phones show one pane at a time and keep everything inside the app: an
+// installed app has no tabs of its own, so a new tab would leave it.
+const phone = matchMedia("(max-width: 759px)");
+const installed = matchMedia("(display-mode: standalone)");
+const inApp = () => phone.matches || installed.matches;
+// The phone's board is the inbox's Board tab.
+const boardHref = () => (inApp() ? "/inbox#board" : "/");
 
 // ---------- helpers ----------
 const $ = id => document.getElementById(id);
@@ -527,6 +603,10 @@ function inline(s) {
 const pill = (label, tone) => el("span", { class: `pill ${tone}` }, label);
 const dots = small => el("span", { class: small ? "dots small" : "dots", "aria-hidden": "true" }, el("i"), el("i"), el("i"));
 const pageUrl = (goalId, pageId) => `/api/goals/${goalId}/pages/${pageId}`;
+/** A page an agent drew. On the PC it opens in a new tab; on a phone it opens in place, and the hub adds a Back link to it. */
+const pageLink = (goalId, pageId) => inApp() ? { href: `${pageUrl(goalId, pageId)}?back=1` }
+  : { href: pageUrl(goalId, pageId), target: "_blank", rel: "noopener" };
+const newTabNote = () => (inApp() ? null : el("span", { class: "sr-only" }, "(opens in a new tab)"));
 
 function announce(text) {
   const live = $("live");
@@ -623,6 +703,8 @@ function renderList() {
       id: g.id, title: g.title, state: g.state,
       app: S.appsById.get(g.app_id)?.name ?? "",
       busy: g.busy && !closed, stuck: g.stuck && !g.busy && !closed,
+      // The project lead asked or answered and waits for you (the plan has its own label).
+      turn: g.state === "talking" && !g.busy && !g.stuck,
       when: ago(g.updated_at), sel: g.id === S.id, closed,
     };
   });
@@ -643,6 +725,7 @@ function renderList() {
         pill(label, tone),
         r.busy ? el("span", { class: "gi-hint thinking" }, dots(true), "Thinking…") : null,
         r.stuck ? el("span", { class: "gi-hint retry" }, "Needs a retry") : null,
+        r.turn ? el("span", { class: "gi-hint turn" }, "Your turn") : null,
         el("span", null, [r.app, r.when].filter(Boolean).join(" · ")))));
   };
   const open = rows.filter(r => !r.closed), closed = rows.filter(r => r.closed);
@@ -799,16 +882,18 @@ function renderHead(v) {
   const acts = [];
   if (g.stuck && !g.busy && !closed) acts.push(el("button", { class: "btn primary", type: "button", "data-action": "retry", onclick: () => goalAction("retry", "Try again") }, "Try again"));
   if (g.state === "for_review") acts.push(el("button", { class: "btn primary", type: "button", "data-action": "close", onclick: () => goalAction("close", "Mark done") }, "Mark done"));
-  if (!closed) {
-    const menu = el("details", { class: "more" },
-      el("summary", { class: "btn ghost", "aria-label": "More actions" }, "•••"),
-      el("div", { class: "more-menu" },
-        el("button", { class: "btn ghost danger", type: "button", onclick: e => {
-          e.target.closest("details").open = false;
-          if (confirm("Stop this goal? Pieces of work that haven't started will be cancelled.")) goalAction("stop", "Stop goal");
-        } }, "Stop goal")));
-    acts.push(menu);
-  }
+  const menu = el("details", { class: "more" },
+    el("summary", { class: "btn ghost", "aria-label": "More actions" }, "•••"),
+    el("div", { class: "more-menu" },
+      el("button", { class: "btn ghost", type: "button", onclick: e => {
+        e.target.closest("details").open = false;
+        openNotes(g.app_id, app);
+      } }, "Notes on this app"),
+      closed ? null : el("button", { class: "btn ghost danger", type: "button", onclick: e => {
+        e.target.closest("details").open = false;
+        if (confirm("Stop this goal? Pieces of work that haven't started will be cancelled.")) goalAction("stop", "Stop goal");
+      } }, "Stop goal")));
+  acts.push(menu);
   $("g-actions").replaceChildren(...acts);
 }
 
@@ -819,6 +904,42 @@ async function goalAction(path, label) {
   try { await post(`/goals/${id}/${path}`); S.headSig = S.tailSig = ""; S.forceStick = true; tick(); }
   catch (e) { if (S.id === id) $("goal-err").textContent = `"${label}" didn't go through: ${e.message}`; }
   finally { document.querySelectorAll("[data-action]").forEach(b => { if (b.dataset.action === path) b.disabled = false; }); }
+}
+
+// ---------- notes on an app ----------
+// What the project lead remembers about an app and reads at the start of
+// every goal. The owner can remove any of them. Notes are agent text, so they
+// go in as text.
+async function openNotes(appId, appName) {
+  const body = el("div", { class: "notes-body" }, el("p", { class: "loading" }, "Loading the notes…"));
+  const close = el("button", { class: "btn ghost", type: "button" }, "Close");
+  const dlg = el("dialog", { class: "notes", "aria-labelledby": "notes-h" },
+    el("div", { class: "notes-head" }, el("h2", { id: "notes-h" }, appName ? `Notes on ${appName}` : "Notes on this app"), close),
+    body);
+  close.addEventListener("click", () => dlg.close());
+  dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });
+  dlg.addEventListener("close", () => dlg.remove());
+  document.body.append(dlg);
+  dlg.showModal();
+  const intro = el("p", { class: "hint" }, "Your project lead keeps these notes about the app and reads them at the start of every goal. Remove any that are wrong or out of date.");
+  async function load() {
+    let notes;
+    try { notes = await api(`/apps/${appId}/notes`) ?? []; }
+    catch (e) { body.replaceChildren(intro, el("p", { class: "err-line" }, `Couldn't load the notes: ${e.message}`)); return; }
+    if (!notes.length) { body.replaceChildren(el("p", { class: "empty" }, "No notes yet. Your project lead adds one when it learns something worth keeping.")); return; }
+    body.replaceChildren(intro, el("ul", { class: "note-list" }, notes.map(n => {
+      const err = el("p", { class: "err-line", role: "alert" });
+      const rm = el("button", { class: "btn ghost danger", type: "button" }, "Remove");
+      rm.addEventListener("click", async () => {
+        if (!confirm("Remove this note? Your project lead won't read it again.")) return;
+        rm.disabled = true; err.textContent = "";
+        try { await post(`/apps/${appId}/notes/${n.id}/remove`); await load(); }
+        catch (e) { rm.disabled = false; err.textContent = `Not removed: ${e.message}`; }
+      });
+      return el("li", null, el("div", { class: "nt" }, n.text, err), rm);
+    })));
+  }
+  await load();
 }
 
 // ---------- messages ----------
@@ -841,6 +962,7 @@ function msgKey(m, ctx) {
       b.questions?.length ? (!ans && m.id === ctx.latestQ && !ctx.closed) : null,
       b.plan ? planStatus(m, ctx) : null,
       b.plan ? (planPage(m, ctx)?.id ?? (ctx.v.drawing && m.id === ctx.latestPlan ? "drawing" : 0)) : null,
+      b.plan ? inApp() : null,
     ]);
   }
   if (b.kind === "answers") return ctx.byId.has(b.to) ? "q" : "-";
@@ -1044,13 +1166,13 @@ function renderPlan(m, ctx) {
     : status === "approvable" || status === "waiting" ? el("span", { class: "hint" }, `${p.pieces.length} piece${p.pieces.length > 1 ? "s" : ""} of work`) : null);
   let visual = null;
   if (page) {
-    visual = el("a", { class: "visual", href: pageUrl(ctx.g.id, page.id), target: "_blank", rel: "noopener" },
+    visual = el("a", { class: "visual", ...pageLink(ctx.g.id, page.id) },
       el("span", { class: "v-icon", "aria-hidden": "true" },
         svgIcon("M3 5h18v14H3zM3 9h18M8 13h3M8 16h7")),
       el("span", { class: "v-text" }, el("span", { class: "v-title" }, "Open the visual plan"),
         el("span", { class: "v-sub" }, "Mockups and what changes, on one page")),
-      el("span", { class: "v-go", "aria-hidden": "true" }, "↗"),
-      el("span", { class: "sr-only" }, "(opens in a new tab)"));
+      el("span", { class: "v-go", "aria-hidden": "true" }, inApp() ? "›" : "↗"),
+      newTabNote());
   } else if (ctx.v.drawing && m.id === ctx.latestPlan) {
     visual = el("div", { class: "drawing", role: "status" },
       el("span", { class: "pen", "aria-hidden": "true" }, "✎"), el("span", null, "Drawing the visual plan…"), dots(true));
@@ -1090,7 +1212,7 @@ async function approve(msgId, btn, err) {
 // ---------- tail: thinking, stuck, review, closed ----------
 function renderTail(v) {
   const g = v.goal;
-  const sig = JSON.stringify([g.busy, g.stuck, g.state]);
+  const sig = JSON.stringify([g.busy, g.stuck, g.state, boardHref()]);
   if (sig === S.tailSig) return false;
   S.tailSig = sig;
   const parts = [];
@@ -1106,7 +1228,7 @@ function renderTail(v) {
   if (g.state === "for_review") {
     parts.push(el("div", { class: "callout attn" },
       el("p", null, "Everything is built and checked. Try it out from the board, then mark the goal done."),
-      el("a", { class: "btn", href: "/" }, "Open the board"),
+      el("a", { class: "btn", href: boardHref() }, "Open the board"),
       el("button", { class: "btn primary", type: "button", "data-action": "close", onclick: () => goalAction("close", "Mark done") }, "Mark done")));
   } else if (g.state === "done") {
     parts.push(el("div", { class: "callout done" }, el("p", null, "You marked this goal done.")));
@@ -1120,7 +1242,7 @@ function renderTail(v) {
 // ---------- pieces ----------
 function renderPieces(v) {
   const pieces = v.pieces ?? [], pages = v.pages ?? [];
-  const sig = JSON.stringify([pieces, pages.filter(p => p.kind === "check")]);
+  const sig = JSON.stringify([pieces, pages.filter(p => p.kind === "check"), inApp()]);
   if (sig === S.piecesSig) return;
   S.piecesSig = sig;
   $("pieces-count").textContent = pieces.length ? String(pieces.length) : "";
@@ -1151,8 +1273,8 @@ function renderPieces(v) {
         p.review_summary ? el("p", null, p.review_summary) : null,
         p.review_issues?.length ? el("ul", null, p.review_issues.map(i => el("li", null, i))) : null) : null,
       el("div", { class: "piece-links" },
-        check ? el("a", { class: "btn built", href: pageUrl(v.goal.id, check.id), target: "_blank", rel: "noopener" }, "See it as built ↗", el("span", { class: "sr-only" }, "(opens in a new tab)")) : null,
-        el("a", { class: "btn ghost", href: "/" }, "On the board")));
+        check ? el("a", { class: "btn built", ...pageLink(v.goal.id, check.id) }, inApp() ? "See it as built" : "See it as built ↗", newTabNote()) : null,
+        el("a", { class: "btn ghost", href: boardHref() }, "On the board")));
   }));
 }
 
@@ -1208,6 +1330,74 @@ document.addEventListener("keydown", e => {
   if (open) { open.open = false; open.querySelector("summary").focus(); }
 });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+
+// ---------- phones: bottom tabs and links that stay in the app ----------
+document.querySelector(".shell").after(D.phoneTabs("goals"));
+$("tab-goals").addEventListener("click", e => {
+  e.preventDefault();
+  document.querySelector(".side").scrollTo({ top: 0, behavior: reducedMotion.matches ? "auto" : "smooth" });
+});
+function placeLinks() {
+  document.querySelectorAll("a[data-board]").forEach(a => { a.href = boardHref(); });
+  // On a phone, apps are added in Settings.
+  $("no-apps-text").textContent = inApp() ? "Add an app in Settings first." : "Add an app on the board first.";
+  $("no-apps-link").textContent = inApp() ? "Open Settings" : "Open the board";
+  $("no-apps-link").href = inApp() ? "/inbox#settings" : "/";
+}
+placeLinks();
+for (const m of [phone, installed]) m.addEventListener("change", () => { placeLinks(); if (S.view) renderGoal(S.view); });
+
+// Unsent words and half-picked answers survive a trip to a plan page and back.
+const KEEP = "decurion.goals.unsent";
+try {
+  const k = JSON.parse(sessionStorage.getItem(KEEP) || "null");
+  if (k) { S.says = new Map(k.says); S.drafts = new Map(k.drafts.map(([m, d]) => [m, new Map(d)])); }
+} catch { /* nothing kept; start empty */ }
+addEventListener("pagehide", () => {
+  try {
+    if (S.id != null) S.says.set(S.id, $("say").value);
+    sessionStorage.setItem(KEEP, JSON.stringify({ says: [...S.says], drafts: [...S.drafts].map(([m, d]) => [m, [...d]]) }));
+  } catch { /* storage is optional */ }
+});
+// ---------- files for agents (files.js) ----------
+// A Files tab with this goal's files and the app's own, and a paperclip by
+// the message box. Kept to this block: it wraps renderGoal rather than
+// changing it. DFiles keeps one panel per goal, so each redraw gets the same
+// element back and an upload in progress is never lost.
+const filesWide = matchMedia("(min-width: 1280px)");
+let filesFor = null; // the goal whose files are shown
+function filesCount({ own, shared }) {
+  const n = own.length + shared.length;
+  $("files-count").textContent = n ? String(n) : "";
+}
+function syncFiles(v) {
+  const g = v?.goal, on = !!(g && window.DFiles);
+  $("tab-files").hidden = !window.DFiles;
+  $("clip").hidden = !on;
+  if (!on) return;
+  $("clip").disabled = CLOSED.has(g.state);
+  if (filesFor !== g.id) { filesFor = g.id; $("files-count").textContent = ""; }
+  const node = DFiles.panel({ appId: g.app_id, goalId: g.id, onChange: filesCount });
+  if ($("files-body").firstChild !== node) $("files-body").replaceChildren(node);
+}
+const renderGoalBeforeFiles = renderGoal;
+renderGoal = function (v) { renderGoalBeforeFiles(v); syncFiles(v); };
+addEventListener("hashchange", () => {
+  if (S.id === filesFor) return;
+  filesFor = null;
+  $("files-body").replaceChildren(); $("files-count").textContent = ""; $("clip").hidden = true;
+});
+function showFiles() { setTab("files"); $("tab-files").setAttribute("aria-pressed", "true"); }
+$("tab-files").addEventListener("click", showFiles);
+for (const t of ["tab-chat", "tab-pieces"]) $(t).addEventListener("click", () => $("tab-files").setAttribute("aria-pressed", "false"));
+$("clip").addEventListener("click", () => {
+  const g = S.view?.goal;
+  if (!g || !window.DFiles) return;
+  if (filesWide.matches) $("files").scrollIntoView({ block: "nearest" }); else showFiles();
+  // Straight from the tap: browsers open a file picker only then.
+  DFiles.pick({ appId: g.app_id, goalId: g.id, onChange: filesCount });
+});
+if (!window.DFiles) $("tab-files").hidden = true;
 
 selectFromHash();
 if (S.id == null) tick();

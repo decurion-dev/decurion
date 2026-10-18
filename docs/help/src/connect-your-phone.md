@@ -17,13 +17,22 @@ On a Mac or Linux, set `DECURION_PUBLIC_URL` in the terminal before you run `dec
 
 ## Pair your phone
 
-1. On the board on your PC, click **Phones and browsers**.
+1. On the board on your PC, open **Settings** and go to **Phones**.
 2. Click **Pair a phone**. A square code (QR code) appears.
 3. On your phone, open the camera and point it at the code. Tap the link that appears.
 4. A page called **Pair this phone** opens. Tap **Pair this phone**.
 5. Your phone shows the **Needs you** inbox.
 
 The code works once, for 30 minutes. If you make a new code, the older unused one stops working.
+
+## What you can do on your phone
+
+Everything you can do on the board. The phone has four tabs at the bottom:
+
+- **Inbox:** what needs you. Questions from agents show first, with answers you tap.
+- **Board:** all your work, by state and by app. Tap **New work** to ask for something: send it to your project lead, or pick **Just do it** for a small change. Tap a card to accept it, send it back, stop it, move it between your PC and the cloud, talk to its agent, or take over its test browser.
+- **Goals:** talk with your project lead, answer its questions, open the visual plan and approve it.
+- **Settings:** apps (with **Choose folder** to pick an app's folder on your PC), websites, test keys, website sign-ins, your GitHub token, caps, usage, computers and phones. Keys and tokens you type are hidden, never shown again except their last four characters, and never kept on the phone.
 
 ## Turn on notifications
 
@@ -37,7 +46,7 @@ Your phone now alerts you when work is ready for review, waiting on you, or stop
 
 ## Remove a phone
 
-1. On the board, click **Phones and browsers**.
+1. In Settings, on the board or your phone, go to **Phones**.
 2. Find the phone in the list and click **Remove**.
 3. Click **OK** to confirm. That phone is signed out and needs a new code to come back.
 

@@ -31,9 +31,14 @@ Thread states and allowed moves: `ThreadState::can_move_to` in `crates/decurion-
 ## Where state lives
 
 - Hub data folder: `DECURION_DATA`, else `%LOCALAPPDATA%\decurion` or `$HOME/decurion` (`data_dir` in hub `main.rs`). `hub.db` (SQLite), `keys.json` (owner and runner keys), `saved-work/` (bundles and checkpoints), `vault/` off Windows.
-- Schema: `crates/decurion-hub/migrations/*.sql`, applied by `Store::open`. Main tables: `apps`, `threads`, `events`, `audit` (append-only), `runs` (money), `receipts`, `messages`, `goals`, `goal_messages`, `goal_pieces`, `helper_jobs`, `goal_pages`, `plan_items` (the master plan), `page_questions`, `app_notes`, `devices`, `runners`, `checkpoints`, `test_keys`, `account_usage`, `owner_keys` (last four of the owner's GitHub token). Sending to GitHub lives in `threads.gh_*` (`0046_github.sql`).
+- Schema: `crates/decurion-hub/migrations/*.sql`, applied by `Store::open`. Main tables: `apps`, `threads`, `events`, `audit` (append-only), `runs` (money), `receipts`, `messages`, `goals`, `goal_messages`, `goal_pieces`, `helper_jobs`, `goal_pages`, `app_notes`, `devices`, `runners`, `checkpoints`, `test_keys`, `account_usage`, `plan_items` (the master plan), `page_questions`, `owner_keys` (last four of the owner's GitHub token), `context_files` (files the owner attached, `0047_context_files.sql`). Sending to GitHub lives in `threads.gh_*` (`0046_github.sql`).
+- Attached files: `saved-work/context/app-<id>/<file id>` and `<file id>.txt` (the text the hub took out of a Word, Excel or PowerPoint file), owned by `crates/decurion-hub/src/context.rs`. Names, kinds and limits are in `crates/decurion-proto/src/context.rs`.
 - Runner data folder (same rule, `data_dir` in runner `main.rs`): `workspaces/` (each thread's copy, mounted at `/work`), `review/` (runner-owned bare repos).
 - Secrets: Windows Credential Manager (`decurion/claude-profile-A`, `decurion/anthropic-api`, `decurion/openai-api`, `decurion/xai-api`, `decurion/app-<id>/test-key/<NAME>`, and `decurion/github` for the owner's optional GitHub token, read only by the hub), or `DECURION_*` env vars off Windows (`Credential::env_fallback`).
+
+## Attached files
+
+The owner attaches files to an app (Settings) or to one goal (its Files tab), through `POST /api/apps/{id}/files` (`crates/decurion-hub/src/context.rs`). A `Claim` and a `HelperClaim` name the files the job gets (`context`: the app's own files plus its goal's). Before the agent starts, the runner fetches them as one tar (`GET /api/runner/threads/{id}/context`, or `/runner/helper/{id}/context`) and unpacks it into the job's home volume at `/home/agent/context` in a sealed throwaway box with no network (`context_import_args` in `crates/decurion-runner/src/handover.rs`), which also makes text versions of PDFs with `pdftotext`. No mount is added: the files ride in the home volume, which the box already has, and are replaced at every start. They sit outside `/work`, so they are never in a commit unless an agent copies one in. The agent learns about them from `context_prompt` (runner `lib.rs`).
 
 ## The screens
 

@@ -1407,6 +1407,7 @@ impl Store {
             .execute(&mut *tx)
             .await?;
             tx.commit().await?;
+            let context = self.goal_context(goal_id).await?;
             return Ok(HelperClaimOutcome {
                 work: Some(HelperClaim {
                     job_id,
@@ -1420,6 +1421,7 @@ impl Store {
                     budget_usd: app.pay_per_use.then(|| claude_budget_usd(prior, reserved)),
                     reserved_micros: app.pay_per_use.then_some(reserved),
                     prior_micros: prior,
+                    context,
                 }),
                 news,
             });

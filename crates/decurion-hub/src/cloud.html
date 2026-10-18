@@ -84,6 +84,7 @@
     .intro h1 { font-size: 22px; }
     .card { padding: 16px; }
     .row > .btn { flex: 1 1 auto; }
+    .brand { min-height: 44px; }
   }
   @media (max-width: 380px) {
     .brand span:last-child { display: none; }
@@ -93,9 +94,9 @@
 <body>
 <header class="appbar">
   <div class="bar">
-    <a class="brand" href="/"><span id="mark"></span><span>Decurion</span></a>
+    <a class="brand" id="brand" href="/"><span id="mark"></span><span>Decurion</span></a>
     <span class="grow"></span>
-    <a class="btn quiet back" href="/"><span data-icon="left"></span>Back to the board</a>
+    <a class="btn quiet back" id="back" href="/"><span data-icon="left"></span><span id="back-text">Back to the board</span></a>
   </div>
 </header>
 <main class="page">
@@ -659,6 +660,12 @@ function el(tag, attrs = {}, text = "") { const e = document.createElement(tag);
 // The mark and icons come from the shared ui.js.
 $("mark").append(D.mark(28));
 for (const s of document.querySelectorAll("[data-icon]")) s.replaceWith(D.icon(s.dataset.icon));
+
+// A phone (or the installed app) comes here from its Settings tab, so Back goes there.
+if (matchMedia("(max-width: 640px), (display-mode: standalone)").matches) {
+  $("back").href = "/inbox#settings"; $("back-text").textContent = "Back to settings";
+  $("brand").href = "/inbox";
+}
 
 // The name of the worker we are waiting for (from the last setup text), and when we started.
 let waitingFor = null, waitStart = 0;
