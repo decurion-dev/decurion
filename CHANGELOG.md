@@ -54,6 +54,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **Click and type straight into the page.** In the live picture of your app (Run it), an agent's test browser or a sign-in window, you now click a field and type, on the PC and the phone; there is no separate typing box any more. On a PC your keyboard works as usual, with Ctrl+A, Ctrl+Z and pasting. On a phone, tap **Keyboard** under the picture to bring up your keyboard. Decurion rebuilds the agent workspace the first time it starts after the update.
 - **Stay signed in.** You confirm "Sign in to Decurion" only the first time; after that, starting Decurion opens the board directly. A phone or browser you use stays signed in instead of signing out after a year.
 - **Pay-per-use until the plan resets.** One tap on **Continue on pay-per-use** now keeps that Max plan's Claude work, new work, planning and checking included, on pay-per-use until the plan resets, then goes back to the plan by itself. It still counts toward the monthly cap. The board and phone say "running on pay-per-use until" instead of asking again.
 
