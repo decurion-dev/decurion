@@ -130,7 +130,11 @@ pub struct Lights {
 
 /// The last answer from GitHub, so the page does not ask on every load.
 #[derive(Clone, Default)]
-pub struct GitHubCache(Arc<Mutex<Option<(Instant, Option<(String, String)>, TokenCheck)>>>);
+pub struct GitHubCache(Arc<Mutex<Option<Asked>>>);
+
+/// When GitHub was asked, about which saved token (its last four and when it
+/// was saved, or none), and what it said.
+type Asked = (Instant, Option<(String, String)>, TokenCheck);
 
 impl Store {
     /// Whole days from now until `at`, negative once passed. `None` for a
