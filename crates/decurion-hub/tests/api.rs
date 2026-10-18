@@ -1016,6 +1016,92 @@ async fn notifications_are_encrypted_for_the_phone_and_dead_ones_dropped() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A push service's 401 or 403 is logged, not acted on: it can come from the
+/// hub's own side (a wrong clock spoils every signature), and dropping on it
+/// would cut off every phone at once. A phone with an old-key subscription is
+/// fixed by the inbox instead.
+#[tokio::test]
+async fn a_refused_subscription_is_kept_so_a_hub_fault_cannot_cut_off_every_phone() {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use web_push_native::p256;
+
+    let ua_secret = p256::SecretKey::from_slice(&[7u8; 32]).expect("key");
+    let ua_public = ua_secret.public_key();
+    let auth = [9u8; 16];
+
+    let app = axum::Router::new()
+        .route("/ok", axum::routing::post(|| async { StatusCode::CREATED }))
+        .route(
+            "/unauthorized",
+            axum::routing::post(|| async {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    "{\"errno\":109,\"message\":\"Request did not validate\"}",
+                )
+            }),
+        )
+        .route(
+            "/forbidden",
+            axum::routing::post(|| async { StatusCode::FORBIDDEN }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move { axum::serve(listener, app).await });
+
+    let store = Store::open("sqlite::memory:").await.expect("store");
+    let dir = std::env::temp_dir().join(format!("decurion-push-refused-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let pusher = decurion_hub::push::Pusher::load_or_create(&dir).expect("pusher");
+
+    let (phone, _) = store.add_device("Android phone").await.expect("device");
+    let (firefox, _) = store.add_device("Firefox phone").await.expect("device");
+    let (tablet, _) = store.add_device("Tablet").await.expect("device");
+    let p256dh = URL_SAFE_NO_PAD.encode(ua_public.to_sec1_bytes());
+    let auth_b64 = URL_SAFE_NO_PAD.encode(auth);
+    for (id, path) in [
+        (phone.id, "ok"),
+        (firefox.id, "unauthorized"),
+        (tablet.id, "forbidden"),
+    ] {
+        sqlx::query("INSERT INTO push_subscriptions (device_id, endpoint, p256dh, auth) VALUES (?, ?, ?, ?)")
+            .bind(id)
+            .bind(format!("http://{addr}/{path}"))
+            .bind(&p256dh)
+            .bind(&auth_b64)
+            .execute(store.pool())
+            .await
+            .expect("insert");
+    }
+
+    pusher
+        .notify(&store, "Ready for review", "Add a hello script")
+        .await;
+
+    let left = store.push_targets().await.expect("targets");
+    let mut ids: Vec<i64> = left.iter().map(|(id, _)| *id).collect();
+    ids.sort();
+    assert_eq!(ids, vec![phone.id, firefox.id, tablet.id]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The phone must not reuse a subscription made with another hub key: the
+/// push service refuses every message sent on it.
+#[tokio::test]
+async fn the_inbox_replaces_a_subscription_made_with_another_key() {
+    let (r, _) = hub().await;
+    let resp = get(&r, "/inbox", None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+    let page = String::from_utf8_lossy(&bytes);
+    assert!(page.contains("existing?.options?.applicationServerKey"));
+    assert!(page.contains("existing.unsubscribe()"));
+    // and checks again when the phone app comes back from the background.
+    assert!(page.contains("Notification.permission === \"granted\") subscribe()"));
+}
+
 #[tokio::test]
 async fn only_a_signed_in_device_can_subscribe() {
     let (r, _) = hub().await;

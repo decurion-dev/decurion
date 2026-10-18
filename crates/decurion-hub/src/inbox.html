@@ -1299,16 +1299,36 @@ function b64ToBytes(b64) {
   const s = atob(b64.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((b64.length + 3) % 4));
   return Uint8Array.from(s, (c) => c.charCodeAt(0));
 }
+// True when a subscription was made with this hub's current key. One made
+// with an older key is refused by the push service on every message.
+function sameKey(have, want) {
+  if (!have) return false;
+  const a = new Uint8Array(have);
+  return a.length === want.length && a.every((b, i) => b === want[i]);
+}
 async function setUpNotifications() {
   if (!("serviceWorker" in navigator) || !("PushManager" in window) || !window.isSecureContext) return;
   const reg = await navigator.serviceWorker.register("/sw.js");
-  const existing = await reg.pushManager.getSubscription();
   async function subscribe() {
     const { key } = await D.api("/push/key");
-    const sub = existing ?? await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+    const want = b64ToBytes(key);
+    let existing = await reg.pushManager.getSubscription();
+    // A browser that does not say which key it used (no `options`) keeps its
+    // subscription: replacing it on every visit would only churn.
+    const used = existing?.options?.applicationServerKey;
+    if (existing && used !== undefined && !sameKey(used, want)) {
+      await existing.unsubscribe();
+      existing = null;
+    }
+    const sub = existing ?? await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: want });
     const j = sub.toJSON();
     await D.api("/push/subscribe", { method: "POST", body: JSON.stringify({ endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth }) });
   }
+  // A phone app brought back from the background does not reload the page,
+  // so check the subscription again each time the inbox comes into view.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && Notification.permission === "granted") subscribe().catch(() => {});
+  });
   if (Notification.permission === "granted") { await subscribe(); return; }
   if (Notification.permission === "denied") return;
   const box = $("notify");
