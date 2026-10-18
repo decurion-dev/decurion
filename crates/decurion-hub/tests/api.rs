@@ -1143,6 +1143,39 @@ async fn the_inbox_replaces_a_subscription_made_with_another_key() {
     assert!(page.contains("Notification.permission === \"granted\") subscribe()"));
 }
 
+/// Finished research changed no code, so its card and its goal point to the
+/// fixes on the app's master plan, never to Accept and GitHub. A link to one
+/// app's master plan opens that app, not the last one picked.
+#[tokio::test]
+async fn finished_research_points_to_its_fixes() {
+    let (r, _) = hub().await;
+    let text = |path: &'static str| {
+        let r = r.clone();
+        async move {
+            let resp = get(&r, path, None).await;
+            assert_eq!(resp.status(), StatusCode::OK, "{path}");
+            let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+    };
+    let ui = text("/ui.js").await;
+    assert!(ui.contains("t.research && t.state === \"in_review\""));
+    assert!(ui.contains("D.RESEARCH_REVIEW"));
+    assert!(ui.contains("\"Fix what it found\""));
+    let goals = text("/goals").await;
+    assert!(goals.contains("v.pieces.every(p => p.research && p.review === \"passed\")"));
+    assert!(goals.contains("D.planHref(g.app_id)"));
+    assert!(
+        ui.contains("!t.research && D.canFix()"),
+        "no second fix route on research"
+    );
+    let inbox = text("/inbox").await;
+    assert!(inbox.contains("t.research && t.state === \"in_review\" ? \"research\""));
+    let plan = text("/plan").await;
+    assert!(plan.contains("await loadApps(h.app)"));
+    assert!(plan.contains("S.app ?? readHash().app"));
+}
+
 #[tokio::test]
 async fn only_a_signed_in_device_can_subscribe() {
     let (r, _) = hub().await;

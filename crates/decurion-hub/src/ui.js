@@ -285,7 +285,29 @@
     keep.focus();
   });
 
-  D.moveButtons = (t, { size = "", onMoved, onError, quiet = false } = {}) => (D.MOVES[t.state] ?? []).map((m) => {
+  // Research changed no code, so it has nothing to accept or send to
+  // GitHub: the owner reads what it found and turns that into changes from
+  // the app's master plan, then closes it.
+  D.RESEARCH_REVIEW = [
+    { to: "done", label: "Mark done", kind: "", done: "Marked done. Research changes no code, so nothing goes to GitHub." },
+    { to: "failed", label: "Reject", kind: "danger", done: "Rejected.",
+      confirm: (t) => [`Reject "${t.title}"?`, "It changed no code. Its report stays on the goal page.", "Reject it", "Keep it"] },
+  ];
+  D.planHref = (appId) => `/plan#app=${encodeURIComponent(appId)}`;
+
+  D.moveButtons = (t, opts = {}) => {
+    const research = t.research && t.state === "in_review";
+    const moves = moveButtonsFor(t, research ? D.RESEARCH_REVIEW : (D.MOVES[t.state] ?? []), opts);
+    if (!research) return moves;
+    const fix = D.el("a", { className: `btn primary ${opts.size ?? ""}`.trim(), href: D.planHref(t.app_id) }, "Fix what it found");
+    fix.onclick = (ev) => {
+      ev.stopPropagation();
+      if (D.offline) { ev.preventDefault(); D.toast("Your PC isn't answering. Try again when it's back.", "offline"); }
+    };
+    return [fix, ...moves];
+  };
+
+  const moveButtonsFor = (t, list, { size = "", onMoved, onError, quiet = false } = {}) => list.map((m) => {
     const cls = quiet ? (m.kind === "danger" ? "btn quiet danger-text" : "btn quiet") : m.kind === "danger" ? "btn quiet danger-text" : `btn ${m.kind}`;
     const b = D.el("button", { type: "button", className: `${cls} ${size}`.trim() }, m.label);
     b.onclick = async (ev) => {
@@ -990,7 +1012,10 @@
           const res = await D.send(`/threads/${id}/messages`, { kind, text, accept_on_yes: t.state === "in_review" && !c.asked });
           delete drafts[id];
           ta.value = "";
-          D.toast(res?.state === "done" ? `Accepted. "${t.title}" is on its way to GitHub.` : sentText(t, kind), "send");
+          const doneText = t.research
+            ? `Marked done. "${t.title}" changed no code, so nothing goes to GitHub.`
+            : `Accepted. "${t.title}" is on its way to GitHub.`;
+          D.toast(res?.state === "done" ? doneText : sentText(t, kind), "send");
           c.sig = "";
           c.changed();
           c.load();
@@ -1071,11 +1096,16 @@
       return x;
     };
     let fix = null;
-    if (D.canFix() && said.trim() && (s === "in_review" || s === "done")) {
+    if (!t.research && D.canFix() && said.trim() && (s === "in_review" || s === "done")) {
       fix = el("button", { type: "button", className: "btn", dataset: { key: "wk-fix" } }, icon("tool"), "Fix these");
       fix.onclick = () => afterClose(() => D.fixWork(t, said));
     }
-    if (s === "in_review") {
+    if (s === "in_review" && t.research) {
+      row("Want what it found fixed?", ["Tap ", b("Fix what it found"), " at the bottom. Its findings are on the app's master plan: tap the × next to anything you don't want (Take off the plan), then Fix all that are left, or Fix this when only one is left."]);
+      row(asks.length ? "Want to answer in your own words, or ask for more?" : "Has a question, or want it to look further?",
+        "Your message goes back to the agent, and it picks up where it left off.", talk("Answer the agent"));
+      row("Done with it?", [b("Mark done"), " closes it. Research changes no code, so nothing goes to GitHub."]);
+    } else if (s === "in_review") {
       row("Looks right?", ["Tap ", b("Accept"), " at the bottom. Decurion sends it to GitHub as a pull request, and you merge it there."]);
       row(asks.length ? "Want to answer in your own words, or ask for changes?" : "Has a question, or want changes?",
         "Your message goes back to the agent, and it picks up where it left off.", talk("Answer the agent"));
