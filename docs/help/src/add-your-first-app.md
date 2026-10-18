@@ -12,6 +12,8 @@ If your code is on GitHub and not yet on your PC, download it first. You can use
 2. Click **Add an app**.
 3. In **Name**, type a short name, such as `portal`. Use only letters, numbers, `-` or `_`. Spaces are not allowed.
 4. In the folder box, type the full path to the app's folder, such as `C:\Users\you\code\portal`. On a Mac or Linux, the path starts with `/`.
+   - Easier: click **Choose folder** and pick the folder from a list instead of typing. This works on your phone too: it shows the folders on your PC. Start in **Projects**, **Documents** or another code folder, open folders until you reach your app's folder, then click **Use this folder**. A folder that holds your app's Git history is marked **Git app folder**. If the folder you are in is not one, Decurion says so: open the folder that holds your app's `.git` instead.
+   - The list shows only folders, never files, and only inside your Projects, Documents and other usual code folders, and the folders your apps are already in. If your app is somewhere else, type its path.
    - Tip: In File Explorer, right-click the folder and choose **Copy as path**. Paste it, then delete the quote marks at each end.
 5. Choose which Claude account this app uses: **A** or **B**.
 6. To bill this app to your pay-per-use key instead, check **Pay-per-use instead of a Max account**.

@@ -1102,3 +1102,126 @@
     d.showModal();
   });
 })();
+
+// ---------- The folder picker (D.pickFolder) ----------
+// Browses the PC's folders through the hub (GET /api/folders), so it works
+// the same on the board and on a paired phone. The hub decides what may be
+// shown; this only draws it. Folder names go in as text, never as HTML.
+(() => {
+  const { el, icon } = D;
+  const SVG = "http://www.w3.org/2000/svg";
+  // Corner-up-left: "the folder above".
+  const upIcon = () => {
+    const s = document.createElementNS(SVG, "svg");
+    s.setAttribute("viewBox", "0 0 24 24");
+    s.setAttribute("class", "i");
+    s.setAttribute("aria-hidden", "true");
+    for (const d of ["M9 14 4 9l5-5", "M4 9h10.5a5.5 5.5 0 0 1 0 11H11"]) {
+      const p = document.createElementNS(SVG, "path");
+      p.setAttribute("d", d);
+      s.append(p);
+    }
+    return s;
+  };
+  const gitBadge = () => el("span", { className: "fp-git" }, icon("branch"), "Git app folder");
+
+  // D.pickFolder({ title, start }) opens the picker, at `start` if the hub
+  // can show it. Resolves with the chosen folder's full path, or null.
+  D.pickFolder = ({ title = "Choose your app's folder", start = "" } = {}) => new Promise((resolve) => {
+    let chosen = null, here = null, seq = 0;
+    const close = el("button", { type: "button", className: "btn icon quiet fp-close", "aria-label": "Close" }, icon("close", "l"));
+    const up = el("button", { type: "button", className: "btn fp-up", disabled: true }, upIcon(), "Up");
+    const crumbs = el("ol", { className: "fp-crumbs" });
+    const note = el("div", { className: "fp-note", role: "status", "aria-live": "polite" });
+    const list = el("ul", { className: "fp-list", "aria-label": "Folders" });
+    const count = el("p", { className: "sr-only", role: "status", "aria-live": "polite" });
+    const cancel = el("button", { type: "button", className: "btn" }, "Cancel");
+    const use = el("button", { type: "button", className: "btn primary", disabled: true }, "Use this folder");
+    const d = el("dialog", { className: "fp", "aria-labelledby": "fp-t" },
+      el("header", { className: "fp-head" },
+        el("div", { className: "fp-top" }, el("h2", { id: "fp-t", tabIndex: -1 }, title), close),
+        el("nav", { className: "fp-nav", "aria-label": "Where you are" }, up, crumbs)),
+      note,
+      el("div", { className: "fp-body" }, list, count),
+      el("footer", { className: "fp-foot" }, cancel, use));
+
+    const crumbButton = (label, path, current, ico) => {
+      const b = el("button", { type: "button", className: "fp-crumb", "aria-current": current ? "location" : null }, ico, label);
+      if (!current) b.onclick = () => go(path);
+      return el("li", {}, b);
+    };
+    const message = (kind, text, retry) => {
+      note.replaceChildren();
+      if (!text) return;
+      note.append(el("div", { className: `notice ${kind}`.trim() }, icon(kind === "ok" ? "branch" : "alert"),
+        el("span", { className: "grow" }, text),
+        retry ? el("button", { type: "button", className: "btn sm", onclick: retry }, "Try again") : null));
+    };
+
+    const draw = (v, why) => {
+      here = v.path;
+      const atStart = !v.path;
+      up.disabled = atStart;
+      up.onclick = () => go(v.up ?? "");
+      crumbs.replaceChildren(crumbButton("Your PC", "", atStart, icon("pc")),
+        ...v.crumbs.map((c, i) => crumbButton(c.name, c.path, i === v.crumbs.length - 1, null)));
+      crumbs.scrollLeft = crumbs.scrollWidth;
+      use.disabled = atStart;
+      if (why) message("info", why);
+      else if (atStart) message("", "");
+      else if (v.git) message("ok", "This is a git folder. You can use it.");
+      else message("warn", "This folder isn't a git folder yet. Pick the folder that holds your app's .git.");
+      list.replaceChildren();
+      if (!v.folders.length) {
+        list.append(el("li", { className: "fp-empty" }, atStart
+          ? "No code folders found on your PC. Close this and type the folder's path instead."
+          : "No folders inside this one."));
+      }
+      for (const f of v.folders) {
+        const b = el("button", { type: "button", className: "fp-item", onclick: () => go(f.path) },
+          icon("app", "l"),
+          el("span", { className: "fp-name" }, el("span", { className: "fp-label" }, f.name),
+            atStart ? el("span", { className: "fp-path" }, f.path) : null),
+          f.git ? gitBadge() : null,
+          icon("right"));
+        list.append(el("li", {}, b));
+      }
+      if (v.cut) list.append(el("li", { className: "fp-empty" }, `Only the first ${v.folders.length} folders are shown.`));
+      count.textContent = `${v.name ?? "Your PC"}: ${D.plural(v.folders.length, "folder")}.`;
+    };
+
+    async function go(path, why) {
+      const mine = ++seq;
+      const hadFocus = list.contains(document.activeElement);
+      d.setAttribute("aria-busy", "true");
+      list.classList.add("fp-loading");
+      try {
+        const v = await D.api(path ? `/folders?path=${encodeURIComponent(path)}` : "/folders");
+        if (mine !== seq) return;
+        draw(v, why);
+        if (hadFocus) list.querySelector("button")?.focus();
+      } catch (e) {
+        if (mine !== seq) return;
+        // A folder that can't be shown: back to the start, saying why. If
+        // the start itself fails, say so with a way to try again.
+        if (path) { go("", e.message); return; }
+        message("bad", e.message, () => go(""));
+        list.replaceChildren();
+        use.disabled = true;
+        here = null;
+      } finally {
+        if (mine === seq) { d.removeAttribute("aria-busy"); list.classList.remove("fp-loading"); }
+      }
+    }
+
+    close.onclick = () => d.close();
+    cancel.onclick = () => d.close();
+    use.onclick = () => { if (here) { chosen = here; d.close(); } };
+    d.addEventListener("close", () => { seq++; d.remove(); resolve(chosen); });
+    document.body.append(d);
+    d.showModal();
+    // Start on the title, so it is read out and no button looks pressed.
+    d.querySelector("#fp-t").focus();
+    go(String(start ?? "").trim());
+  });
+})();
