@@ -278,7 +278,25 @@
     keep.focus();
   });
 
-  D.moveButtons = (t, { size = "", onMoved, onError, quiet = false } = {}) => (D.MOVES[t.state] ?? []).map((m) => {
+  // Research changed no code, so it has nothing to accept or send to
+  // GitHub: the owner reads what it found and turns that into changes from
+  // the app's master plan, then closes it.
+  D.RESEARCH_REVIEW = [
+    { to: "done", label: "Mark done", kind: "", done: "Marked done. Research changes no code, so nothing goes to GitHub." },
+    D.MOVES.in_review.find((m) => m.to === "failed"),
+  ];
+  D.planHref = (appId) => `/plan#app=${encodeURIComponent(appId)}`;
+
+  D.moveButtons = (t, opts = {}) => {
+    const research = t.research && t.state === "in_review";
+    const moves = moveButtonsFor(t, research ? D.RESEARCH_REVIEW : (D.MOVES[t.state] ?? []), opts);
+    if (!research) return moves;
+    const fix = D.el("a", { className: `btn primary ${opts.size ?? ""}`.trim(), href: D.planHref(t.app_id) }, "Fix what it found");
+    fix.onclick = (ev) => ev.stopPropagation();
+    return [fix, ...moves];
+  };
+
+  const moveButtonsFor = (t, list, { size = "", onMoved, onError, quiet = false } = {}) => list.map((m) => {
     const cls = quiet ? (m.kind === "danger" ? "btn quiet danger-text" : "btn quiet") : m.kind === "danger" ? "btn quiet danger-text" : `btn ${m.kind}`;
     const b = D.el("button", { type: "button", className: `${cls} ${size}`.trim() }, m.label);
     b.onclick = async (ev) => {
