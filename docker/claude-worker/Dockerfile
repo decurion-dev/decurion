@@ -110,34 +110,21 @@ RUN chmod a+r /opt/decurion/browser-host.mjs /etc/decurion/mcp-box.json \
 
 # PostgreSQL, so an app's tests that need a database can run inside the box
 # (decurion-postgres starts a private one; see that script). It comes from
-# PostgreSQL's own Debian repository. Only the one signing key with the
-# pinned fingerprint is kept in its keyring, whatever else the downloaded
-# file holds. PG_MAJOR is pinned; the minor version is whatever that
-# repository serves, as it keeps only the newest (security fixes included),
-# the same as the Debian packages above. Only the server and client are kept;
-# the box reaches no package site for it at run time. The image's own
-# cluster is removed: agents make theirs in their home volume.
+# PostgreSQL's own Debian repository, set up the way PostgreSQL recommends:
+# Debian's postgresql-common package ships that repository's signing key and
+# the script that adds it, so the key is vouched for by Debian's own signed
+# archive. PG_MAJOR is pinned; the minor version is whatever that repository
+# serves, as it keeps only the newest (security fixes included), the same as
+# the Debian packages above. Only the server and client are kept; the box
+# reaches no package site for it at run time. The image's own cluster is
+# removed: agents make theirs in their home volume.
 ARG PG_MAJOR=16
-ARG PGDG_SIGNER=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
 RUN apt-get update \
- && apt-get install -y --no-install-recommends gnupg wget \
- && wget -q -O /tmp/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
- && export GNUPGHOME="$(mktemp -d)" \
- && gpg --batch --quiet --import /tmp/pgdg.asc \
- && gpg --batch --export "$PGDG_SIGNER" > /usr/share/keyrings/pgdg.gpg \
- && keys="$(gpg --batch --with-colons --show-keys /usr/share/keyrings/pgdg.gpg | awk -F: '$1 == "fpr" { print $10 }' | head -n 1)" \
- && n="$(gpg --batch --with-colons --show-keys /usr/share/keyrings/pgdg.gpg | grep -c '^pub:')" \
- && if [ "$keys" != "$PGDG_SIGNER" ] || [ "$n" != 1 ]; then \
-      echo "PostgreSQL signing key is not exactly $PGDG_SIGNER" >&2; exit 1; \
-    fi \
- && rm -rf "$GNUPGHOME" \
- && echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
-      > /etc/apt/sources.list.d/pgdg.list \
- && apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-common \
+ && /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y \
  && apt-get install -y --no-install-recommends "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" \
  && { pg_dropcluster --stop "${PG_MAJOR}" main || true; } \
- && apt-get purge -y --auto-remove gnupg wget \
- && rm -rf /var/lib/apt/lists/* /tmp/pgdg.asc \
+ && rm -rf /var/lib/apt/lists/* \
  && "/usr/lib/postgresql/${PG_MAJOR}/bin/postgres" --version
 COPY decurion-postgres /usr/local/bin/decurion-postgres
 RUN chmod a+rx /usr/local/bin/decurion-postgres
