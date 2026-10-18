@@ -49,7 +49,11 @@ work, each with how you will know it is done.
   mockups. On your phone it opens inside the app; press **Back to the goal**
   when you are done.
 - Want something different? Type it. You get a new plan.
-- Happy with it? Press **Approve plan**. That is the only approval the goal needs.
+- Happy with it? Press **Approve plan**, tap **Yes, do it**, or just type
+  "yes" or "go ahead". That is the only approval the goal needs, and it works
+  even while your project lead is still answering.
+- A piece marked **Changes a protected part** waits for one tap from you at
+  the end, because you asked to see changes to those parts yourself.
 
 ## While the work runs
 
@@ -66,6 +70,9 @@ and found, so you never have to pass them along yourself.
 To find something out without changing the app, or to ask why a piece was
 done a certain way, see [Research, Ask why, and the checker's proof](research-and-ask-why.md).
 
+A piece that passes goes to GitHub as a pull request by itself. You approved
+the plan, so you are not asked again.
+
 You can stop the goal at any time with **Stop goal**, under the **•••** button.
 
 Your project lead keeps short notes about each app, such as how its tests run.
@@ -75,8 +82,10 @@ wrong or out of date.
 ## When it is ready
 
 When every piece is finished, your project lead writes up what was done in
-plain words and your phone gets a notice. Look at the pictures and the work,
-then review and merge it as usual. See [Review and merge work](review-and-merge.md).
+plain words and your phone gets a notice. Under the report you see each pull
+request, numbered in the order to merge them. Merge them on GitHub. When they
+are all merged, the goal closes by itself; you can also press **Mark done**.
+See [Review and merge work](review-and-merge.md).
 
 ## Tips for a good goal
 

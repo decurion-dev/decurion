@@ -952,10 +952,12 @@
         sending = true;
         btns.forEach((x) => (x.disabled = true));
         try {
-          await D.send(`/threads/${id}/messages`, { kind, text });
+          // With the Accept on screen and no question from the agent, a
+          // plain "yes" is that Accept (the hub decides what counts as yes).
+          const res = await D.send(`/threads/${id}/messages`, { kind, text, accept_on_yes: t.state === "in_review" && !c.asked });
           delete drafts[id];
           ta.value = "";
-          D.toast(sentText(t, kind), "send");
+          D.toast(res?.state === "done" ? `Accepted. "${t.title}" is on its way to GitHub.` : sentText(t, kind), "send");
           c.sig = "";
           c.changed();
           c.load();
@@ -1123,6 +1125,7 @@
     if (next) upper.push(next);
     p.upper.replaceChildren(...upper);
     browserPart(c);
+    c.asked = asks.length > 0;
     p.talk.update(t, waiting);
 
     const open = (k, key) => {

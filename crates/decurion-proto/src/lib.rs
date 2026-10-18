@@ -479,6 +479,12 @@ pub struct NewMessage {
     /// See [`check_receipt`].
     #[serde(default)]
     pub receipt: Option<String>,
+    /// Set by the owner's screen when it shows the work's Accept and no
+    /// question from the agent: a plain yes ([`goal::is_plain_yes`]) is then
+    /// that Accept. Otherwise "yes" may be an answer to the agent, and is
+    /// sent as one.
+    #[serde(default)]
+    pub accept_on_yes: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

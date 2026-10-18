@@ -1,7 +1,8 @@
 //! Sending accepted work to GitHub, so it is ready for the owner to merge.
 //!
-//! When the owner accepts a piece of work, the hub pushes it to the app's
-//! own `origin` remote as a new branch and, when that remote is on GitHub,
+//! When the owner accepts a piece of work (or approved the plan of a goal
+//! whose piece then passes its check, see [`crate::coordinator`]), the hub
+//! pushes it to the app's own `origin` remote as a new branch and, when that remote is on GitHub,
 //! opens a pull request for the owner to merge there. Rules that must stay
 //! true:
 //!
