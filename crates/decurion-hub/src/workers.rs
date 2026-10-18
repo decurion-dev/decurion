@@ -157,13 +157,7 @@ impl Store {
     pub async fn set_place(&self, id: i64, place: Place, actor: &str) -> Result<Thread> {
         // Bring up to date runs get the base branch in their starting copy
         // from this PC's hub; they stay here.
-        let update: bool =
-            sqlx::query_scalar("SELECT merge_from IS NOT NULL FROM threads WHERE id = ?")
-                .bind(id)
-                .fetch_optional(self.pool())
-                .await?
-                .ok_or(StoreError::NotFound)?;
-        if place == Place::Cloud && update {
+        if place == Place::Cloud && self.merge_from(id).await?.is_some() {
             return Err(StoreError::Refused(
                 "Bringing a pull request up to date runs on this PC only, so it stays here.".into(),
             ));

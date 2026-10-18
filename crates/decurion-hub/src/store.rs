@@ -645,6 +645,7 @@ impl Store {
                 "SELECT t.id, t.app_id, t.title, t.prompt, t.state, t.ai, t.session_id, t.branch,
                         t.place, t.updated_at, t.parent_id, t.background, t.pay_per_use AS thread_ppu,
                         t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, t.fix_of, t.research, t.dismissed_at, t.hold,
+                        t.merge_from,
                         EXISTS (SELECT 1 FROM profile_limits l WHERE l.profile = a.profile
                             AND {ppu}) AS plan_ppu
                  FROM threads t JOIN apps a ON a.id = t.app_id
@@ -667,6 +668,8 @@ impl Store {
                 return Ok(ClaimOutcome { work: None, capped });
             };
             let t = thread_from(&row)?;
+            // Read with the claim itself, so it is the run's own.
+            let merge_from: Option<String> = row.try_get("merge_from")?;
             let app = self.app_in(&mut tx, t.app_id).await?;
             // The owner chose pay-per-use while its Max account is out: for
             // the account until its reset, or (hubs before migration 0077)
@@ -797,11 +800,6 @@ impl Store {
             };
             let context = self.thread_context(t.id).await?;
             let addons = self.claim_addons(app.id).await?;
-            let merge_from: Option<String> =
-                sqlx::query_scalar("SELECT merge_from FROM threads WHERE id = ?")
-                    .bind(t.id)
-                    .fetch_one(&self.pool)
-                    .await?;
             return Ok(ClaimOutcome {
                 work: Some(Claim {
                     thread,
