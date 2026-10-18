@@ -428,7 +428,9 @@
   }
   function writeHash() {
     const h = new URLSearchParams();
-    if (S.app != null) h.set("app", S.app);
+    // Before the apps load, keep the app the address asked for.
+    const app = S.app ?? readHash().app;
+    if (app != null) h.set("app", app);
     if (S.tab === "pages") h.set("tab", "pages");
     const next = "#" + h.toString();
     if (location.hash !== next) history.replaceState(null, "", next);
@@ -464,14 +466,17 @@
     if (text) b.replaceChildren(icon(D.offline ? "offline" : "alert"), el("span", {}, text));
   }
 
-  async function loadApps() {
+  // `asked` is the app the address named when the page opened. It is read
+  // before anything rewrites the address, so a link to one app's plan opens
+  // that app, not the last one picked.
+  async function loadApps(asked) {
     const apps = (await D.api("/apps")) ?? [];
     S.apps = apps;
     const sel = $("app");
     sel.replaceChildren(...apps.map((a) => el("option", { value: String(a.id) }, a.name)));
     $("app-pick").hidden = apps.length < 1;
     if (!apps.length) return;
-    const want = [readHash().app, Number(D.store.get(KEY_APP))].find((id) => apps.some((a) => a.id === id));
+    const want = [asked, Number(D.store.get(KEY_APP))].find((id) => apps.some((a) => a.id === id));
     S.app = want ?? apps[0].id;
     sel.value = String(S.app);
   }
@@ -948,7 +953,7 @@
     setTab(h.tab);
     skeleton();
     try {
-      await loadApps();
+      await loadApps(h.app);
     } catch (e) {
       showBanner(e.message);
       $("plan-top").replaceChildren();

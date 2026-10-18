@@ -88,6 +88,9 @@ pub struct Goal {
     pub stuck: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// When the owner dismissed this closed goal from the goal list.
+    #[serde(default)]
+    pub dismissed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

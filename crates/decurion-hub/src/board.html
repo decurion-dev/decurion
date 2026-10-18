@@ -133,6 +133,19 @@
   .board-wrap.more-l { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 56px), transparent); mask-image: linear-gradient(to left, #000 calc(100% - 56px), transparent); }
   .board-wrap.more-l.more-r { -webkit-mask-image: linear-gradient(to right, transparent, #000 56px, #000 calc(100% - 56px), transparent); mask-image: linear-gradient(to right, transparent, #000 56px, #000 calc(100% - 56px), transparent); }
   .col-h .ghost { opacity: 0; transition: opacity .12s var(--ease); }
+  .col-tools { display: flex; justify-content: flex-end; margin: -6px 0 -2px; }
+  .dis-toggle {
+    display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 0 10px; margin-top: 2px;
+    border: 1px dashed var(--line); border-radius: var(--radius); background: none; cursor: pointer;
+    font: 600 13px/1 var(--font); color: var(--muted); text-align: left;
+  }
+  .dis-toggle:hover { background: var(--surface-2); color: var(--ink); }
+  .dis-toggle .grow { flex: 1; }
+  .dis-toggle .ct { font-variant-numeric: tabular-nums; color: var(--faint); }
+  .dis-toggle svg.i { width: 14px; height: 14px; transition: transform .12s var(--ease); }
+  .dis-toggle[aria-expanded="true"] svg.i { transform: rotate(90deg); }
+  .wcard.dismissed { opacity: .72; box-shadow: none; }
+  .wcard.dismissed:hover, .wcard.dismissed:focus-within { opacity: 1; }
   .col:hover .col-h .ghost, .col-h .ghost:focus-visible { opacity: 1; }
   @media (hover: none) { .col-h .ghost { opacity: 1; } }
   .limits { display: grid; gap: 8px; }
@@ -314,7 +327,12 @@
   try { folds = JSON.parse(D.store.get("decurion.board.folds") || "{}") || {}; } catch (_) { folds = {}; }
 
   const appById = (id) => apps.find((a) => a.id === id);
-  const shownThreads = () => threads.filter((t) => filter === "all" || String(t.app_id) === filter);
+  const inFilter = (t) => filter === "all" || String(t.app_id) === filter;
+  // Dismissed work is kept, but only shows when its column's Dismissed list is open.
+  const shownThreads = () => threads.filter((t) => inFilter(t) && !t.dismissed_at);
+  const dismissedThreads = () => threads.filter((t) => inFilter(t) && t.dismissed_at)
+    .sort((a, b) => b.dismissed_at.localeCompare(a.dismissed_at));
+  const openDismissed = new Set(); // columns whose Dismissed list is open
   const lineOf = (t) => D.cardLine(t, tails.get(t.id)?.ev);
 
   // ---------- Which AI, which account ----------
@@ -684,6 +702,21 @@
     const acts = (t.state === "needs_you" || t.state === "in_review")
       ? D.moveButtons(t, { quiet: true, size: "sm", onMoved: refresh }) : [];
     acts.forEach((b, i) => { b.dataset.key = `act-${t.id}-${i}`; b.disabled = D.offline; });
+    // Finished work can be put out of the way; dismissed work can come back.
+    if (D.finished(t)) {
+      const back = !!t.dismissed_at;
+      const put = el("button", { type: "button", className: "btn quiet sm", dataset: { key: `dis-${t.id}` },
+        title: back ? "Show it on the board again" : "Hide it from the board. It's kept under Dismissed." },
+        icon(back ? "retry" : "archive"), back ? "Bring back" : "Dismiss");
+      put.disabled = D.offline;
+      put.onclick = async (ev) => {
+        ev.stopPropagation();
+        put.disabled = true;
+        if (!(await D.dismiss("threads", [t], { dismissed: !back, onChanged: refresh }))) put.disabled = D.offline;
+      };
+      acts.push(put);
+    }
+    if (t.dismissed_at) c.classList.add("dismissed");
     const parts = [
       el("div", { className: "meta" },
         el("span", { className: "tag app" }, icon("app"), el("span", {}, D.appName(t.app_id) || "Unknown app")),
@@ -718,15 +751,15 @@
     }
     if (!loaded) { if (changed("board", ["skeleton", !!loadErr])) { if (loadErr) $("board").replaceChildren(); else skeleton(); } return; }
 
-    const shown = shownThreads();
-    const sig = ["board", filter, D.pro, D.offline, hasCloud, folds, Math.floor(Date.now() / 30000), apps.map((a) => [a.id, a.name, a.pay_per_use, a.profile]),
+    const shown = shownThreads(), gone = dismissedThreads();
+    const sig = ["board", filter, D.pro, D.offline, hasCloud, folds, [...openDismissed], gone.map((t) => [t.id, t.state, t.dismissed_at, t.title, t.github]), Math.floor(Date.now() / 30000), apps.map((a) => [a.id, a.name, a.pay_per_use, a.profile]),
       shown.map((t) => [t.id, t.state, t.ai, t.place, t.updated_at, t.title, t.branch, t.github, lineOf(t), D.treeLine(t)])];
     if (!changed("board", sig)) return;
 
     keepFocus(() => {
       const board = $("board");
       if (!apps.length) { board.replaceChildren(); return; }
-      if (!shown.length) {
+      if (!shown.length && !gone.length) {
         const all = filter === "all";
         const btn = !all && Object.assign(el("button", { type: "button", className: "btn sm" }, "Show all apps"), { onclick: () => setFilter("all") });
         board.replaceChildren(el("div", { className: "empty-state board-empty", style: "flex:1" },
@@ -744,9 +777,35 @@
         const fold = el("button", { type: "button", className: "ghost", dataset: { key: `fold-${st}` }, "aria-expanded": "true",
           "aria-label": `Fold ${D.STATES[st].col}`, title: "Fold this column" }, icon("left"));
         fold.onclick = () => toggleFold(st, mine.length);
+        // Done and Failed: Dismiss all on top, and the dismissed ones folded at the bottom.
+        let clear = null, kept = [];
+        if (st === "done" || st === "failed") {
+          if (mine.length >= 2) {
+            clear = el("button", { type: "button", className: "btn quiet sm col-clear", dataset: { key: `clear-${st}` },
+              title: `Hide all ${mine.length} from the board. They're kept under Dismissed.` }, icon("archive"), "Dismiss all");
+            clear.disabled = D.offline;
+            clear.onclick = async () => {
+              clear.disabled = true;
+              if (!(await D.dismiss("threads", mine, { onChanged: refresh }))) clear.disabled = D.offline;
+            };
+          }
+          const hid = gone.filter((t) => t.state === st);
+          if (hid.length) {
+            const on = openDismissed.has(st);
+            const tog = el("button", { type: "button", className: "dis-toggle", "aria-expanded": on ? "true" : "false", dataset: { key: `dis-list-${st}` } },
+              icon("right"), el("span", { className: "grow" }, on ? "Hide dismissed" : "Dismissed"), el("span", { className: "ct" }, String(hid.length)));
+            tog.onclick = () => {
+              if (on) openDismissed.delete(st); else openDismissed.add(st);
+              renderBoard();
+              document.querySelector(`[data-key="dis-list-${st}"]`)?.focus({ preventScroll: true });
+            };
+            kept = [tog, ...(on ? hid.map(card) : [])];
+          }
+        }
+        const empty = st === "done" && kept.length ? "All cleared. Dismissed work is kept below." : EMPTY_COL[st];
         return el("section", { className: "col", dataset: { state: st }, "aria-label": `${D.STATES[st].col}, ${mine.length}` },
           el("header", { className: "col-h" }, el("h2", {}, pill), el("span", { className: "ct" }, String(mine.length)), el("span", { className: "grow" }), fold),
-          el("div", { className: "cards" }, ...(mine.length ? mine.map(card) : [el("div", { className: "col-empty" }, EMPTY_COL[st])])));
+          el("div", { className: "cards" }, clear && el("div", { className: "col-tools" }, clear), ...(mine.length ? mine.map(card) : [el("div", { className: "col-empty" }, empty)]), ...kept));
       }));
     });
   }

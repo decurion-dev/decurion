@@ -73,6 +73,18 @@
   .gi-hint.thinking { color:var(--accent-ink); }
   .gi-hint.retry, .gi-hint.turn { color:var(--warn-ink); }
   .empty { color:var(--muted); padding:20px 8px; margin:0; }
+  .group-row { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:18px 0 6px; }
+  .group-row .group-h { margin:0 8px; }
+  .btn.small { min-height:32px; padding:4px 10px; font-size:13.5px; }
+  .btn.link { color:var(--accent-ink); }
+  .dis-toggle { display:flex; align-items:center; gap:8px; width:100%; min-height:44px; margin-top:18px; padding:0 12px; border:1px dashed var(--line-strong); border-radius:12px;
+    background:none; color:var(--muted); font:inherit; font-size:13.5px; font-weight:600; text-align:left; cursor:pointer; }
+  .dis-toggle:hover { background:var(--neutral-soft); color:var(--ink); }
+  .dis-toggle .grow { flex:1; }
+  .dis-toggle .n { font-variant-numeric:tabular-nums; }
+  .dis-toggle svg.i { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; transition:transform .12s; }
+  .dis-toggle[aria-expanded="true"] svg.i { transform:rotate(90deg); }
+  .goal-list.dismissed { margin-top:6px; opacity:.75; }
 
   /* New goal */
   .new-goal { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:14px; margin:0 0 8px; box-shadow:var(--shadow); }
@@ -406,6 +418,8 @@
   .toasts { position:fixed; z-index:60; right:16px; bottom:calc(16px + env(safe-area-inset-bottom)); display:grid; gap:8px; max-width:min(380px, calc(100vw - 32px)); }
   .toast { display:flex; gap:10px; align-items:center; padding:12px 14px; border-radius:12px; background:var(--ink); color:var(--bg); font-size:14px; box-shadow:0 8px 30px rgba(0,0,0,.2); }
   .toast svg.i { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  .toast .grow { flex:1; min-width:0; }
+  .toast-undo { flex:none; min-height:32px; margin:-6px -6px -6px 0; padding:0 12px; border:0; border-radius:8px; background:color-mix(in srgb, var(--bg) 16%, transparent); color:var(--bg); font:inherit; font-weight:600; cursor:pointer; }
   @media (max-width: 759px) {
     .toasts { left:16px; right:16px; bottom:calc(96px + env(safe-area-inset-bottom)); max-width:none; }
   }
@@ -725,8 +739,9 @@ async function loadGoals() {
   if (!S.autoPicked) {
     S.autoPicked = true;
     // On a wide screen, open the newest goal rather than an empty pane.
-    if (S.id == null && wide.matches && goals.length && !location.hash) {
-      history.replaceState(null, "", `#goal-${goals[0].id}`);
+    const first = goals.find(g => !g.dismissed_at);
+    if (S.id == null && wide.matches && first && !location.hash) {
+      history.replaceState(null, "", `#goal-${first.id}`);
       selectFromHash();
     }
     if (!goals.length && !S.autoOpened) { S.autoOpened = true; openNewGoal(false); }
@@ -756,10 +771,10 @@ function renderList() {
       busy: g.busy && !closed, stuck: g.stuck && !g.busy && !closed,
       // The project lead asked or answered and waits for you (the plan has its own label).
       turn: g.state === "talking" && !g.busy && !g.stuck,
-      when: ago(g.updated_at), sel: g.id === S.id, closed,
+      when: ago(g.updated_at), sel: g.id === S.id, closed, dismissed: closed && !!g.dismissed_at,
     };
   });
-  const sig = JSON.stringify(rows);
+  const sig = JSON.stringify([rows, S.showDismissed]);
   if (sig === S.listSig) return;
   S.listSig = sig;
   const focused = document.activeElement?.closest?.("[data-goal]")?.dataset.goal;
@@ -779,12 +794,35 @@ function renderList() {
         r.turn ? el("span", { class: "gi-hint turn" }, "Your turn") : null,
         el("span", null, [r.app, r.when].filter(Boolean).join(" · ")))));
   };
-  const open = rows.filter(r => !r.closed), closed = rows.filter(r => r.closed);
+  const open = rows.filter(r => !r.closed), closed = rows.filter(r => r.closed && !r.dismissed), gone = rows.filter(r => r.dismissed);
   const parts = [];
   if (open.length) parts.push(el("h2", { class: "group-h", id: "g-open" }, "In progress"), el("ul", { class: "goal-list", "aria-labelledby": "g-open" }, open.map(item)));
-  if (closed.length) parts.push(el("h2", { class: "group-h", id: "g-closed" }, "Finished"), el("ul", { class: "goal-list", "aria-labelledby": "g-closed" }, closed.map(item)));
+  if (closed.length) {
+    // Finished goals can be put out of the way; they stay under Dismissed.
+    const all = el("button", { class: "btn ghost small link", type: "button", "data-key": "dismiss-finished",
+      title: "Hide finished goals from this list. They're kept under Dismissed.",
+      onclick: e => { e.currentTarget.disabled = true; dismissGoals(closed, true); } }, closed.length === 1 ? "Dismiss" : "Dismiss all");
+    parts.push(el("div", { class: "group-row" }, el("h2", { class: "group-h", id: "g-closed" }, "Finished"), all),
+      el("ul", { class: "goal-list", "aria-labelledby": "g-closed" }, closed.map(item)));
+  }
+  if (gone.length) {
+    const on = S.showDismissed;
+    parts.push(el("button", { class: "dis-toggle", type: "button", "aria-expanded": on ? "true" : "false", "data-key": "dis-goals",
+      onclick: () => { S.showDismissed = !S.showDismissed; renderList(); $("goal-groups").querySelector('[data-key="dis-goals"]')?.focus(); } },
+      el("span", { class: "grow" }, on ? "Hide dismissed" : "Dismissed"), el("span", { class: "n" }, String(gone.length)), D.icon("right")));
+    if (on) parts.push(el("ul", { class: "goal-list dismissed", "aria-label": "Dismissed goals" }, gone.map(item)));
+  }
   box.replaceChildren(...parts);
   if (focused) box.querySelector(`[data-goal="${focused}"]`)?.focus();
+}
+
+/** Hides finished goals from the list, or brings them back. Nothing is deleted. */
+async function dismissGoals(rows, dismissed) {
+  await D.dismiss("goals", rows.map(r => ({ id: r.id, title: r.title })), {
+    dismissed, onChanged: () => { S.listSig = S.tailSig = ""; tick(); },
+  });
+  S.listSig = "";
+  renderList();
 }
 
 // ---------- new goal ----------
@@ -1308,7 +1346,7 @@ async function approve(msgId, btn, err) {
 function renderTail(v) {
   const g = v.goal;
   const prs = (v.pieces ?? []).map(p => [p.thread_id, p.github?.state, p.github?.url, p.merged, p.review, p.thread_state]);
-  const sig = JSON.stringify([g.busy, g.stuck, g.state, boardHref(), prs]);
+  const sig = JSON.stringify([g.busy, g.stuck, g.state, g.dismissed_at, boardHref(), prs]);
   if (sig === S.tailSig) return false;
   S.tailSig = sig;
   const parts = [];
@@ -1321,7 +1359,15 @@ function renderTail(v) {
       el("p", null, "Your project lead ran into a problem on that last turn. Nothing was lost."),
       el("button", { class: "btn primary", type: "button", "data-action": "retry", onclick: () => goalAction("retry", "Try again") }, "Try again")));
   }
-  if (g.state === "for_review") {
+  const onlyResearch = (v.pieces ?? []).length > 0 && v.pieces.every(p => p.research && p.review === "passed");
+  if (g.state === "for_review" && onlyResearch) {
+    // Research changed no code: nothing to try on the board or merge. What it
+    // found is on the app's master plan, ready to be built.
+    parts.push(el("div", { class: "callout attn" },
+      el("p", null, "The research is done and nothing in the app was changed. Read what it found below. To turn it into real changes, open the master plan, tap the × next to anything you don't want (Take off the plan), and tap Fix all that are left (or Fix this when only one is left). Or tap Turn into a goal on the report."),
+      el("a", { class: "btn primary", href: D.planHref(g.app_id) }, "Fix what it found"),
+      el("button", { class: "btn", type: "button", "data-action": "close", onclick: () => goalAction("close", "Mark done") }, "Mark done")));
+  } else if (g.state === "for_review") {
     const sent = (v.pieces ?? []).some(p => p.github);
     parts.push(el("div", { class: "callout attn" },
       el("p", null, sent
@@ -1330,11 +1376,16 @@ function renderTail(v) {
       finishList(v),
       el("a", { class: "btn", href: boardHref() }, "Open the board"),
       el("button", { class: "btn primary", type: "button", "data-action": "close", onclick: () => goalAction("close", "Mark done") }, "Mark done")));
-  } else if (g.state === "done") {
+  } else if (CLOSED.has(g.state)) {
     const merged = (v.pieces ?? []).some(p => p.merged);
-    parts.push(el("div", { class: "callout done" }, el("p", null, merged ? "Every pull request is merged, so this goal is done." : "You marked this goal done.")));
-  } else if (g.state === "stopped") {
-    parts.push(el("div", { class: "callout done" }, el("p", null, "This goal was stopped.")));
+    const words = g.state === "stopped" ? "This goal was stopped."
+      : merged ? "Every pull request is merged, so this goal is done." : "You marked this goal done.";
+    // Dismiss takes it off the goal list; it is kept under Dismissed.
+    const back = !!g.dismissed_at;
+    const put = el("button", { class: "btn ghost small link", type: "button", "data-key": "dismiss-goal",
+      title: back ? "Show it in the goal list again" : "Hide it from the goal list. It's kept under Dismissed.",
+      onclick: e => { e.currentTarget.disabled = true; dismissGoals([{ id: g.id, title: g.title }], !back); } }, back ? "Bring back" : "Dismiss");
+    parts.push(el("div", { class: "callout done" }, el("p", null, words), put));
   }
   $("tail").replaceChildren(...parts);
   return true;

@@ -25,6 +25,7 @@
 - [Watch and take over the test browser](take-over-the-browser.md)
 - [Run your app and try it](run-your-app.md)
 - [Review and merge work](review-and-merge.md)
+- [Dismiss finished work](dismiss-finished-work.md)
 
 # When things go wrong
 
