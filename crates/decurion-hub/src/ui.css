@@ -256,6 +256,10 @@ body.offline .live { opacity: .6; }
 .toasts { position: fixed; z-index: 60; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); display: grid; gap: 8px; max-width: min(380px, calc(100vw - 32px)); }
 .toast { display: flex; gap: 10px; align-items: center; padding: 12px 14px; border-radius: var(--radius); background: var(--ink); color: var(--bg); font-size: 14px; box-shadow: var(--shadow-pop); animation: rise .2s var(--ease); }
 .toast svg.i { color: var(--bg); }
+.toast .grow { flex: 1; min-width: 0; }
+.toast-undo { flex: none; min-height: 32px; margin: -6px -6px -6px 0; padding: 0 12px; border: 0; border-radius: var(--radius-s, 8px); background: color-mix(in srgb, var(--bg) 16%, transparent); color: var(--bg); font: 600 14px/1 var(--font); cursor: pointer; }
+.toast-undo:hover { background: color-mix(in srgb, var(--bg) 26%, transparent); }
+.toast-undo:focus-visible { outline: 2px solid var(--bg); outline-offset: 2px; }
 
 .empty-state { text-align: center; padding: 40px 16px; color: var(--muted); display: grid; justify-items: center; gap: 10px; }
 .empty-state .mark { width: 44px; height: 44px; color: var(--faint); }

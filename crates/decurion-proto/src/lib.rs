@@ -339,6 +339,10 @@ pub struct Thread {
     /// skips the checker, and is never sent to GitHub.
     #[serde(default)]
     pub research: bool,
+    /// When the owner dismissed this finished work. It is then shown only
+    /// in the Dismissed view; nothing about the work itself changes.
+    #[serde(default)]
+    pub dismissed_at: Option<String>,
 }
 
 /// Where sending accepted work to GitHub has got to. Only the hub sends,

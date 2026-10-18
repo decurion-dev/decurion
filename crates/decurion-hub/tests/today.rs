@@ -360,6 +360,34 @@ async fn a_merged_pull_request_is_the_last_word() {
 }
 
 #[tokio::test]
+async fn dismissing_the_merged_work_quiets_its_row() {
+    let (r, store) = hub().await;
+    let app = add_app(&r, "family-budget").await;
+    let old = add_work(&r, app, "First change").await;
+    let new = add_work(&r, app, "Second change").await;
+    set_state(&store, old, "done").await;
+    set_state(&store, new, "done").await;
+    watch(&store, new, app, 12, "merged", "2026-10-18T07:30:00Z").await;
+    watch(&store, old, app, 11, "merged", "2026-10-17T07:30:00Z").await;
+
+    let (s, v) = call(
+        &r,
+        "POST",
+        "/api/threads/dismiss",
+        Some(OWNER),
+        json!({"ids": [new]}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    let rows = today(&r).await;
+    // Old news is not repeated, and the older pull request does not take
+    // its place.
+    assert_eq!(rows[0]["tone"], "quiet");
+    assert_eq!(rows[0]["line"], "Nothing waiting");
+    assert!(rows[0]["last_pr"].is_null());
+}
+
+#[tokio::test]
 async fn only_the_owner_sees_today() {
     let (r, _) = hub().await;
     add_app(&r, "atlas").await;

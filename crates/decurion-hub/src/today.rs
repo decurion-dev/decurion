@@ -120,6 +120,8 @@ pub struct TodayRow {
 struct Watch {
     app_id: i64,
     pr: LastPr,
+    /// The owner dismissed the work that opened it.
+    dismissed: bool,
 }
 
 /// Open comments on one open pull request, by who wrote them.
@@ -151,6 +153,9 @@ struct Facts {
     newest_open: Option<i64>,
     comments: Option<Comments>,
     last_pr: Option<LastPr>,
+    /// The app's newest pull request has been looked at, whether or not it
+    /// became `last_pr`.
+    newest_seen: bool,
 }
 
 fn plural(n: i64, one: &str, many: &str) -> String {
@@ -334,8 +339,10 @@ impl Store {
         // Newest happening first: when it last changed, else when it opened.
         let mut watches = Vec::new();
         for r in sqlx::query(
-            "SELECT thread_id, app_id, number, url, state, event, event_at FROM pr_watches
-             ORDER BY COALESCE(event_at, created_at) DESC, created_at DESC, thread_id DESC",
+            "SELECT w.thread_id, w.app_id, w.number, w.url, w.state, w.event, w.event_at,
+                    COALESCE(t.dismissed_at IS NOT NULL, 0) AS dismissed
+             FROM pr_watches w LEFT JOIN threads t ON t.id = w.thread_id
+             ORDER BY COALESCE(w.event_at, w.created_at) DESC, w.created_at DESC, w.thread_id DESC",
         )
         .fetch_all(self.pool())
         .await?
@@ -350,12 +357,19 @@ impl Store {
                     event: r.try_get("event")?,
                     event_at: r.try_get("event_at")?,
                 },
+                dismissed: r.try_get("dismissed")?,
             });
         }
         for w in &watches {
             let f = facts.entry(w.app_id).or_default();
-            if f.last_pr.is_none() {
-                f.last_pr = Some(w.pr.clone());
+            if !f.newest_seen {
+                f.newest_seen = true;
+                // A merged or closed pull request whose work the owner
+                // dismissed is old news: the row goes quiet instead of
+                // repeating it, and an older one does not take its place.
+                if !(w.dismissed && w.pr.state != "open") {
+                    f.last_pr = Some(w.pr.clone());
+                }
             }
             if w.pr.state == "open" {
                 f.open_prs += 1;
