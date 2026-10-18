@@ -499,6 +499,11 @@ details.fold[open] > summary svg.i { transform: rotate(90deg); }
 .row-cap .cap-row { align-items: center; }
 .row-cap .money-in { width: 140px; }
 .row-cap .field-error:empty { display: none; }
+/* Changing an app, under its row, and its go-first-today star. */
+.row-edit { flex-basis: 100%; min-width: 0; margin-left: 44px; }
+.row-edit .actions { flex-wrap: wrap; }
+.btn.star[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+.btn.star[aria-pressed="true"] svg.i { fill: currentColor; }
 .qr { display: grid; gap: 12px; justify-items: start; }
 .qr-box { background: #fff; padding: 14px; border-radius: var(--radius-l); box-shadow: 0 0 0 1px var(--line); line-height: 0; }
 .qr-box svg { width: 196px; height: 196px; display: block; }
@@ -519,7 +524,7 @@ input[type="password"], input[type="url"] {
 
 @media (max-width: 899px) {
   .settings { grid-template-columns: 1fr; }
-  .rows .sites { margin-left: 0; }
+  .rows .sites, .row-edit { margin-left: 0; }
 }
 @media (max-width: 640px) {
   .form-grid { grid-template-columns: 1fr; }
@@ -536,7 +541,7 @@ input[type="password"], input[type="url"] {
 .settings.on-phone .scard > header .ic { display: none; }
 .settings.on-phone .rows li { padding: 12px; gap: 10px; }
 .settings.on-phone .rows .who { min-width: 0; flex: 1 1 150px; }
-.settings.on-phone .rows .sites, .settings.on-phone .row-cap { margin-left: 0; padding-left: 0; }
+.settings.on-phone .rows .sites, .settings.on-phone .row-cap, .settings.on-phone .row-edit { margin-left: 0; padding-left: 0; }
 .settings.on-phone .row-cap .money-in { flex: 1 1 120px; width: auto; max-width: none; }
 .settings.on-phone .btn, .settings.on-phone .btn.sm { min-height: 44px; }
 .settings.on-phone .btn.icon.sm { width: 44px; }
