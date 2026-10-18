@@ -2739,6 +2739,14 @@ async fn an_update_that_did_not_merge_main_or_whose_pull_request_moved_is_never_
         .expect("fake")
         .bases
         .insert(1, "develop".into());
+    // The watcher looks in between and records the new base branch: the
+    // update still knows which one it merged.
+    decurion_hub::pr_watch::poll(&h.state).await;
+    let now: Option<String> = sqlx::query_scalar("SELECT base_ref FROM pr_watches")
+        .fetch_one(h.store.pool())
+        .await
+        .expect("base");
+    assert_eq!(now.as_deref(), Some("develop"));
     accept(&h, id, "accept-receipt-moved").await;
     let t = settled(&h, id).await;
     assert_eq!(t["github"]["state"], "failed", "{t}");

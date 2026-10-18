@@ -893,8 +893,9 @@ impl Store {
         let base = seen.base_ref.as_deref().unwrap_or("main");
         let short: String = seen.title.chars().take(80).collect();
         let id = sqlx::query_scalar::<_, i64>(
-            "INSERT INTO threads (app_id, title, prompt, place, ai, fix_of, base_commit, merge_from)
-             VALUES (?, ?, ?, 'pc', ?, ?, ?, ?) RETURNING id",
+            "INSERT INTO threads (app_id, title, prompt, place, ai, fix_of, base_commit, merge_from,
+                                  merge_ref)
+             VALUES (?, ?, ?, 'pc', ?, ?, ?, ?, ?) RETURNING id",
         )
         .bind(seen.app_id)
         .bind(format!("Bring up to date: {short}"))
@@ -903,6 +904,7 @@ impl Store {
         .bind(thread_id)
         .bind(&seen.head)
         .bind(merge_from)
+        .bind(base)
         .fetch_one(&mut *tx)
         .await?;
         save_receipt(&mut tx, receipt, "pr_update", id).await?;

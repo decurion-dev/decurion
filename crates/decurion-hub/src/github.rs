@@ -930,6 +930,8 @@ struct FixOf {
 /// What a Bring up to date run's send checks it against.
 struct Update {
     merge_from: String,
+    /// The base branch `merge_from` came from, fixed when the run started.
+    merge_ref: String,
     start: String,
 }
 
@@ -1085,7 +1087,7 @@ impl Store {
                  g.title AS goal, a.reviewer,
                  w.thread_id AS watch, w.branch AS w_branch, w.head AS w_head, w.url AS w_url,
                  w.number AS w_number, w.state AS w_state, w.base_ref AS w_base_ref,
-                 t.merge_from, t.base_commit
+                 t.merge_from, t.merge_ref, t.base_commit
              FROM threads t JOIN apps a ON a.id = t.app_id
              LEFT JOIN goal_pieces p ON p.thread_id = t.id
              LEFT JOIN goals g ON g.id = p.goal_id
@@ -1152,12 +1154,17 @@ impl Store {
                     base_ref: row.try_get("w_base_ref")?,
                     update: match (
                         row.try_get::<Option<String>, _>("merge_from")?,
+                        row.try_get::<Option<String>, _>("merge_ref")?,
                         row.try_get::<Option<String>, _>("base_commit")?,
                     ) {
-                        (Some(merge_from), Some(start)) => Some(Update { merge_from, start }),
-                        (Some(_), None) => {
+                        (Some(merge_from), Some(merge_ref), Some(start)) => Some(Update {
+                            merge_from,
+                            merge_ref,
+                            start,
+                        }),
+                        (Some(_), _, _) => {
                             return Err(StoreError::Invalid(
-                                "an update with no starting commit".into(),
+                                "an update with no starting commit or base branch".into(),
                             ))
                         }
                         _ => None,
@@ -1622,7 +1629,10 @@ impl Sender {
         if !open {
             return Err(PR_ENDED.to_owned());
         }
-        if pr["base"]["ref"].as_str() != f.base_ref.as_deref() {
+        // The branch the update merged, fixed when it started: GitHub must
+        // still say it, and so must the watcher's last look.
+        let want = f.update.as_ref().map(|u| u.merge_ref.as_str());
+        if want.is_none() || pr["base"]["ref"].as_str() != want || f.base_ref.as_deref() != want {
             return Err(PR_BASE_MOVED.to_owned());
         }
         Ok(())

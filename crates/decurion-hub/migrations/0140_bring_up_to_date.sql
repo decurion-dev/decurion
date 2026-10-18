@@ -17,6 +17,10 @@ ALTER TABLE pr_watches ADD COLUMN base_ref TEXT;
 -- For a Bring up to date run: the base branch's commit it merges in,
 -- pinned in the hub's copy of the app before the run was created.
 ALTER TABLE threads ADD COLUMN merge_from TEXT;
+-- And the base branch it came from, as the pull request named it when the
+-- run was started. The watcher's base_ref follows GitHub; this one does
+-- not, so a pull request retargeted since is never sent the update.
+ALTER TABLE threads ADD COLUMN merge_ref TEXT;
 -- Plain words for why finished work is held for the owner (protected parts
 -- changed), set by the hub when work with no goal piece reaches review.
 ALTER TABLE threads ADD COLUMN hold TEXT;
