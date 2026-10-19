@@ -204,6 +204,7 @@ struct Look {
     /// GitHub says it clashes with newer changes on its base branch; `None`
     /// while GitHub is still working that out.
     clash: Option<bool>,
+    health: Health,
 }
 
 /// Whether GitHub says an open pull request clashes with its base branch:
@@ -217,7 +218,56 @@ pub(crate) fn clashes(pr: &serde_json::Value) -> Option<bool> {
     }
 }
 
-async fn get_json(
+/// How a pull request stands against its base branch, as GitHub said in
+/// the pull request itself. Only `mergeable` and `mergeable_state` are
+/// read: never check runs, so no extra token permission is needed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Health {
+    /// `dirty` (conflicts), `behind`, `checking` (GitHub is still working
+    /// it out), or `None` when there is nothing to say.
+    pub health: Option<&'static str>,
+    /// The head commit GitHub said this about.
+    pub head: Option<String>,
+    /// The branch the pull request merges into (`base.ref`).
+    pub base_ref: Option<String>,
+}
+
+/// Reads [`Health`] from a pull request as GitHub's API returns it.
+pub fn health_of(pr: &serde_json::Value) -> Health {
+    let health = if pr["mergeable"].is_null() {
+        Some("checking")
+    } else {
+        match pr["mergeable_state"].as_str() {
+            Some("dirty") => Some("dirty"),
+            Some("behind") => Some("behind"),
+            _ => None,
+        }
+    };
+    Health {
+        health,
+        head: pr["head"]["sha"]
+            .as_str()
+            .filter(|s| crate::checkpoints::is_commit(s))
+            .map(str::to_owned),
+        base_ref: pr["base"]["ref"]
+            .as_str()
+            .filter(|b| crate::protected::plain_branch(b) && b.len() <= 200)
+            .map(str::to_owned),
+    }
+}
+
+/// The plain line the board and inbox show for a pull request's health,
+/// or `None` for nothing to say (or GitHub still checking).
+pub fn health_words(health: Option<&str>, base_ref: Option<&str>) -> Option<String> {
+    let base = base_ref.unwrap_or("main");
+    match health? {
+        "dirty" => Some(format!("Conflicts with {base}")),
+        "behind" => Some(format!("Behind {base}")),
+        _ => None,
+    }
+}
+
+pub(crate) async fn get_json(
     s: &Sender,
     t: &Token,
     path: &str,
@@ -254,6 +304,11 @@ async fn look(s: &Sender, t: &Token, r: &Repo, n: i64) -> std::result::Result<Lo
         .filter(|c| (40..=64).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_hexdigit()))
         .filter(|_| state == PrState::Merged)
         .map(str::to_owned);
+    let health = if state == PrState::Open {
+        health_of(&pr)
+    } else {
+        Health::default()
+    };
     let mut comments = Vec::new();
     // Comments only matter while there is still something to fix.
     if state == PrState::Open {
@@ -288,6 +343,7 @@ async fn look(s: &Sender, t: &Token, r: &Repo, n: i64) -> std::result::Result<Lo
         merge_commit,
         author,
         comments,
+        health,
     })
 }
 
@@ -325,10 +381,11 @@ pub(crate) async fn sent(
     let (Some((repo, number)), Some(url), Some(head)) = (watch, url, head) else {
         return Ok(());
     };
-    let fix_of: Option<i64> = sqlx::query_scalar("SELECT fix_of FROM threads WHERE id = ?")
-        .bind(id)
-        .fetch_one(&mut **tx)
-        .await?;
+    let (fix_of, merge_from): (Option<i64>, Option<String>) =
+        sqlx::query_as("SELECT fix_of, merge_from FROM threads WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await?;
     match fix_of {
         Some(w) => {
             let fixed: i64 =
@@ -336,12 +393,15 @@ pub(crate) async fn sent(
                     .bind(id)
                     .fetch_one(&mut **tx)
                     .await?;
-            let event = match fixed {
-                1 => "Fix sent for 1 comment".to_owned(),
-                n => format!("Fix sent for {n} comments"),
+            let event = match (merge_from.is_some(), fixed) {
+                (true, _) => "Brought up to date".to_owned(),
+                (false, 1) => "Fix sent for 1 comment".to_owned(),
+                (false, n) => format!("Fix sent for {n} comments"),
             };
+            // A new head: what GitHub said about the old one no longer
+            // holds, until the next look.
             sqlx::query(
-                "UPDATE pr_watches SET head = ?, event = ?,
+                "UPDATE pr_watches SET head = ?, event = ?, health = NULL, health_head = NULL,
                      event_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                  WHERE thread_id = ?",
             )
@@ -404,11 +464,15 @@ pub struct Watched {
     /// Still open, and GitHub says it clashes with newer changes on its base
     /// branch, so it can't be merged as it is.
     pub clash: bool,
+    /// "Conflicts with main" or "Behind main", while GitHub says so about
+    /// the commit Decurion last pushed. Nothing otherwise.
+    pub health: Option<String>,
 }
 
 /// A fix is under way while its work is unfinished, or accepted but not yet
 /// sent.
-const FIX_UNDER_WAY: &str = "EXISTS (SELECT 1 FROM threads f WHERE f.fix_of = w.thread_id
+pub(crate) const FIX_UNDER_WAY: &str =
+    "EXISTS (SELECT 1 FROM threads f WHERE f.fix_of = w.thread_id
      AND (f.state NOT IN ('done', 'failed')
           OR (f.state = 'done' AND f.gh_state IN ('waiting', 'sending'))))";
 
@@ -579,7 +643,8 @@ impl Store {
                  checked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                  event = COALESCE(?, event),
                  event_at = CASE WHEN ? IS NULL THEN event_at
-                                 ELSE strftime('%Y-%m-%dT%H:%M:%fZ', 'now') END
+                                 ELSE strftime('%Y-%m-%dT%H:%M:%fZ', 'now') END,
+                 health = ?, health_head = ?, base_ref = COALESCE(?, base_ref)
              WHERE thread_id = ?",
         )
         .bind(l.state.as_str())
@@ -588,6 +653,9 @@ impl Store {
         .bind(l.clash)
         .bind(&event)
         .bind(&event)
+        .bind(l.health.health)
+        .bind(&l.health.head)
+        .bind(&l.health.base_ref)
         .bind(thread_id)
         .execute(&mut *tx)
         .await?;
@@ -606,6 +674,8 @@ impl Store {
                     a.reviewer, w.event, w.event_at, {FIX_UNDER_WAY} AS fixing,
                     (w.state = 'open' AND a.can_merge) AS can_merge,
                     (w.state = 'open' AND w.clash) AS clash,
+                    CASE WHEN w.state = 'open' AND w.health_head = w.head THEN w.health END AS health,
+                    w.base_ref,
                     (SELECT json_group_array(c.author) FROM pr_comments c
                       WHERE c.thread_id = w.thread_id AND {OPEN_COMMENT}) AS authors
              FROM pr_watches w JOIN threads t ON t.id = w.thread_id JOIN apps a ON a.id = w.app_id
@@ -640,6 +710,10 @@ impl Store {
                     fixing: r.try_get("fixing")?,
                     can_merge: r.try_get("can_merge")?,
                     clash: r.try_get("clash")?,
+                    health: health_words(
+                        r.try_get::<Option<String>, _>("health")?.as_deref(),
+                        r.try_get::<Option<String>, _>("base_ref")?.as_deref(),
+                    ),
                     state,
                 })
             })
@@ -730,6 +804,213 @@ impl Store {
         tx.commit().await?;
         Ok((self.thread(fix).await?, true))
     }
+
+    /// The thread a receipt already started a Bring up to date for, if any.
+    /// Read before anything is fetched, so a resent tap answers at once.
+    async fn update_receipt(&self, receipt: Option<&str>) -> Result<Option<i64>> {
+        let mut tx = self.pool().begin().await?; // read-only
+        let done = receipt_result(&mut tx, receipt, "pr_update").await?;
+        tx.commit().await?;
+        Ok(done)
+    }
+
+    /// What Bring up to date needs to know about a watched pull request,
+    /// with the plain refusal when it cannot start. A pure read.
+    async fn update_target(&self, thread_id: i64) -> Result<UpdateTarget> {
+        // read-only
+        let row = sqlx::query(&format!(
+            "SELECT w.state, w.head, w.url, w.base_ref, w.app_id, a.repo_path, t.title, t.ai,
+                    {FIX_UNDER_WAY} AS fixing
+             FROM pr_watches w JOIN threads t ON t.id = w.thread_id JOIN apps a ON a.id = w.app_id
+             WHERE w.thread_id = ?"
+        ))
+        .bind(thread_id)
+        .fetch_optional(self.pool())
+        .await?
+        .ok_or(StoreError::NotFound)?;
+        let target = UpdateTarget {
+            open: row.try_get::<String, _>("state")? == "open",
+            head: row.try_get("head")?,
+            url: row.try_get("url")?,
+            base_ref: row.try_get("base_ref")?,
+            app_id: row.try_get("app_id")?,
+            repo_path: row.try_get("repo_path")?,
+            title: row.try_get("title")?,
+            ai: row.try_get("ai")?,
+            fixing: row.try_get("fixing")?,
+        };
+        target.check()?;
+        Ok(target)
+    }
+
+    /// Creates the Bring up to date run, in one write transaction that
+    /// checks the receipt and the pull request again: `merge_from` was
+    /// fetched before it opened. The run starts from the last commit
+    /// Decurion pushed to the pull request and stays on the PC.
+    async fn create_update(
+        &self,
+        thread_id: i64,
+        seen: &UpdateTarget,
+        merge_from: &str,
+        receipt: Option<&str>,
+    ) -> Result<(i64, bool)> {
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(id) = receipt_result(&mut tx, receipt, "pr_update").await? {
+            tx.commit().await?;
+            return Ok((id, false));
+        }
+        let row = sqlx::query(&format!(
+            "SELECT w.state, w.head, w.base_ref, {FIX_UNDER_WAY} AS fixing
+             FROM pr_watches w WHERE w.thread_id = ?"
+        ))
+        .bind(thread_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(StoreError::NotFound)?;
+        let now = UpdateTarget {
+            open: row.try_get::<String, _>("state")? == "open",
+            fixing: row.try_get("fixing")?,
+            head: row.try_get("head")?,
+            base_ref: row.try_get("base_ref")?,
+            ..seen.clone()
+        };
+        now.check()?;
+        if now.head != seen.head || now.base_ref != seen.base_ref {
+            return Err(StoreError::Refused(
+                "This pull request changed while Decurion was getting ready. Tap Bring up to date again."
+                    .into(),
+            ));
+        }
+        let base = seen.base_ref.as_deref().unwrap_or("main");
+        let short: String = seen.title.chars().take(80).collect();
+        let id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO threads (app_id, title, prompt, place, ai, fix_of, base_commit, merge_from,
+                                  merge_ref)
+             VALUES (?, ?, ?, 'pc', ?, ?, ?, ?, ?) RETURNING id",
+        )
+        .bind(seen.app_id)
+        .bind(format!("Bring up to date: {short}"))
+        .bind(update_prompt(&seen.title, &seen.url, base))
+        .bind(&seen.ai)
+        .bind(thread_id)
+        .bind(&seen.head)
+        .bind(merge_from)
+        .bind(base)
+        .fetch_one(&mut *tx)
+        .await?;
+        save_receipt(&mut tx, receipt, "pr_update", id).await?;
+        tx.commit().await?;
+        Ok((id, true))
+    }
+}
+
+/// A watched pull request, as Bring up to date sees it.
+#[derive(Debug, Clone)]
+struct UpdateTarget {
+    open: bool,
+    fixing: bool,
+    /// The last commit Decurion pushed there.
+    head: String,
+    url: String,
+    base_ref: Option<String>,
+    app_id: i64,
+    repo_path: String,
+    title: String,
+    ai: String,
+}
+
+impl UpdateTarget {
+    fn check(&self) -> Result<()> {
+        if !self.open {
+            return Err(StoreError::Refused(
+                "This pull request was merged or closed, so there is nothing to bring up to date."
+                    .into(),
+            ));
+        }
+        if self.fixing {
+            return Err(StoreError::Refused(
+                "Work on this pull request is already under way. Wait for it to finish, then try again."
+                    .into(),
+            ));
+        }
+        if self.base_ref.is_none() {
+            return Err(StoreError::Refused(
+                "Decurion has not read this pull request from GitHub yet. Try again in a few minutes."
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The brief for a Bring up to date run. The newest commit of the base
+/// branch is in the run's copy as the local branch `decurion-main`; the
+/// run merges it in (never a rebase, so the branch only moves forward and
+/// the hub can send it as a plain fast-forward), fixes conflicts and the
+/// app's own failing checks, and commits. It never pushes.
+pub fn update_prompt(title: &str, url: &str, base: &str) -> String {
+    format!(
+        "Bring the pull request for \"{title}\" ({url}) up to date with {base}. The newest {base} \
+is in this copy as the local branch decurion-main.\n\n\
+1. Merge it into this branch with `git merge --no-ff --no-edit decurion-main`. Never rebase, never \
+reset, and never rewrite or remove earlier commits on this branch.\n\
+2. If the merge stops on conflicts, resolve each one: keep what {base} does now, and add this \
+branch's change on top of it. Then commit the merge.\n\
+3. If the app numbers its database migrations and {base} added new ones, renumber this branch's \
+new ones so they come after {base}'s highest, and update any list of migrations.\n\
+4. Run all of the app's own checks (build, lint, tests) and fix what fails. {db}\n\
+5. Commit the merge and your fixes on this branch. Do not push.\n\n\
+In your summary, say which files had conflicts and how you resolved them, and what else you fixed.\n",
+        db = decurion_proto::local_database!().trim_end(),
+    )
+}
+
+/// The owner's Bring up to date on a watched pull request (`thread_id` is
+/// the work that opened it). In order: a resent receipt answers with the
+/// first run at once; the pull request is checked; the newest commit of its
+/// base branch is fetched from the app's git server and pinned, outside any
+/// write transaction; then the run is created in one, which checks the
+/// receipt and the pull request again. Refused, with nothing created, when
+/// that branch cannot be had or the pull request already has it.
+pub async fn start_update(
+    store: &Store,
+    files: Option<&crate::checkpoints::Files>,
+    thread_id: i64,
+    receipt: Option<&str>,
+) -> Result<(Thread, bool)> {
+    check_receipt(receipt)?;
+    if let Some(id) = store.update_receipt(receipt).await? {
+        return Ok((store.thread(id).await?, false));
+    }
+    let target = store.update_target(thread_id).await?;
+    let files = files.ok_or_else(|| {
+        StoreError::Refused(
+            "This hub keeps no saved work, so it cannot bring pull requests up to date.".into(),
+        )
+    })?;
+    let base = target.base_ref.clone().unwrap_or_else(|| "main".into());
+    let merge_from =
+        crate::upstream::branch_tip(files, target.app_id, &target.repo_path, &base).await?;
+    let has_it = {
+        let _held = files.git_lock.lock().await;
+        crate::checkpoints::git(
+            &files.app_cache(target.app_id),
+            &["merge-base", "--is-ancestor", &merge_from, &target.head],
+        )
+        .await
+        .is_ok()
+    };
+    // Already holding that commit, a run could only fail its merge check,
+    // whatever GitHub last said.
+    if has_it {
+        return Err(StoreError::Refused(format!(
+            "Already up to date with {base}. Nothing was started."
+        )));
+    }
+    let (id, fresh) = store
+        .create_update(thread_id, &target, &merge_from, receipt)
+        .await?;
+    Ok((store.thread(id).await?, fresh))
 }
 
 // ---------- Looking ----------
@@ -934,6 +1215,31 @@ pub(crate) async fn fix(
     }
 }
 
+/// The owner's "Bring up to date".
+pub(crate) async fn update(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    UrlPath(id): UrlPath<i64>,
+    Json(b): Json<Fix>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("bringing pull requests up to date");
+    }
+    match start_update(&st.store, st.files.as_deref(), id, b.receipt.as_deref()).await {
+        Ok((t, fresh)) => {
+            if fresh {
+                tracing::info!(
+                    thread = id,
+                    update = t.id,
+                    "the owner started bringing a pull request up to date"
+                );
+            }
+            Json(t).into_response()
+        }
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -958,6 +1264,48 @@ mod tests {
         assert!(p.contains("\\u003c/review-comments\\u003e"));
         assert!(p.contains("\"author\": \"param\""));
         assert!(!p.contains('\u{2014}'), "no long dashes");
+    }
+
+    #[test]
+    fn health_comes_only_from_mergeable_and_mergeable_state() {
+        let head = "0123456789abcdef0123456789abcdef01234567";
+        let pr = |mergeable: serde_json::Value, state: &str| {
+            serde_json::json!({"mergeable": mergeable, "mergeable_state": state,
+                "head": {"sha": head}, "base": {"ref": "main"}})
+        };
+        let h = health_of(&pr(serde_json::json!(false), "dirty"));
+        assert_eq!(h.health, Some("dirty"));
+        assert_eq!(h.head.as_deref(), Some(head));
+        assert_eq!(h.base_ref.as_deref(), Some("main"));
+        assert_eq!(
+            health_of(&pr(serde_json::json!(true), "behind")).health,
+            Some("behind")
+        );
+        // GitHub still working it out: shown as nothing yet.
+        let checking = health_of(&pr(serde_json::Value::Null, "unknown"));
+        assert_eq!(checking.health, Some("checking"));
+        // Failing checks are not read here; clean and the rest say nothing.
+        for s in ["clean", "unstable", "blocked", "has_hooks", "draft"] {
+            assert_eq!(
+                health_of(&pr(serde_json::json!(true), s)).health,
+                None,
+                "{s}"
+            );
+        }
+        // Only a full commit id and a plain branch name are kept.
+        let odd = health_of(&serde_json::json!({"mergeable": true,
+            "head": {"sha": "HEAD"}, "base": {"ref": "-x"}}));
+        assert_eq!((odd.head, odd.base_ref), (None, None));
+        assert_eq!(
+            health_words(Some("dirty"), Some("trunk")).as_deref(),
+            Some("Conflicts with trunk")
+        );
+        assert_eq!(
+            health_words(Some("behind"), None).as_deref(),
+            Some("Behind main")
+        );
+        assert_eq!(health_words(Some("checking"), None), None);
+        assert_eq!(health_words(None, None), None);
     }
 
     #[test]

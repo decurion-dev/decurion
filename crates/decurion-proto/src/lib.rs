@@ -18,7 +18,7 @@ use std::str::FromStr;
 /// built and how work is handed between computers. The hub refuses a runner
 /// built with a different number, so a PC and a cloud worker can never run
 /// the same work under different rules. Bump it whenever either changes.
-pub const RULES_VERSION: u32 = 14;
+pub const RULES_VERSION: u32 = 15;
 
 /// What every agent that may run an app's tests (builder, research, checker)
 /// is told about the private database in its box: `decurion-postgres` in the
@@ -437,6 +437,11 @@ pub struct Thread {
     /// in the Dismissed view; nothing about the work itself changes.
     #[serde(default)]
     pub dismissed_at: Option<String>,
+    /// Why this work, which has no goal piece, waits for the owner to look
+    /// at it before Accept (it changes protected parts of the app). Set by
+    /// the hub when a Bring up to date run reaches review.
+    #[serde(default)]
+    pub hold: Option<String>,
 }
 
 /// Where sending accepted work to GitHub has got to. Only the hub sends,
@@ -550,6 +555,25 @@ pub fn check_receipt(r: &str) -> bool {
     (8..=64).contains(&r.len())
         && r.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Whether a Bring up to date run merged main the way it was asked to,
+/// read from `git rev-list --parents <head> --not <start> <merge_from>`:
+/// the commits it added, each with its parents. No commit may have more
+/// than two parents (no octopus merge), and at least one of them must be a
+/// merge with `merge_from` as a parent. The runner checks this when the run
+/// ends and the hub again before sending, along with the head descending
+/// from both the start and `merge_from`.
+pub fn merged_as_asked(rev_list_parents: &str, merge_from: &str) -> bool {
+    let mut merged = false;
+    for line in rev_list_parents.lines().filter(|l| !l.trim().is_empty()) {
+        let parents: Vec<&str> = line.split_whitespace().skip(1).collect();
+        if parents.len() > 2 {
+            return false;
+        }
+        merged |= parents.len() == 2 && parents.contains(&merge_from);
+    }
+    merged
 }
 
 /// How a message from the owner reaches an agent.
@@ -699,6 +723,12 @@ pub struct Claim {
     /// boxes of their own beside the agent's (see [`addon`]).
     #[serde(default)]
     pub addons: Vec<addon::AddonUse>,
+    /// For a Bring up to date run: the commit of the pull request's base
+    /// branch to merge in. The starting bundle then also holds it, as
+    /// `refs/heads/decurion-main`, and the runner makes the local branch
+    /// `decurion-main` at exactly this commit before the agent starts.
+    #[serde(default)]
+    pub merge_from: Option<String>,
 }
 
 /// A saved website sign-in named in a claim: which one to open from the
@@ -981,6 +1011,24 @@ pub struct EventRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_update_must_merge_main_with_one_plain_merge() {
+        let (m, x, y, a) = (
+            "m".repeat(40),
+            "x".repeat(40),
+            "y".repeat(40),
+            "a".repeat(40),
+        );
+        // A fix after the merge, then the merge of main into the branch.
+        assert!(merged_as_asked(&format!("{a} {x}\n{x} {y} {m}\n"), &m));
+        // No merge at all, or one that is not of main.
+        assert!(!merged_as_asked(&format!("{x} {y}\n"), &m));
+        assert!(!merged_as_asked(&format!("{x} {y} {a}\n"), &m));
+        assert!(!merged_as_asked("", &m));
+        // An octopus merge, even one that includes main.
+        assert!(!merged_as_asked(&format!("{x} {y} {m} {a}\n"), &m));
+    }
 
     #[test]
     fn terminal_states_cannot_move_except_retry() {

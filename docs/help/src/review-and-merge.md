@@ -45,6 +45,16 @@ After a pull request is open, Decurion looks at it about every five minutes unti
 
 Only one fix per pull request runs at a time. New comments that arrive while it runs wait for the next **Answer the comments**.
 
+## Bring a pull request up to date with main
+
+While you wait for a review, other work may be merged into main. Then the pull request can fall behind main, or conflict with it, and GitHub will not merge it until that is fixed. Decurion reads this from GitHub when it looks at the pull request, and the app's line on the board and your phone says **Conflicts with main** or **Behind main**.
+
+- **Tap Bring up to date** to start new work on that pull request. Decurion gets the newest main from GitHub, and the agent merges it into the pull request's work, fixes any conflicts (keeping what main does now and adding this work on top), and runs the app's own checks and fixes what fails. If Decurion cannot reach GitHub for the newest main, nothing starts and it says so.
+- **Review it like any other work.** When you accept it, Decurion adds it to the same pull request, on the same branch. It only ever adds on top of what is there: it never rewrites the branch, never changes main and never merges.
+- **Protected parts.** If the result changes a part of the app you protect, compared with main, the work says **Held for you** and names the files. Look it over before you tap Accept.
+
+The button shows on any open pull request Decurion opened, whenever no other fix or update is running on it, so you can bring it up to date whenever you like. If it already has the newest main, Decurion says **Already up to date** and starts nothing. This work always runs on your PC.
+
 ## Merge from Decurion
 
 For an app you set to **Full control** (Settings, Apps, then the app), a pull request Decurion opened shows a **Merge** button on the board's Today row and on your phone. One tap merges it on GitHub. Nothing merges by itself, and no agent can tap it.

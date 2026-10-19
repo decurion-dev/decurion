@@ -357,6 +357,7 @@ pub fn router(state: AppState) -> Router {
         .route("/threads/{id}/github", post(github::retry))
         .route("/threads/{id}/goal", get(goals::piece_of))
         .route("/threads/{id}/pr/fix", post(pr_watch::fix))
+        .route("/threads/{id}/pr/update", post(pr_watch::update))
         .route("/threads/{id}/pr/merge", post(merge::tap))
         .route("/prs", get(pr_watch::list))
         .route("/deploys", get(deploy::list))
@@ -1078,6 +1079,20 @@ async fn add_thread(
     }
 }
 
+/// Saves the protected-parts hold of a Bring up to date run about to go to
+/// review ([`protected::update_hold`]); nothing for other work. Without the
+/// hub's saved copies there is nothing to check, so the work is held.
+async fn decide_update_hold(st: &AppState, id: i64) -> Result<(), StoreError> {
+    if st.store.merge_from(id).await?.is_none() {
+        return Ok(());
+    }
+    let hold = match st.files.as_deref() {
+        Some(files) => protected::update_hold(&st.store, files, id).await,
+        None => protected::Hold::Unchecked("this hub keeps no saved copies".into()),
+    };
+    st.store.set_thread_hold(id, &hold).await
+}
+
 async fn move_thread(
     State(st): State<AppState>,
     axum::Extension(c): axum::Extension<Caller>,
@@ -1102,6 +1117,17 @@ async fn move_thread(
         Some(axum::Extension(r)) if c == Caller::Runner => r.actor(),
         _ => c.actor().to_owned(),
     };
+    // A Bring up to date run has no checker: its protected-parts hold is
+    // decided here, from its saved copy, before any move of it into review,
+    // whoever asks for the move, so the owner never sees it there without
+    // the reason. A hold that cannot be decided holds the work; a lookup
+    // that fails refuses the move.
+    if m.to == InReview {
+        if let Err(e) = decide_update_hold(&st, id).await {
+            tracing::error!(error = %e, thread = id, "could not decide the update's hold");
+            return ApiError(e).into_response();
+        }
+    }
     match st
         .store
         .request_move(
@@ -1755,11 +1781,24 @@ async fn runner_base(
         let t = st.store.thread(id).await?;
         let app = st.store.app(t.app_id).await?;
         let base = st.store.base_commit(id).await?;
+        let merge_from = st.store.merge_from(id).await?;
         let bundled = files
-            .base_bundle(app.id, &app.repo_path, base.as_deref())
+            .base_bundle_with(
+                app.id,
+                &app.repo_path,
+                base.as_deref(),
+                merge_from.as_deref(),
+            )
             .await?;
         files
-            .settle_base(&st.store, id, app.id, &app.repo_path, bundled)
+            .settle_base(
+                &st.store,
+                id,
+                app.id,
+                &app.repo_path,
+                bundled,
+                merge_from.as_deref(),
+            )
             .await
     }
     .await;

@@ -434,6 +434,7 @@ mod tests {
             fix_of: None,
             research: false,
             dismissed_at: None,
+            hold: None,
         };
         Claim {
             thread,
@@ -450,6 +451,7 @@ mod tests {
             sign_ins,
             context: vec![],
             addons: vec![],
+            merge_from: None,
         }
     }
 

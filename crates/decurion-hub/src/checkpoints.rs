@@ -175,6 +175,23 @@ impl Files {
         repo_path: &str,
         base: Option<&str>,
     ) -> Result<(String, PathBuf)> {
+        self.base_bundle_with(app_id, repo_path, base, None).await
+    }
+
+    /// [`Files::base_bundle`], and for a Bring up to date run also the
+    /// commit it merges in, `merge_from`, as a second ref,
+    /// `refs/heads/decurion-main`. Such a bundle is kept under both commits,
+    /// so one made for an older main is never handed out for a newer one.
+    /// Before it is used, both refs are checked to name exactly the
+    /// expected commits, and the bundle is checked to be complete on its
+    /// own (`git bundle verify` in an empty repo).
+    pub async fn base_bundle_with(
+        &self,
+        app_id: i64,
+        repo_path: &str,
+        base: Option<&str>,
+        merge_from: Option<&str>,
+    ) -> Result<(String, PathBuf)> {
         let sha = match base {
             Some(s) => s.to_owned(),
             None => crate::upstream::start_commit(self, app_id, repo_path).await?,
@@ -182,8 +199,11 @@ impl Files {
         if !is_commit(&sha) {
             return Err(StoreError::Invalid(format!("not a commit id: {sha}")));
         }
+        if merge_from.is_some_and(|m| !is_commit(m)) {
+            return Err(StoreError::Invalid("not a commit id to merge".into()));
+        }
         let _held = self.git_lock.lock().await;
-        let path = self.bundle_path(&sha);
+        let path = self.bundle_path(&sha, merge_from);
         if path.exists() {
             return Ok((sha, path));
         }
@@ -196,29 +216,75 @@ impl Files {
                 ));
             }
         }
+        // Pinned in the hub's copy when the run was created
+        // (`refs/decurion/merge/`); never read from the owner's folder,
+        // which may not have it, and never any other commit.
+        if let Some(m) = merge_from {
+            if !self.is_pinned_merge(app_id, m).await {
+                return Err(StoreError::Refused(
+                    "The newest main this work was to merge is no longer in Decurion's copy of the app. Tap Bring up to date again."
+                        .into(),
+                ));
+            }
+        }
         std::fs::create_dir_all(self.dir.join("bundles")).map_err(io)?;
         git(&cache, &["update-ref", "refs/heads/decurion-base", &sha]).await?;
+        let mut refs = vec![("refs/heads/decurion-base", sha.as_str())];
+        if let Some(m) = merge_from {
+            git(&cache, &["update-ref", "refs/heads/decurion-main", m]).await?;
+            refs.push(("refs/heads/decurion-main", m));
+        }
         let tmp = path.with_extension("partial");
         let tmp_s = tmp.to_string_lossy().into_owned();
-        git(
-            &cache,
-            &[
-                "bundle",
-                "create",
-                "--quiet",
-                &tmp_s,
-                "refs/heads/decurion-base",
-            ],
-        )
-        .await?;
+        let mut args = vec!["bundle", "create", "--quiet", tmp_s.as_str()];
+        args.extend(refs.iter().map(|(r, _)| *r));
+        git(&cache, &args).await?;
+        if merge_from.is_some() {
+            if let Err(e) = self.check_bundle(&tmp, &refs).await {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e);
+            }
+        }
         std::fs::rename(&tmp, &path).map_err(io)?;
         Ok((sha, path))
+    }
+
+    /// Checks a bundle names exactly `refs` (ref and commit) and nothing
+    /// else, and that it holds everything they need with no other repo's
+    /// help. The caller holds `git_lock`.
+    async fn check_bundle(&self, bundle: &Path, refs: &[(&str, &str)]) -> Result<()> {
+        let b = bundle.to_string_lossy().into_owned();
+        let empty = self.dir.join("bundles").join("check-empty.git");
+        if !empty.join("objects").is_dir() {
+            std::fs::create_dir_all(&empty).map_err(io)?;
+            git(&empty, &["init", "--quiet", "--bare"]).await?;
+        }
+        let heads = git(&empty, &["bundle", "list-heads", &b]).await?;
+        let mut got: Vec<(String, String)> = heads
+            .lines()
+            .filter_map(|l| l.split_once(' '))
+            .map(|(sha, name)| (name.trim().to_owned(), sha.to_owned()))
+            .collect();
+        got.sort();
+        let mut want: Vec<(String, String)> = refs
+            .iter()
+            .map(|(r, sha)| ((*r).to_owned(), (*sha).to_owned()))
+            .collect();
+        want.sort();
+        if got != want {
+            return Err(StoreError::Invalid(format!(
+                "the starting bundle names {got:?}, not {want:?}"
+            )));
+        }
+        git(&empty, &["bundle", "verify", "--quiet", &b]).await?;
+        Ok(())
     }
 
     /// Fixes the start a request bundled, `bundled`, as the thread's start,
     /// unless another request for the same thread fixed one first. Then it
     /// answers with that one's bundle instead, so the commit the runner is
-    /// told and the bundle it gets always agree.
+    /// told and the bundle it gets always agree. `merge_from` is what the
+    /// first bundle was made with, and the answer is made with it too.
     pub async fn settle_base(
         &self,
         store: &Store,
@@ -226,12 +292,15 @@ impl Files {
         app_id: i64,
         repo_path: &str,
         bundled: (String, PathBuf),
+        merge_from: Option<&str>,
     ) -> Result<(String, PathBuf)> {
         let won = store.fix_base_commit(thread, &bundled.0).await?;
         if won == bundled.0 {
             return Ok(bundled);
         }
-        self.base_bundle(app_id, repo_path, Some(&won)).await
+        // The same kind of bundle: an update's keeps main in it.
+        self.base_bundle_with(app_id, repo_path, Some(&won), merge_from)
+            .await
     }
 
     /// Reads the branch `branch` from a saved copy's code part into the ref
@@ -283,8 +352,12 @@ impl Files {
         Ok(head)
     }
 
-    fn bundle_path(&self, sha: &str) -> PathBuf {
-        self.dir.join("bundles").join(format!("base-{sha}.bundle"))
+    fn bundle_path(&self, sha: &str, merge_from: Option<&str>) -> PathBuf {
+        let name = match merge_from {
+            None => format!("base-{sha}.bundle"),
+            Some(m) => format!("base-{sha}-main-{m}.bundle"),
+        };
+        self.dir.join("bundles").join(name)
     }
 }
 
@@ -368,6 +441,17 @@ impl Store {
             .execute(self.pool())
             .await?;
         self.base_commit(thread).await?.ok_or(StoreError::NotFound)
+    }
+
+    /// The commit a Bring up to date run merges in, if it is one.
+    pub async fn merge_from(&self, thread: i64) -> Result<Option<String>> {
+        // read-only
+        let v: Option<Option<String>> =
+            sqlx::query_scalar("SELECT merge_from FROM threads WHERE id = ?")
+                .bind(thread)
+                .fetch_optional(self.pool())
+                .await?;
+        v.ok_or(StoreError::NotFound)
     }
 
     pub async fn base_commit(&self, thread: i64) -> Result<Option<String>> {
@@ -461,6 +545,108 @@ mod tests {
         assert!(!is_commit(&"A".repeat(40)));
         assert!(!is_commit("HEAD"));
         assert!(!is_commit(&format!("--{}", "a".repeat(38))));
+    }
+
+    fn sh(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    fn commit(dir: &Path, file: &str, text: &str) -> String {
+        std::fs::write(dir.join(file), text).expect("write");
+        sh(dir, &["add", "."]);
+        sh(dir, &["commit", "--quiet", "-m", file]);
+        sh(dir, &["rev-parse", "HEAD"])
+    }
+
+    /// A Bring up to date run's starting bundle holds the pull request's
+    /// commit and main's, with all their objects, and is kept per pair.
+    #[tokio::test]
+    async fn a_bundle_to_merge_main_holds_both_commits_and_is_kept_per_pair() {
+        let root = std::env::temp_dir().join(format!("decurion-cp-{}", uuid::Uuid::new_v4()));
+        let folder = root.join("app");
+        std::fs::create_dir_all(&folder).expect("dir");
+        sh(&folder, &["init", "--quiet", "-b", "main"]);
+        let a = commit(&folder, "a.txt", "a");
+        let main1 = commit(&folder, "main.txt", "main 1");
+        sh(&folder, &["switch", "--quiet", "-c", "pr", &a]);
+        let pr = commit(&folder, "pr.txt", "the feature");
+        sh(&folder, &["switch", "--quiet", "main"]);
+        let main2 = commit(&folder, "main.txt", "main 2");
+        let files = Files::new(root.join("saved"));
+        let path = folder.to_string_lossy().into_owned();
+        // The hub's copy has main's commits pinned, as Bring up to date does.
+        files.base_bundle(1, &path, Some(&pr)).await.expect("plain");
+        let cache = files.app_cache(1);
+        // Held but not pinned for merging: refused, not bundled.
+        assert!(matches!(
+            files
+                .base_bundle_with(1, &path, Some(&pr), Some(&main1))
+                .await,
+            Err(StoreError::Refused(_))
+        ));
+        for m in [&main1, &main2] {
+            sh(
+                &cache,
+                &["update-ref", &format!("refs/decurion/merge/{m}"), m],
+            );
+        }
+        let (sha, b1) = files
+            .base_bundle_with(1, &path, Some(&pr), Some(&main1))
+            .await
+            .expect("bundle");
+        assert_eq!(sha, pr);
+        let into = root.join("clone");
+        sh(
+            &root,
+            &[
+                "clone",
+                "--quiet",
+                "--no-checkout",
+                &b1.to_string_lossy(),
+                &into.to_string_lossy(),
+            ],
+        );
+        assert_eq!(sh(&into, &["rev-parse", "origin/decurion-base"]), pr);
+        assert_eq!(sh(&into, &["rev-parse", "origin/decurion-main"]), main1);
+        sh(&into, &["cat-file", "-e", &format!("{main1}:main.txt")]);
+        sh(&into, &["cat-file", "-e", &format!("{pr}:pr.txt")]);
+        // Same start, newer main: another bundle, never the stale one.
+        let (_, b2) = files
+            .base_bundle_with(1, &path, Some(&pr), Some(&main2))
+            .await
+            .expect("bundle");
+        assert_ne!(b1, b2);
+        let heads = sh(&root, &["bundle", "list-heads", &b2.to_string_lossy()]);
+        assert!(
+            heads.contains(&format!("{main2} refs/heads/decurion-main")),
+            "{heads}"
+        );
+        // The plain start bundle still has one ref only.
+        let (_, plain) = files.base_bundle(1, &path, Some(&pr)).await.expect("plain");
+        let heads = sh(&root, &["bundle", "list-heads", &plain.to_string_lossy()]);
+        assert_eq!(heads.lines().count(), 1, "{heads}");
+        // A main the hub's copy does not hold is refused, not guessed.
+        let missing = "e".repeat(40);
+        assert!(matches!(
+            files
+                .base_bundle_with(1, &path, Some(&pr), Some(&missing))
+                .await,
+            Err(StoreError::Refused(_))
+        ));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

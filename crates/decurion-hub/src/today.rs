@@ -82,6 +82,12 @@ pub struct LastPr {
     /// Still open, and the app's rules let the owner merge it from Decurion
     /// (`POST /api/threads/{id}/pr/merge`).
     pub can_merge: bool,
+    /// "Conflicts with main" or "Behind main", while GitHub says so about
+    /// the commit Decurion last pushed (see [`crate::pr_watch::health_words`]).
+    pub health: Option<String>,
+    /// Still open with no fix or update under way: Bring up to date can
+    /// start (`POST /api/threads/{id}/pr/update`).
+    pub can_update: bool,
 }
 
 /// One app's row.
@@ -517,14 +523,19 @@ impl Store {
 
         // Newest happening first: when it last changed, else when it opened.
         let mut watches = Vec::new();
-        for r in sqlx::query(
+        for r in sqlx::query(&format!(
             "SELECT w.thread_id, w.app_id, w.number, w.url, w.state, w.event, w.event_at,
                     COALESCE(t.dismissed_at IS NOT NULL, 0) AS dismissed,
-                    (w.state = 'open' AND a.can_merge) AS can_merge
+                    (w.state = 'open' AND a.can_merge) AS can_merge,
+                    CASE WHEN w.state = 'open' AND w.health_head = w.head THEN w.health END AS health,
+                    w.base_ref,
+                    (w.state = 'open' AND w.base_ref IS NOT NULL
+                        AND NOT {under_way}) AS can_update
              FROM pr_watches w LEFT JOIN threads t ON t.id = w.thread_id
                   JOIN apps a ON a.id = w.app_id
              ORDER BY COALESCE(w.event_at, w.created_at) DESC, w.created_at DESC, w.thread_id DESC",
-        )
+            under_way = crate::pr_watch::FIX_UNDER_WAY
+        ))
         .fetch_all(self.pool())
         .await?
         {
@@ -538,6 +549,11 @@ impl Store {
                     event: r.try_get("event")?,
                     event_at: r.try_get("event_at")?,
                     can_merge: r.try_get("can_merge")?,
+                    health: crate::pr_watch::health_words(
+                        r.try_get::<Option<String>, _>("health")?.as_deref(),
+                        r.try_get::<Option<String>, _>("base_ref")?.as_deref(),
+                    ),
+                    can_update: r.try_get("can_update")?,
                 },
                 dismissed: r.try_get("dismissed")?,
             });

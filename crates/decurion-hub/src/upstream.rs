@@ -191,6 +191,103 @@ pub(crate) async fn for_next_round(
     }
 }
 
+/// The tip of `branch` on the app's git server, brought into the hub's copy
+/// and pinned at `refs/decurion/merge/<sha>`, for Bring up to date
+/// ([`crate::pr_watch`]): the newest commit of the branch a pull request
+/// merges into. The same network path as [`start_commit`] (the folder's
+/// `origin` by name, read-only, into the server copy first), but with no
+/// fallback: merging an old copy of the branch would not bring the pull
+/// request up to date, so when the server cannot be asked this refuses, in
+/// plain words, and nothing is started.
+pub(crate) async fn branch_tip(
+    files: &Files,
+    app_id: i64,
+    repo_path: &str,
+    branch: &str,
+) -> Result<String> {
+    let refused = || {
+        StoreError::Refused(format!(
+            "Decurion could not get the newest {branch} from the app's git server, so nothing \
+was started. Check this PC's internet connection, then tap Bring up to date again."
+        ))
+    };
+    if !plain_branch(branch) {
+        return Err(refused());
+    }
+    let lock = files.upstream.for_app(app_id);
+    let _one = lock.lock().await;
+    let folder = Path::new(repo_path);
+    let Some(url) = git(folder, &["remote", "get-url", "origin"])
+        .await
+        .ok()
+        .filter(|u| !u.is_empty())
+    else {
+        tracing::warn!(
+            app = app_id,
+            "no origin to bring a pull request up to date from"
+        );
+        return Err(refused());
+    };
+    let id = identity(repo_path, &credential_free(&url));
+    let cache = files.app_cache(app_id);
+    let asked = async {
+        {
+            let _held = files.git_lock.lock().await;
+            files
+                .fetch_app(&cache, repo_path)
+                .await
+                .map_err(|e| failed(&e))?;
+        }
+        let limit = Duration::from_secs(NET_SECS);
+        let out = run(ls_remote_branch_command(folder, branch).await, limit).await?;
+        let sha = advertised_branch(&String::from_utf8_lossy(&out.stdout), branch)
+            .ok_or_else(|| NotAsked::Failed(format!("the server has no branch {branch}")))?;
+        bring(files, app_id, folder, &id, branch, &sha).await?;
+        let _held = files.git_lock.lock().await;
+        let got = take_branch(files, app_id, &cache, &id, branch)
+            .await
+            .map_err(|e| failed(&e))?;
+        if got != sha || !is_commit(&got) {
+            return Err(NotAsked::Failed(
+                "the branch moved while it was fetched".into(),
+            ));
+        }
+        git(
+            &cache,
+            &["update-ref", &format!("refs/decurion/merge/{got}"), &got],
+        )
+        .await
+        .map_err(|e| failed(&e))?;
+        Ok(got)
+    }
+    .await;
+    asked.map_err(|why| {
+        tracing::warn!(
+            app = app_id,
+            reason = %scrub(&why.to_string()),
+            "could not get the base branch to bring a pull request up to date"
+        );
+        refused()
+    })
+}
+
+/// Asks the folder's `origin`, by name, where one branch is. Read-only.
+async fn ls_remote_branch_command(folder: &Path, branch: &str) -> tokio::process::Command {
+    let mut cmd = netgit::command(folder).await;
+    cmd.args(["ls-remote", "origin", &format!("refs/heads/{branch}")]);
+    cmd
+}
+
+/// The commit `branch` is at in `git ls-remote <remote> refs/heads/<branch>`'s
+/// answer: only that exact name, and only a full commit id.
+pub(crate) fn advertised_branch(ls_remote: &str, branch: &str) -> Option<String> {
+    let want = format!("refs/heads/{branch}");
+    ls_remote.lines().find_map(|line| {
+        let (sha, name) = line.split_once('\t')?;
+        (name.trim() == want && is_commit(sha)).then(|| sha.to_owned())
+    })
+}
+
 /// Why the server's default could not be used this time.
 enum NotAsked {
     NoOrigin,
@@ -295,6 +392,25 @@ async fn take_default(
     id: &str,
     branch: &str,
 ) -> Result<String> {
+    let sha = take_branch(files, app_id, cache, id, branch).await?;
+    git(
+        cache,
+        &["update-ref", &format!("refs/upstream-default/{id}"), &sha],
+    )
+    .await?;
+    Ok(sha)
+}
+
+/// Takes `refs/upstream/<id>/<branch>` from the app's server copy into the
+/// hub's copy with a local fetch. Returns its commit. The caller holds
+/// `git_lock`.
+async fn take_branch(
+    files: &Files,
+    app_id: i64,
+    cache: &Path,
+    id: &str,
+    branch: &str,
+) -> Result<String> {
     let from = files.upstream_cache(app_id).to_string_lossy().into_owned();
     let name = format!("refs/upstream/{id}/{branch}");
     git(
@@ -314,17 +430,11 @@ async fn take_default(
         ],
     )
     .await?;
-    let sha = git(
+    git(
         cache,
         &["rev-parse", "--verify", &format!("{name}^{{commit}}")],
     )
-    .await?;
-    git(
-        cache,
-        &["update-ref", &format!("refs/upstream-default/{id}"), &sha],
-    )
-    .await?;
-    Ok(sha)
+    .await
 }
 
 /// Asks the server its default branch and brings that branch's commit into
@@ -341,6 +451,22 @@ async fn ask_server(
     let out = run(ls_remote_command(folder).await, limit).await?;
     let (branch, sha) =
         advertised_default(&String::from_utf8_lossy(&out.stdout)).ok_or(NotAsked::NoDefault)?;
+    bring(files, app_id, folder, id, &branch, &sha).await?;
+    Ok(branch)
+}
+
+/// Brings commit `sha`, which the server says `branch` is at, into the
+/// app's server copy as `refs/upstream/<id>/<branch>`. The caller holds the
+/// app's own lock.
+async fn bring(
+    files: &Files,
+    app_id: i64,
+    folder: &Path,
+    id: &str,
+    branch: &str,
+    sha: &str,
+) -> std::result::Result<(), NotAsked> {
+    let limit = Duration::from_secs(NET_SECS);
     let up = files.upstream_cache(app_id);
     let cache = files.app_cache(app_id);
     files
@@ -348,11 +474,11 @@ async fn ask_server(
         .await
         .map_err(|e| failed(&e))?;
     let own = folder_objects(folder).await.map_err(|e| failed(&e))?;
-    let cmd = fetch_command(folder, &up, &own, &branch)
+    let cmd = fetch_command(folder, &up, &own, branch)
         .await
         .map_err(|e| failed(&e))?;
     run(cmd, limit).await?;
-    keep_what_it_needs(&up, &cache, &own, &sha)
+    keep_what_it_needs(&up, &cache, &own, sha)
         .await
         .map_err(|e| failed(&e))?;
     git(&up, &["cat-file", "-e", &format!("{sha}^{{commit}}")])
@@ -360,11 +486,11 @@ async fn ask_server(
         .map_err(|_| NotAsked::Failed("the server did not send the commit it named".into()))?;
     git(
         &up,
-        &["update-ref", &format!("refs/upstream/{id}/{branch}"), &sha],
+        &["update-ref", &format!("refs/upstream/{id}/{branch}"), sha],
     )
     .await
     .map_err(|e| failed(&e))?;
-    Ok(branch)
+    Ok(())
 }
 
 async fn run(
@@ -676,6 +802,24 @@ impl Files {
                     "--verify",
                     "--quiet",
                     &format!("refs/decurion/start/{sha}^{{commit}}"),
+                ],
+            )
+            .await
+            .is_ok()
+    }
+
+    /// True if `sha` is a base-branch commit this hub pinned for app
+    /// `app_id` for Bring up to date ([`branch_tip`]). Kept apart from the
+    /// starts, so it never counts as one.
+    pub(crate) async fn is_pinned_merge(&self, app_id: i64, sha: &str) -> bool {
+        is_commit(sha)
+            && git(
+                &self.app_cache(app_id),
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/decurion/merge/{sha}^{{commit}}"),
                 ],
             )
             .await
@@ -1008,6 +1152,67 @@ mod tests {
             start_commit(&files, 1, &r.path()).await.expect("a start"),
             head
         );
+    }
+
+    #[test]
+    fn a_branch_tip_is_read_only_for_that_exact_branch() {
+        let sha = "b".repeat(40);
+        assert_eq!(
+            advertised_branch(&format!("{sha}\trefs/heads/main\n"), "main"),
+            Some(sha.clone())
+        );
+        assert_eq!(
+            advertised_branch(&format!("{sha}\trefs/heads/x/refs/heads/main\n"), "main"),
+            None
+        );
+        assert_eq!(advertised_branch("HEAD\trefs/heads/main\n", "main"), None);
+        assert_eq!(advertised_branch("", "main"), None);
+    }
+
+    /// Bring up to date gets the server's newest commit of the branch, pinned
+    /// in the hub's copy, and never falls back to an older one.
+    #[tokio::test]
+    async fn the_tip_of_a_pull_requests_base_branch_comes_from_the_server_or_not_at_all() {
+        let r = Repos::new();
+        let files = r.files();
+        let first = sh(&r.origin, &["rev-parse", "trunk"]);
+        assert_eq!(
+            branch_tip(&files, 1, &r.path(), "trunk")
+                .await
+                .expect("tip"),
+            first
+        );
+        // Pinned for merging only: never a start a goal's helpers may ask
+        // for with `?at=`.
+        assert!(files.is_pinned_merge(1, &first).await);
+        assert!(!files.is_pinned_start(1, &first).await);
+        // The server moved on, the owner's folder did not: the server's wins.
+        let next = r.advance("b2");
+        let tip = branch_tip(&files, 1, &r.path(), "trunk")
+            .await
+            .expect("tip");
+        assert_eq!(tip, next);
+        assert!(files.is_pinned_merge(1, &tip).await);
+        assert!(!files.is_pinned_start(1, &tip).await);
+        assert_ne!(sh(&r.folder, &["rev-parse", "HEAD"]), next);
+        // No such branch, an odd name, or no server: refused in plain words.
+        for b in ["nope", "-x"] {
+            match branch_tip(&files, 1, &r.path(), b).await {
+                Err(StoreError::Refused(m)) => assert!(m.contains("could not get"), "{m}"),
+                other => panic!("{b}: {other:?}"),
+            }
+        }
+        let gone = r.root.join("gone.git").to_string_lossy().into_owned();
+        sh(&r.folder, &["remote", "set-url", "origin", &gone]);
+        assert!(matches!(
+            branch_tip(&files, 1, &r.path(), "trunk").await,
+            Err(StoreError::Refused(_))
+        ));
+        sh(&r.folder, &["remote", "remove", "origin"]);
+        assert!(matches!(
+            branch_tip(&files, 1, &r.path(), "trunk").await,
+            Err(StoreError::Refused(_))
+        ));
     }
 
     #[test]

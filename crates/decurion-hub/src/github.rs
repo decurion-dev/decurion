@@ -114,6 +114,9 @@ const NO_REMOTE: &str = "This app's folder is not linked to GitHub (it has no re
 const NOT_READ: &str = "Decurion could not read this work from its saved copy, so it was not sent. Tap Try again. You can still get it by hand: see Help, Review and merge work.";
 const PR_ENDED: &str = "The pull request this fix answers was merged or closed on GitHub, so the fix was not sent. Ask for the change as new work instead.";
 const NOT_FORWARD: &str = "This fix does not build on the work already in its pull request, so Decurion did not send it and nothing on GitHub changed. Start the fix again from the comments.";
+const NOT_MERGED_MAIN: &str = "This update did not merge main in the expected way, so Decurion did not send it and nothing on GitHub changed. Tap Bring up to date again on the pull request.";
+const PR_BASE_MOVED: &str = "The pull request now merges into a different branch than when this update started, so the update was not sent and nothing on GitHub changed. Tap Bring up to date again on the pull request.";
+const PR_UNCHECKED: &str = "Decurion could not check the pull request on GitHub, so the update was not sent and nothing on GitHub changed. Tap Try again.";
 const NOT_READ_APP: &str = "Decurion could not read the app's folder on this PC, so the work was not sent. Check that the folder is still there, then tap Try again.";
 
 // ---------- Names and addresses ----------
@@ -917,6 +920,19 @@ struct FixOf {
     url: String,
     number: i64,
     open: bool,
+    /// The branch the pull request merges into, as last read from GitHub.
+    base_ref: Option<String>,
+    /// For a Bring up to date run: the commit of `base_ref` it merged, and
+    /// the commit it started from (the pull request's head then).
+    update: Option<Update>,
+}
+
+/// What a Bring up to date run's send checks it against.
+struct Update {
+    merge_from: String,
+    /// The base branch `merge_from` came from, fixed when the run started.
+    merge_ref: String,
+    start: String,
 }
 
 /// What was sent.
@@ -1070,7 +1086,8 @@ impl Store {
                  p.review, p.review_summary, p.review_evidence, p.review_claims,
                  g.title AS goal, a.reviewer,
                  w.thread_id AS watch, w.branch AS w_branch, w.head AS w_head, w.url AS w_url,
-                 w.number AS w_number, w.state AS w_state
+                 w.number AS w_number, w.state AS w_state, w.base_ref AS w_base_ref,
+                 t.merge_from, t.merge_ref, t.base_commit
              FROM threads t JOIN apps a ON a.id = t.app_id
              LEFT JOIN goal_pieces p ON p.thread_id = t.id
              LEFT JOIN goals g ON g.id = p.goal_id
@@ -1134,6 +1151,24 @@ impl Store {
                     url: row.try_get("w_url")?,
                     number: row.try_get("w_number")?,
                     open: row.try_get::<String, _>("w_state")? == "open",
+                    base_ref: row.try_get("w_base_ref")?,
+                    update: match (
+                        row.try_get::<Option<String>, _>("merge_from")?,
+                        row.try_get::<Option<String>, _>("merge_ref")?,
+                        row.try_get::<Option<String>, _>("base_commit")?,
+                    ) {
+                        (Some(merge_from), Some(merge_ref), Some(start)) => Some(Update {
+                            merge_from,
+                            merge_ref,
+                            start,
+                        }),
+                        (Some(_), _, _) => {
+                            return Err(StoreError::Invalid(
+                                "an update with no starting commit or base branch".into(),
+                            ))
+                        }
+                        _ => None,
+                    },
                 }),
             },
         })
@@ -1430,6 +1465,11 @@ impl Sender {
             Some(f) => check_fix_branch(&job.branch, &f.branch, default.as_deref())?,
             None => check_branch(&job.branch, default.as_deref())?,
         }
+        // An update goes only to the pull request it was made for, still
+        // open and still merging into the branch it brought in.
+        if let Some(f) = job.fix.as_ref().filter(|f| f.update.is_some()) {
+            self.check_update_pr(repo.as_ref(), f).await?;
+        }
         tracing::info!(thread = id, remote = %scrub(&remote), branch = %job.branch, "sending accepted work");
         let into = format!("refs/decurion/send/{id}");
         let head = {
@@ -1476,6 +1516,13 @@ impl Sender {
                     let _ = git(&cache, &["update-ref", "-d", &into]).await;
                     tracing::warn!(thread = id, base = %f.head, got = %head, "the fix does not build on the pull request");
                     return Err(NOT_FORWARD.to_owned());
+                }
+                if let Some(u) = &f.update {
+                    if !merged_as_asked(&cache, u, &head).await {
+                        let _ = git(&cache, &["update-ref", "-d", &into]).await;
+                        tracing::warn!(thread = id, got = %head, "the update did not merge main as asked");
+                        return Err(NOT_MERGED_MAIN.to_owned());
+                    }
                 }
             }
             let pushed = push(repo_path, &cache, &head, &job.branch, place).await;
@@ -1554,6 +1601,73 @@ impl Sender {
                 }
             },
         )
+    }
+}
+
+impl Sender {
+    /// Reads the pull request an update answers, just before sending: it
+    /// must still be open and still merge into the branch the update
+    /// brought in. Without a token or an answer, the update is not sent.
+    async fn check_update_pr(
+        &self,
+        repo: Option<&Repo>,
+        f: &FixOf,
+    ) -> std::result::Result<(), String> {
+        let (Some(repo), Some(token)) = (repo, self.gh.tokens.get().await) else {
+            return Err(PR_UNCHECKED.to_owned());
+        };
+        let path = format!("/repos/{}/{}/pulls/{}", repo.owner, repo.name, f.number);
+        let pr = crate::pr_watch::get_json(self, &token, &path)
+            .await
+            .map_err(|why| {
+                tracing::warn!(reason = %why, "could not read the pull request before sending an update");
+                PR_UNCHECKED.to_owned()
+            })?;
+        let open = pr["state"].as_str() == Some("open")
+            && pr["merged"].as_bool() != Some(true)
+            && !pr["merged_at"].is_string();
+        if !open {
+            return Err(PR_ENDED.to_owned());
+        }
+        // The branch the update merged, fixed when it started: GitHub must
+        // still say it, and so must the watcher's last look.
+        let want = f.update.as_ref().map(|u| u.merge_ref.as_str());
+        if want.is_none() || pr["base"]["ref"].as_str() != want || f.base_ref.as_deref() != want {
+            return Err(PR_BASE_MOVED.to_owned());
+        }
+        Ok(())
+    }
+}
+
+/// Whether `head`, in the hub's copy `cache`, is an update that merged
+/// main as asked: it descends from both its start and `merge_from`, and
+/// its own commits pass [`decurion_proto::merged_as_asked`]. The runner
+/// checked this too; the hub does not take its word.
+async fn merged_as_asked(cache: &Path, u: &Update, head: &str) -> bool {
+    for from in [u.start.as_str(), u.merge_from.as_str()] {
+        if git(cache, &["merge-base", "--is-ancestor", from, head])
+            .await
+            .is_err()
+        {
+            return false;
+        }
+    }
+    match git(
+        cache,
+        &[
+            "rev-list",
+            "--parents",
+            head,
+            "--not",
+            &u.start,
+            &u.merge_from,
+            "--",
+        ],
+    )
+    .await
+    {
+        Ok(list) => decurion_proto::merged_as_asked(&list, &u.merge_from),
+        Err(_) => false,
     }
 }
 
