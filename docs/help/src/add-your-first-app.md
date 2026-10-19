@@ -23,7 +23,7 @@ Your app now shows in the list of apps. It also shows in the app menu where you 
 
 ## Each app has its own page
 
-Open **Settings**, then **Apps**. Each app has one row, with its plan and its rules at a glance, such as **Max plan A**, **PR only** and **Patient data**. Tap a row to open the app's page. Everything about that app is there, one tab at a time:
+Open **Settings**, then **Apps**. Each app has one row, with its plan and its rules at a glance, such as **Max plan A**, **PR only** and **Made-up data only**. Every app starts with **Made-up data only** on, to be safe: its agents are told to use made-up data and never real records. If the app's live version holds no patient or personal data, you can turn it off on the app's **Rules** tab. Tap a row to open the app's page. Everything about that app is there, one tab at a time:
 
 - **Rules** opens first: what Decurion may do for this app. See [Choose your rules](choose-your-rules.md).
 - **Plan and money**: its Claude Max plan, pay-per-use, its own monthly cap and **Go first today**. See [Change an app's plan, name or folder](change-an-app.md).

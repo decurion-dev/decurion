@@ -7,7 +7,7 @@ Work moves to **In review** only when the agent has finished and saved its chang
 ## Review the work
 
 1. On the board, click the card under **In review**. Or open it from the inbox on your phone.
-2. Read the activity log. It shows what the agent did, step by step, and its final summary.
+2. Read the **Overview**. For a piece of a goal, it starts with your project lead's plain report once every piece is checked; the builder's own notes (commits, commands, file names) are behind **Show details**. **Details** shows what you asked, in your own words, and the brief your project lead wrote for the builder. **Activity** shows every step. A very long summary is kept in full, or cut at the end of a line with a note that the end is missing, never in the middle of a word.
 3. Choose one:
    - **Accept** if you are happy with it. The work moves to **Done**, and Decurion sends it to GitHub for you. See the next part. Typing "yes", "push" or "do it" in the message box does the same, as long as the agent did not ask you a question.
    - Pieces of a goal can skip this step. When the app's rule **Checked work goes to GitHub by itself** is on (it is on for new apps), your approval of the plan counts as Accept, so a piece the checker passes goes to GitHub by itself. Its **Overview** says so: "It went to GitHub by itself because you approved the plan", with a link to the goal and the goal's step bar (see [Follow each piece to live](give-your-first-goal.md#follow-each-piece-to-live)). With that rule off, each piece waits for your **Accept**. One that changes a protected part of the app says **Held for you** and waits for your **Accept** either way. Work you started with **Just do it** always waits for you.
@@ -77,7 +77,8 @@ Your work is still accepted, and nothing is lost. The card says **Not sent to Gi
 - **A branch with that name is already on GitHub with other changes.** Decurion did not overwrite it. Delete or rename that branch on GitHub, then tap **Try again**.
 - **Could not reach GitHub.** Check this PC's internet connection, then tap **Try again**.
 - **This app's folder is not linked to GitHub.** It has no remote named `origin`. Get the work by hand instead, as shown below.
-- **The pull request was not opened, but the work was sent.** The card still shows **Open pull request on GitHub**. Tap it to make the pull request yourself. If it says the token was not accepted, save a new one in **Settings**, **GitHub**.
+- **The pull request was not opened, but the work was sent.** The card still shows **Open pull request on GitHub**, and the goal page and the piece's panel say why beside it. Tap it to make the pull request yourself. If it says the token was not accepted, save a new one in **Settings**, **GitHub**. If it says your token can't open pull requests on this app, **Settings**, **Sign-ins** shows GitHub amber with the steps to fix it. See [Check your sign-ins](check-your-sign-ins.md).
+- **"Can't automatically merge."** GitHub shows this when the work changes the same lines as something merged into the main branch since the work started. You can still open the pull request; it just can't be merged with one click yet. Once it is open, GitHub's **Resolve conflicts** button lets you pick which lines to keep, or ask someone who knows the code. When a pull request Decurion opened clashes like this, the goal page and the piece's panel say so.
 
 ## Get the changes by hand
 

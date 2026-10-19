@@ -119,12 +119,13 @@
   };
 
   // Where Decurion's help pages are. The one place this address lives, so
-  // both menus agree. The pages are published online, not served by the hub,
-  // so Help opens them in a new browser tab and leaves Decurion open.
-  D.HELP_URL = "https://github.com/decurion-dev/decurion/tree/main/docs/help/src";
+  // both menus agree. The hub serves its own help (help.rs, help.html), so
+  // it works on every install with nothing outside to reach. Help opens in
+  // a new browser tab and leaves Decurion open where you were.
+  D.HELP_URL = "/help";
   // One help page by its file name (no ending), so a page links to it in
   // one place if the help moves.
-  D.helpPage = (name) => `${D.HELP_URL.replace("/tree/", "/blob/")}/${name}.md`;
+  D.helpPage = (name) => `${D.HELP_URL}#${name}.md`;
 
   // The phone's bottom tabs, the same on the inbox and the goals page so the
   // phone feels like one app. Inbox, Board and Settings are hash routes of
@@ -346,7 +347,7 @@
     }));
     const update = road.update?.length ? [
       D.el("ul", { className: "road-update" }, ...road.update.map((l) => D.el("li", {}, l))),
-      D.el("p", { className: "road-next" }, D.el("a", { href: D.helpPage("improve-decurion-itself"), target: "_blank", rel: "noopener noreferrer" }, "How to update Decurion")),
+      D.el("p", { className: "road-next" }, D.el("a", { href: `${D.helpPage("improve-decurion-itself")}#update-decurion`, target: "_blank", rel: "noopener noreferrer" }, "How to update Decurion")),
     ] : [];
     return D.el("div", { className: `road${road.you ? " you" : ""}` }, steps, D.el("p", { className: "road-next" }, road.next), ...update);
   };
@@ -371,6 +372,23 @@
     const last = [...(ev ?? [])].reverse().find((r) => r.event.kind === "finished" || r.event.kind === "message");
     return last ? (last.event.summary ?? last.event.text ?? "") : "";
   };
+
+  // A summary the runner had to cut short ends in "…" at its size limit.
+  // It is shown up to its last whole line or sentence, never mid-word or
+  // mid-markdown, and `cut` says the end is missing so the page can say so.
+  D.cleanCut = (text) => {
+    const s = String(text ?? "");
+    if (!s.endsWith("…") || s.length < 1990) return { text: s, cut: false };
+    const body = s.slice(0, -1);
+    let at = body.lastIndexOf("\n");
+    if (at < body.length / 2) {
+      const ends = [...body.matchAll(/[.!?]["')\]]*(?=\s)/g)];
+      const last = ends[ends.length - 1];
+      if (last) at = Math.max(at, last.index + last[0].length);
+    }
+    return { text: (at > 0 ? body.slice(0, at) : body).trimEnd(), cut: true };
+  };
+  D.CUT_NOTE = "The agent wrote more than Decurion keeps, so the end is missing.";
 
   // One line for a card: what the work is doing now, or asking.
   D.cardLine = (t, ev) => {
@@ -479,6 +497,11 @@
   D.pro = store.get("decurion.pro") === "1";
   D.setPro = (v) => { D.pro = v; store.set("decurion.pro", v ? "1" : "0"); document.body.classList.toggle("pro", v); for (const fn of proHooks) fn(v); };
   D.onPro = (fn) => proHooks.push(fn);
+  // What Pro view adds, in one plain line, wherever its switch is.
+  // How much of a plan something used: one plain word, or in Pro view the
+  // exact figures (TokenLine in tokens.rs). Older hubs send only words.
+  D.usageWords = (u) => (D.pro || !u.plain ? u.words : `${u.plain[0].toUpperCase()}${u.plain.slice(1)} plan usage`);
+  D.PRO_LINE = "Pro view shows every step an agent takes, its branch and cost, and exact usage numbers. Off keeps it simple.";
   D.switchEl = (label, get, set, onChange) => {
     const b = D.el("button", { type: "button", className: "switch", role: "switch" },
       D.el("span", { className: "track" }), D.el("span", {}, label), D.el("span", { className: "state" }));
@@ -623,7 +646,9 @@
 // Agents write their summaries in a little markdown. D.richText draws the
 // parts they use (paragraphs, lists, headings, bold, code, quotes, simple
 // tables) with D.el and text nodes only: nothing an agent writes ever
-// becomes HTML, and its links stay plain text. D.questions pulls out what
+// becomes HTML, and its links stay plain text. Only Decurion's own help
+// (help.html) passes `links`, which turns a link into one only when that
+// function gives back an address it allows. D.questions pulls out what
 // the agent asks the owner, so screens can put it first, and D.askBox draws
 // it with one-tap answers. An answer goes the same way as the message box's
 // "Do this next": the work goes back to its agent with it. Nothing here
@@ -658,7 +683,7 @@
         continue;
       }
       if (!line.trim()) { open = null; continue; }
-      if ((m = line.match(/^\s{0,3}#{1,6}\s+(.*?)[\s#]*$/))) { out.push({ k: "h", text: m[1] }); open = null; continue; }
+      if ((m = line.match(/^\s{0,3}(#{1,6})\s+(.*?)[\s#]*$/))) { out.push({ k: "h", level: m[1].length, text: m[2] }); open = null; continue; }
       if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { out.push({ k: "hr" }); open = null; continue; }
       if (ROW.test(line) && i + 1 < lines.length && RULE.test(lines[i + 1])) {
         const rows = [];
@@ -685,10 +710,18 @@
     return out;
   }
 
-  // `code`, **bold**, __bold__, [text](address) as plain text, *italic*.
+  // `code`, **bold**, __bold__, [text](address) as plain text, *italic*,
+  // <https://address> as plain text.
   // No lookbehind: older phone browsers would refuse the whole file.
-  const INLINE = /`([^`]+)`|\*\*(\S(?:.*?\S)?)\*\*|__(\S(?:.*?\S)?)__|\[([^\]]+)\]\(([^)\s]+)\)|(^|[^\w*])\*([^\s*](?:[^*]*?[^\s*])?)\*(?![\w*])/g;
-  function inline(s, depth = 0) {
+  const INLINE = /`([^`]+)`|\*\*(\S(?:.*?\S)?)\*\*|__(\S(?:.*?\S)?)__|\[([^\]]+)\]\(([^)\s]+)\)|(^|[^\w*])\*([^\s*](?:[^*]*?[^\s*])?)\*(?![\w*])|<(https?:\/\/[^\s>]+)>/g;
+  // A link, only when the caller's `links` allows its address (help only).
+  const anchor = (o, url, kids) => {
+    const href = o.links?.(url);
+    if (typeof href !== "string" || !href) return null;
+    const out = /^https?:/i.test(href);
+    return el("a", out ? { href, target: "_blank", rel: "noopener noreferrer" } : { href }, ...kids);
+  };
+  function inline(s, depth = 0, o = {}) {
     const out = [];
     let last = 0;
     for (const m of s.matchAll(INLINE)) {
@@ -697,30 +730,41 @@
       if (m[1] !== undefined) out.push(el("code", {}, m[1]));
       else if (m[2] !== undefined || m[3] !== undefined) {
         const inner = m[2] ?? m[3];
-        out.push(el("strong", {}, ...(depth < 2 ? inline(inner, depth + 1) : [inner])));
-      } else if (m[4] !== undefined) out.push(...inline(m[4], depth + 1), m[4] === m[5] ? "" : ` (${m[5]})`);
+        out.push(el("strong", {}, ...(depth < 2 ? inline(inner, depth + 1, o) : [inner])));
+      } else if (m[4] !== undefined) {
+        const a = anchor(o, m[5], inline(m[4], depth + 1, o));
+        if (a) out.push(a);
+        else out.push(...inline(m[4], depth + 1, o), m[4] === m[5] ? "" : ` (${m[5]})`);
+      } else if (m[8] !== undefined) out.push(anchor(o, m[8], [m[8]]) ?? m[0]);
       else out.push(el("em", {}, m[7]));
       last = m.index + m[0].length;
     }
     if (last < s.length) out.push(s.slice(last));
     return out;
   }
-  const lines = (text) => text.split("\n").flatMap((l, i) => (i ? [el("br"), ...inline(l)] : inline(l)));
 
   // D.richText(text) → a <div class="rich"> that is safe to put anywhere.
-  D.richText = (text) => {
+  // Options, for Decurion's own help only: `links(address)` gives back the
+  // address to link to, or nothing to keep it as text; `headings` draws
+  // headings as real headings (h1 to h4), with ids made from their words.
+  D.richText = (text, o = {}) => {
+    const lines = (t) => t.split("\n").flatMap((l, i) => (i ? [el("br"), ...inline(l, 0, o)] : inline(l, 0, o)));
     const root = el("div", { className: "rich" });
     let stack = []; // open lists: { indent, list, ord }
     for (const b of blocks(text)) {
       if (b.k !== "li") stack = [];
-      if (b.k === "h") root.append(el("p", { className: "rh" }, el("strong", {}, ...inline(b.text))));
+      if (b.k === "h" && o.headings) {
+        const tag = `h${Math.min(4, b.level)}`;
+        const id = b.text.toLowerCase().replace(/[`*_]/g, "").replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-");
+        root.append(el(tag, { id }, ...inline(b.text, 0, o)));
+      } else if (b.k === "h") root.append(el("p", { className: "rh" }, el("strong", {}, ...inline(b.text, 0, o))));
       else if (b.k === "p") root.append(el("p", {}, ...lines(b.text)));
       else if (b.k === "quote") root.append(el("blockquote", {}, ...lines(b.text)));
       else if (b.k === "hr") root.append(el("hr"));
       else if (b.k === "code") root.append(el("pre", {}, el("code", {}, b.text)));
       else if (b.k === "table") {
         const n = Math.max(b.head.length, ...b.rows.map((r) => r.length));
-        const tr = (r, tag) => el("tr", {}, ...Array.from({ length: n }, (_, i) => el(tag, {}, ...inline(r[i] ?? ""))));
+        const tr = (r, tag) => el("tr", {}, ...Array.from({ length: n }, (_, i) => el(tag, {}, ...inline(r[i] ?? "", 0, o))));
         root.append(el("div", { className: "rtable" }, el("table", {},
           el("thead", {}, tr(b.head, "th")), el("tbody", {}, ...b.rows.map((r) => tr(r, "td"))))));
       } else {
@@ -766,9 +810,8 @@
     }
     return out;
   }
-  // Words that mean the agent wants something from the owner. "No
-  // questions" is the opposite, so it never counts.
-  const ASKS = /\b(questions?|should I|shall I|do you want|would you like|worth checking|let me know|please confirm|your call|up to you|decide|which (one|do you))\b/i;
+  // A heading that means questions for the owner follow. "No questions" is
+  // the opposite, so it never counts.
   const NOT_ASKS = /\bno (open |other |further )?questions\b/i;
   const ASKS_HEAD = /\b(questions?|decisions?|for you|to decide|open items?)\b/i;
   const sentences = (t) => t.match(/[^.?!]+(?:[.?!]+["')\]]*|$)/g)?.map((x) => x.trim()).filter(Boolean) ?? [];
@@ -780,14 +823,13 @@
       if (b.k === "h") { heading = ASKS_HEAD.test(b.text) && !NOT_ASKS.test(b.text); continue; }
       const t = plain(b.text).replace(/\s+/g, " ").trim();
       if (!t) continue;
-      if (heading) { under.push(t); continue; }
+      // Only a real question counts: a sentence that ends in a question
+      // mark. A line that only mentions a question, or sits under a heading
+      // such as "Decisions", is the agent's report, not something to answer.
       const asked = sentences(t).filter((x) => /\?["')\]]*$/.test(x));
-      if (asked.length) loose.push(...asked);
-      else if (ASKS.test(t) && !NOT_ASKS.test(t)) loose.push(t);
+      (heading ? under : loose).push(...asked);
     }
-    // Real questions beat sentences that only mention one.
-    const real = loose.filter((t) => /\?["')\]]*$/.test(t));
-    const pick = under.length ? under.slice(0, MAX_Q) : (real.length ? real : loose).slice(-MAX_Q);
+    const pick = under.length ? under.slice(0, MAX_Q) : loose.slice(-MAX_Q);
     // A section label such as "(e)" in front means nothing on its own.
     return [...new Set(pick.map((t) => clip(t.replace(/^\(?[a-z0-9]{1,2}\)\s+/i, ""), Q_LEN)))].map((text) => ({ text, choices: [] }));
   }
@@ -1118,6 +1160,20 @@
     if (g.pull_request) return "Pull request ready on GitHub";
     return ghLink(g.url) ? "On GitHub as a branch. Open it to make the pull request." : `Sent as the branch ${g.branch}`;
   };
+  // Plain words for what GitHub will show next, so its red warnings are
+  // never the first sign. A pull request GitHub says clashes with newer
+  // changes says so; a link that opens one says what "Can't automatically
+  // merge" there means. Null when there is nothing to say.
+  D.githubClash = (g) => {
+    if (!g || g.state !== "sent" || !ghLink(g.url)) return null;
+    if (g.pull_request && g.clash) {
+      return "This clashes with newer changes on main, so GitHub can't merge it as it is. Ask for the same change again: new work always starts from the latest code. Or have someone fix the clash on GitHub.";
+    }
+    if (!g.pull_request) {
+      return "If GitHub says \u201cCan't automatically merge\u201d, newer changes on main clash with this work. You can still open the pull request. To have it redone on the latest code, ask for the same change again.";
+    }
+    return null;
+  };
   // What happened, with the link or Try again. `small` is for board cards.
   D.github = (t, onChanged, { small = false } = {}) => {
     const g = t.github;
@@ -1134,8 +1190,10 @@
       const words = g.pull_request ? "On GitHub as a pull request: a proposed change to your app's code. Nothing changes in the app until it is merged."
         : link ? "On GitHub as a branch, with no pull request yet. Tap Open pull request on GitHub, then Create pull request there. Decurion finds it by itself."
         : `Sent to the app's git server as the branch ${g.branch}.`;
-      return el("div", { className: "gh notice" }, icon("done"),
-        el("div", { className: "grow" }, words, g.error ? el("div", { className: "hint" }, g.error) : null), link || null);
+      const clash = D.githubClash(g);
+      return el("div", { className: `gh notice${g.pull_request && g.clash ? " warn" : ""}` }, icon(g.pull_request && g.clash ? "alert" : "done"),
+        el("div", { className: "grow" }, words, g.error ? el("div", { className: "hint" }, g.error) : null,
+          clash ? el("div", { className: "hint" }, clash) : null), link || null);
     }
     const again = el("button", { type: "button", className: sz }, icon("retry"), "Try again");
     again.disabled = D.offline;
@@ -1208,6 +1266,11 @@
     const ol = el("ol", { className: "timeline" });
     const item = (icCls, ic, ...kids) => ol.append(el("li", { className: icCls === "quiet" ? "quiet" : "" }, el("span", { className: `ic ${icCls}` }, icon(ic)), el("div", { className: "txt" }, ...kids)));
     const when = (r) => el("span", { className: "when" }, D.clock(r.at));
+    // A summary cut short shows up to its last whole line, and says so.
+    const said = (text) => {
+      const s = D.cleanCut(text);
+      return [el("div", {}, s.text), s.cut ? el("div", { className: "hint" }, D.CUT_NOTE) : null];
+    };
     for (let i = 0; i < ev.length; i++) {
       const r = ev[i], e = r.event;
       if (e.kind === "started") item("", "start", "Started its sealed box", when(r));
@@ -1238,7 +1301,7 @@
       }
       else if (e.kind === "finished") {
         const cost = pro && e.cost_usd != null ? `${D.money(e.cost_usd)} so far` : "";
-        item(e.ok ? "ok" : "bad", e.ok ? "done" : "failed", el("b", {}, e.ok ? "Finished" : "Could not finish"), when(r), el("div", {}, D.questions(e.summary).plain), cost && el("div", { className: "hint" }, cost));
+        item(e.ok ? "ok" : "bad", e.ok ? "done" : "failed", el("b", {}, e.ok ? "Finished" : "Could not finish"), when(r), ...said(D.questions(e.summary).plain), cost && el("div", { className: "hint" }, cost));
       } else if (e.kind === "tool") {
         // Simple view folds a run of tool calls into one line.
         let j = i;
@@ -1461,6 +1524,15 @@
       : g.state === "failed" ? ["failed", "Not sent to GitHub"] : ["queued", "Sending to GitHub"];
     return el("span", { className: `pill ${cls}` }, icon(cls), word);
   };
+  // "What you asked" is the owner's own words. For a goal's piece that is
+  // what they typed to start the goal; the piece's prompt is the project
+  // lead's brief for the builder, shown under its own name.
+  function asked(c) {
+    const t = c.t, own = c.goal?.asked;
+    const part = (title, text) => el("section", {}, el("div", { className: "section-title" }, title), el("p", { className: "asked" }, text));
+    if (!c.goal) return [part("What you asked", t.prompt)];
+    return [own ? part("What you asked", own) : null, part("Brief for the builder", t.prompt)].filter(Boolean);
+  }
 
   function draw(c) {
     const t = c.t, ev = c.ev, app = apps[t.app_id];
@@ -1536,17 +1608,38 @@
       upper.push(el("section", {}, el("div", { className: "section-title" }, "GitHub"),
         D.github(t, () => { c.sig = ""; c.changed(); c.load(); })));
     }
+    // A goal's piece leads with the project lead's plain report; the
+    // builder's own notes (commits, commands, file names) wait behind Show
+    // details, in full.
+    const lead = c.goal && (t.state === "in_review" || t.state === "done");
+    const report = lead ? c.goal.report : null;
+    if (report) {
+      const hear = window.Voice?.canSpeak?.() ? window.Voice.speaker(report, { label: "Read aloud" }) : null;
+      upper.push(el("section", {}, el("div", { className: `section-title${hear ? " with-voice" : ""}` }, "Your project lead's report", hear),
+        el("div", { className: "callout rich-box done" }, D.richText(report))));
+    }
     if (rest.trim() && t.state !== "running") {
       const label = { needs_you: asks.length ? "What the agent said" : "The agent is asking", in_review: "The agent's summary", failed: "What went wrong", done: "The agent's summary", queued: "Last thing it said" }[t.state];
-      // A small "Read aloud" in the header, so the owner can hear the report.
-      const hear = window.Voice?.canSpeak?.() ? window.Voice.speaker(rest, { label: "Read aloud" }) : null;
-      upper.push(el("section", {}, el("div", { className: `section-title${hear ? " with-voice" : ""}` }, label, hear),
-        el("div", { className: `callout rich-box ${t.state}` }, D.richText(rest))));
+      const full = D.cleanCut(rest);
+      const box = [el("div", { className: `callout rich-box ${t.state}` }, D.richText(full.text)),
+        full.cut ? el("p", { className: "hint" }, D.CUT_NOTE) : null];
+      if (lead) {
+        const det = el("details", { className: "fold tech", open: !!c.techOpen },
+          el("summary", { className: "section-title", dataset: { key: "wk-tech" } }, icon("right"), "Show details: the builder's own notes"), ...box);
+        det.ontoggle = () => { c.techOpen = det.open; };
+        upper.push(el("section", {},
+          report ? null : el("p", { className: "hint" }, "Your project lead writes you a plain report here once every piece of this goal is checked."),
+          det));
+      } else {
+        // A small "Read aloud" in the header, so the owner can hear the report.
+        const hear = window.Voice?.canSpeak?.() ? window.Voice.speaker(full.text, { label: "Read aloud" }) : null;
+        upper.push(el("section", {}, el("div", { className: `section-title${hear ? " with-voice" : ""}` }, label, hear), ...box));
+      }
     }
     const next = whatNext(c, asks, rest);
     if (next) upper.push(next);
     // Before it has started there is nothing else to show: say what was asked.
-    if (!ev.length) upper.push(el("section", {}, el("div", { className: "section-title" }, "What you asked"), el("p", { className: "asked" }, t.prompt)));
+    if (!ev.length) upper.push(...asked(c));
     p.upper.replaceChildren(...upper);
     // While it works, Overview shows its last few steps; Activity has them all.
     if (t.state === "running" && ev.length) {
@@ -1578,8 +1671,7 @@
           open(k, `wk-kid-${k.id}`))))));
     }
     // Details is its own tab, so what was asked shows in full, not folded.
-    lower.push(el("section", {}, el("div", { className: "section-title" }, "What you asked"),
-      el("p", { className: "asked" }, t.prompt)));
+    lower.push(...asked(c));
     p.activity.replaceChildren(ev.length ? timeline(ev, D.pro) : el("p", { className: "hint" }, "Nothing yet. Steps show here as the agent takes them."));
     if (D.pro) {
       const last = [...ev].reverse().find((r) => r.event.kind === "finished");

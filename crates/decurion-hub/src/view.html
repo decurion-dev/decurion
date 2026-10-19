@@ -233,7 +233,9 @@
     if (history.length > 1) { e.preventDefault(); history.back(); }
   };
   function showFrame(id) {
-    $("raw").href = pageSrc(id);
+    // On its own, the page gets the hub's fixed "Back to the goal" link,
+    // where Approve is, because a page an agent drew has no way back.
+    $("raw").href = `${pageSrc(id)}?back=1`;
     // No permissions at all: no scripts, no forms, no pop-ups, no reaching the hub.
     const f = document.createElement("iframe");
     f.setAttribute("sandbox", "");

@@ -104,6 +104,12 @@ pub struct PieceOf {
     /// Where it is on its way from built to live, the same steps and words
     /// as on the goal page ([`crate::road`]). `None` for research.
     pub road: Option<Road>,
+    /// The project lead's plain report on the goal, once it wrote one after
+    /// this piece last finished. The work panel leads with it.
+    pub report: Option<String>,
+    /// What the owner typed to start the goal, in their own words. The
+    /// piece's own prompt is the project lead's brief for the builder.
+    pub asked: Option<String>,
 }
 
 /// What the runner gets when it asks for helper work.
@@ -1246,11 +1252,11 @@ impl Store {
         let mut tx = self.pool().begin().await?; // read-only: a reader never waits on writers
         let app_name = app_name(&mut tx, goal.app_id).await?;
         let messages = messages_in(&mut tx, id).await?;
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             "SELECT p.thread_id, p.goal_id, p.title, p.done_when, p.review, p.rounds,
                     p.review_summary, p.review_issues, p.review_evidence, p.review_claims,
                     t.state, t.branch, t.research, p.merged_at, w.live_at,
-                    t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error,
+                    t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, {},
                     EXISTS (SELECT 1 FROM piece_reports r WHERE r.thread_id = p.thread_id) AS report,
                     (SELECT json_extract(e.body, '$.summary') FROM events e
                      WHERE e.thread_id = p.thread_id AND json_extract(e.body, '$.kind') = 'finished'
@@ -1259,7 +1265,8 @@ impl Store {
              FROM goal_pieces p JOIN threads t ON t.id = p.thread_id
              LEFT JOIN pr_watches w ON w.thread_id = p.thread_id
              WHERE p.goal_id = ? ORDER BY p.thread_id",
-        )
+            crate::github::gh_clash("t")
+        ))
         .bind(id)
         .fetch_all(&mut *tx)
         .await?;
@@ -2759,14 +2766,34 @@ impl Store {
         .await?;
         let rules = self.road_rules(t.app_id).await?;
         let road = self.piece_road(thread_id, &rules).await?;
+        let goal_id: i64 = row.try_get("goal_id")?;
+        // A report covers this piece only when it came after the piece last
+        // finished: an older one is about an earlier round.
+        let (report, asked): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT
+                (SELECT json_extract(m.body, '$.say') FROM goal_messages m
+                 WHERE m.goal_id = ?1 AND json_extract(m.body, '$.kind') = 'report'
+                   AND julianday(m.at) >= COALESCE((SELECT julianday(MAX(e.at)) FROM events e
+                        WHERE e.thread_id = ?2 AND json_extract(e.body, '$.kind') = 'finished'), 0)
+                 ORDER BY m.id DESC LIMIT 1),
+                (SELECT json_extract(m.body, '$.text') FROM goal_messages m
+                 WHERE m.goal_id = ?1 AND json_extract(m.body, '$.kind') = 'owner'
+                 ORDER BY m.id LIMIT 1)",
+        )
+        .bind(goal_id)
+        .bind(thread_id)
+        .fetch_one(self.pool())
+        .await?;
         Ok(Some(PieceOf {
-            goal_id: row.try_get("goal_id")?,
+            goal_id,
             goal_title: row.try_get("title")?,
             review,
             by_plan: !t.research && t.state == ThreadState::Done && sent_by_plan,
             held,
             sends_checked,
             road,
+            report: report.filter(|r| !r.trim().is_empty()),
+            asked: asked.filter(|a| !a.trim().is_empty()),
         }))
     }
 

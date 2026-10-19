@@ -57,6 +57,6 @@ If you are new, follow these pages in order:
 
 ## Get more help
 
-You can open these pages any time from **Help** in Decurion's menu, on your PC and on your phone.
+You can open these pages any time from **Help** in Decurion's menu, on your PC and on your phone. Decurion shows them itself, in a new tab, with the list of pages on the side; **Back to Decurion** takes you back.
 
 Ask a question or report a problem on [GitHub](https://github.com/decurion-dev/decurion/issues).

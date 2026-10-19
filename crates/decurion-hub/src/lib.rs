@@ -29,6 +29,7 @@ pub mod devices;
 pub mod dismiss;
 pub mod folders;
 pub mod github;
+pub mod help;
 pub mod limits;
 pub mod live;
 pub mod merge;
@@ -384,6 +385,7 @@ pub fn router(state: AppState) -> Router {
         .route("/today", get(today::list))
         // Helper agents working or lined up, for the board: owner only (live.rs).
         .route("/helpers", get(live::list))
+        .route("/needs-you", get(today::needs))
         // A research piece's report page, escaped inside JSON (research.rs).
         .route(
             "/runner/threads/{id}/report",
@@ -459,6 +461,9 @@ pub fn router(state: AppState) -> Router {
         .route("/runner/join", post(runner_join))
         .route("/goals", get(goals_page))
         .route("/plan", get(plan_page))
+        // Owner help, built into the hub (help.rs). Public words only.
+        .route("/help", get(help::page))
+        .route("/help/book.json", get(help::book))
         .route("/pages/{goal}/{page}", get(view_page))
         .route("/login", get(login_page).post(login))
         .route("/pair", get(pair_page).post(pair))

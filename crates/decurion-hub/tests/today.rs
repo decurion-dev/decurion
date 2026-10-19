@@ -442,3 +442,116 @@ async fn the_board_and_inbox_still_send_the_content_security_policy() {
         assert!(csp.contains("frame-ancestors 'none'"), "{path}");
     }
 }
+
+async fn needs(r: &axum::Router) -> Value {
+    let (s, v) = call(r, "GET", "/api/needs-you", Some(OWNER), Value::Null).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v
+}
+
+#[tokio::test]
+async fn one_list_says_what_needs_you_and_the_app_rows_count_it() {
+    let (r, store) = hub().await;
+    let shop = add_app(&r, "shop").await;
+    let blog = add_app(&r, "blog").await;
+    // Shop: one piece asks, one is ready to check, one failed, one was
+    // accepted but did not reach GitHub, one failed but was dismissed.
+    let asks = add_work(&r, shop, "Asks").await;
+    set_state(&store, asks, "needs_you").await;
+    let check = add_work(&r, shop, "Check me").await;
+    set_state(&store, check, "in_review").await;
+    let failed = add_work(&r, shop, "Broke").await;
+    set_state(&store, failed, "failed").await;
+    let lost = add_work(&r, shop, "Not sent").await;
+    set_state(&store, lost, "done").await;
+    sqlx::query("UPDATE threads SET gh_state = 'failed', gh_branch = 'decurion/x' WHERE id = ?")
+        .bind(lost)
+        .execute(store.pool())
+        .await
+        .expect("send failed");
+    let gone = add_work(&r, shop, "Old failure").await;
+    set_state(&store, gone, "failed").await;
+    sqlx::query("UPDATE threads SET dismissed_at = '2026-10-18T09:00:00Z' WHERE id = ?")
+        .bind(gone)
+        .execute(store.pool())
+        .await
+        .expect("dismiss");
+    // Blog: a goal's piece in review whose checker is still coming waits on
+    // the checker, not the owner; its plan-ready goal waits on the owner.
+    let goal: i64 = sqlx::query_scalar(
+        "INSERT INTO goals (app_id, title, state, session_id) VALUES (?, 'Posts', 'plan_ready', 's1') RETURNING id",
+    )
+    .bind(blog)
+    .fetch_one(store.pool())
+    .await
+    .expect("goal");
+    let piece = add_work(&r, blog, "Being checked").await;
+    set_state(&store, piece, "in_review").await;
+    sqlx::query("INSERT INTO goal_pieces (thread_id, goal_id, title, done_when, review) VALUES (?, ?, 'Being checked', 'ok', 'reviewing')")
+        .bind(piece)
+        .bind(goal)
+        .execute(store.pool())
+        .await
+        .expect("piece");
+    // And an open pull request with a comment to answer.
+    let pr = add_work(&r, blog, "Sent").await;
+    set_state(&store, pr, "done").await;
+    watch(&store, pr, blog, 4, "open", "2026-10-18T08:00:00Z").await;
+    comment(&store, pr, 1, "param").await;
+
+    let n = needs(&r).await;
+    let work: Vec<(i64, &str)> = n["work"]
+        .as_array()
+        .expect("work")
+        .iter()
+        .map(|w| {
+            (
+                w["thread_id"].as_i64().expect("id"),
+                w["why"].as_str().expect("why"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        work,
+        vec![
+            (asks, "answer"),
+            (check, "check"),
+            (failed, "failed"),
+            (lost, "not_sent")
+        ]
+    );
+    assert_eq!(
+        n["goals"],
+        json!([{"goal_id": goal, "app_id": blog, "why": "plan"}])
+    );
+    assert_eq!(
+        n["prs"],
+        json!([{"thread_id": pr, "app_id": blog, "why": "comments"}])
+    );
+    assert_eq!(n["total"], 6);
+    assert_eq!(n["by_app"][shop.to_string()], 4);
+    assert_eq!(n["by_app"][blog.to_string()], 2);
+
+    // The app rows count the same list, and say it.
+    let rows = today(&r).await;
+    let row = |id: i64| {
+        rows.iter()
+            .find(|x| x["app_id"] == id)
+            .expect("row")
+            .clone()
+    };
+    assert_eq!(row(shop)["needs_you"], 4);
+    assert_eq!(row(shop)["line"], "1 piece needs you · 3 more");
+    assert_eq!(row(blog)["needs_you"], 2);
+
+    // Its check done, the piece is the owner's to look at.
+    sqlx::query("UPDATE goal_pieces SET review = 'passed' WHERE thread_id = ?")
+        .bind(piece)
+        .execute(store.pool())
+        .await
+        .expect("passed");
+    assert_eq!(needs(&r).await["by_app"][blog.to_string()], 3);
+
+    let (s, _) = call(&r, "GET", "/api/needs-you", Some(RUNNER), Value::Null).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}

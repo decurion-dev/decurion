@@ -468,6 +468,22 @@ async fn a_goal_becomes_reviewed_work() {
     assert_eq!(v["pages"][1]["kind"], "check");
     assert_eq!(v["pages"][1]["thread_id"], thread);
     assert_eq!(v["goal"]["busy"], true);
+    // Until the project lead reports, the piece's panel has no report to
+    // lead with; it always has what the owner typed.
+    let of = ok(
+        &r,
+        "GET",
+        &format!("/api/threads/{thread}/goal"),
+        OWNER,
+        Value::Null,
+    )
+    .await;
+    assert!(of["report"].is_null(), "{of}");
+    assert_eq!(
+        of["asked"],
+        "Add a password reset
+for clinic staff"
+    );
     let claim = helper(
         &r,
         "coordinator",
@@ -482,6 +498,18 @@ async fn a_goal_becomes_reviewed_work() {
     let v = view(&r, goal).await;
     assert_eq!(v["goal"]["state"], "for_review");
     assert_eq!(last_message(&v)["body"]["kind"], "report");
+    let of = ok(
+        &r,
+        "GET",
+        &format!("/api/threads/{thread}/goal"),
+        OWNER,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        of["report"],
+        "The reset link is built and checked. Try it on your phone."
+    );
     no_helper(&r).await;
 
     let g = ok(

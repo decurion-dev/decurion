@@ -303,6 +303,7 @@
   .prs li { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; background:var(--card); border-radius:10px; padding:8px 12px; overflow-wrap:anywhere; }
   .prs .n { font-weight:700; color:var(--muted); font-variant-numeric:tabular-nums; }
   .prs .t { flex:1 1 160px; min-width:0; font-weight:600; }
+  .prs .pr-why { flex:1 1 100%; margin:0; font-size:14px; color:var(--muted); }
   .composer-box { display:flex; align-items:flex-end; gap:8px; background:var(--card); border:1px solid var(--line-strong); border-radius:24px; padding:5px 5px 5px 16px; }
   .composer-box:focus-within { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
   .composer textarea { flex:1; min-width:0; border:0; background:transparent; resize:none; font:inherit; font-size:16px; line-height:1.45; padding:9px 0; max-height:200px; color:var(--ink); outline:none; }
@@ -880,6 +881,9 @@ function drawNewWork() {
 }
 D.onOffline(drawNewWork);
 function openNewGoal(focus = true) {
+  // The box starts on the open goal's app, else on the app last used.
+  const open = S.goals?.find(g => g.id === S.id);
+  if (open && $("new-goal").hidden) newWork.setApp(open.app_id);
   $("new-goal").hidden = false;
   $("new-toggle").setAttribute("aria-expanded", "true");
   if (location.hash.startsWith("#goal-") && !wide.matches) location.hash = "#goals";
@@ -1399,17 +1403,30 @@ function svgIcon(d) {
   const path = document.createElementNS(ns, "path"); path.setAttribute("d", d); svg.append(path);
   return svg;
 }
+/**
+ * Puts the goal the hub just answered with into the list at once, so the list
+ * on the left says Working the moment a plan is approved, not a poll later.
+ */
+function showGoalNow(g) {
+  if (!g || g.id == null || !Array.isArray(S.goals)) return;
+  const at = S.goals.findIndex(x => x.id === g.id);
+  if (at < 0) return;
+  S.goals[at] = { ...S.goals[at], ...g };
+  S.listSig = "";
+  renderList();
+}
+
 async function approve(msgId, btn, err) {
   const id = S.id;
   btn.disabled = true; btn.textContent = "Starting the work…"; err.textContent = "";
-  try { await post(`/goals/${id}/approve`, { plan_message_id: msgId }); S.forceStick = true; tick(); }
+  try { showGoalNow(await post(`/goals/${id}/approve`, { plan_message_id: msgId })); S.forceStick = true; tick(); }
   catch (e) { btn.disabled = false; btn.textContent = "Approve plan"; err.textContent = `The plan wasn't approved: ${e.message}`; }
 }
 
 // ---------- tail: thinking, stuck, review, closed ----------
 function renderTail(v) {
   const g = v.goal;
-  const prs = (v.pieces ?? []).map(p => [p.thread_id, p.github?.state, p.github?.url, p.merged, p.review, p.thread_state, p.road?.label]);
+  const prs = (v.pieces ?? []).map(p => [p.thread_id, p.github?.state, p.github?.url, p.github?.error, p.github?.clash, p.merged, p.review, p.thread_state, p.road?.label]);
   const sig = JSON.stringify([g.busy, g.stuck, g.state, g.dismissed_at, boardHref(), prs, v.live, v.road]);
   if (sig === S.tailSig) return false;
   S.tailSig = sig;
@@ -1483,7 +1500,11 @@ function finishList(v) {
     else if (gh) what = el("span", { class: "hint" }, "Sending to GitHub…");
     else if (p.review === "needs_a_look") what = el("a", { class: "btn", href: boardHref() }, "Needs your look on the board");
     else what = el("span", { class: "hint" }, p.review === "failed" ? "Couldn't be finished" : "Not sent");
-    return el("li", null, el("span", { class: "n", "aria-hidden": "true" }, String(i + 1)), el("span", { class: "t" }, p.title), what);
+    // Why Decurion didn't open it, and what GitHub's warnings there mean,
+    // in the same plain words as the piece's own panel.
+    const why = !p.merged && gh?.state === "sent" ? [gh.pull_request ? null : gh.error, D.githubClash(gh)].filter(Boolean) : [];
+    return el("li", null, el("span", { class: "n", "aria-hidden": "true" }, String(i + 1)), el("span", { class: "t" }, p.title), what,
+      ...why.map(w => el("p", { class: "pr-why" }, w)));
   }));
 }
 
@@ -1570,10 +1591,13 @@ function renderPieces(v) {
   const typing = document.activeElement?.dataset?.why;
   $("pieces-count").textContent = pieces.length ? String(pieces.length) : "";
   const body = $("pieces-body");
-  // What the goal used so far (tokens.rs): the project lead and every piece.
-  const used = v.usage ? el("p", { class: "hint used" }, `This goal used ${v.usage.total.words}`,
-    pieces.length
-      ? ` (project lead ${v.usage.lead.words.split(" ·")[0]}, pieces ${v.usage.pieces.words.split(" ·")[0]})` : "", ".") : null;
+  // What the goal used so far (tokens.rs): one plain word for how much of
+  // the plan; in Pro view the exact figures, the project lead and every piece.
+  const used = !v.usage ? null : D.pro || !v.usage.total.plain
+    ? el("p", { class: "hint used" }, `This goal used ${v.usage.total.words}`,
+      pieces.length
+        ? ` (project lead ${v.usage.lead.words.split(" ·")[0]}, pieces ${v.usage.pieces.words.split(" ·")[0]})` : "", ".")
+    : el("p", { class: "hint used" }, `Plan usage so far: ${v.usage.total.plain}. Turn on Pro view for the exact numbers.`);
   if (!pieces.length) {
     body.replaceChildren(el("p", { class: "empty" }, "Pieces of work show up here once you approve a plan."), used ?? "");
     return;
@@ -1589,7 +1613,7 @@ function renderPieces(v) {
       : `${passed} of ${pieces.length} passed the check`),
     used,
   ];
-  body.replaceChildren(...head, ...pieces.map(p => {
+  body.replaceChildren(...head.filter(Boolean), ...pieces.map(p => {
     let [label, tone] = REVIEW_STATES[p.review] ?? [p.review, "neutral"];
     if (p.research && p.review === "passed") label = "Research done";
     if (p.research && p.review === "building") label = "Researching";
@@ -1610,8 +1634,8 @@ function renderPieces(v) {
       el("dl", { class: "facts" },
         el("div", null, el("dt", null, "Agent:"), el("dd", null, THREAD_STATES[p.thread_state] ?? p.thread_state)),
         p.research ? null : el("div", null, el("dt", null, "Checked:"), el("dd", null, rounds)),
-        p.usage ? el("div", null, el("dt", null, "Used:"), el("dd", null, p.usage.words)) : null,
-        p.usage?.peak_context ? el("div", null, el("dt", null, "Longest conversation:"), el("dd", null, contextWords(p.usage))) : null),
+        p.usage ? el("div", null, el("dt", null, D.pro ? "Used:" : "Plan usage:"), el("dd", null, D.pro || !p.usage.plain ? p.usage.words : p.usage.plain)) : null,
+        D.pro && p.usage?.peak_context ? el("div", null, el("dt", null, "Longest conversation:"), el("dd", null, contextWords(p.usage))) : null),
       p.agent_summary ? el("details", { class: "said", open: p.research ? true : null },
         el("summary", null, p.research ? "What it found" : "What the agent said it did"),
         el("div", { class: "said-body" }, p.agent_summary)) : null,
@@ -1693,7 +1717,7 @@ async function sayToLead(text, typed = false) {
   if (id == null || !text || S.saying || (S.view && CLOSED.has(S.view.goal.state))) return;
   S.saying = true; updateSend(); $("say-err").textContent = "";
   try {
-    await post(`/goals/${id}/say`, { text, plan_message_id: S.view ? shownPlan(S.view) : null });
+    showGoalNow(await post(`/goals/${id}/say`, { text, plan_message_id: S.view ? shownPlan(S.view) : null }));
     if (typed) {
       S.says.delete(id);
       if (S.id === id) { $("say").value = ""; autosize(); }

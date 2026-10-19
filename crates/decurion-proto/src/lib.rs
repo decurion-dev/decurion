@@ -495,6 +495,10 @@ pub struct GitHubSend {
     /// request was opened.
     #[serde(default)]
     pub error: Option<String>,
+    /// GitHub says the pull request clashes with newer changes on its base
+    /// branch, so it can't be merged as it is.
+    #[serde(default)]
+    pub clash: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
