@@ -95,7 +95,7 @@ async function act(data, kind, tag) {
   }
   if (r && r.ok) {
     title = name(kind === "approve" ? "plan approved" : "accepted");
-    body = kind === "approve" ? "The work has started." : "Decurion is sending it to GitHub for you to merge there.";
+    body = kind === "approve" ? "The work has started." : "Decurion is sending it to GitHub. Open Decurion to see what comes next.";
   } else {
     title = name(kind === "approve" ? "plan not approved" : "not accepted");
     if (!r) body = "Can't reach your PC. Open Decurion to try again.";

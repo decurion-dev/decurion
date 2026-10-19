@@ -24,8 +24,14 @@
 //! - **No token, no watching.** Without a token Decurion cannot read the
 //!   pull request, so it waits quietly; the token never leaves the request
 //!   header.
+//! - **A pull request the owner opened from Decurion's link counts too.**
+//!   When the token could not open one, the work went up as its own
+//!   `decurion/` branch with a link that opens it. Decurion looks for a pull
+//!   request whose head is exactly that branch ([`find_opened`]) and, once
+//!   found, watches it like one it opened, from the commit it pushed there.
+//!   A pull request from any other branch is never taken up.
 
-use crate::github::{is_login, Repo, Sender, Token};
+use crate::github::{is_login, repo_of_page, Pr, Repo, Sender, Token};
 use crate::push::Notice;
 use crate::store::{check_receipt, receipt_result, save_receipt, Result, Store, StoreError};
 use crate::{forbidden, ApiError, AppState, Caller};
@@ -195,6 +201,20 @@ struct Look {
     merge_commit: Option<String>,
     author: Option<String>,
     comments: Vec<NewComment>,
+    /// GitHub says it clashes with newer changes on its base branch; `None`
+    /// while GitHub is still working that out.
+    clash: Option<bool>,
+}
+
+/// Whether GitHub says an open pull request clashes with its base branch:
+/// `mergeable_state` "dirty". GitHub works this out in the background, so
+/// "unknown" (or no answer yet) tells nothing.
+pub(crate) fn clashes(pr: &serde_json::Value) -> Option<bool> {
+    match pr["mergeable_state"].as_str() {
+        Some("dirty") => Some(true),
+        Some("unknown") | None => None,
+        Some(_) => Some(false),
+    }
 }
 
 async fn get_json(
@@ -259,6 +279,11 @@ async fn look(s: &Sender, t: &Token, r: &Repo, n: i64) -> std::result::Result<Lo
         }
     }
     Ok(Look {
+        clash: if state == PrState::Open {
+            clashes(&pr)
+        } else {
+            Some(false)
+        },
         state,
         merge_commit,
         author,
@@ -376,6 +401,9 @@ pub struct Watched {
     /// Still open, and the app's rules let the owner merge it from Decurion
     /// ([`crate::merge`]).
     pub can_merge: bool,
+    /// Still open, and GitHub says it clashes with newer changes on its base
+    /// branch, so it can't be merged as it is.
+    pub clash: bool,
 }
 
 /// A fix is under way while its work is unfinished, or accepted but not yet
@@ -384,7 +412,99 @@ const FIX_UNDER_WAY: &str = "EXISTS (SELECT 1 FROM threads f WHERE f.fix_of = w.
      AND (f.state NOT IN ('done', 'failed')
           OR (f.state = 'done' AND f.gh_state IN ('waiting', 'sending'))))";
 
+/// Work sent as its own `decurion/` branch with only a link to open its
+/// pull request, not watched yet.
+struct Unwatched {
+    thread_id: i64,
+    repo: Repo,
+    branch: String,
+}
+
+/// How far back sent work is looked for a pull request opened by hand.
+const ADOPT_DAYS: i64 = 30;
+
+/// Most such sends looked at in one round, newest first.
+const ADOPT_MAX: i64 = 20;
+
 impl Store {
+    /// Sends that went up as a branch with a link to open the pull request
+    /// (no pull request was opened for them), recent ones only.
+    async fn unwatched_sends(&self) -> Result<Vec<Unwatched>> {
+        let rows: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT t.id, t.gh_url, t.gh_branch FROM threads t
+             WHERE t.gh_state = 'sent' AND t.gh_pr = 0 AND t.fix_of IS NULL
+               AND t.gh_branch LIKE 'decurion/%' AND t.gh_head IS NOT NULL
+               AND t.gh_url LIKE 'https://github.com/%'
+               AND t.updated_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
+               AND NOT EXISTS (SELECT 1 FROM pr_watches w WHERE w.thread_id = t.id)
+             ORDER BY t.id DESC LIMIT ?",
+        )
+        .bind(format!("-{ADOPT_DAYS} days"))
+        .bind(ADOPT_MAX)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(thread_id, url, branch)| {
+                Some(Unwatched {
+                    thread_id,
+                    repo: repo_of_page(&url)?,
+                    branch,
+                })
+            })
+            .collect())
+    }
+
+    /// Starts watching pull request `pr`, found on GitHub with thread
+    /// `id`'s own branch as its head, as if Decurion had opened it: from the
+    /// commit Decurion pushed there, so a fix of its comments may only move
+    /// that branch forward. Its link becomes the pull request. In one
+    /// transaction, with an audit row; nothing happens twice.
+    async fn adopt_pr(&self, id: i64, repo: &Repo, branch: &str, pr: &Pr) -> Result<bool> {
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        let added = sqlx::query(
+            "INSERT INTO pr_watches (thread_id, app_id, owner, repo, number, url, branch, head,
+                                     event, event_at)
+             SELECT t.id, t.app_id, ?, ?, ?, ?, t.gh_branch, t.gh_head,
+                    'Pull request found on GitHub', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             FROM threads t
+             WHERE t.id = ? AND t.gh_state = 'sent' AND t.gh_pr = 0 AND t.gh_branch = ?
+               AND t.gh_head IS NOT NULL
+             ON CONFLICT (thread_id) DO NOTHING",
+        )
+        .bind(&repo.owner)
+        .bind(&repo.name)
+        .bind(pr.number)
+        .bind(&pr.url)
+        .bind(id)
+        .bind(branch)
+        .execute(&mut *tx)
+        .await?;
+        if added.rows_affected() != 1 {
+            tx.commit().await?;
+            return Ok(false);
+        }
+        sqlx::query("UPDATE threads SET gh_url = ?, gh_pr = 1 WHERE id = ?")
+            .bind(&pr.url)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        crate::store::audit(
+            &mut tx,
+            id,
+            "hub",
+            decurion_proto::ThreadState::Done,
+            decurion_proto::ThreadState::Done,
+            Some(&format!(
+                "found the pull request opened from its branch: {}",
+                pr.url
+            )),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
     async fn open_watches(&self) -> Result<Vec<Open>> {
         let rows = sqlx::query(
             "SELECT w.thread_id, w.owner, w.repo, w.number, w.url, t.title, a.name AS app
@@ -455,7 +575,7 @@ impl Store {
         };
         sqlx::query(
             "UPDATE pr_watches SET state = ?, author = COALESCE(?, author),
-                 merge_commit = COALESCE(?, merge_commit),
+                 merge_commit = COALESCE(?, merge_commit), clash = COALESCE(?, clash),
                  checked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                  event = COALESCE(?, event),
                  event_at = CASE WHEN ? IS NULL THEN event_at
@@ -465,6 +585,7 @@ impl Store {
         .bind(l.state.as_str())
         .bind(&l.author)
         .bind(&l.merge_commit)
+        .bind(l.clash)
         .bind(&event)
         .bind(&event)
         .bind(thread_id)
@@ -484,6 +605,7 @@ impl Store {
             "SELECT w.thread_id, w.app_id, a.name AS app, t.title, w.number, w.url, w.state,
                     a.reviewer, w.event, w.event_at, {FIX_UNDER_WAY} AS fixing,
                     (w.state = 'open' AND a.can_merge) AS can_merge,
+                    (w.state = 'open' AND w.clash) AS clash,
                     (SELECT json_group_array(c.author) FROM pr_comments c
                       WHERE c.thread_id = w.thread_id AND {OPEN_COMMENT}) AS authors
              FROM pr_watches w JOIN threads t ON t.id = w.thread_id JOIN apps a ON a.id = w.app_id
@@ -517,6 +639,7 @@ impl Store {
                     line: (state == "open" && !authors.is_empty()).then(|| left_words(&authors)),
                     fixing: r.try_get("fixing")?,
                     can_merge: r.try_get("can_merge")?,
+                    clash: r.try_get("clash")?,
                     state,
                 })
             })
@@ -631,23 +754,69 @@ pub(crate) async fn merged(s: &Sender, thread_id: i64) {
     }
 }
 
-/// Looks at every open pull request once. Returns how many it looked at.
-/// Without a token there is nothing it can read, so it looks at none.
+/// Looks on GitHub for the pull request of each recent send that went up
+/// with only a link to open one, by its own `decurion/` branch, and starts
+/// watching those it finds. Returns how many it found.
+async fn find_opened(s: &Sender, token: &Token, sends: Vec<Unwatched>) -> usize {
+    let mut found = 0;
+    for u in sends {
+        let pr = match s.gh.find_pr(token, &u.repo, &u.branch).await {
+            Ok(Some(pr)) => pr,
+            Ok(None) => continue,
+            Err(why) => {
+                tracing::debug!(thread = u.thread_id, reason = %why, "could not look for a pull request opened by hand");
+                continue;
+            }
+        };
+        match s.store.adopt_pr(u.thread_id, &u.repo, &u.branch, &pr).await {
+            Ok(true) => {
+                tracing::info!(
+                    thread = u.thread_id,
+                    "found the pull request opened from Decurion's link"
+                );
+                found += 1;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::error!(error = %e, thread = u.thread_id, "could not start watching a pull request")
+            }
+        }
+    }
+    found
+}
+
+/// Looks at every open pull request once, after looking for ones the owner
+/// opened from Decurion's link. Returns how many it looked at. Without a
+/// token there is nothing it can read, so it looks at none.
 pub async fn poll(state: &AppState) -> usize {
     let Some(s) = state.sender() else { return 0 };
-    let open = match s.store.open_watches().await {
-        Ok(o) => o,
-        Err(e) => {
+    let (open, unwatched) = match (
+        s.store.open_watches().await,
+        s.store.unwatched_sends().await,
+    ) {
+        (Ok(o), Ok(u)) => (o, u),
+        (Err(e), _) | (_, Err(e)) => {
             tracing::error!(error = %e, "could not list the pull requests to watch");
             return 0;
         }
     };
-    if open.is_empty() {
+    if open.is_empty() && unwatched.is_empty() {
         return 0;
     }
     let Some(token) = s.gh.tokens.get().await else {
         tracing::debug!("no GitHub token, so pull requests are not watched");
         return 0;
+    };
+    let open = if find_opened(&s, &token, unwatched).await > 0 {
+        match s.store.open_watches().await {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::error!(error = %e, "could not list the pull requests to watch");
+                return 0;
+            }
+        }
+    } else {
+        open
     };
     let mut looked = 0;
     for w in open {
@@ -700,7 +869,9 @@ pub async fn poll(state: &AppState) -> usize {
 }
 
 /// Looks at open pull requests every [`POLL_SECS`] for as long as the hub
-/// runs.
+/// runs, starting at once. Each round also notices Decurion's own merged
+/// changes that this hub now runs ([`crate::road::notice_self_live`]): the
+/// first round after the owner updated and restarted Decurion says Live.
 pub fn watch(state: AppState) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(POLL_SECS));
@@ -711,6 +882,7 @@ pub fn watch(state: AppState) {
             if n > 0 {
                 tracing::debug!(n, "looked at pull requests");
             }
+            crate::road::notice_self_live(&state).await;
         }
     });
 }

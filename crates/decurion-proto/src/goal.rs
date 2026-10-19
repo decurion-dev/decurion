@@ -448,6 +448,41 @@ pub struct Piece {
     /// Tokens this piece used: its building runs and its checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<crate::tokens::TokenLine>,
+    /// The check coming for it, while one is: the screens say the checker
+    /// is at work or waiting, and offer no Accept until it has finished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<CheckNow>,
+    /// Where it is on its way from built to live, by the app's rules.
+    /// `None` for a research piece, which changes no code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub road: Option<Road>,
+}
+
+/// Where a helper agent's job (a piece's check, a project lead's turn, a
+/// visual plan being drawn) is right now, so the screens can show work that
+/// is alive. Only for showing; nothing is decided from it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckNow {
+    pub state: JobNow,
+    /// When it started, while it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    /// Why it cannot start yet, in plain words, when something other than
+    /// waiting for a free agent holds it up (such as the Max plan being out
+    /// of usage for now).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
+    /// When that wait should end by itself, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+}
+
+/// A helper job that has not finished: lined up, or running now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobNow {
+    Queued,
+    Running,
 }
 
 /// One thing the checker actually did, such as running the tests or opening
@@ -561,6 +596,71 @@ pub struct GoalView {
     /// project lead's turns. `None` until an agent reported any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<GoalUsage>,
+    /// Where the goal's work is on its way from built to live: the piece
+    /// furthest behind. `None` while nothing that changes code is planned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub road: Option<Road>,
+    /// The whole way from approval to live for this app, in plain words
+    /// built from its rules, for the plan and its approval.
+    #[serde(default)]
+    pub story: String,
+}
+
+/// One step on a piece's way from built to live. Every screen names them
+/// the same way: Built, Checked, On GitHub, Merged, Live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Step {
+    Built,
+    Checked,
+    OnGithub,
+    Merged,
+    /// Live for an app Decurion deploys; for Decurion's own code, the
+    /// running Decurion has the change ("Update Decurion" until then).
+    Live,
+}
+
+/// How far a step is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepMark {
+    Done,
+    /// The step the work is on now.
+    Now,
+    Todo,
+    /// Passed by without it, such as a piece the owner accepted before a
+    /// checker passed it.
+    Skipped,
+}
+
+/// One step as a screen shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoadStep {
+    pub step: Step,
+    /// The step's name, such as "On GitHub" or "Update Decurion".
+    pub label: String,
+    pub mark: StepMark,
+}
+
+/// Where work is on its way from built to live, worked out by the hub from
+/// the app's rules, so every screen tells the same, true story. Steps that
+/// do not apply to the app are left out: Live only for an app that deploys
+/// from Decurion, or for Decurion's own code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Road {
+    pub steps: Vec<RoadStep>,
+    /// A short status, such as "Needs you · merge on GitHub" or "Live".
+    pub label: String,
+    /// What happens next and who does it, in one plain line.
+    pub next: String,
+    /// The next move is the owner's (or their reviewer's).
+    pub you: bool,
+    /// Nothing is left to do: the last step is done.
+    pub done: bool,
+    /// For Decurion's own code, merged but not yet running here: how to
+    /// update this Decurion, one plain line per way it may be installed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub update: Vec<String>,
 }
 
 /// A goal's tokens, in total and by who used them.

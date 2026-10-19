@@ -29,7 +29,9 @@ pub mod devices;
 pub mod dismiss;
 pub mod folders;
 pub mod github;
+pub mod help;
 pub mod limits;
+pub mod live;
 pub mod merge;
 pub mod messages;
 pub(crate) mod netgit;
@@ -40,6 +42,7 @@ pub mod preview;
 pub mod protected;
 pub mod push;
 pub mod research;
+pub mod road;
 pub mod secrets;
 pub mod sign_in_lights;
 pub mod sign_ins;
@@ -380,6 +383,9 @@ pub fn router(state: AppState) -> Router {
         .route("/runner/threads/{id}/credential", post(runner_credential))
         // The Today strip: owner only, never cloud workers (today.rs).
         .route("/today", get(today::list))
+        // Helper agents working or lined up, for the board: owner only (live.rs).
+        .route("/helpers", get(live::list))
+        .route("/needs-you", get(today::needs))
         // A research piece's report page, escaped inside JSON (research.rs).
         .route(
             "/runner/threads/{id}/report",
@@ -455,6 +461,9 @@ pub fn router(state: AppState) -> Router {
         .route("/runner/join", post(runner_join))
         .route("/goals", get(goals_page))
         .route("/plan", get(plan_page))
+        // Owner help, built into the hub (help.rs). Public words only.
+        .route("/help", get(help::page))
+        .route("/help/book.json", get(help::book))
         .route("/pages/{goal}/{page}", get(view_page))
         .route("/login", get(login_page).post(login))
         .route("/pair", get(pair_page).post(pair))
@@ -1042,15 +1051,17 @@ async fn add_app(
     }
 }
 
-async fn list_threads(State(st): State<AppState>) -> ApiResult<Vec<decurion_proto::Thread>> {
-    Ok(Json(st.store.threads().await?))
+/// Work as the screens read it: each thread with what is alive about it now
+/// (live.rs). Extra fields only, so a reader of plain threads still parses it.
+async fn list_threads(State(st): State<AppState>) -> ApiResult<Vec<live::ThreadView>> {
+    Ok(Json(st.store.thread_views().await?))
 }
 
 async fn get_thread(
     State(st): State<AppState>,
     Path(id): Path<i64>,
-) -> ApiResult<decurion_proto::Thread> {
-    Ok(Json(st.store.thread(id).await?))
+) -> ApiResult<live::ThreadView> {
+    Ok(Json(st.store.thread_view(id).await?))
 }
 
 async fn add_thread(

@@ -1105,6 +1105,19 @@ impl Deployer {
             if held {
                 if let Err(e) = self.store.set_pr_live(thread_id).await {
                     tracing::warn!(error = %e, thread = thread_id, "could not mark a pull request live");
+                    continue;
+                }
+                // The last step of its goal, maybe: the goal closes by itself.
+                match self.store.piece_live(thread_id).await {
+                    Ok(Some(n)) => {
+                        if let Some(p) = &self.push {
+                            p.send(&self.store, &n).await;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, thread = thread_id, "could not close a goal that is live")
+                    }
                 }
             }
         }

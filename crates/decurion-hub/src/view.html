@@ -233,7 +233,9 @@
     if (history.length > 1) { e.preventDefault(); history.back(); }
   };
   function showFrame(id) {
-    $("raw").href = pageSrc(id);
+    // On its own, the page gets the hub's fixed "Back to the goal" link,
+    // where Approve is, because a page an agent drew has no way back.
+    $("raw").href = `${pageSrc(id)}?back=1`;
     // No permissions at all: no scripts, no forms, no pop-ups, no reaching the hub.
     const f = document.createElement("iframe");
     f.setAttribute("sandbox", "");
@@ -576,7 +578,7 @@
       ask.onclick = () => { S.changes.open = !S.changes.open; S.sig = ""; render(); if (S.changes.open) $("changes")?.focus(); };
       const sec = el("section", { className: "ready", "aria-labelledby": "ready-h" },
         el("h2", { id: "ready-h" }, "Ready to start?"),
-        el("p", {}, "This page shows the plan your project lead made. One tap starts every piece of it. Each piece is built, then checked by a second agent."),
+        el("p", {}, "This page shows the plan your project lead made. One tap starts every piece of it, the same as Approve plan, Yes, do it, or typing “yes” on the goal page. Each piece is built, then checked by a second agent."),
         el("div", { className: "acts" }, go, ask));
       if (S.changes.open) {
         const t = el("textarea", { id: "changes", rows: 3, maxLength: 4000, placeholder: "Say what should be different", dataset: { key: "changes" }, disabled: S.sending.has("changes") });
@@ -682,7 +684,8 @@
     const n = (c.v.messages ?? []).find((x) => x.id === c.info.message_id)?.body.plan?.pieces?.length ?? 0;
     const sure = await confirmStart([
       "Start this plan?",
-      `${n ? `All ${D.plural(n, "piece")} of work start` : "The work starts"} now. Each is built in its own sealed box, then checked by a second agent. Nothing reaches GitHub until you accept it.`,
+      // What follows comes from the app's rules (road.rs), the same words as the goal page.
+      `${n ? `All ${D.plural(n, "piece")} of work start` : "The work starts"} now. ${c.v.story || "Each piece is built in its own sealed box, then checked by a second agent."}`,
       "Approve and start", "Not yet",
     ]);
     if (!sure) return;

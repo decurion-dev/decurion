@@ -4,9 +4,19 @@ This page shows where to see how much of your Claude plans a goal used, and what
 
 ## Where to look
 
-- **On a goal:** open the goal and its **Pieces of work** tab. The line under the progress bar says what the whole goal used, for example "This goal used 1.2M tokens · 94% cached (project lead 80k tokens, pieces 1.1M tokens)."
-- **On each piece:** a piece's card shows **Used** (its own work and its checks) and **Longest conversation** (how full its agent's memory got).
-- **On Today:** each app's row on the board and on your phone says what its agents used today, for example "350k tokens · 91% cached."
+- **On a goal:** open the goal and its **Pieces of work** tab. The line under the progress bar says how much of your plan the whole goal used, for example "Plan usage so far: light."
+- **On each piece:** a piece's card shows its **Plan usage** (its own work and its checks).
+- **On Today:** each app's row on the board and on your phone says how much its agents used today, for example "Light plan usage today."
+
+The word is a rough guide: **light**, **moderate** or **heavy**. It weighs what Claude wrote more than what it read, and what it read back from its cache much less. For your plan's real meters, open **Settings**, **Accounts**.
+
+### The exact numbers, in Pro view
+
+Turn on **Pro view** (at the top of the board, or in **Settings** on your phone) to see the exact token counts instead:
+
+- The goal's line says, for example, "This goal used 1.2M tokens · 94% cached (project lead 80k tokens, pieces 1.1M tokens)."
+- A piece's card shows **Used** and **Longest conversation** (how full its agent's memory got).
+- Today says, for example, "350k tokens · 91% cached."
 
 ## What the numbers mean
 

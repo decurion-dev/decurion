@@ -89,7 +89,20 @@
       }
       s.append(p);
     }
-    if (name === "running") s.classList.add("spin");
+    if (name === "running") {
+      s.classList.add("spin");
+      // With reduce motion on, a still spinner reads as stuck: ui.css swaps
+      // the arc for this dot in a ring, the sign of something live.
+      const still = document.createElementNS(SVG, "g");
+      still.setAttribute("class", "still");
+      for (const [r, cls] of [[9, "ring"], [4, "core"]]) {
+        const c = document.createElementNS(SVG, "circle");
+        c.setAttribute("cx", "12"); c.setAttribute("cy", "12"); c.setAttribute("r", String(r));
+        c.setAttribute("class", cls);
+        still.append(c);
+      }
+      s.append(still);
+    }
     return s;
   };
 
@@ -106,9 +119,13 @@
   };
 
   // Where Decurion's help pages are. The one place this address lives, so
-  // both menus agree. The pages are published online, not served by the hub,
-  // so Help opens them in a new browser tab and leaves Decurion open.
-  D.HELP_URL = "https://github.com/decurion-dev/decurion/tree/main/docs/help/src";
+  // both menus agree. The hub serves its own help (help.rs, help.html), so
+  // it works on every install with nothing outside to reach. Help opens in
+  // a new browser tab and leaves Decurion open where you were.
+  D.HELP_URL = "/help";
+  // One help page by its file name (no ending), so a page links to it in
+  // one place if the help moves.
+  D.helpPage = (name) => `${D.HELP_URL}#${name}.md`;
 
   // The phone's bottom tabs, the same on the inbox and the goals page so the
   // phone feels like one app. Inbox, Board and Settings are hash routes of
@@ -172,7 +189,7 @@
   // stop work, which always ask first.
   D.MOVES = {
     in_review: [
-      { to: "done", label: "Accept", kind: "primary", done: "Accepted. Decurion is sending it to GitHub for you to merge there." },
+      { to: "done", label: "Accept", kind: "primary", done: (t) => `Accepted. ${D.acceptWords(t.app_id)}` },
       { to: "queued", label: "Send back", kind: "", done: "Sent back. The agent will pick up where it left off." },
       { to: "failed", label: "Reject", kind: "danger", done: "Rejected.",
         confirm: (t) => [`Reject "${t.title}"?`, "Its changes stay on its branch, but the work is closed.", "Reject work", "Keep it"] },
@@ -230,6 +247,111 @@
     return r.text();
   };
 
+  // ---------- When the hub goes away ----------
+  // While Decurion restarts or updates, its requests fail. After a few
+  // seconds of that, a calm full-page note covers the page (every page that
+  // loads ui.js gets it, whatever it uses to ask the hub), the page keeps
+  // asking quietly, and once the hub answers again it reloads, so it comes
+  // back on the version that now runs. A short blip shows nothing. The hub
+  // answers some requests with 502 or 503 itself, so those only make the
+  // page ask /healthz; Tailscale's own 502 for a hub that is down fails it.
+  const LOST_MS = 6000, PROBE_MS = 3000;
+  const realFetch = window.fetch.bind(window);
+  let lostSince = null, lostNote = null, probing = null;
+  const ours = (input) => {
+    try { return new URL(typeof input === "string" ? input : input.url, location.href).origin === location.origin; }
+    catch (_) { return false; }
+  };
+  function hubLost() {
+    if (lostSince == null) lostSince = Date.now();
+    if (!lostNote && Date.now() - lostSince >= LOST_MS) showLost();
+    if (!probing) probing = setInterval(probe, PROBE_MS);
+  }
+  function hubBack() {
+    lostSince = null;
+    if (lostNote) { location.reload(); return; }
+    clearInterval(probing);
+    probing = null;
+  }
+  async function probe() {
+    try { const r = await realFetch("/healthz", { cache: "no-store" }); if (r.ok) hubBack(); else hubLost(); }
+    catch (_) { hubLost(); }
+  }
+  function showLost() {
+    D.ensureStyle();
+    lostNote = D.el("div", { className: "hub-lost", role: "status", "aria-live": "polite" },
+      D.el("div", { className: "hub-lost-box" },
+        // A device that knows it has no connection says so instead.
+        D.el("p", { className: "hub-lost-h" }, navigator.onLine === false ? "This device is offline." : "Decurion is restarting or updating."),
+        D.el("p", {}, "This page comes back by itself."),
+        D.el("p", { className: "hub-lost-hint" }, "If it doesn't come back in a few minutes, check that Decurion is running on your PC.")));
+    document.body.append(lostNote);
+  }
+  window.fetch = async (input, init) => {
+    if (!ours(input)) return realFetch(input, init);
+    let r;
+    try {
+      r = await realFetch(input, init);
+    } catch (e) {
+      if (e?.name !== "AbortError") hubLost();
+      throw e;
+    }
+    if (r.status === 502 || r.status === 504) probe(); else hubBack();
+    return r;
+  };
+
+  // The shared look of the pieces above and of D.road, added once to the
+  // page, since some pages (the goal page) keep their own look without
+  // ui.css. Colors fall back from ui.css's names to the goal page's.
+  let styled = false;
+  D.ensureStyle = () => {
+    if (styled) return;
+    styled = true;
+    document.head.append(D.el("style", {}, `
+.hub-lost { position: fixed; inset: 0; z-index: 2147483000; display: grid; place-items: center; padding: 24px;
+  background: var(--bg, #f5f6f8); color: var(--ink, #14171c); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; text-align: center; }
+.hub-lost-box { max-width: 420px; }
+.hub-lost-h { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+.hub-lost p { margin: 0 0 8px; }
+.hub-lost-hint { color: var(--muted, #545d6b); font-size: 14px; }
+.road { display: grid; gap: 6px; min-width: 0; }
+.road-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
+.road-steps li { display: inline-flex; align-items: center; gap: 5px; color: var(--muted, #545d6b); }
+.road-steps .mk { font-weight: 700; width: 1.1em; text-align: center; }
+.road-steps .done { color: var(--green, var(--ok-ink, #18703a)); }
+.road-steps .now { color: var(--ink, #14171c); font-weight: 600; }
+.road-steps .now.you { color: var(--amber, var(--warn-ink, #8a5300)); }
+.road-next { margin: 0; font-size: 14px; }
+.road.you .road-next { border-left: 3px solid var(--amber-line, var(--warn, #b97a0f)); padding-left: 8px; }
+.road-update { margin: 0; padding-left: 18px; font-size: 13.5px; }
+.road .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .hub-lost { background: var(--bg, #0e1014); color: var(--ink, #e9ecf1); }
+}`));
+  };
+
+  // Where a goal's work is, from Built to Live (road.rs works it out from
+  // the app's rules, so every screen tells the same story): the steps, each
+  // with a word and a symbol, and one line on what happens next and who
+  // does it. For Decurion's own code, merged but not running yet, how to
+  // update it and the help page that says more.
+  const MARKS = { done: ["✓", "done"], now: ["●", "now"], todo: ["○", "not yet"], skipped: ["–", "skipped"] };
+  D.road = (road) => {
+    if (!road) return null;
+    D.ensureStyle();
+    const steps = D.el("ol", { className: "road-steps", "aria-label": "From built to live" }, ...road.steps.map((s) => {
+      const you = s.mark === "now" && road.you;
+      const [mk, words] = you ? ["!", "needs you"] : MARKS[s.mark] ?? ["○", ""];
+      return D.el("li", { className: `${s.mark}${you ? " you" : ""}`, "aria-current": s.mark === "now" ? "step" : null },
+        D.el("span", { className: "mk", "aria-hidden": "true" }, mk), D.el("span", {}, s.label), D.el("span", { className: "sr" }, `, ${words}`));
+    }));
+    const update = road.update?.length ? [
+      D.el("ul", { className: "road-update" }, ...road.update.map((l) => D.el("li", {}, l))),
+      D.el("p", { className: "road-next" }, D.el("a", { href: `${D.helpPage("improve-decurion-itself")}#update-decurion`, target: "_blank", rel: "noopener noreferrer" }, "How to update Decurion")),
+    ] : [];
+    return D.el("div", { className: `road${road.you ? " you" : ""}` }, steps, D.el("p", { className: "road-next" }, road.next), ...update);
+  };
+
   // Events come in pages of 500; fetch them all so the outcome is never cut off.
   D.events = async (id, after = 0) => {
     let ev = [], page;
@@ -251,21 +373,96 @@
     return last ? (last.event.summary ?? last.event.text ?? "") : "";
   };
 
+  // A summary the runner had to cut short ends in "…" at its size limit.
+  // It is shown up to its last whole line or sentence, never mid-word or
+  // mid-markdown, and `cut` says the end is missing so the page can say so.
+  D.cleanCut = (text) => {
+    const s = String(text ?? "");
+    if (!s.endsWith("…") || s.length < 1990) return { text: s, cut: false };
+    const body = s.slice(0, -1);
+    let at = body.lastIndexOf("\n");
+    if (at < body.length / 2) {
+      const ends = [...body.matchAll(/[.!?]["')\]]*(?=\s)/g)];
+      const last = ends[ends.length - 1];
+      if (last) at = Math.max(at, last.index + last[0].length);
+    }
+    return { text: (at > 0 ? body.slice(0, at) : body).trimEnd(), cut: true };
+  };
+  D.CUT_NOTE = "The agent wrote more than Decurion keeps, so the end is missing.";
+
   // One line for a card: what the work is doing now, or asking.
   D.cardLine = (t, ev) => {
     if (t.state === "queued") return t.session_id ? "Waiting to pick up where it left off" : "Waiting to start";
-    if (!ev?.length) return t.state === "running" ? "Starting up" : "";
+    // A piece waiting for its check: what the checker is doing (live.rs).
+    if (t.state === "in_review" && t.check) return D.checkLine(t.check);
+    if (!ev?.length) return t.state === "running" ? (t.last_note ? noteLine(t.last_note) : "Starting up") : "";
     if (t.state === "running") {
       // A blocked website visit is a side note, not what the work is doing.
       const e = [...ev].reverse().find((r) => r.event.kind !== "blocked")?.event;
+      if (e?.kind === "limit_hit") return "Paused: the Claude Max account ran out of usage";
+      // The agent's own newest words, from the hub, with when it said them.
+      // A raw command stays in Activity and Pro view; the card says it plainly.
+      if (t.last_note) return noteLine(t.last_note);
       if (!e) return "Working";
       if (e.kind === "started") return "Starting up its box";
-      if (e.kind === "limit_hit") return "Paused: the Claude Max account ran out of usage";
-      if (e.kind === "tool") return e.summary ? `${e.name}: ${e.summary}` : `Using ${e.name}`;
+      if (e.kind === "tool") return D.toolWords(e.name, e.summary);
       if (e.kind === "message") return e.text;
     }
     return D.lastWords(ev);
   };
+  const noteLine = (n) => `${n.text} · ${D.ago(n.at)}`;
+
+  // A tool step in plain words, for cards. The common ones are named; any
+  // other is "Working on the code". Checked in order: a command that waits
+  // first, then tests before building (running tests builds too).
+  const SHELL_WORDS = [
+    [/^\s*(cd\s+[^;&|]+(&&|;)\s*)?(sleep|timeout|wait)\b/, "Waiting for the build to finish"],
+    [/\b(test|tests|pytest|jest|vitest|mocha|rspec|phpunit|playwright)\b/, "Running the tests"],
+    [/\b(build|compile|check|clippy|tsc|make|webpack|vite|esbuild|rollup|gradle|mvn|msbuild)\b/, "Building the code"],
+    [/\b(npm|pnpm|yarn|pip3?|cargo|bundle|composer|dotnet)\s+(install|ci|add|fetch|restore|i)\b/, "Getting what the app needs"],
+    [/\bgit\s+(commit|add)\b/, "Saving its changes"],
+    [/\b(sleep|wait|tail\s+-f)\b/, "Waiting for the build to finish"],
+    [/^\s*(cd\s+[^;&|]+(&&|;)\s*)?(cat|ls|grep|rg|find|head|tail|sed\s+-n|wc|tree|git\s+(diff|log|status|show))\b/, "Reading the code"],
+  ];
+  D.toolWords = (name, summary) => {
+    const n = String(name ?? ""), s = String(summary ?? "");
+    if (/^(Read|Glob|Grep|LS|NotebookRead)$/.test(n)) return "Reading the code";
+    if (/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(n)) return "Editing files";
+    if (/^(WebFetch|WebSearch)$/.test(n)) return "Looking something up";
+    if (/^TodoWrite$/.test(n)) return "Planning its next steps";
+    if (/^(Bash|PowerShell|bash|shell)$/.test(n)) return SHELL_WORDS.find(([re]) => re.test(s))?.[1] ?? "Working on the code";
+    return "Working on the code";
+  };
+
+  // A helper job's line (a check, a project lead's turn, a drawing), from
+  // the hub's `CheckNow` (live.rs): working since when, waiting for a free
+  // agent, or waiting on something named in plain words.
+  const untilWhen = (iso) => {
+    const d = new Date(iso);
+    if (isNaN(d)) return "later";
+    return d.toDateString() === new Date().toDateString() ? D.clock(iso)
+      : d.toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" });
+  };
+  D.jobLine = (now, who = "checker") => {
+    const [busy, free] = {
+      checker: ["Checker working", "Waiting for a free agent to check it"],
+      project_lead: ["Project lead working", "Waiting for a free agent for the project lead"],
+      designer: ["Drawing the visual plan", "Waiting for a free agent to draw the visual plan"],
+    }[who] ?? ["Helper working", "Waiting for a free agent"];
+    if (now?.state === "running") return now.started_at ? `${busy} · started ${D.clock(now.started_at)}` : busy;
+    if (now?.waiting) return `Waiting: ${now.waiting}${now.until ? ` It starts by itself about ${untilWhen(now.until)}.` : ""}`;
+    return free;
+  };
+  D.checkLine = (check) => D.jobLine(check, "checker");
+  // While a check is coming the screens offer no Accept: the checker looks
+  // first, and the buttons come back once it has finished.
+  D.checking = (t) => t.state === "in_review" && !!t.check;
+  D.checkNote = (t, { small = false } = {}) => D.el("div", { className: `check-note${small ? " sm" : ""}`, role: "status" },
+    D.icon(t.check?.state === "running" ? "running" : t.check?.waiting ? "alert" : "queued"),
+    D.el("div", { className: "grow" }, D.el("b", {}, "Nothing to do."), " The checker looks at it first.",
+      small ? null : D.el("div", { className: "hint" }, D.checkLine(t.check))));
+  // When the work last did anything: its newest step or note (live.rs).
+  D.lastActivity = (t) => t.last_activity_at ?? t.updated_at;
 
   // ---------- Words and numbers ----------
   D.money = (n) => "$" + (n ?? 0).toFixed(2);
@@ -300,6 +497,11 @@
   D.pro = store.get("decurion.pro") === "1";
   D.setPro = (v) => { D.pro = v; store.set("decurion.pro", v ? "1" : "0"); document.body.classList.toggle("pro", v); for (const fn of proHooks) fn(v); };
   D.onPro = (fn) => proHooks.push(fn);
+  // What Pro view adds, in one plain line, wherever its switch is.
+  // How much of a plan something used: one plain word, or in Pro view the
+  // exact figures (TokenLine in tokens.rs). Older hubs send only words.
+  D.usageWords = (u) => (D.pro || !u.plain ? u.words : `${u.plain[0].toUpperCase()}${u.plain.slice(1)} plan usage`);
+  D.PRO_LINE = "Pro view shows every step an agent takes, its branch and cost, and exact usage numbers. Off keeps it simple.";
   D.switchEl = (label, get, set, onChange) => {
     const b = D.el("button", { type: "button", className: "switch", role: "switch" },
       D.el("span", { className: "track" }), D.el("span", {}, label), D.el("span", { className: "state" }));
@@ -429,6 +631,13 @@
   let apps = {};
   D.setApps = (list) => { apps = Object.fromEntries(list.map((a) => [a.id, a])); };
   D.appName = (id) => apps[id]?.name ?? "";
+  // What happens after Accept, by the app's own rules (road.rs tells the
+  // same story for a goal's pieces): it goes to GitHub as a pull request,
+  // and the merge is the owner's, on GitHub or with one Merge tap.
+  D.mergeWords = (id) => (apps[id]?.rules?.merge
+    ? "Then tap Merge on it once GitHub's checks pass."
+    : "Then you or your reviewer merge it on GitHub.");
+  D.acceptWords = (id) => `Decurion sends it to GitHub as a pull request, a proposed change to your app's code. ${D.mergeWords(id)}`;
 
   document.body.classList.toggle("pro", D.pro);
 })();
@@ -437,7 +646,9 @@
 // Agents write their summaries in a little markdown. D.richText draws the
 // parts they use (paragraphs, lists, headings, bold, code, quotes, simple
 // tables) with D.el and text nodes only: nothing an agent writes ever
-// becomes HTML, and its links stay plain text. D.questions pulls out what
+// becomes HTML, and its links stay plain text. Only Decurion's own help
+// (help.html) passes `links`, which turns a link into one only when that
+// function gives back an address it allows. D.questions pulls out what
 // the agent asks the owner, so screens can put it first, and D.askBox draws
 // it with one-tap answers. An answer goes the same way as the message box's
 // "Do this next": the work goes back to its agent with it. Nothing here
@@ -472,7 +683,7 @@
         continue;
       }
       if (!line.trim()) { open = null; continue; }
-      if ((m = line.match(/^\s{0,3}#{1,6}\s+(.*?)[\s#]*$/))) { out.push({ k: "h", text: m[1] }); open = null; continue; }
+      if ((m = line.match(/^\s{0,3}(#{1,6})\s+(.*?)[\s#]*$/))) { out.push({ k: "h", level: m[1].length, text: m[2] }); open = null; continue; }
       if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { out.push({ k: "hr" }); open = null; continue; }
       if (ROW.test(line) && i + 1 < lines.length && RULE.test(lines[i + 1])) {
         const rows = [];
@@ -499,10 +710,18 @@
     return out;
   }
 
-  // `code`, **bold**, __bold__, [text](address) as plain text, *italic*.
+  // `code`, **bold**, __bold__, [text](address) as plain text, *italic*,
+  // <https://address> as plain text.
   // No lookbehind: older phone browsers would refuse the whole file.
-  const INLINE = /`([^`]+)`|\*\*(\S(?:.*?\S)?)\*\*|__(\S(?:.*?\S)?)__|\[([^\]]+)\]\(([^)\s]+)\)|(^|[^\w*])\*([^\s*](?:[^*]*?[^\s*])?)\*(?![\w*])/g;
-  function inline(s, depth = 0) {
+  const INLINE = /`([^`]+)`|\*\*(\S(?:.*?\S)?)\*\*|__(\S(?:.*?\S)?)__|\[([^\]]+)\]\(([^)\s]+)\)|(^|[^\w*])\*([^\s*](?:[^*]*?[^\s*])?)\*(?![\w*])|<(https?:\/\/[^\s>]+)>/g;
+  // A link, only when the caller's `links` allows its address (help only).
+  const anchor = (o, url, kids) => {
+    const href = o.links?.(url);
+    if (typeof href !== "string" || !href) return null;
+    const out = /^https?:/i.test(href);
+    return el("a", out ? { href, target: "_blank", rel: "noopener noreferrer" } : { href }, ...kids);
+  };
+  function inline(s, depth = 0, o = {}) {
     const out = [];
     let last = 0;
     for (const m of s.matchAll(INLINE)) {
@@ -511,30 +730,41 @@
       if (m[1] !== undefined) out.push(el("code", {}, m[1]));
       else if (m[2] !== undefined || m[3] !== undefined) {
         const inner = m[2] ?? m[3];
-        out.push(el("strong", {}, ...(depth < 2 ? inline(inner, depth + 1) : [inner])));
-      } else if (m[4] !== undefined) out.push(...inline(m[4], depth + 1), m[4] === m[5] ? "" : ` (${m[5]})`);
+        out.push(el("strong", {}, ...(depth < 2 ? inline(inner, depth + 1, o) : [inner])));
+      } else if (m[4] !== undefined) {
+        const a = anchor(o, m[5], inline(m[4], depth + 1, o));
+        if (a) out.push(a);
+        else out.push(...inline(m[4], depth + 1, o), m[4] === m[5] ? "" : ` (${m[5]})`);
+      } else if (m[8] !== undefined) out.push(anchor(o, m[8], [m[8]]) ?? m[0]);
       else out.push(el("em", {}, m[7]));
       last = m.index + m[0].length;
     }
     if (last < s.length) out.push(s.slice(last));
     return out;
   }
-  const lines = (text) => text.split("\n").flatMap((l, i) => (i ? [el("br"), ...inline(l)] : inline(l)));
 
   // D.richText(text) → a <div class="rich"> that is safe to put anywhere.
-  D.richText = (text) => {
+  // Options, for Decurion's own help only: `links(address)` gives back the
+  // address to link to, or nothing to keep it as text; `headings` draws
+  // headings as real headings (h1 to h4), with ids made from their words.
+  D.richText = (text, o = {}) => {
+    const lines = (t) => t.split("\n").flatMap((l, i) => (i ? [el("br"), ...inline(l, 0, o)] : inline(l, 0, o)));
     const root = el("div", { className: "rich" });
     let stack = []; // open lists: { indent, list, ord }
     for (const b of blocks(text)) {
       if (b.k !== "li") stack = [];
-      if (b.k === "h") root.append(el("p", { className: "rh" }, el("strong", {}, ...inline(b.text))));
+      if (b.k === "h" && o.headings) {
+        const tag = `h${Math.min(4, b.level)}`;
+        const id = b.text.toLowerCase().replace(/[`*_]/g, "").replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-");
+        root.append(el(tag, { id }, ...inline(b.text, 0, o)));
+      } else if (b.k === "h") root.append(el("p", { className: "rh" }, el("strong", {}, ...inline(b.text, 0, o))));
       else if (b.k === "p") root.append(el("p", {}, ...lines(b.text)));
       else if (b.k === "quote") root.append(el("blockquote", {}, ...lines(b.text)));
       else if (b.k === "hr") root.append(el("hr"));
       else if (b.k === "code") root.append(el("pre", {}, el("code", {}, b.text)));
       else if (b.k === "table") {
         const n = Math.max(b.head.length, ...b.rows.map((r) => r.length));
-        const tr = (r, tag) => el("tr", {}, ...Array.from({ length: n }, (_, i) => el(tag, {}, ...inline(r[i] ?? ""))));
+        const tr = (r, tag) => el("tr", {}, ...Array.from({ length: n }, (_, i) => el(tag, {}, ...inline(r[i] ?? "", 0, o))));
         root.append(el("div", { className: "rtable" }, el("table", {},
           el("thead", {}, tr(b.head, "th")), el("tbody", {}, ...b.rows.map((r) => tr(r, "td"))))));
       } else {
@@ -580,9 +810,8 @@
     }
     return out;
   }
-  // Words that mean the agent wants something from the owner. "No
-  // questions" is the opposite, so it never counts.
-  const ASKS = /\b(questions?|should I|shall I|do you want|would you like|worth checking|let me know|please confirm|your call|up to you|decide|which (one|do you))\b/i;
+  // A heading that means questions for the owner follow. "No questions" is
+  // the opposite, so it never counts.
   const NOT_ASKS = /\bno (open |other |further )?questions\b/i;
   const ASKS_HEAD = /\b(questions?|decisions?|for you|to decide|open items?)\b/i;
   const sentences = (t) => t.match(/[^.?!]+(?:[.?!]+["')\]]*|$)/g)?.map((x) => x.trim()).filter(Boolean) ?? [];
@@ -594,14 +823,13 @@
       if (b.k === "h") { heading = ASKS_HEAD.test(b.text) && !NOT_ASKS.test(b.text); continue; }
       const t = plain(b.text).replace(/\s+/g, " ").trim();
       if (!t) continue;
-      if (heading) { under.push(t); continue; }
+      // Only a real question counts: a sentence that ends in a question
+      // mark. A line that only mentions a question, or sits under a heading
+      // such as "Decisions", is the agent's report, not something to answer.
       const asked = sentences(t).filter((x) => /\?["')\]]*$/.test(x));
-      if (asked.length) loose.push(...asked);
-      else if (ASKS.test(t) && !NOT_ASKS.test(t)) loose.push(t);
+      (heading ? under : loose).push(...asked);
     }
-    // Real questions beat sentences that only mention one.
-    const real = loose.filter((t) => /\?["')\]]*$/.test(t));
-    const pick = under.length ? under.slice(0, MAX_Q) : (real.length ? real : loose).slice(-MAX_Q);
+    const pick = under.length ? under.slice(0, MAX_Q) : loose.slice(-MAX_Q);
     // A section label such as "(e)" in front means nothing on its own.
     return [...new Set(pick.map((t) => clip(t.replace(/^\(?[a-z0-9]{1,2}\)\s+/i, ""), Q_LEN)))].map((text) => ({ text, choices: [] }));
   }
@@ -886,7 +1114,7 @@
     if (m.confirm && !(await D.confirm(m.confirm(t)))) return false;
     try {
       await D.send(`/threads/${t.id}/move`, { to: m.to, expect: t.state });
-      D.toast(m.done, m.to === "failed" ? "close" : "done");
+      D.toast(typeof m.done === "function" ? m.done(t) : m.done, m.to === "failed" ? "close" : "done");
       return true;
     } catch (e) {
       const msg = `"${m.label}" did not go through. ${e.message}`;
@@ -932,6 +1160,20 @@
     if (g.pull_request) return "Pull request ready on GitHub";
     return ghLink(g.url) ? "On GitHub as a branch. Open it to make the pull request." : `Sent as the branch ${g.branch}`;
   };
+  // Plain words for what GitHub will show next, so its red warnings are
+  // never the first sign. A pull request GitHub says clashes with newer
+  // changes says so; a link that opens one says what "Can't automatically
+  // merge" there means. Null when there is nothing to say.
+  D.githubClash = (g) => {
+    if (!g || g.state !== "sent" || !ghLink(g.url)) return null;
+    if (g.pull_request && g.clash) {
+      return "This clashes with newer changes on main, so GitHub can't merge it as it is. Ask for the same change again: new work always starts from the latest code. Or have someone fix the clash on GitHub.";
+    }
+    if (!g.pull_request) {
+      return "If GitHub says \u201cCan't automatically merge\u201d, newer changes on main clash with this work. You can still open the pull request. To have it redone on the latest code, ask for the same change again.";
+    }
+    return null;
+  };
   // What happened, with the link or Try again. `small` is for board cards.
   D.github = (t, onChanged, { small = false } = {}) => {
     const g = t.github;
@@ -945,11 +1187,13 @@
         icon("branch"), g.pull_request ? "Open pull request" : "Open pull request on GitHub");
       if (link) link.onclick = (ev) => ev.stopPropagation();
       if (small) return el("p", { className: "gh" }, link || `Sent as the branch ${g.branch}`);
-      const words = g.pull_request ? "Sent to GitHub. The pull request is ready for you to look over and merge there."
-        : link ? "Sent to GitHub as a branch. Open the pull request in one tap, then merge it there."
+      const words = g.pull_request ? "On GitHub as a pull request: a proposed change to your app's code. Nothing changes in the app until it is merged."
+        : link ? "On GitHub as a branch, with no pull request yet. Tap Open pull request on GitHub, then Create pull request there. Decurion finds it by itself."
         : `Sent to the app's git server as the branch ${g.branch}.`;
-      return el("div", { className: "gh notice" }, icon("done"),
-        el("div", { className: "grow" }, words, g.error ? el("div", { className: "hint" }, g.error) : null), link || null);
+      const clash = D.githubClash(g);
+      return el("div", { className: `gh notice${g.pull_request && g.clash ? " warn" : ""}` }, icon(g.pull_request && g.clash ? "alert" : "done"),
+        el("div", { className: "grow" }, words, g.error ? el("div", { className: "hint" }, g.error) : null,
+          clash ? el("div", { className: "hint" }, clash) : null), link || null);
     }
     const again = el("button", { type: "button", className: sz }, icon("retry"), "Try again");
     again.disabled = D.offline;
@@ -1022,6 +1266,11 @@
     const ol = el("ol", { className: "timeline" });
     const item = (icCls, ic, ...kids) => ol.append(el("li", { className: icCls === "quiet" ? "quiet" : "" }, el("span", { className: `ic ${icCls}` }, icon(ic)), el("div", { className: "txt" }, ...kids)));
     const when = (r) => el("span", { className: "when" }, D.clock(r.at));
+    // A summary cut short shows up to its last whole line, and says so.
+    const said = (text) => {
+      const s = D.cleanCut(text);
+      return [el("div", {}, s.text), s.cut ? el("div", { className: "hint" }, D.CUT_NOTE) : null];
+    };
     for (let i = 0; i < ev.length; i++) {
       const r = ev[i], e = r.event;
       if (e.kind === "started") item("", "start", "Started its sealed box", when(r));
@@ -1052,7 +1301,7 @@
       }
       else if (e.kind === "finished") {
         const cost = pro && e.cost_usd != null ? `${D.money(e.cost_usd)} so far` : "";
-        item(e.ok ? "ok" : "bad", e.ok ? "done" : "failed", el("b", {}, e.ok ? "Finished" : "Could not finish"), when(r), el("div", {}, D.questions(e.summary).plain), cost && el("div", { className: "hint" }, cost));
+        item(e.ok ? "ok" : "bad", e.ok ? "done" : "failed", el("b", {}, e.ok ? "Finished" : "Could not finish"), when(r), ...said(D.questions(e.summary).plain), cost && el("div", { className: "hint" }, cost));
       } else if (e.kind === "tool") {
         // Simple view folds a run of tool calls into one line.
         let j = i;
@@ -1115,7 +1364,8 @@
         try {
           // With the Accept on screen and no question from the agent, a
           // plain "yes" is that Accept (the hub decides what counts as yes).
-          const res = await D.send(`/threads/${id}/messages`, { kind, text, accept_on_yes: t.state === "in_review" && !c.asked });
+          // While the checker looks first there is no Accept on screen.
+          const res = await D.send(`/threads/${id}/messages`, { kind, text, accept_on_yes: t.state === "in_review" && !c.asked && !D.checking(t) });
           delete drafts[id];
           ta.value = "";
           const doneText = t.research
@@ -1156,7 +1406,8 @@
         ta.setSelectionRange(end, end);
       },
       update(t, n) {
-        box.hidden = t.state === "done";
+        // Sending now would send it back past the checker, so not while it looks.
+        box.hidden = t.state === "done" || D.checking(t);
         const idle = IDLE.has(t.state);
         title.textContent = t.state === "in_review" || t.state === "needs_you" ? "Answer the agent" : "Tell the agent something";
         how.textContent = HOW[t.state] ?? howIdle(t.state);
@@ -1192,6 +1443,8 @@
   // buttons; this only says what each one does.
   function whatNext(c, asks, said) {
     const t = c.t, s = t.state;
+    // While its check is coming there is nothing to choose yet; the footer says so.
+    if (D.checking(t)) return null;
     const rows = [];
     const row = (head, text, btn) => rows.push(el("div", { className: "nx" },
       el("p", { className: "nx-h" }, head), el("p", { className: "nx-t" }, ...[text].flat()), btn || null));
@@ -1212,7 +1465,10 @@
         "Your message goes back to the agent, and it picks up where it left off.", talk("Answer the agent"));
       row("Done with it?", [b("Mark done"), " closes it. Research changes no code, so nothing goes to GitHub."]);
     } else if (s === "in_review") {
-      row("Looks right?", ["Tap ", b("Accept"), " at the bottom. Decurion sends it to GitHub as a pull request, and you merge it there."]);
+      // A goal's piece the checker has yet to pass waits for it (road.rs):
+      // the owner is not asked to Accept it now.
+      const checking = !!c.goal?.road && !c.goal.road.you && c.goal.road.steps.some((x) => x.step === "checked" && x.mark === "now");
+      if (!checking) row("Looks right?", ["Tap ", b("Accept"), ` at the bottom. ${D.acceptWords(t.app_id)}`]);
       row(asks.length ? "Want to answer in your own words, or ask for changes?" : "Has a question, or want changes?",
         "Your message goes back to the agent, and it picks up where it left off.", talk("Answer the agent"));
       if (fix) row("Want what it found fixed?", "Start new work from this summary. This piece stays as it is.", fix);
@@ -1227,7 +1483,8 @@
     } else if (s === "done") {
       // An app whose rules allow merging from Decurion gets a Merge button
       // on the pull request's card (board's Today, phone's inbox) instead.
-      if (t.github?.state === "sent" && t.github.pull_request) {
+      // A goal's piece has its step bar above, which says the same.
+      if (t.github?.state === "sent" && t.github.pull_request && !c.goal?.road) {
         if (apps[t.app_id]?.rules?.merge) row("Merge it", ["Tap ", b("Merge"), " on its pull request on the board's Today strip or in your phone's inbox. Decurion merges once GitHub says the checks passed. You can also merge it on GitHub."]);
         else row("Merge it on GitHub", "Open the pull request above, look it over, and merge it there. This app's rules leave merging to you or your reviewer.");
       }
@@ -1237,33 +1494,51 @@
     return el("section", {}, el("div", { className: "section-title" }, "What next?"), el("div", { className: "next" }, ...rows));
   }
 
-  // A piece of a goal says why it did or didn't wait for your Accept: the
-  // plan's approval covers each piece that passes its check, except one
-  // held for the app's protected parts (finish_helper in coordinator.rs).
-  // Work added straight to the board has no line: Accept is always yours.
+  // A piece of a goal shows the goal's step bar for it (road.rs works it out
+  // from the app's rules: the same steps and words as the goal page) and
+  // says how it reached GitHub: by the plan's approval, or the owner's own
+  // Accept. Work added straight to the board has no line: Accept is always
+  // yours.
   function pieceLine(c) {
     const t = c.t, g = c.goal;
     if (!g) return null;
-    const goal = `“${g.goal_title}”`;
-    const held = g.held && t.state === "in_review";
-    const checking = t.state === "in_review" && !t.research && ["building", "reviewing", "fixing"].includes(g.review);
-    const waits = t.state === "in_review" && !t.research && g.review === "passed" && !g.held;
-    const text = g.by_plan ? `Sent to GitHub by itself because you approved the plan for ${goal}.`
-      : held ? `Held for you: it may change a part of the app you protect, so approving the plan for ${goal} doesn't cover it. Look it over, then tap Accept.`
-      : waits ? `Part of your goal ${goal}. It passed its check. This app's rules say passed pieces wait for you, so tap Accept to send it to GitHub.`
-      : checking && g.sends_checked ? `Part of your goal ${goal}. A checker looks at it first. If it passes, it goes to GitHub by itself, because you approved the plan.`
-      : checking ? `Part of your goal ${goal}. A checker looks at it first. Then it waits for your Accept, as this app's rules say.`
-      : t.state === "done" && !t.research ? `Part of your goal ${goal}. You accepted it yourself.`
-      : `Part of your goal ${goal}.`;
-    return el("div", { className: `notice${held ? " warn" : ""}` }, icon(held ? "shield" : "plan"),
-      el("span", { className: "grow" }, text, " ", el("a", { href: `/goals#goal-${g.goal_id}` }, "Open the goal")));
+    const how = g.by_plan ? " It went to GitHub by itself because you approved the plan."
+      : t.state === "done" && !t.research ? " You accepted it yourself." : "";
+    const head = el("span", {}, `Part of your goal “${g.goal_title}”.${how} `, el("a", { href: `/goals#goal-${g.goal_id}` }, "Open the goal"));
+    const you = !!g.road?.you;
+    return el("div", { className: `notice${you ? " warn" : ""}` }, icon(g.held && t.state === "in_review" ? "shield" : "plan"),
+      el("div", { className: "grow" }, head, g.road ? el("div", { style: "margin-top:8px" }, D.road(g.road)) : null));
+  }
+
+  // The header's time: the newest step or note, not when the work started,
+  // so long quiet work still shows it is alive. Kept fresh on every load.
+  const activityText = (t) => `Last activity ${D.ago(D.lastActivity(t))}`;
+  // A finished piece says where it is on its way to live, never just Done
+  // while nothing is merged: its goal's road, or else how its send went.
+  D.statePill = (t, road) => {
+    if (t.state !== "done" || t.research) return D.pill(t.state);
+    const g = t.github;
+    const [cls, word] = road ? [road.done ? "done" : road.you ? "needs_you" : "queued", road.label]
+      : !g ? ["done", "Accepted"]
+      : g.state === "sent" ? ["queued", g.pull_request ? "On GitHub" : "On GitHub as a branch"]
+      : g.state === "failed" ? ["failed", "Not sent to GitHub"] : ["queued", "Sending to GitHub"];
+    return el("span", { className: `pill ${cls}` }, icon(cls), word);
+  };
+  // "What you asked" is the owner's own words. For a goal's piece that is
+  // what they typed to start the goal; the piece's prompt is the project
+  // lead's brief for the builder, shown under its own name.
+  function asked(c) {
+    const t = c.t, own = c.goal?.asked;
+    const part = (title, text) => el("section", {}, el("div", { className: "section-title" }, title), el("p", { className: "asked" }, text));
+    if (!c.goal) return [part("What you asked", t.prompt)];
+    return [own ? part("What you asked", own) : null, part("Brief for the builder", t.prompt)].filter(Boolean);
   }
 
   function draw(c) {
     const t = c.t, ev = c.ev, app = apps[t.app_id];
     const kids = kidsOf(t.id), parent = t.parent_id != null ? all.find((p) => p.id === t.parent_id) : null;
     const waiting = c.msgs ? c.msgs.filter((m) => m.delivered_at == null).length : 0;
-    const sig = JSON.stringify([t.state, t.place, cloud, t.updated_at, t.title, t.github, c.goal, ev.length, D.pro, D.offline, waiting, parent?.title,
+    const sig = JSON.stringify([t.state, t.place, cloud, t.updated_at, t.title, t.github, c.goal, t.check, ev.length, D.pro, D.offline, waiting, parent?.title,
       kids.map((k) => [k.id, k.state, k.title, k.background])]);
     if (sig === c.sig) return;
     c.sig = sig;
@@ -1303,13 +1578,13 @@
     const close = el("button", { type: "button", className: "btn icon quiet close", "aria-label": "Close", dataset: { key: "wk-close" } }, icon("close", "l"));
     close.onclick = () => panel.close();
     const head = el("header", { className: "work-head" },
-      el("div", { className: "top" }, D.pill(t.state), el("span", { className: "grow" }), close),
+      el("div", { className: "top" }, D.statePill(t, c.goal?.road), el("span", { className: "grow" }), close),
       el("h2", { id: "wk-title" }, t.title),
       el("div", { className: "meta" },
         el("span", { className: "tag" }, icon("app"), D.appName(t.app_id) || "Unknown app"),
         app && el("span", { className: "tag dot-sep" }, icon("ai"), D.aiLabel(app, t)),
         el("span", { className: "tag dot-sep" }, icon(D.PLACES[t.place]?.[0] ?? "pc"), D.PLACES[t.place]?.[1] ?? "Your PC"),
-        el("span", { className: "tag dot-sep updated" }, `Updated ${D.ago(t.updated_at)}`)),
+        p.when = el("span", { className: "tag dot-sep updated", title: new Date(D.lastActivity(t)).toLocaleString() }, activityText(t))),
       p.tabs.el);
     p.head.replaceWith(head);
     p.head = head;
@@ -1333,17 +1608,38 @@
       upper.push(el("section", {}, el("div", { className: "section-title" }, "GitHub"),
         D.github(t, () => { c.sig = ""; c.changed(); c.load(); })));
     }
+    // A goal's piece leads with the project lead's plain report; the
+    // builder's own notes (commits, commands, file names) wait behind Show
+    // details, in full.
+    const lead = c.goal && (t.state === "in_review" || t.state === "done");
+    const report = lead ? c.goal.report : null;
+    if (report) {
+      const hear = window.Voice?.canSpeak?.() ? window.Voice.speaker(report, { label: "Read aloud" }) : null;
+      upper.push(el("section", {}, el("div", { className: `section-title${hear ? " with-voice" : ""}` }, "Your project lead's report", hear),
+        el("div", { className: "callout rich-box done" }, D.richText(report))));
+    }
     if (rest.trim() && t.state !== "running") {
       const label = { needs_you: asks.length ? "What the agent said" : "The agent is asking", in_review: "The agent's summary", failed: "What went wrong", done: "The agent's summary", queued: "Last thing it said" }[t.state];
-      // A small "Read aloud" in the header, so the owner can hear the report.
-      const hear = window.Voice?.canSpeak?.() ? window.Voice.speaker(rest, { label: "Read aloud" }) : null;
-      upper.push(el("section", {}, el("div", { className: `section-title${hear ? " with-voice" : ""}` }, label, hear),
-        el("div", { className: `callout rich-box ${t.state}` }, D.richText(rest))));
+      const full = D.cleanCut(rest);
+      const box = [el("div", { className: `callout rich-box ${t.state}` }, D.richText(full.text)),
+        full.cut ? el("p", { className: "hint" }, D.CUT_NOTE) : null];
+      if (lead) {
+        const det = el("details", { className: "fold tech", open: !!c.techOpen },
+          el("summary", { className: "section-title", dataset: { key: "wk-tech" } }, icon("right"), "Show details: the builder's own notes"), ...box);
+        det.ontoggle = () => { c.techOpen = det.open; };
+        upper.push(el("section", {},
+          report ? null : el("p", { className: "hint" }, "Your project lead writes you a plain report here once every piece of this goal is checked."),
+          det));
+      } else {
+        // A small "Read aloud" in the header, so the owner can hear the report.
+        const hear = window.Voice?.canSpeak?.() ? window.Voice.speaker(full.text, { label: "Read aloud" }) : null;
+        upper.push(el("section", {}, el("div", { className: `section-title${hear ? " with-voice" : ""}` }, label, hear), ...box));
+      }
     }
     const next = whatNext(c, asks, rest);
     if (next) upper.push(next);
     // Before it has started there is nothing else to show: say what was asked.
-    if (!ev.length) upper.push(el("section", {}, el("div", { className: "section-title" }, "What you asked"), el("p", { className: "asked" }, t.prompt)));
+    if (!ev.length) upper.push(...asked(c));
     p.upper.replaceChildren(...upper);
     // While it works, Overview shows its last few steps; Activity has them all.
     if (t.state === "running" && ev.length) {
@@ -1375,8 +1671,7 @@
           open(k, `wk-kid-${k.id}`))))));
     }
     // Details is its own tab, so what was asked shows in full, not folded.
-    lower.push(el("section", {}, el("div", { className: "section-title" }, "What you asked"),
-      el("p", { className: "asked" }, t.prompt)));
+    lower.push(...asked(c));
     p.activity.replaceChildren(ev.length ? timeline(ev, D.pro) : el("p", { className: "hint" }, "Nothing yet. Steps show here as the agent takes them."));
     if (D.pro) {
       const last = [...ev].reverse().find((r) => r.event.kind === "finished");
@@ -1394,7 +1689,9 @@
     }
     p.lower.replaceChildren(...lower);
 
-    const moves = D.moveButtons(t, {
+    // No Accept, Send back or Reject while the checker looks first.
+    const checking = D.checking(t);
+    const moves = checking ? [] : D.moveButtons(t, {
       onMoved: () => { panel.close(); c.changed(); },
       onError: (m) => { p.err.hidden = false; p.err.replaceChildren(icon("alert"), el("span", { className: "grow" }, m)); },
     });
@@ -1429,8 +1726,9 @@
     }
     moves.forEach((b, i) => { b.disabled = D.offline; b.dataset.key = `wk-move-${i}`; });
     // On a computer the main button sits on the right.
-    const foot = el("footer", { className: "work-foot", hidden: !moves.length && !D.offline }, ...moves.reverse());
+    const foot = el("footer", { className: "work-foot", hidden: !moves.length && !D.offline && !checking }, ...moves.reverse());
     if (D.offline) foot.prepend(el("p", { className: "hint", style: "width:100%" }, "Answer when your PC is back."));
+    if (checking) foot.prepend(D.checkNote(t));
     p.foot.replaceWith(foot);
     p.foot = foot;
 
@@ -1575,6 +1873,7 @@
         if (msgs) c.msgs = msgs;
         c.goal = goal;
         draw(c);
+        if (c.parts?.when) c.parts.when.textContent = activityText(c.t);
       } catch (e) {
         if (cur === c && !c.parts) {
           panel.querySelector(".work-body").replaceChildren(el("div", { className: "notice bad" }, icon("alert"),

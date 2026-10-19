@@ -67,6 +67,16 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
 
+/// A column for a thread query: whether GitHub says the pull request Decurion
+/// opened for it clashes with newer changes on its base branch. `thread` is
+/// the threads table's name or alias in the query. [`send_from`] reads it.
+pub(crate) fn gh_clash(thread: &str) -> String {
+    format!(
+        "(SELECT w.state = 'open' AND w.clash FROM pr_watches w
+          WHERE w.thread_id = {thread}.id) AS gh_clash"
+    )
+}
+
 /// Every branch Decurion sends starts with this.
 pub const PREFIX: &str = "decurion/";
 
@@ -252,6 +262,16 @@ pub fn github_repo(url: &str) -> Option<Repo> {
         owner: owner.to_owned(),
         name: name.to_owned(),
     })
+}
+
+/// The repo a page on github.com belongs to, such as the link that opens a
+/// pull request (`https://github.com/o/r/compare/...`). `None` for any
+/// other address.
+pub fn repo_of_page(url: &str) -> Option<Repo> {
+    let path = url.strip_prefix("https://github.com/")?;
+    let mut parts = path.split(['/', '?', '#']);
+    let (owner, name) = (parts.next()?, parts.next()?);
+    github_repo(&format!("https://github.com/{owner}/{name}"))
 }
 
 /// The page on GitHub that opens a pull request for `branch` in one tap,
@@ -586,7 +606,7 @@ impl GitHub {
 
     /// A pull request already open (or closed) for `branch`, so a resend
     /// never opens a second one.
-    async fn find_pr(
+    pub(crate) async fn find_pr(
         &self,
         t: &Token,
         r: &Repo,
@@ -723,18 +743,36 @@ fn pr_url_ok(u: &str) -> bool {
 }
 
 fn unreachable_api() -> String {
-    "Could not reach GitHub to open the pull request. Open it with the link instead.".into()
+    "Could not reach GitHub to open the pull request. Tap Open a pull request to open it yourself."
+        .into()
 }
 
 fn unreadable_api() -> String {
-    "GitHub's answer could not be read, so no pull request was opened. Open it with the link instead.".into()
+    "GitHub's answer could not be read, so no pull request was opened. Tap Open a pull request to open it yourself.".into()
 }
+
+/// GitHub would not let the token open a pull request on this repo (it said
+/// 403 or 404). Settings, Sign-ins turns GitHub amber for it, with the steps.
+const NO_PR_ACCESS: &str = "Your GitHub token can send work but can't open pull requests on this app, so none was opened. Tap Open a pull request to open it yourself. To let Decurion open them for you, follow the steps in Settings, Sign-ins, GitHub.";
+
+/// GitHub no longer takes the token (it said 401).
+const TOKEN_REFUSED: &str = "GitHub no longer takes your GitHub token, so no pull request was opened. Tap Open a pull request to open it yourself, and save a new token in Settings, GitHub.";
 
 fn api_refused(status: reqwest::StatusCode) -> String {
     match status.as_u16() {
-        401 => "GitHub did not accept the saved token, so no pull request was opened. Open it with the link instead, or save a new token in Settings.".into(),
-        403 | 404 => "The saved GitHub token may not open pull requests on this repo, so none was opened. Open it with the link instead, or give the token Pull requests: Read and write for this repo.".into(),
-        _ => format!("GitHub said {} when asked to open the pull request. Open it with the link instead.", status.as_u16()),
+        401 => TOKEN_REFUSED.into(),
+        403 | 404 => NO_PR_ACCESS.into(),
+        _ => format!("GitHub said {} when asked to open the pull request. Tap Open a pull request to open it yourself.", status.as_u16()),
+    }
+}
+
+/// Whether a reason no pull request was opened is the token's doing, and
+/// which kind ([`Store::github_pr_trouble`]).
+fn token_trouble(why: &str) -> Option<&'static str> {
+    match why {
+        NO_PR_ACCESS => Some("no_access"),
+        TOKEN_REFUSED => Some("refused"),
+        _ => None,
     }
 }
 
@@ -890,6 +928,21 @@ struct Sent {
     head: Option<String>,
     /// The pull request's repo and number, to watch it.
     watch: Option<(Repo, i64)>,
+    /// What this send learned about the token and this app's repo, for the
+    /// GitHub light.
+    token: TokenNews,
+}
+
+/// What a send learned about whether the token opens pull requests on the
+/// app's repo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenNews {
+    /// Nothing: no token, no GitHub, or a fix (which opens nothing).
+    Nothing,
+    /// A pull request was opened or found, so the token works there.
+    Works,
+    /// GitHub would not let it: `no_access` or `refused`.
+    Trouble(&'static str),
 }
 
 impl Sent {
@@ -900,6 +953,7 @@ impl Sent {
             note: None,
             head: Some(head.to_owned()),
             watch: None,
+            token: TokenNews::Nothing,
         }
     }
 }
@@ -923,7 +977,56 @@ pub(crate) fn send_from(row: &SqliteRow) -> Result<Option<GitHubSend>> {
         url: row.try_get("gh_url")?,
         pull_request: row.try_get("gh_pr")?,
         error: row.try_get("gh_error")?,
+        // Read only where the query asks for it ([`gh_clash`]).
+        clash: row
+            .try_get::<Option<bool>, _>("gh_clash")
+            .ok()
+            .flatten()
+            .unwrap_or(false),
     }))
+}
+
+/// Remembers, in the send's own transaction, whether the token could open
+/// a pull request on this work's app: the reason when it could not, gone
+/// again once one opens. Only the app, the time and the plain reason are
+/// kept; never the token.
+async fn pr_trouble(tx: &mut Transaction<'_, Sqlite>, id: i64, sent: &Sent) -> Result<()> {
+    match sent.token {
+        TokenNews::Nothing => {}
+        TokenNews::Works => {
+            sqlx::query(
+                "DELETE FROM github_pr_trouble
+                 WHERE app_id = (SELECT app_id FROM threads WHERE id = ?)",
+            )
+            .bind(id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        TokenNews::Trouble(kind) => {
+            sqlx::query(
+                "INSERT INTO github_pr_trouble (app_id, kind, reason)
+                 SELECT app_id, ?, ? FROM threads WHERE id = ?
+                 ON CONFLICT (app_id) DO UPDATE SET kind = excluded.kind,
+                     reason = excluded.reason, at = excluded.at",
+            )
+            .bind(kind)
+            .bind(sent.note.as_deref().unwrap_or(NO_PR_ACCESS))
+            .bind(id)
+            .execute(&mut **tx)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// An app whose last try to open a pull request failed because of the
+/// token, as the GitHub light shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PrTrouble {
+    pub app: String,
+    /// `no_access` or `refused`.
+    pub kind: String,
+    pub at: String,
 }
 
 /// Records, inside the accept's own transaction, that the hub is to send
@@ -1101,6 +1204,7 @@ impl Store {
                     sent.head.as_deref(),
                 )
                 .await?;
+                pr_trouble(&mut tx, id, sent).await?;
             }
         }
         tx.commit().await?;
@@ -1160,6 +1264,24 @@ impl Store {
         )
         .fetch_all(self.pool())
         .await?)
+    }
+
+    /// Apps where the token could not open a pull request last time, oldest
+    /// first. A token saved after that may well work, so those are left out
+    /// until a send says otherwise.
+    pub(crate) async fn github_pr_trouble(&self) -> Result<Vec<PrTrouble>> {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT a.name, t.kind, t.at FROM github_pr_trouble t JOIN apps a ON a.id = t.app_id
+             WHERE NOT EXISTS (SELECT 1 FROM owner_keys k WHERE k.name = 'github'
+                               AND julianday(k.added_at) > julianday(t.at))
+             ORDER BY t.at, a.name",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(app, kind, at)| PrTrouble { app, kind, at })
+            .collect())
     }
 
     /// The owner's saved GitHub token, as the board shows it.
@@ -1245,10 +1367,12 @@ impl Sender {
                         &note,
                     )
                     .await;
-                let head = if sent.url.is_some() {
-                    "ready to merge on GitHub"
-                } else {
-                    "sent as a branch"
+                // Merging is the owner's next step only once a pull
+                // request is open; with only its link, opening it is.
+                let head = match (&sent.url, sent.pull_request) {
+                    (Some(_), true) => "ready to merge on GitHub",
+                    (Some(_), false) => "on GitHub, open its pull request",
+                    (None, _) => "sent as a branch",
                 };
                 (ended, head, sent.url.unwrap_or_else(|| "/inbox".into()))
             }
@@ -1386,6 +1510,7 @@ impl Sender {
                 note,
                 head: Some(head),
                 watch: Some((repo, f.number)),
+                token: TokenNews::Nothing,
             });
         }
         let link = compare_url(&repo, default.as_deref(), &job.branch);
@@ -1416,11 +1541,13 @@ impl Sender {
                         note,
                         head: Some(head),
                         watch: Some((repo, pr.number)),
+                        token: TokenNews::Works,
                     }
                 }
                 Err(why) => {
                     tracing::warn!(thread = id, reason = %why, "no pull request opened; giving the link");
                     Sent {
+                        token: token_trouble(&why).map_or(TokenNews::Nothing, TokenNews::Trouble),
                         note: Some(why),
                         ..Sent::plain(Some(link), &head)
                     }
@@ -1720,6 +1847,11 @@ mod tests {
             compare_url(&repo, Some("rel #1"), "decurion/shop-7"),
             "https://github.com/acme/shop/compare/rel%20%231...decurion/shop-7?expand=1"
         );
+        // The link names its repo, so a pull request opened from it can be found.
+        let link = compare_url(&repo, Some("main"), "decurion/shop-7");
+        assert_eq!(repo_of_page(&link), Some(repo));
+        assert_eq!(repo_of_page("https://gitlab.com/acme/shop/compare/x"), None);
+        assert_eq!(repo_of_page("https://github.com/acme"), None);
     }
 
     #[test]

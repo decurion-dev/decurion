@@ -92,9 +92,10 @@ where
     T::deserialize(d).map(Some)
 }
 
-const THREAD_COLS: &str =
+pub(crate) const THREAD_COLS: &str =
     "id, app_id, title, prompt, state, ai, session_id, branch, place, updated_at, parent_id, background,
-     gh_state, gh_branch, gh_url, gh_pr, gh_error, fix_of, research, dismissed_at";
+     gh_state, gh_branch, gh_url, gh_pr, gh_error, fix_of, research, dismissed_at,
+     (SELECT w.state = 'open' AND w.clash FROM pr_watches w WHERE w.thread_id = threads.id) AS gh_clash";
 
 /// The actor recorded for the owner's own moves.
 pub const OWNER: &str = "owner";
@@ -110,7 +111,7 @@ pub(crate) const APP_COLS: &str =
      COALESCE(first_on = date('now', 'localtime'), 0) AS first_today,
      can_merge, can_deploy, deploy_steps, deploy_site, send_checked, patient_data";
 
-fn thread_from(row: &SqliteRow) -> Result<Thread> {
+pub(crate) fn thread_from(row: &SqliteRow) -> Result<Thread> {
     let state: String = row.try_get("state")?;
     let ai: String = row.try_get("ai")?;
     let place: String = row.try_get("place")?;

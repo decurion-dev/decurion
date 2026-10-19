@@ -2,6 +2,12 @@
 
 This page shows how to change an agent's direction, give it more to do, or tell it something, without stopping its work.
 
+## See that it is still working
+
+- The card under **Running** shows the agent's newest note in its own words and how long ago it wrote it, such as "Build and tests are still running in the background; I'll wait for them. · 5 min ago". Before its first note, the card says what it is doing in plain words, such as **Running the tests**, **Building the code**, **Reading the code** or **Editing files**. The exact commands are on the panel's **Activity** tab.
+- The panel's header says **Last activity** and how long ago the agent last took a step or wrote a note. Long tests or builds can be quiet for a few minutes; that is normal.
+- If your computer is set to reduce motion, the turning sign is a still dot in a ring instead, next to the word **Working**.
+
 ## Send a message
 
 1. On the board, click the card for the work.

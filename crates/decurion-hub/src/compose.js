@@ -19,7 +19,7 @@
   const LAST_APP = "decurion.board.lastApp", LAST_AI = "decurion.board.ai";
   const MODES = {
     lead: { label: "Project lead", button: "Send to the project lead",
-      line: "The project lead asks what it needs, shows you a plan, and starts after you approve. A checker reviews each piece." },
+      line: "The project lead asks what it needs, shows you a plan, and starts after you approve. A checker reviews each piece. Just do it skips the plan and the checker, for small changes." },
     direct: { label: "Just do it", button: "Start work",
       line: "One agent does it right away. No plan and no checker. Best for small changes." },
   };
@@ -59,7 +59,7 @@
     const sigs = {};
     const changed = (name, v) => { const s = JSON.stringify(v); if (sigs[name] === s) return false; sigs[name] = s; return true; };
     let st = { apps: [], threads: [], hasCloud: false, filter: "all", loaded: false };
-    let mode = "lead", sending = false, wantApp = null;
+    let mode = "lead", sending = false, wantApp = null, lastFilter = null;
     // One receipt per tap: kept only while the same piece of work is unanswered,
     // so pressing Start again after a dropped connection never makes it twice.
     let pending = null;
@@ -80,7 +80,7 @@
     const err = el("div", { className: "field-error", id: id("add-err"), role: "alert" });
     const modeLine = el("p", { className: "c-mode-line hint", id: id("mode-line"), "aria-live": "polite" });
     const modeBtns = Object.entries(MODES).map(([k, m]) => {
-      const b = el("button", { type: "button", className: "seg", role: "radio", dataset: { mode: k } }, m.label);
+      const b = el("button", { type: "button", className: "seg", role: "radio", dataset: { mode: k }, title: m.line }, m.label);
       b.onclick = () => setMode(k, true);
       return b;
     });
@@ -282,6 +282,12 @@
         app.replaceChildren(...st.apps.map((a) => el("option", { value: String(a.id) }, a.name)));
         if (keep && st.apps.some((a) => String(a.id) === keep)) app.value = keep;
       }
+      // The box starts on the app the owner picked on the board or with the
+      // phone's app filter, and follows when they pick another one.
+      if (st.filter !== lastFilter) {
+        lastFilter = st.filter;
+        if (st.filter && st.filter !== "all" && !wantApp) setApp(st.filter);
+      }
       // An app asked for by fill() before the apps had loaded.
       if (wantApp && st.apps.some((a) => String(a.id) === wantApp)) { app.value = wantApp; wantApp = null; }
       // The choice of computer only shows once there is a cloud worker.
@@ -294,6 +300,8 @@
     function setApp(v) {
       if (v == null || v === "all" || !st.apps.some((a) => String(a.id) === String(v))) return;
       app.value = String(v);
+      // Remembered, so the box on another page starts on this app too.
+      D.store.set(LAST_APP, app.value);
       fillParents();
       showClaudeChoice();
     }

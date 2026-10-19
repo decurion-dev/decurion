@@ -368,7 +368,8 @@ $("tabbar").replaceWith(D.phoneTabs("inbox"));
 // What each state in the inbox means, in one plain line.
 const MEANS = {
   needs_you: "The agent stopped to ask for something only you can decide.",
-  in_review: "Looks right? Accept keeps it and sends it to GitHub as a pull request for you to merge there. Questions or changes? Tell the agent.",
+  // Its words are built from the app's rules where the card is drawn.
+  in_review: "",
   // A research piece in review: it changed no code.
   research: "Research is done and changed no code. Fix what it found opens the app's master plan, where its findings wait to be built.",
   failed: "This piece of work could not finish. You can retry it.",
@@ -390,6 +391,9 @@ const BOARD_LIMIT = 40;
 
 const S = {
   tab: "inbox", threads: null, goals: [], apps: {}, appList: [], limits: [], signIns: [], prs: [], merges: [], err: null, signedOut: false, updated: null,
+  // GET /api/needs-you: the hub's one list of what waits on you (today.rs),
+  // the same one the PC board and the app rows count. Null on an older hub.
+  needs: null,
   chip: null, actErr: null, open: new Set(), notifyOn: false, showDismissed: false,
   // The board tab's app filter, remembered like the PC board's; how many cards it shows; whether a cloud worker exists.
   app: D.store.get("decurion.board.app") || "all", limit: BOARD_LIMIT, hasCloud: false,
@@ -415,8 +419,11 @@ function sinceLines(ev) {
 const byNewest = (a, b) => b.updated_at.localeCompare(a.updated_at);
 // What is waiting on a decision comes first, then failures, then reviews.
 const URGENCY = { needs_you: 0, failed: 1, done: 1, in_review: 2 };
-// Accepted work is done, unless it could not be sent to GitHub.
-const needsYou = (t) => t.state === "done" ? t.github?.state === "failed" : t.state in MEANS;
+// Accepted work is done, unless it could not be sent to GitHub. With the
+// hub's list, exactly its work: a piece whose checker is still coming waits
+// on the checker, not on you.
+const needsYou = (t) => S.needs ? S.needs.work.some((w) => w.thread_id === t.id)
+  : t.state === "done" ? t.github?.state === "failed" : t.state in MEANS && !D.checking(t);
 // Dismissed work never waits in the inbox; it stays under Dismissed on the board tab.
 const inboxItems = () => (S.threads ?? []).filter((t) => needsYou(t) && !t.dismissed_at).sort((a, b) => URGENCY[a.state] - URGENCY[b.state] || byNewest(a, b));
 const counts = (list = S.threads ?? []) => {
@@ -481,7 +488,16 @@ function goalWait(g) {
   }
   return null;
 }
-const goalCards = () => S.goals.filter(waitsOnYou).map((g) => ({ g, w: goalWait(g) })).filter((x) => x.w);
+// With the hub's list, every goal on it gets a card: a plan or questions in
+// full when its view says so, else a short card that opens the goal (work
+// to review, a stuck project lead, or something it said).
+const goalCards = () => {
+  if (!S.needs) return S.goals.filter(waitsOnYou).map((g) => ({ g, w: goalWait(g) })).filter((x) => x.w);
+  return S.needs.goals.map((n) => {
+    const g = S.goals.find((x) => x.id === n.goal_id);
+    return g && { g, w: goalWait(g) ?? { kind: "other", why: n.why, at: g.updated_at } };
+  }).filter(Boolean);
+};
 // Everything the inbox lists after limits and sign-ins: work as { t } and
 // goals as { g, w }. A goal waits on a decision, so it sorts with Needs you,
 // by when its project lead last spoke.
@@ -494,10 +510,11 @@ function inboxEntries() {
 const approving = new Set();
 
 // ---------- Loading ----------
-// The Goals tab's badge: goals waiting on you, with questions to answer or a
-// plan to approve (the project lead is not thinking).
+// The Goals tab's badge: goals waiting on you, from the hub's one list (a
+// plan to approve, questions, work to review, a stuck project lead); on an
+// older hub, questions to answer or a plan to approve.
 function goalsBadge(list) {
-  const n = list.filter(waitsOnYou).length;
+  const n = S.needs ? S.needs.goals.length : list.filter(waitsOnYou).length;
   $("goals-badge").hidden = n === 0;
   $("goals-badge").textContent = n > 99 ? "99+" : n;
   $("tab-goals").setAttribute("aria-label", n ? `Goals, ${D.plural(n, "goal")} ${n === 1 ? "needs" : "need"} you` : "Goals");
@@ -545,7 +562,7 @@ function runButton(r) {
 function renderToday() {
   const box = $("today");
   const rows = Array.isArray(today) ? today : [];
-  const sig = JSON.stringify([rows, todayAll, D.offline, previews.map((s) => [s.id, s.app_id])]);
+  const sig = JSON.stringify([rows, todayAll, D.offline, D.pro, previews.map((s) => [s.id, s.app_id])]);
   if (sig === todaySig) return;
   todaySig = sig;
   box.hidden = !rows.length;
@@ -554,7 +571,7 @@ function renderToday() {
   box.replaceChildren(el("div", { className: "th" }, "Today"), ...shown.flatMap((r) => {
     const go = el("button", { type: "button", className: "go" },
       el("span", { className: "nm" }, r.name), el("span", { className: "ln" }, r.line),
-      r.used_today ? el("span", { className: "use" }, r.used_today.words) : null);
+      r.used_today ? el("span", { className: "use" }, `${D.usageWords(r.used_today)} today`) : null);
     go.onclick = () => { setAppFilter(String(r.app_id)); location.hash = "#board"; };
     const fixOn = r.open_comments > 0 ? (r.fix_thread_id ?? r.last_pr?.thread_id) : null;
     let act;
@@ -595,10 +612,11 @@ async function refresh() {
     // whether work can run in the cloud, which the new-work box needs.
     const forSettings = S.tab === "settings";
     const seq = D.settings.seq();
-    const [apps, list, limits, signIns, workers, more, prs] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/limits").catch(() => []),
+    const [apps, list, limits, signIns, workers, more, prs, needs] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/limits").catch(() => []),
       D.api("/sign-ins").catch(() => []), D.api("/workers").catch(() => null),
       forSettings ? Promise.all([D.api("/spend"), D.api("/accounts").catch(() => null)]) : null,
-      D.api("/prs").catch(() => [])]);
+      D.api("/prs").catch(() => []), D.api("/needs-you").catch(() => null)]);
+    S.needs = needs && Array.isArray(needs.work) ? needs : null;
     // Pull requests with review comments waiting for a fix, and ones the
     // owner may merge from here (their app's rules allow it) with none.
     const open = (Array.isArray(prs) ? prs : []).filter((p) => p.state === "open" && !p.fixing);
@@ -681,7 +699,10 @@ function errorState(what) {
 }
 
 function renderShell() {
-  const n = inboxEntries().length + S.limits.filter((l) => !l.pay_per_use_until).length + S.signIns.length + S.prs.length + S.merges.length;
+  // The count is what needs you: work, goals and pull requests, the same
+  // list the PC board and the app rows count. Notices about Decurion's own
+  // accounts and sign-ins show above the list but are not counted.
+  const n = inboxEntries().length + S.prs.length + S.merges.length;
   document.body.classList.toggle("signed-out", S.signedOut);
   $("title").textContent = S.signedOut ? "Decurion" : TITLES[S.tab];
   $("count").hidden = !(S.tab === "inbox" && n > 0 && !S.signedOut);
@@ -727,7 +748,10 @@ function inboxCard(t, anim) {
     el("h2", { className: "h" }, ttl));
   if (asks.length) card.append(D.askBox(t, asks, { onSent: leave, guessed: !fromBlock,
     onTalk: (prefill) => D.openWork(t, refresh, { talk: true, prefill }) }));
-  card.append(el("p", { className: "means" }, MEANS[t.research && t.state === "in_review" ? "research" : t.state]));
+  // What Accept leads to comes from the app's rules (D.acceptWords).
+  card.append(el("p", { className: "means" }, t.state === "in_review" && !t.research
+    ? `Looks right? Accept keeps it. ${D.acceptWords(t.app_id)} Questions or changes? Tell the agent.`
+    : MEANS[t.research && t.state === "in_review" ? "research" : t.state]));
   if (said) {
     const q = el("div", { className: "q" + (S.open.has(t.id) ? " open" : "") }, D.richText(said));
     const more = el("button", { type: "button", className: "more", hidden: true, "aria-expanded": S.open.has(t.id) ? "true" : "false" },
@@ -936,7 +960,33 @@ function mergeCard(p, anim) {
 // lead's questions, answered on the goal's page. The title and question are
 // the owner's and the project lead's words, so they go in as text.
 const cut = (s, n) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
+// What a goal waiting on you needs, when it is not a plan or questions.
+const GOAL_OTHER = {
+  plan: ["Needs you · approve the plan", "Your project lead's plan is ready. Open the goal to read it and approve it."],
+  answer: ["Needs you · your project lead wrote", "Your project lead is waiting for your reply."],
+  review: ["Needs you · review the work", "Everything is built and checked. Open the goal to see the report and what to do next."],
+  stuck: ["Needs you · try again", "Your project lead ran into a problem. Nothing was lost. Open the goal and tap Try again."],
+};
+function otherGoalCard(g, w, anim) {
+  const href = `/goals#goal-${g.id}`;
+  const [pillText, means] = GOAL_OTHER[w.why] ?? GOAL_OTHER.answer;
+  const card = el("article", { className: "icard" + (anim === "still" ? " still" : ""), dataset: { state: "needs_you", key: `goal-${g.id}`, anim } });
+  const ttl = el("button", { type: "button", className: "ttl" }, g.title);
+  ttl.onclick = () => { location.href = href; };
+  card.append(
+    el("div", { className: "meta" },
+      el("span", { className: "pill needs_you" }, D.icon(w.why === "stuck" ? "alert" : "plan"), pillText),
+      el("span", { className: "app" }, D.appName(g.app_id)),
+      el("span", { className: "when", dataset: { at: w.at } }, D.ago(w.at)),
+      el("span", { className: "chev" }, D.icon("right"))),
+    el("h2", { className: "h" }, ttl),
+    el("p", { className: "means" }, means),
+    el("div", { className: "iacts" }, el("a", { className: "btn primary", href }, "Open the goal")));
+  card.addEventListener("click", (e) => { if (!e.target.closest("button, a")) location.href = href; });
+  return card;
+}
 function goalCard({ g, w }, anim) {
+  if (w.kind === "other") return otherGoalCard(g, w, anim);
   const key = `goal-${g.id}`, href = `/goals#goal-${g.id}`, plan = w.kind === "plan";
   const go = () => { location.href = href; };
   const card = el("article", { className: "icard" + (anim === "still" ? " still" : ""), dataset: { state: "needs_you", key, anim } });
@@ -1366,7 +1416,7 @@ function renderSettings() {
     // Above the list of settings tabs, not inside each one.
     const top = el("div", { className: "set-top" }, use,
       el("div", { className: "pro-row" }, pro,
-        el("span", { className: "hint" }, "Shows every step an agent takes, and its branch and cost, when you open a piece of work.")));
+        el("span", { className: "hint" }, D.PRO_LINE)));
     D.settings.mount(host, { refresh: () => refresh(), onSignedOut: () => { S.signedOut = true; render(); }, place: "phone", top });
   }
   D.settings.usage($("set-usage"));

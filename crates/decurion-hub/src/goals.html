@@ -164,6 +164,10 @@
   .gh-main h2 { font-size:17.5px; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; letter-spacing:-.01em; }
   .gh-meta { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; font-size:13px; color:var(--muted); margin-top:2px; }
   .gh-actions { display:flex; align-items:center; gap:8px; flex:none; }
+  .goal-road { flex:none; padding:8px 20px 10px; border-bottom:1px solid var(--line); }
+  @media (max-width: 759px) { .goal-road { padding:6px 12px 8px; } }
+  .piece-road { margin:8px 0; }
+  .plan-story { margin:8px 0 0; }
   .more { position:relative; }
   .more > summary { list-style:none; }
   .more > summary::-webkit-details-marker { display:none; }
@@ -299,6 +303,7 @@
   .prs li { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; background:var(--card); border-radius:10px; padding:8px 12px; overflow-wrap:anywhere; }
   .prs .n { font-weight:700; color:var(--muted); font-variant-numeric:tabular-nums; }
   .prs .t { flex:1 1 160px; min-width:0; font-weight:600; }
+  .prs .pr-why { flex:1 1 100%; margin:0; font-size:14px; color:var(--muted); }
   .composer-box { display:flex; align-items:flex-end; gap:8px; background:var(--card); border:1px solid var(--line-strong); border-radius:24px; padding:5px 5px 5px 16px; }
   .composer-box:focus-within { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
   .composer textarea { flex:1; min-width:0; border:0; background:transparent; resize:none; font:inherit; font-size:16px; line-height:1.45; padding:9px 0; max-height:200px; color:var(--ink); outline:none; }
@@ -320,6 +325,7 @@
   .piece-top { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
   .piece h4 { margin:0; font-size:15px; }
   .piece .pp-done { margin-top:6px; }
+  .piece .check-line { display:flex; align-items:center; gap:8px; margin:8px 0 0; font-size:13.5px; color:var(--accent-ink); }
   .facts { display:flex; flex-wrap:wrap; gap:4px 16px; margin:10px 0 0; font-size:13px; }
   .facts div { display:flex; gap:4px; }
   .facts dt { color:var(--muted); }
@@ -503,6 +509,8 @@
         </div>
         <div class="gh-actions" id="g-actions"></div>
       </div>
+      <!-- Where the goal's work is, from Built to Live (D.road in ui.js), above every tab. -->
+      <div class="goal-road" id="g-road" hidden></div>
       <div class="tabs" aria-label="Show">
         <button class="tab" id="tab-chat" type="button" aria-pressed="true" aria-controls="convo">Conversation</button>
         <button class="tab" id="tab-pieces" type="button" aria-pressed="false" aria-controls="pieces">Pieces of work<span class="count" id="pieces-count"></span></button>
@@ -703,7 +711,7 @@ const S = {
   goals: null, listSig: "", autoPicked: false, autoOpened: false,
   id: null, view: null,
   rendered: new Map(),      // message id -> { node, key }
-  lastDay: "", headSig: "", tailSig: "", piecesSig: "",
+  lastDay: "", headSig: "", roadSig: "", tailSig: "", piecesSig: "",
   firstPaint: true, forceStick: false, wasBusy: false,
   drafts: new Map(),        // coordinator message id -> Map(question id -> { choice, other, open })
   sendingAnswers: new Set(),
@@ -873,6 +881,9 @@ function drawNewWork() {
 }
 D.onOffline(drawNewWork);
 function openNewGoal(focus = true) {
+  // The box starts on the open goal's app, else on the app last used.
+  const open = S.goals?.find(g => g.id === S.id);
+  if (open && $("new-goal").hidden) newWork.setApp(open.app_id);
   $("new-goal").hidden = false;
   $("new-toggle").setAttribute("aria-expanded", "true");
   if (location.hash.startsWith("#goal-") && !wide.matches) location.hash = "#goals";
@@ -920,7 +931,7 @@ function selectFromHash() {
 }
 function resetPane() {
   S.view = null; S.rendered.clear(); S.lastDay = "";
-  S.headSig = S.tailSig = S.piecesSig = S.quickSig = "";
+  S.headSig = S.tailSig = S.piecesSig = S.quickSig = S.roadSig = "";
   S.firstPaint = true; S.wasBusy = false;
   $("tail").replaceChildren(); $("pieces-body").replaceChildren(); $("g-actions").replaceChildren();
   $("g-title").textContent = ""; $("g-app").textContent = ""; $("g-state").textContent = ""; $("g-state").className = "pill";
@@ -964,6 +975,7 @@ function renderGoal(v) {
   document.title = `${g.title} · Decurion`;
   $("say").disabled = false;
   renderHead(v);
+  renderRoad(v);
   const ctx = context(v);
   const added = renderMessages(v, ctx);
   const tailChanged = renderTail(v);
@@ -993,19 +1005,37 @@ function context(v) {
   return { v, g: v.goal, byId, answeredBy, latestQ, latestPlan, pages, closed: CLOSED.has(v.goal.state) };
 }
 
+/** The goal's step bar, Built to Live, and what happens next (road.rs). */
+function renderRoad(v) {
+  const sig = JSON.stringify(v.road ?? null);
+  if (sig === S.roadSig) return;
+  S.roadSig = sig;
+  $("g-road").hidden = !v.road;
+  $("g-road").replaceChildren(...(v.road ? [D.road(v.road)] : []));
+}
+
+/** What "Close this goal" does, said wherever its button is. */
+const CLOSE_WORDS = "Close this goal ends it here and moves it to your finished goals. Nothing changes on GitHub or in your live app.";
+const closeButton = (cls) => el("button", { class: cls, type: "button", "data-action": "close", title: CLOSE_WORDS, onclick: () => goalAction("close", "Close this goal") }, "Close this goal");
+
 function renderHead(v) {
   const g = v.goal, closed = CLOSED.has(g.state);
   const app = S.appsById.get(g.app_id)?.name ?? v.app_name ?? "";
-  const sig = JSON.stringify([g.title, app, g.state, g.busy, g.stuck]);
+  const sig = JSON.stringify([g.title, app, g.state, g.busy, g.stuck, v.road?.label, v.road?.you, v.road?.done]);
   if (sig === S.headSig) return;
   S.headSig = sig;
   $("g-title").textContent = g.title;
   $("g-app").textContent = app;
-  const [label, tone] = GOAL_STATES[g.state] ?? [g.state, "neutral"];
+  let [label, tone] = GOAL_STATES[g.state] ?? [g.state, "neutral"];
+  // While its work is on the way, the goal says the step it is on.
+  if ((g.state === "working" || g.state === "for_review") && v.road?.label) {
+    label = v.road.label;
+    tone = v.road.you ? "attn" : v.road.done ? "ok" : "accent";
+  }
   $("g-state").textContent = label; $("g-state").className = `pill ${tone}`;
   const acts = [];
   if (g.stuck && !g.busy && !closed) acts.push(el("button", { class: "btn primary", type: "button", "data-action": "retry", onclick: () => goalAction("retry", "Try again") }, "Try again"));
-  if (g.state === "for_review") acts.push(el("button", { class: "btn primary", type: "button", "data-action": "close", onclick: () => goalAction("close", "Mark done") }, "Mark done"));
+  if (g.state === "for_review") acts.push(closeButton("btn"));
   const menu = el("details", { class: "more" },
     el("summary", { class: "btn ghost", "aria-label": "More actions" }, "•••"),
     el("div", { class: "more-menu" },
@@ -1347,16 +1377,19 @@ function renderPlan(m, ctx) {
     el("div", { class: "pp" },
       el("div", { class: "pp-title" }, pc.title),
       el("div", { class: "pp-done" }, el("b", null, "Done when: "), pc.done_when),
-      pc.touches_protected ? el("div", { class: "pp-protected" }, "Changes a protected part: waits for one tap from you at the end") : null,
+      pc.touches_protected ? el("div", { class: "pp-protected" }, "May change a protected part of the app, so it waits for your Accept") : null,
       pc.brief ? el("details", { class: "brief" }, el("summary", null, "What the builder is told"), el("div", null, pc.brief)) : null))));
   let foot = null;
   if (status === "approvable") {
     const btn = el("button", { class: "btn primary", type: "button", onclick: () => approve(m.id, btn, err) }, "Approve plan");
     const err = el("p", { class: "err-line", role: "alert" });
+    // The three ways to approve are one and the same; what follows comes
+    // from the app's rules (road.rs), so it matches every other screen.
     const hint = ctx.g.busy
       ? "Your project lead is still answering your last message. Approving now starts this plan as it is."
-      : "One tap starts every piece. Each is built and checked by a second agent, and each one that passes goes to GitHub as a pull request by itself. Replying \u201cyes\u201d works too, or ask for changes below.";
-    foot = [el("div", { class: "plan-foot" }, btn, el("p", { class: "hint" }, hint)), err];
+      : "Approve plan, Yes, do it, and typing \u201cyes\u201d all do the same thing: they start this plan as shown. Or ask for changes below.";
+    foot = [el("div", { class: "plan-foot" }, btn, el("p", { class: "hint" }, hint)),
+      ctx.v.story ? el("p", { class: "hint plan-story" }, el("b", null, "What happens next: "), ctx.v.story) : null, err];
   } else if (status === "waiting") {
     foot = el("div", { class: "plan-foot" }, el("p", { class: "hint" }, "You can approve this once your project lead has finished thinking."));
   }
@@ -1370,18 +1403,31 @@ function svgIcon(d) {
   const path = document.createElementNS(ns, "path"); path.setAttribute("d", d); svg.append(path);
   return svg;
 }
+/**
+ * Puts the goal the hub just answered with into the list at once, so the list
+ * on the left says Working the moment a plan is approved, not a poll later.
+ */
+function showGoalNow(g) {
+  if (!g || g.id == null || !Array.isArray(S.goals)) return;
+  const at = S.goals.findIndex(x => x.id === g.id);
+  if (at < 0) return;
+  S.goals[at] = { ...S.goals[at], ...g };
+  S.listSig = "";
+  renderList();
+}
+
 async function approve(msgId, btn, err) {
   const id = S.id;
   btn.disabled = true; btn.textContent = "Starting the work…"; err.textContent = "";
-  try { await post(`/goals/${id}/approve`, { plan_message_id: msgId }); S.forceStick = true; tick(); }
+  try { showGoalNow(await post(`/goals/${id}/approve`, { plan_message_id: msgId })); S.forceStick = true; tick(); }
   catch (e) { btn.disabled = false; btn.textContent = "Approve plan"; err.textContent = `The plan wasn't approved: ${e.message}`; }
 }
 
 // ---------- tail: thinking, stuck, review, closed ----------
 function renderTail(v) {
   const g = v.goal;
-  const prs = (v.pieces ?? []).map(p => [p.thread_id, p.github?.state, p.github?.url, p.merged, p.review, p.thread_state]);
-  const sig = JSON.stringify([g.busy, g.stuck, g.state, g.dismissed_at, boardHref(), prs, v.live]);
+  const prs = (v.pieces ?? []).map(p => [p.thread_id, p.github?.state, p.github?.url, p.github?.error, p.github?.clash, p.merged, p.review, p.thread_state, p.road?.label]);
+  const sig = JSON.stringify([g.busy, g.stuck, g.state, g.dismissed_at, boardHref(), prs, v.live, v.road]);
   if (sig === S.tailSig) return false;
   S.tailSig = sig;
   const parts = [];
@@ -1401,23 +1447,32 @@ function renderTail(v) {
     parts.push(el("div", { class: "callout attn" },
       el("p", null, "The research is done and nothing in the app was changed. Read what it found below. To turn it into real changes, open the master plan, tap the × next to anything you don't want (Take off the plan), and tap Fix all that are left (or Fix this when only one is left). Or tap Turn into a goal on the report."),
       el("a", { class: "btn primary", href: D.planHref(g.app_id) }, "Fix what it found"),
-      el("button", { class: "btn", type: "button", "data-action": "close", onclick: () => goalAction("close", "Mark done") }, "Mark done")));
+      closeButton("btn"),
+      el("p", { class: "hint" }, CLOSE_WORDS)));
   } else if (g.state === "for_review") {
     const sent = (v.pieces ?? []).some(p => p.github);
+    // The goal closes by itself at the road's last step: merged, or live
+    // where the app deploys or is Decurion itself (road.rs).
+    const last = v.road?.steps?.[v.road.steps.length - 1]?.step;
+    const ends = last === "live" ? "live" : "merged";
     parts.push(el("div", { class: "callout attn" },
       el("p", null, sent
-        ? "Everything is built and checked. Merge the pull requests on GitHub, in this order. The goal closes by itself once they are all merged."
-        : "Everything is built and checked. Try it out from the board, then mark the goal done."),
+        ? `Everything is built and checked. Here is where each piece is, in the order to merge them. The goal closes by itself once every piece is ${ends}.`
+        : "Everything is built and checked. Try it out from the board, then close the goal."),
       finishList(v),
       el("a", { class: "btn", href: boardHref() }, "Open the board"),
-      el("button", { class: "btn primary", type: "button", "data-action": "close", onclick: () => goalAction("close", "Mark done") }, "Mark done")));
+      closeButton(sent ? "btn" : "btn primary"),
+      el("p", { class: "hint" }, CLOSE_WORDS)));
   } else if (CLOSED.has(g.state)) {
     const merged = (v.pieces ?? []).some(p => p.merged);
     const words = g.state === "stopped" ? "This goal was stopped."
+      // Closed by the owner while work is still on its way: where it is.
+      : v.road && !v.road.done ? v.road.next
       // An app that deploys: merged is not live until a deploy finishes.
       : v.live === false ? "Merged · ready to deploy. Tap Deploy on Today to put it live."
-      : v.live === true ? "Live. Every pull request is merged and deployed."
-      : merged ? "Every pull request is merged, so this goal is done." : "You marked this goal done.";
+      : v.live === true || v.road?.label === "Live" ? "Live. Every piece is merged and live."
+      : merged ? "Every pull request is merged, so this goal is done."
+      : "You closed this goal. Nothing changed on GitHub or in the live app.";
     // Dismiss takes it off the goal list; it is kept under Dismissed.
     const back = !!g.dismissed_at;
     const put = el("button", { class: "btn ghost small link", type: "button", "data-key": "dismiss-goal",
@@ -1437,13 +1492,19 @@ function finishList(v) {
   return el("ol", { class: "prs", "aria-label": "Pull requests to merge" }, pieces.map((p, i) => {
     const gh = p.github;
     let what;
-    if (p.merged) what = pill("Merged", "ok");
+    // Merged, and Live where that is a step: the same words as the step bar.
+    if (p.merged) what = pill(p.road?.done ? p.road.label : "Merged", p.road && !p.road.done ? "attn" : "ok");
     else if (gh?.state === "sent" && gh.url) what = el("a", { class: "btn", href: gh.url, target: "_blank", rel: "noopener" }, gh.pull_request ? "Open the pull request" : "Open a pull request");
+    else if (gh?.state === "sent") what = pill("Sent", "neutral");
     else if (gh?.state === "failed") what = el("a", { class: "btn", href: boardHref() }, "Didn't reach GitHub: open the board");
     else if (gh) what = el("span", { class: "hint" }, "Sending to GitHub…");
     else if (p.review === "needs_a_look") what = el("a", { class: "btn", href: boardHref() }, "Needs your look on the board");
     else what = el("span", { class: "hint" }, p.review === "failed" ? "Couldn't be finished" : "Not sent");
-    return el("li", null, el("span", { class: "n", "aria-hidden": "true" }, String(i + 1)), el("span", { class: "t" }, p.title), what);
+    // Why Decurion didn't open it, and what GitHub's warnings there mean,
+    // in the same plain words as the piece's own panel.
+    const why = !p.merged && gh?.state === "sent" ? [gh.pull_request ? null : gh.error, D.githubClash(gh)].filter(Boolean) : [];
+    return el("li", null, el("span", { class: "n", "aria-hidden": "true" }, String(i + 1)), el("span", { class: "t" }, p.title), what,
+      ...why.map(w => el("p", { class: "pr-why" }, w)));
   }));
 }
 
@@ -1530,10 +1591,13 @@ function renderPieces(v) {
   const typing = document.activeElement?.dataset?.why;
   $("pieces-count").textContent = pieces.length ? String(pieces.length) : "";
   const body = $("pieces-body");
-  // What the goal used so far (tokens.rs): the project lead and every piece.
-  const used = v.usage ? el("p", { class: "hint used" }, `This goal used ${v.usage.total.words}`,
-    pieces.length
-      ? ` (project lead ${v.usage.lead.words.split(" ·")[0]}, pieces ${v.usage.pieces.words.split(" ·")[0]})` : "", ".") : null;
+  // What the goal used so far (tokens.rs): one plain word for how much of
+  // the plan; in Pro view the exact figures, the project lead and every piece.
+  const used = !v.usage ? null : D.pro || !v.usage.total.plain
+    ? el("p", { class: "hint used" }, `This goal used ${v.usage.total.words}`,
+      pieces.length
+        ? ` (project lead ${v.usage.lead.words.split(" ·")[0]}, pieces ${v.usage.pieces.words.split(" ·")[0]})` : "", ".")
+    : el("p", { class: "hint used" }, `Plan usage so far: ${v.usage.total.plain}. Turn on Pro view for the exact numbers.`);
   if (!pieces.length) {
     body.replaceChildren(el("p", { class: "empty" }, "Pieces of work show up here once you approve a plan."), used ?? "");
     return;
@@ -1549,10 +1613,12 @@ function renderPieces(v) {
       : `${passed} of ${pieces.length} passed the check`),
     used,
   ];
-  body.replaceChildren(...head, ...pieces.map(p => {
+  body.replaceChildren(...head.filter(Boolean), ...pieces.map(p => {
     let [label, tone] = REVIEW_STATES[p.review] ?? [p.review, "neutral"];
     if (p.research && p.review === "passed") label = "Research done";
     if (p.research && p.review === "building") label = "Researching";
+    // Past its check, a piece says the step it is on, never just "passed".
+    if (p.road && p.thread_state === "done") [label, tone] = [p.road.label, p.road.you ? "attn" : p.road.done ? "ok" : "accent"];
     const check = pages.filter(x => x.kind === "check" && x.thread_id === p.thread_id).sort((a, b) => b.id - a.id)[0];
     const rounds = p.rounds === 0 ? "Not yet" : p.rounds === 1 ? "Once" : `${p.rounds} times`;
     const err = el("p", { class: "err-line", role: "alert" });
@@ -1561,12 +1627,15 @@ function renderPieces(v) {
     return el("article", { class: "piece", "data-review": p.review },
       el("div", { class: "piece-top" }, el("h4", null, p.title), pill(label, tone)),
       p.research ? el("span", { class: "research-tag" }, "Research · no code is changed") : null,
+      // The check coming for it, from the hub (live.rs): working, lined up, or why it waits.
+      p.check ? el("p", { class: "check-line", role: "status" }, p.check.state === "running" ? dots(true) : null, D.checkLine(p.check)) : null,
       el("div", { class: "pp-done" }, el("b", null, p.research ? "Answers: " : "Done when: "), p.done_when),
+      p.road ? el("div", { class: "piece-road" }, D.road(p.road)) : null,
       el("dl", { class: "facts" },
         el("div", null, el("dt", null, "Agent:"), el("dd", null, THREAD_STATES[p.thread_state] ?? p.thread_state)),
         p.research ? null : el("div", null, el("dt", null, "Checked:"), el("dd", null, rounds)),
-        p.usage ? el("div", null, el("dt", null, "Used:"), el("dd", null, p.usage.words)) : null,
-        p.usage?.peak_context ? el("div", null, el("dt", null, "Longest conversation:"), el("dd", null, contextWords(p.usage))) : null),
+        p.usage ? el("div", null, el("dt", null, D.pro ? "Used:" : "Plan usage:"), el("dd", null, D.pro || !p.usage.plain ? p.usage.words : p.usage.plain)) : null,
+        D.pro && p.usage?.peak_context ? el("div", null, el("dt", null, "Longest conversation:"), el("dd", null, contextWords(p.usage))) : null),
       p.agent_summary ? el("details", { class: "said", open: p.research ? true : null },
         el("summary", null, p.research ? "What it found" : "What the agent said it did"),
         el("div", { class: "said-body" }, p.agent_summary)) : null,
@@ -1605,7 +1674,7 @@ function renderQuick(v) {
   box.hidden = plan == null;
   if (plan == null) { box.replaceChildren(); return; }
   box.replaceChildren(
-    el("button", { class: "btn primary", type: "button", onclick: () => sayToLead("Yes, do it") }, "Yes, do it"),
+    el("button", { class: "btn primary", type: "button", title: "The same as Approve plan: starts the plan shown", onclick: () => sayToLead("Yes, do it") }, "Yes, do it"),
     el("button", { class: "btn", type: "button", onclick: () => { $("say").focus(); } }, "Change something"),
     el("button", { class: "btn ghost danger", type: "button", onclick: () => {
       if (confirm("Stop this goal? Pieces of work that haven't started will be cancelled.")) goalAction("stop", "Stop goal");
@@ -1648,7 +1717,7 @@ async function sayToLead(text, typed = false) {
   if (id == null || !text || S.saying || (S.view && CLOSED.has(S.view.goal.state))) return;
   S.saying = true; updateSend(); $("say-err").textContent = "";
   try {
-    await post(`/goals/${id}/say`, { text, plan_message_id: S.view ? shownPlan(S.view) : null });
+    showGoalNow(await post(`/goals/${id}/say`, { text, plan_message_id: S.view ? shownPlan(S.view) : null }));
     if (typed) {
       S.says.delete(id);
       if (S.id === id) { $("say").value = ""; autosize(); }

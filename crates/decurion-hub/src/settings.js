@@ -635,7 +635,10 @@
   const modeOf = (r) => (r.merge && r.deploy ? "full" : !r.merge && !r.deploy ? "pr" : "mix");
   const MODE = { pr: ["branch", "PR only"], full: ["done", "Full control"], mix: ["settings", "Your own mix"] };
   const ruleChip = (r) => { const [ic, words] = MODE[modeOf(r)]; return el("span", { className: `pill rule-${modeOf(r)}` }, icon(ic), words); };
-  const dataChip = () => el("span", { className: "pill" }, icon("shield"), "Patient data");
+  // Every app starts with this rule on, to be safe (migration 0095), so the
+  // chip says what it does rather than claiming the app holds such data.
+  const dataChip = () => el("span", { className: "pill", title: "Agents use made-up data only. Every app starts this way to be safe. If this app's live version holds no patient data, turn it off under the app's Rules." },
+    icon("shield"), "Made-up data only");
   const hasSteps = (r) => /\S/.test(r.deploy_steps ?? "");
 
   // Sends a change to the app's rules. The hub answers with the whole app;
@@ -1405,7 +1408,17 @@
       el("span", { className: `lamp ${i.light}`, role: "img", "aria-label": LAMP[i.light] ?? "", title: LAMP[i.light] ?? "" }),
       el("div", { className: "who" }, el("b", {}, i.label),
         el("span", { className: "hint" }, when ? `${i.text} · ${when}` : i.text)),
-      lightButton(i));
+      lightButton(i), lightSteps(i));
+  }
+  // What to do on another site (GitHub's token page), step by step, with the
+  // one link that starts it. Only GitHub pages are ever linked.
+  function lightSteps(i) {
+    if (!Array.isArray(i.steps) || !i.steps.length) return null;
+    const go = typeof i.link?.url === "string" && i.link.url.startsWith("https://github.com/")
+      ? el("a", { className: "btn sm", href: i.link.url, target: "_blank", rel: "noopener noreferrer" }, icon("branch"), i.link.label || "Open GitHub")
+      : null;
+    return el("div", { className: "light-steps" },
+      el("ol", {}, ...i.steps.map((t) => el("li", {}, t))), go);
   }
   function lightButton(i) {
     const btn = (text, onclick, primary) => {

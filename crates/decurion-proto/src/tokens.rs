@@ -67,7 +67,29 @@ impl TokenUse {
         self.compactions = self.compactions.saturating_add(o.compactions);
     }
 
-    /// A few plain words for the board: "1.2M tokens · 94% cached".
+    /// Tokens weighed roughly by what they take from a plan: written output
+    /// about five times fresh input, input read back from the cache about a
+    /// tenth. A well-cached run weighs less than its raw count.
+    pub fn weight(&self) -> u64 {
+        self.fresh
+            .saturating_add(self.cache_write)
+            .saturating_add(self.cache_read / 10)
+            .saturating_add(self.output.saturating_mul(5))
+    }
+
+    /// One plain word for how much of a plan this used, for screens that
+    /// show no numbers: "light", "moderate" or "heavy". A rough guide; the
+    /// exact counts are `words`, in Pro view, and the plan's own meters are
+    /// under Settings, Accounts.
+    pub fn plain(&self) -> &'static str {
+        match self.weight() {
+            0..=999_999 => "light",
+            1_000_000..=9_999_999 => "moderate",
+            _ => "heavy",
+        }
+    }
+
+    /// The exact figures in a few words, for Pro view: "1.2M tokens · 94% cached".
     pub fn words(&self) -> String {
         let mut s = format!("{} tokens", short(self.total()));
         if let Some(p) = self.cache_pct() {
@@ -91,18 +113,22 @@ fn trim(s: String) -> String {
     s.strip_suffix(".0").map(str::to_owned).unwrap_or(s)
 }
 
-/// A total with its words, as the board shows it.
+/// A total with its words, as the board shows it: `plain` ("light",
+/// "moderate", "heavy") in the simple view, `words` in Pro view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenLine {
     #[serde(flatten)]
     pub tokens: TokenUse,
     pub words: String,
+    #[serde(default)]
+    pub plain: String,
 }
 
 impl From<TokenUse> for TokenLine {
     fn from(tokens: TokenUse) -> Self {
         TokenLine {
             words: tokens.words(),
+            plain: tokens.plain().to_string(),
             tokens,
         }
     }
@@ -136,6 +162,36 @@ mod tests {
         assert_eq!(t.words(), "1k tokens · 90% cached");
         assert_eq!(TokenUse::default().cache_pct(), None);
         assert_eq!(TokenUse::default().words(), "0 tokens");
+    }
+
+    #[test]
+    fn the_simple_view_says_how_heavy_in_one_word() {
+        // 217k tokens, mostly read back from the cache: light.
+        let goal = TokenUse {
+            fresh: 20_000,
+            cache_read: 160_000,
+            cache_write: 30_000,
+            output: 7_000,
+            ..TokenUse::default()
+        };
+        assert_eq!(goal.weight(), 20_000 + 30_000 + 16_000 + 35_000);
+        assert_eq!(goal.plain(), "light");
+        // 18.3M tokens, nothing cached: heavy.
+        let day = TokenUse {
+            fresh: 18_000_000,
+            output: 300_000,
+            ..TokenUse::default()
+        };
+        assert_eq!(day.plain(), "heavy");
+        let some = TokenUse {
+            fresh: 2_000_000,
+            ..TokenUse::default()
+        };
+        assert_eq!(some.plain(), "moderate");
+        assert_eq!(TokenUse::default().plain(), "light");
+        let line = TokenLine::from(day);
+        assert_eq!(line.plain, "heavy");
+        assert!(line.words.starts_with("18.3M tokens"));
     }
 
     #[test]

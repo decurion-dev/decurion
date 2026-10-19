@@ -5,9 +5,13 @@
 //! place, so the PC and the phone always say the same thing. The pages only
 //! pick a colour from the row's `tone`.
 //!
+//! It also owns the one meaning of "needs you" ([`Store::needs_you`],
+//! `GET /api/needs-you`): the app rows, the board's Needs you column and the
+//! phone's inbox all count exactly that list, so the three never disagree.
+//!
 //! This only reads. Watched pull requests and their comments are written by
 //! the code that keeps an eye on GitHub; a fix of comments starts from its own
-//! route. The route is owner-only and is not in `cloud_reach`: a runner has no
+//! route. The routes are owner-only and not in `cloud_reach`: a runner has no
 //! business knowing what the owner's other apps are doing.
 
 use crate::store::{Result, Store};
@@ -91,12 +95,8 @@ pub struct TodayRow {
     pub running: i64,
     /// Work waiting for a computer to start it.
     pub queued: i64,
-    /// What waits on the owner: work in Needs you or In review, plus goals
-    /// that wait on them. A goal counts when its plan is ready or the project
-    /// lead has asked or said something (talking or plan ready, and the
-    /// project lead is not thinking), the same as the phone's Goals badge;
-    /// when its work is ready for the owner's review; or when the project lead
-    /// got stuck and needs Try again.
+    /// What waits on the owner in this app: its share of
+    /// [`Store::needs_you`], the one list the board and the phone count too.
     pub needs_you: i64,
     /// Progress of the newest working goal, when there is one.
     pub pieces: Option<Pieces>,
@@ -129,6 +129,55 @@ pub struct TodayRow {
     pub used_today: Option<decurion_proto::tokens::TokenLine>,
 }
 
+/// Everything only the owner can move on right now, in one list. The app
+/// rows (`needs_you`), the board's Needs you column and the phone's inbox
+/// all count this, so they always say the same number.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct NeedsYou {
+    /// Work that asks the owner something, is ready for them to check (in
+    /// review, and no checker is still coming), could not finish, or was
+    /// accepted but did not reach GitHub. Work the owner dismissed is left
+    /// out.
+    pub work: Vec<WorkWait>,
+    /// Goals that wait on the owner.
+    pub goals: Vec<GoalWait>,
+    /// Open pull requests with review comments to answer, or waiting for the
+    /// owner's Merge tap, by the work that opened them. Not while a fix of
+    /// their comments is under way.
+    pub prs: Vec<PrWait>,
+    /// How many of all three each app has.
+    pub by_app: std::collections::BTreeMap<i64, i64>,
+    pub total: i64,
+}
+
+/// One piece of work in [`NeedsYou`].
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkWait {
+    pub thread_id: i64,
+    pub app_id: i64,
+    /// `answer`, `check`, `failed` or `not_sent`.
+    pub why: &'static str,
+}
+
+/// One goal in [`NeedsYou`].
+#[derive(Debug, Clone, Serialize)]
+pub struct GoalWait {
+    pub goal_id: i64,
+    pub app_id: i64,
+    /// `plan` (approve it), `answer` (the project lead asked or said
+    /// something), `review` (its work is built and checked) or `stuck`.
+    pub why: &'static str,
+}
+
+/// One pull request in [`NeedsYou`].
+#[derive(Debug, Clone, Serialize)]
+pub struct PrWait {
+    pub thread_id: i64,
+    pub app_id: i64,
+    /// `comments` or `merge`.
+    pub why: &'static str,
+}
+
 /// A watched pull request, as read.
 struct Watch {
     app_id: i64,
@@ -154,6 +203,10 @@ struct Facts {
     queued: i64,
     work_needs_you: i64,
     work_in_review: i64,
+    /// Work that could not finish, not dismissed.
+    work_failed: i64,
+    /// Accepted work that did not reach GitHub, not dismissed.
+    work_not_sent: i64,
     plans_ready: i64,
     goals_for_review: i64,
     goals_talking: i64,
@@ -230,6 +283,18 @@ fn words(f: &Facts) -> (Tone, &'static str, String) {
             plural(f.work_in_review, "piece is ready", "pieces are ready")
         ));
     }
+    if f.work_failed > 0 {
+        asks.push(format!(
+            "{} finish",
+            plural(f.work_failed, "piece couldn't", "pieces couldn't")
+        ));
+    }
+    if f.work_not_sent > 0 {
+        asks.push(format!(
+            "{} GitHub",
+            plural(f.work_not_sent, "piece didn't reach", "pieces didn't reach")
+        ));
+    }
     if let Some(first) = asks.first() {
         let line = match asks.len() {
             1 => first.clone(),
@@ -292,6 +357,81 @@ fn words(f: &Facts) -> (Tone, &'static str, String) {
 }
 
 impl Store {
+    /// What only the owner can move on now ([`NeedsYou`]).
+    pub async fn needs_you(&self) -> Result<NeedsYou> {
+        let mut n = NeedsYou::default();
+        // A piece of a goal in review with its check still to come waits on
+        // the checker, not the owner (the same rule as its work panel).
+        for r in sqlx::query(
+            "SELECT t.id, t.app_id, t.state FROM threads t
+             LEFT JOIN goal_pieces p ON p.thread_id = t.id
+             WHERE t.dismissed_at IS NULL AND (
+                 t.state IN ('needs_you', 'failed')
+                 OR (t.state = 'done' AND t.gh_state = 'failed')
+                 OR (t.state = 'in_review' AND NOT (p.thread_id IS NOT NULL AND t.research = 0
+                     AND p.review IN ('building', 'reviewing', 'fixing'))))
+             ORDER BY t.id",
+        )
+        .fetch_all(self.pool())
+        .await?
+        {
+            n.work.push(WorkWait {
+                thread_id: r.try_get("id")?,
+                app_id: r.try_get("app_id")?,
+                why: match r.try_get::<String, _>("state")?.as_str() {
+                    "needs_you" => "answer",
+                    "in_review" => "check",
+                    "failed" => "failed",
+                    _ => "not_sent",
+                },
+            });
+        }
+        for g in self.goals().await? {
+            let why = match g.state {
+                GoalState::Done | GoalState::Stopped => continue,
+                _ if g.stuck && !g.busy => "stuck",
+                GoalState::Talking | GoalState::PlanReady if g.busy => continue,
+                GoalState::PlanReady => "plan",
+                GoalState::Talking => "answer",
+                GoalState::ForReview => "review",
+                GoalState::Working => continue,
+            };
+            n.goals.push(GoalWait {
+                goal_id: g.id,
+                app_id: g.app_id,
+                why,
+            });
+        }
+        for w in self.watched_prs().await? {
+            if w.state != "open" || w.fixing {
+                continue;
+            }
+            let why = if w.open_comments > 0 {
+                "comments"
+            } else if w.can_merge {
+                "merge"
+            } else {
+                continue;
+            };
+            n.prs.push(PrWait {
+                thread_id: w.thread_id,
+                app_id: w.app_id,
+                why,
+            });
+        }
+        let apps = n
+            .work
+            .iter()
+            .map(|w| w.app_id)
+            .chain(n.goals.iter().map(|g| g.app_id))
+            .chain(n.prs.iter().map(|p| p.app_id));
+        for app in apps {
+            *n.by_app.entry(app).or_default() += 1;
+            n.total += 1;
+        }
+        Ok(n)
+    }
+
     /// The Today strip: every app, those needing the owner first, then those
     /// with work running, then the rest; by name within each, with today's
     /// starred apps ahead.
@@ -311,9 +451,18 @@ impl Store {
             match r.try_get::<String, _>("state")?.as_str() {
                 "running" => f.running += n,
                 "queued" => f.queued += n,
-                "needs_you" => f.work_needs_you += n,
-                "in_review" => f.work_in_review += n,
                 _ => {}
+            }
+        }
+        // Work that waits on the owner, as the one list counts it.
+        let needs = self.needs_you().await?;
+        for w in &needs.work {
+            let f = facts.entry(w.app_id).or_default();
+            match w.why {
+                "answer" => f.work_needs_you += 1,
+                "check" => f.work_in_review += 1,
+                "failed" => f.work_failed += 1,
+                _ => f.work_not_sent += 1,
             }
         }
 
@@ -474,12 +623,7 @@ impl Store {
                     first_today: a.first_today,
                     running: f.running,
                     queued: f.queued,
-                    needs_you: f.work_needs_you
-                        + f.work_in_review
-                        + f.plans_ready
-                        + f.goals_for_review
-                        + f.goals_talking
-                        + f.goals_stuck,
+                    needs_you: needs.by_app.get(&a.id).copied().unwrap_or(0),
                     pieces: f.pieces,
                     reviewer: a.reviewer,
                     waiting_on_reviewer: f.open_prs,
@@ -504,6 +648,17 @@ impl Store {
                 .then(a.app_id.cmp(&b.app_id))
         });
         Ok(rows)
+    }
+}
+
+/// `GET /api/needs-you`: owner only.
+pub(crate) async fn needs(State(st): State<AppState>, Extension(c): Extension<Caller>) -> Response {
+    if c != Caller::Owner {
+        return forbidden("seeing what needs you");
+    }
+    match st.store.needs_you().await {
+        Ok(n) => Json(n).into_response(),
+        Err(e) => ApiError(e).into_response(),
     }
 }
 
