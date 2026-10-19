@@ -620,11 +620,15 @@ impl Store {
         for row in rows {
             match row.kind {
                 ItemKind::Todo => {
-                    count(row.state);
                     let fix = row
                         .fix_goal_id
                         .and_then(|id| goals.get(&id))
                         .map(|g| g.goal.clone());
+                    // A to-do handed to a goal that is not stopped is carried by
+                    // that goal's own row, so it is counted once, there.
+                    if fix.as_ref().is_none_or(|g| g.state == GoalState::Stopped) {
+                        count(row.state);
+                    }
                     let parent = row.parent_id;
                     let item = todo_item(row, fix);
                     match parent {
