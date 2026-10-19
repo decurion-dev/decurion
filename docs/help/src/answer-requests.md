@@ -4,6 +4,14 @@ This page helps you deal with everything that needs you, on your phone or on the
 
 Your **inbox** shows only what needs you. Open it on your paired phone (see [Connect your phone](connect-your-phone.md)), or look at the **Needs you** column on the board. Questions from agents come first.
 
+The inbox, the board's **Needs you** column and the dots beside each app all count the same things:
+
+- work that asks you something, is ready for you to check, failed, or didn't reach GitHub;
+- goals that wait on you: a plan to approve, a question from your project lead, finished work to review, or a project lead that got stuck;
+- pull requests with review comments or a **Merge** button.
+
+Work still waiting for its checker is not counted: the checker looks first. Notices about Decurion's own accounts and sign-ins show at the top of the inbox but are not counted.
+
 Each card says what kind of request it is, which app it is for, and what the agent said last. Nothing in Decurion ever answers a request for you. A request waits until you answer it.
 
 ## Answer a request
@@ -14,7 +22,7 @@ Each card says what kind of request it is, which app it is for, and what the age
 
 | The card says | What it means | Your buttons |
 | --- | --- | --- |
-| The agent asks | An agent asked you a question, often with choices. | Tap a choice. With several questions, pick one for each, then **Send answers**. |
+| The agent asks | An agent asked you a question, often with choices. When it gave no choices, the panel shows "The agent seems to ask" with the sentences that end in a question mark. | Tap a choice. With several questions, pick one for each, then **Send answers**. |
 | Needs you · approve the plan | Your project lead has a plan for a goal. | **Approve**, **Open plan** |
 | Needs you · answer a question | Your project lead needs your answer before it can make a plan. | **Answer** |
 | In review | The agent finished and saved its changes. | **Accept**, **Send back**, **Reject** |

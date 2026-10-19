@@ -46,6 +46,9 @@ struct Fake {
     line: Vec<Value>,
     issue: Vec<Value>,
     reviews: Vec<Value>,
+    /// What GitHub answers when asked to open a pull request, when not 201:
+    /// 403 is a token that may not open them on this repo.
+    refuse_open: Option<u16>,
 }
 
 type FakeState = Arc<Mutex<Fake>>;
@@ -83,6 +86,12 @@ async fn fake_open(
     let mut f = f.lock().expect("fake");
     f.seen
         .push(("POST".into(), "pulls".into(), auth(&headers), b.clone()));
+    if let Some(code) = f.refuse_open {
+        return (
+            StatusCode::from_u16(code).expect("status"),
+            Json(json!({"message": "Resource not accessible by personal access token"})),
+        );
+    }
     let url = format!("https://github.com/acme/demo/pull/{}", f.prs.len() + 1);
     f.prs.push((
         b["head"].as_str().unwrap_or_default().to_owned(),
@@ -411,6 +420,11 @@ async fn reviewed_work(h: &Hub, repo: &Path) -> (i64, String) {
     .await["id"]
         .as_i64()
         .expect("app id");
+    reviewed_work_in(h, app).await
+}
+
+/// Like [`reviewed_work`], for an app already added.
+async fn reviewed_work_in(h: &Hub, app: i64) -> (i64, String) {
     ok(
         &h.r,
         OWNER,
@@ -1779,4 +1793,179 @@ async fn merge_waits_until_github_says_the_pull_request_is_ready() {
     assert!(v.as_str().expect("text").contains("pushed"), "{v}");
     assert!(merges(&h).is_empty(), "never asked GitHub to merge");
     assert_eq!(watched(&h).await[0]["state"], "open");
+}
+
+// ---------- An honest GitHub light ----------
+
+fn github_light(v: &Value) -> Value {
+    v["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|i| i["key"] == "github")
+        .cloned()
+        .expect("github row")
+}
+
+#[tokio::test]
+async fn a_token_that_cannot_open_pull_requests_turns_github_amber_until_one_opens() {
+    let h = hub(Tok::Fixed).await;
+    let (repo, _bare) = app_repo(&h.dir, Origin::GitHub);
+    h.fake.lock().expect("fake").refuse_open = Some(403);
+    let (thread, _head) = reviewed_work(&h, &repo).await;
+    accept(&h, thread, "accept-receipt-no-pr").await;
+    let t = settled(&h, thread).await;
+    let g = &t["github"];
+    // The work still went up as a branch, with the link and the plain reason.
+    assert_eq!(g["state"], "sent", "{g}");
+    assert_eq!(g["pull_request"], false);
+    assert!(g["url"].as_str().expect("url").contains("/compare/"), "{g}");
+    let why = g["error"].as_str().expect("reason");
+    assert!(
+        why.contains("can't open pull requests on this app"),
+        "{why}"
+    );
+    assert!(why.contains("Settings, Sign-ins"), "{why}");
+
+    // Settings, Sign-ins says so, with steps and GitHub's token page.
+    let v = ok(&h.r, OWNER, "GET", "/api/sign-in-lights", Value::Null).await;
+    let row = github_light(&v);
+    assert_eq!(row["light"], "amber", "{row}");
+    assert_eq!(
+        row["text"],
+        "This PC's GitHub sign-in can send work but can't open pull requests on demo."
+    );
+    assert!(
+        row["steps"].as_array().is_some_and(|s| s.len() >= 3),
+        "{row}"
+    );
+    assert_eq!(
+        row["link"]["url"],
+        "https://github.com/settings/personal-access-tokens"
+    );
+    assert_eq!(v["amber"], 1, "{v}");
+    // The token is never in what the page gets, nor in what was kept.
+    assert!(!v.to_string().contains(TOKEN));
+    let kept: Vec<String> = sqlx::query_scalar("SELECT reason || at FROM github_pr_trouble")
+        .fetch_all(h.store.pool())
+        .await
+        .expect("trouble");
+    assert_eq!(kept.len(), 1);
+    assert!(kept.iter().all(|k| !k.contains(TOKEN)));
+
+    // Once the token may open them, the next piece's pull request opens and
+    // the light is green again.
+    h.fake.lock().expect("fake").refuse_open = None;
+    let app: i64 = sqlx::query_scalar("SELECT app_id FROM threads WHERE id = ?")
+        .bind(thread)
+        .fetch_one(h.store.pool())
+        .await
+        .expect("app");
+    let (next, _) = reviewed_work_in(&h, app).await;
+    accept(&h, next, "accept-receipt-pr-again").await;
+    let t = settled(&h, next).await;
+    assert_eq!(t["github"]["pull_request"], true, "{t}");
+    let v = ok(&h.r, OWNER, "GET", "/api/sign-in-lights", Value::Null).await;
+    assert_eq!(github_light(&v)["light"], "green", "{v}");
+    assert!(github_light(&v)["steps"].is_null(), "{v}");
+}
+
+#[tokio::test]
+async fn a_token_saved_after_the_trouble_is_given_its_chance() {
+    let h = hub(Tok::Settings).await;
+    ok(
+        &h.r,
+        OWNER,
+        "POST",
+        "/api/github/token",
+        json!({"value": TOKEN}),
+    )
+    .await;
+    let (repo, _bare) = app_repo(&h.dir, Origin::GitHub);
+    h.fake.lock().expect("fake").refuse_open = Some(404);
+    let (thread, _head) = reviewed_work(&h, &repo).await;
+    accept(&h, thread, "accept-receipt-saved").await;
+    settled(&h, thread).await;
+    let v = ok(&h.r, OWNER, "GET", "/api/sign-in-lights", Value::Null).await;
+    let row = github_light(&v);
+    assert_eq!(row["light"], "amber", "{row}");
+    assert_eq!(
+        row["text"],
+        "Your GitHub token can send work but can't open pull requests on demo."
+    );
+    // The owner saves a new token: it may well work, so the light stops
+    // saying it can't until a send says so again.
+    sqlx::query(
+        "UPDATE github_pr_trouble SET at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 minute')",
+    )
+    .execute(h.store.pool())
+    .await
+    .expect("age");
+    ok(
+        &h.r,
+        OWNER,
+        "POST",
+        "/api/github/token",
+        json!({"value": format!("{TOKEN}x")}),
+    )
+    .await;
+    let v = ok(&h.r, OWNER, "GET", "/api/sign-in-lights", Value::Null).await;
+    assert_ne!(github_light(&v)["light"], "amber", "{v}");
+}
+
+#[tokio::test]
+async fn a_pull_request_that_clashes_with_main_says_so() {
+    let h = hub(Tok::Fixed).await;
+    let (_repo, _bare, thread, _head, _branch) = sent_pr(&h).await;
+    let t = ok(
+        &h.r,
+        OWNER,
+        "GET",
+        &format!("/api/threads/{thread}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(t["github"]["clash"], false, "{t}");
+
+    h.fake
+        .lock()
+        .expect("fake")
+        .merge_state
+        .insert(1, "dirty".into());
+    decurion_hub::pr_watch::poll(&h.state).await;
+    let t = ok(
+        &h.r,
+        OWNER,
+        "GET",
+        &format!("/api/threads/{thread}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(t["github"]["clash"], true, "{t}");
+    assert_eq!(watched(&h).await[0]["clash"], true);
+
+    // GitHub still working it out tells nothing; fixed, it is clear again.
+    h.fake
+        .lock()
+        .expect("fake")
+        .merge_state
+        .insert(1, "unknown".into());
+    decurion_hub::pr_watch::poll(&h.state).await;
+    assert_eq!(watched(&h).await[0]["clash"], true);
+    h.fake
+        .lock()
+        .expect("fake")
+        .merge_state
+        .insert(1, "clean".into());
+    decurion_hub::pr_watch::poll(&h.state).await;
+    assert_eq!(watched(&h).await[0]["clash"], false);
+    let t = ok(
+        &h.r,
+        OWNER,
+        "GET",
+        &format!("/api/threads/{thread}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(t["github"]["clash"], false, "{t}");
 }

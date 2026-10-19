@@ -195,6 +195,20 @@ struct Look {
     merge_commit: Option<String>,
     author: Option<String>,
     comments: Vec<NewComment>,
+    /// GitHub says it clashes with newer changes on its base branch; `None`
+    /// while GitHub is still working that out.
+    clash: Option<bool>,
+}
+
+/// Whether GitHub says an open pull request clashes with its base branch:
+/// `mergeable_state` "dirty". GitHub works this out in the background, so
+/// "unknown" (or no answer yet) tells nothing.
+pub(crate) fn clashes(pr: &serde_json::Value) -> Option<bool> {
+    match pr["mergeable_state"].as_str() {
+        Some("dirty") => Some(true),
+        Some("unknown") | None => None,
+        Some(_) => Some(false),
+    }
 }
 
 async fn get_json(
@@ -259,6 +273,11 @@ async fn look(s: &Sender, t: &Token, r: &Repo, n: i64) -> std::result::Result<Lo
         }
     }
     Ok(Look {
+        clash: if state == PrState::Open {
+            clashes(&pr)
+        } else {
+            Some(false)
+        },
         state,
         merge_commit,
         author,
@@ -376,6 +395,9 @@ pub struct Watched {
     /// Still open, and the app's rules let the owner merge it from Decurion
     /// ([`crate::merge`]).
     pub can_merge: bool,
+    /// Still open, and GitHub says it clashes with newer changes on its base
+    /// branch, so it can't be merged as it is.
+    pub clash: bool,
 }
 
 /// A fix is under way while its work is unfinished, or accepted but not yet
@@ -455,7 +477,7 @@ impl Store {
         };
         sqlx::query(
             "UPDATE pr_watches SET state = ?, author = COALESCE(?, author),
-                 merge_commit = COALESCE(?, merge_commit),
+                 merge_commit = COALESCE(?, merge_commit), clash = COALESCE(?, clash),
                  checked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                  event = COALESCE(?, event),
                  event_at = CASE WHEN ? IS NULL THEN event_at
@@ -465,6 +487,7 @@ impl Store {
         .bind(l.state.as_str())
         .bind(&l.author)
         .bind(&l.merge_commit)
+        .bind(l.clash)
         .bind(&event)
         .bind(&event)
         .bind(thread_id)
@@ -484,6 +507,7 @@ impl Store {
             "SELECT w.thread_id, w.app_id, a.name AS app, t.title, w.number, w.url, w.state,
                     a.reviewer, w.event, w.event_at, {FIX_UNDER_WAY} AS fixing,
                     (w.state = 'open' AND a.can_merge) AS can_merge,
+                    (w.state = 'open' AND w.clash) AS clash,
                     (SELECT json_group_array(c.author) FROM pr_comments c
                       WHERE c.thread_id = w.thread_id AND {OPEN_COMMENT}) AS authors
              FROM pr_watches w JOIN threads t ON t.id = w.thread_id JOIN apps a ON a.id = w.app_id
@@ -517,6 +541,7 @@ impl Store {
                     line: (state == "open" && !authors.is_empty()).then(|| left_words(&authors)),
                     fixing: r.try_get("fixing")?,
                     can_merge: r.try_get("can_merge")?,
+                    clash: r.try_get("clash")?,
                     state,
                 })
             })

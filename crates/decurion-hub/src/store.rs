@@ -94,7 +94,8 @@ where
 
 const THREAD_COLS: &str =
     "id, app_id, title, prompt, state, ai, session_id, branch, place, updated_at, parent_id, background,
-     gh_state, gh_branch, gh_url, gh_pr, gh_error, fix_of, research, dismissed_at";
+     gh_state, gh_branch, gh_url, gh_pr, gh_error, fix_of, research, dismissed_at,
+     (SELECT w.state = 'open' AND w.clash FROM pr_watches w WHERE w.thread_id = threads.id) AS gh_clash";
 
 /// The actor recorded for the owner's own moves.
 pub const OWNER: &str = "owner";

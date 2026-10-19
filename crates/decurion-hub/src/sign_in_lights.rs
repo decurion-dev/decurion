@@ -82,7 +82,25 @@ pub struct Light {
     pub action: Option<Action>,
     pub profile: Option<Profile>,
     pub id: Option<i64>,
+    /// Short steps in plain words, in order, when fixing it takes the owner
+    /// somewhere else (GitHub's own pages).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<String>,
+    /// Where those steps start: an `https://github.com/` page only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<Link>,
 }
+
+/// A page outside Decurion that a row's steps send the owner to.
+#[derive(Debug, Clone, Serialize)]
+pub struct Link {
+    pub url: &'static str,
+    pub label: &'static str,
+}
+
+/// GitHub's page for fine-grained tokens, where a token's repositories and
+/// permissions are changed.
+pub const GITHUB_TOKENS_PAGE: &str = "https://github.com/settings/personal-access-tokens";
 
 impl Light {
     fn new(key: String, group: &'static str, label: String, light: Color, text: &str) -> Self {
@@ -97,6 +115,8 @@ impl Light {
             action: None,
             profile: None,
             id: None,
+            steps: Vec::new(),
+            link: None,
         }
     }
 
@@ -402,6 +422,14 @@ async fn github(st: &AppState) -> Result<Light> {
         }
     };
     let saved = info.is_some();
+    // GitHub takes the token, but it could not open a pull request on some
+    // app last time: the light says so instead of green.
+    if matches!(check, TokenCheck::Works { .. } | TokenCheck::Unknown) {
+        let trouble = st.store.github_pr_trouble().await?;
+        if !trouble.is_empty() {
+            return Ok(pr_trouble_row(row(Color::Amber, ""), &trouble, saved));
+        }
+    }
     Ok(match check {
         TokenCheck::NoToken => row(
             Color::Grey,
@@ -444,6 +472,57 @@ async fn github(st: &AppState) -> Result<Light> {
             }
         }
     })
+}
+
+/// The amber GitHub row for apps where the token could not open a pull
+/// request: what happened, in plain words, and the steps to fix it on
+/// GitHub. Names only; never the token.
+fn pr_trouble_row(mut r: Light, trouble: &[crate::github::PrTrouble], saved: bool) -> Light {
+    let names: Vec<&str> = trouble.iter().map(|t| t.app.as_str()).collect();
+    let apps = match names.as_slice() {
+        [] => "an app".to_owned(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    };
+    let refused = trouble.iter().any(|t| t.kind == "refused");
+    let who = if saved {
+        "Your GitHub token"
+    } else {
+        "This PC's GitHub sign-in"
+    };
+    r.text = if refused {
+        let whom = if saved {
+            "your GitHub token"
+        } else {
+            "this PC's GitHub sign-in"
+        };
+        format!("GitHub stopped taking {whom} when Decurion tried to open a pull request on {apps}. Save a new token.")
+    } else {
+        format!("{who} can send work but can't open pull requests on {apps}.")
+    };
+    r.expires_at = None;
+    r.days_left = None;
+    r.steps = if saved && !refused {
+        vec![
+            "Open GitHub's token page with the button here, and sign in to GitHub if it asks.".to_owned(),
+            "Open the token you made for Decurion and tap Edit.".to_owned(),
+            format!("Under Repository access, make sure the repo for {apps} is picked."),
+            "Under Permissions, set Pull requests to Read and write. Tap Update.".to_owned(),
+            "Done. The next piece of work opens its pull request by itself. For work already sent, tap Open a pull request.".to_owned(),
+        ]
+    } else {
+        vec![
+            "Open GitHub's token page with the button here, sign in, and tap Generate new token.".to_owned(),
+            format!("Name it Decurion. Under Repository access, pick the repo for {apps}."),
+            "Under Permissions, set Pull requests to Read and write. Tap Generate token and copy it.".to_owned(),
+            "In Decurion, open Settings, GitHub, paste it in and tap Save.".to_owned(),
+        ]
+    };
+    r.link = Some(Link {
+        url: GITHUB_TOKENS_PAGE,
+        label: "Open GitHub's token page",
+    });
+    r
 }
 
 pub(crate) fn routes() -> Router<AppState> {

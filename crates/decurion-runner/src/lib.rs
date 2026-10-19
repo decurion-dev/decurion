@@ -1582,6 +1582,29 @@ fn clip(s: &str, n: usize) -> String {
     }
 }
 
+/// Longest final summary the board gets, in characters: room for a whole
+/// report (what was done, what was checked, what was not).
+pub const SUMMARY_CHARS: usize = 8000;
+
+/// An agent's final summary as the board may show it, after [`hide`]:
+/// redacted like every text and, when longer than [`SUMMARY_CHARS`], cut at
+/// its last whole line (or else sentence) before the limit, never mid-word
+/// or mid-markdown, and marked with a last line of "…".
+pub fn clip_summary(s: &str) -> String {
+    let s = redact(s.trim());
+    let Some((cut, _)) = s.char_indices().nth(SUMMARY_CHARS) else {
+        return s;
+    };
+    let head = &s[..cut];
+    // Both marks are ASCII, so these byte offsets are character boundaries.
+    let at = head
+        .rfind('\n')
+        .filter(|&i| i >= cut / 2)
+        .or_else(|| head.rfind(". ").map(|i| i + 1))
+        .unwrap_or(cut);
+    format!("{}\n\n…", head[..at].trim_end())
+}
+
 /// Turns one line of Claude Code `stream-json` output into board events.
 pub fn parse_line(line: &str) -> Vec<RunEvent> {
     parse_line_hiding(line, &[])
@@ -1634,7 +1657,7 @@ pub fn parse_line_hiding(line: &str, secrets: &[String]) -> Vec<RunEvent> {
             } else if limit.is_some() {
                 LIMIT_STOP.to_owned()
             } else {
-                show(text, 2000)
+                clip_summary(&hide(text, secrets))
             };
             let mut out = Vec::new();
             if let Some(reset_epoch) = limit {
@@ -1889,7 +1912,9 @@ impl PiRun {
     pub fn finished(&self) -> Option<RunEvent> {
         let aborted = self.settled?;
         let (ok, summary) = match &self.answer {
-            Some((text, stop, _)) if stop == "stop" => (!aborted, self.show(text, 2000)),
+            Some((text, stop, _)) if stop == "stop" => {
+                (!aborted, clip_summary(&hide(text, &self.secrets)))
+            }
             Some((_, stop, error)) if stop == "error" || stop == "aborted" => (
                 false,
                 self.show(error.as_deref().unwrap_or("the model request failed"), 2000),
@@ -1898,7 +1923,7 @@ impl PiRun {
                 false,
                 format!(
                     "Stopped at the model's output limit: {}",
-                    self.show(text, 2000)
+                    clip_summary(&hide(text, &self.secrets))
                 ),
             ),
             _ => (false, "pi ended without an answer".to_owned()),
@@ -3134,6 +3159,49 @@ mod tests {
     fn clip_respects_char_boundaries() {
         assert_eq!(clip("héllo", 2), "hé…");
         assert_eq!(clip("hi", 5), "hi");
+    }
+
+    #[test]
+    fn a_long_summary_is_kept_whole_or_cut_at_a_line_never_mid_word() {
+        // A report of ordinary length arrives in full, markdown and all.
+        let report = format!(
+            "{}\n\nNot checked - **Browser**: nobody opened it in a browser.",
+            "- Did a thing.\n".repeat(200)
+        );
+        assert!(report.chars().count() > 2000);
+        assert_eq!(clip_summary(&report), report);
+        // One far too long is cut after its last whole line, and says so.
+        let long = "- **Step**: done.\n".repeat(1000);
+        let cut = clip_summary(&long);
+        assert!(cut.chars().count() <= SUMMARY_CHARS + 3, "{}", cut.len());
+        assert!(
+            cut.ends_with("- **Step**: done.\n\n…"),
+            "{}",
+            &cut[cut.len() - 40..]
+        );
+        // No line breaks at all: cut after the last sentence.
+        let flat = "This is one sentence. ".repeat(600);
+        let cut = clip_summary(&flat);
+        assert!(
+            cut.ends_with("sentence.\n\n…"),
+            "{}",
+            &cut[cut.len() - 40..]
+        );
+        // Test keys are still hidden from it, as from every text.
+        let ev = parse_line_hiding(
+            &format!(
+                r#"{{"type":"result","subtype":"success","is_error":false,"result":"{} key sk_test_abcdef123456","total_cost_usd":0.1}}"#,
+                "Long. ".repeat(500)
+            ),
+            &["sk_test_abcdef123456".to_owned()],
+        );
+        match &ev[..] {
+            [RunEvent::Finished { summary, .. }] => {
+                assert!(!summary.contains("sk_test_abcdef123456"));
+                assert!(summary.chars().count() > 2000, "kept whole");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     fn msg(id: i64, kind: MessageKind, text: &str) -> Message {

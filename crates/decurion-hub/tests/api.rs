@@ -1933,9 +1933,7 @@ async fn the_menus_carry_a_help_link_that_opens_a_new_tab() {
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = resp.into_body().collect().await.expect("body").to_bytes();
     let ui = String::from_utf8_lossy(&bytes).into_owned();
-    assert!(ui.contains(
-        "D.HELP_URL = \"https://github.com/decurion-dev/decurion/tree/main/docs/help/src\""
-    ));
+    assert!(ui.contains("D.HELP_URL = \"/help\""));
     assert!(ui.contains("id: \"tab-help\""), "phone Help tab");
     assert!(ui.contains("\"Help\""), "Help label");
     assert_eq!(
@@ -1944,6 +1942,40 @@ async fn the_menus_carry_a_help_link_that_opens_a_new_tab() {
         2,
         "both menus open Help in a new tab"
     );
+}
+
+#[tokio::test]
+async fn help_is_served_by_the_hub_with_the_pages_strict_rules() {
+    let (r, _) = hub().await;
+    let resp = get(&r, "/help", None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let csp = resp
+        .headers()
+        .get(header::CONTENT_SECURITY_POLICY)
+        .expect("help has the pages' CSP")
+        .to_str()
+        .expect("ascii")
+        .to_string();
+    assert!(csp.contains("default-src 'self'"), "{csp}");
+    assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+    let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+    let html = String::from_utf8_lossy(&bytes).into_owned();
+    assert!(html.contains("<script src=\"/ui.js\"></script>"));
+    assert!(html.contains("Back to Decurion"));
+
+    let resp = get(&r, "/help/book.json", None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+    let book: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(book["summary"]
+        .as_str()
+        .expect("summary")
+        .contains("(review-and-merge.md)"));
+    assert!(book["pages"]["review-and-merge.md"]
+        .as_str()
+        .expect("a page")
+        .starts_with("# Review and merge work"));
+    assert!(book["pages"]["check-your-sign-ins.md"].is_string());
 }
 
 #[tokio::test]

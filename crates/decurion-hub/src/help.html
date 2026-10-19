@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Decurion help</title>
+<link rel="icon" href="/icon.svg">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/ui.css">
+<style>
+  /* Decurion's own help, served by the hub (help.rs). The pages are the
+     same words as docs/help/src, drawn with D.richText. Only here are links
+     clickable: to other help pages, and to outside https addresses in a
+     new tab. Contents on the left on a PC; on a phone, one page at a time
+     with "All help pages" at the top. */
+  .hbar {
+    position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; min-height: 60px;
+    padding: 8px 16px; padding-top: max(8px, env(safe-area-inset-top));
+    border-bottom: 1px solid var(--line); background: var(--surface);
+  }
+  .hbar .mk { flex: none; display: inline-flex; border-radius: 8px; }
+  .hbar .mk svg { border-radius: 8px; }
+  .hbar h1 { flex: 1; min-width: 0; font: 650 17px/1.3 var(--font-display); }
+  .hbar .btn { flex: none; }
+  .hmain { display: grid; grid-template-columns: 290px minmax(0, 1fr); max-width: 1180px; margin: 0 auto; }
+  .toc { position: sticky; top: 61px; align-self: start; max-height: calc(100dvh - 61px); overflow-y: auto; padding: 20px 12px 32px; border-right: 1px solid var(--line); }
+  .toc h2 { font-size: 12px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 18px 10px 6px; font-weight: 650; }
+  .toc h2:first-child { margin-top: 0; }
+  .toc ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .toc a { display: flex; align-items: center; min-height: 40px; padding: 6px 10px; border-radius: 10px; color: var(--ink); text-decoration: none; font-size: 14.5px; }
+  .toc a:hover { background: var(--surface-2); }
+  .toc a[aria-current="page"] { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
+  .doc { min-width: 0; padding: 28px 40px 64px; }
+  .doc .all { display: none; }
+  .doc .rich { max-width: 720px; gap: 12px; font-size: 15.5px; line-height: 1.6; }
+  .doc .rich h1 { font-size: 28px; line-height: 1.25; margin-bottom: 4px; }
+  .doc .rich h2 { font-size: 20px; line-height: 1.3; margin-top: 18px; scroll-margin-top: 76px; }
+  .doc .rich h3, .doc .rich h4 { font-size: 16.5px; margin-top: 10px; scroll-margin-top: 76px; }
+  .doc .rich table { font-size: 14px; }
+  .doc .next { max-width: 720px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--line); }
+  .err { max-width: 720px; padding: 12px 14px; border-radius: var(--radius); background: var(--surface-2); }
+  @media (max-width: 760px) {
+    .hmain { grid-template-columns: minmax(0, 1fr); }
+    .toc { position: static; max-height: none; border-right: 0; padding: 16px 16px 32px; }
+    .hmain.reading .toc { display: none; }
+    .hmain:not(.reading) .doc { display: none; }
+    .doc { padding: 16px 16px calc(40px + env(safe-area-inset-bottom)); }
+    .doc .all { display: inline-flex; margin-bottom: 14px; }
+    .doc .rich h1 { font-size: 24px; }
+  }
+</style>
+</head>
+<body>
+<header class="hbar">
+  <a class="mk" href="/" id="mark" aria-label="Back to Decurion"></a>
+  <h1>Decurion help</h1>
+  <a class="btn" href="/" id="home">Back to Decurion</a>
+</header>
+<div class="hmain" id="main">
+  <nav class="toc" id="toc" aria-label="Help pages"></nav>
+  <main class="doc" id="doc" aria-live="polite"><p>Loading the help…</p></main>
+</div>
+<script src="/ui.js"></script>
+<script>
+"use strict";
+(() => {
+  const { el } = D;
+  const $ = (id) => document.getElementById(id);
+  $("mark").append(D.mark(32));
+  // On a phone, Decurion's home is the inbox.
+  if (matchMedia("(max-width: 760px)").matches) for (const id of ["mark", "home"]) $(id).href = "/inbox";
+  let book = null, order = [], current = "README.md";
+
+  // Links in help: another help page (with or without a part of it), or an
+  // outside https address, which opens in a new tab. Anything else stays
+  // plain text.
+  const PAGE = /^([a-z0-9-]+\.md)(#[a-z0-9-]+)?$/;
+  const links = (url) => {
+    if (/^#[a-z0-9-]+$/.test(url)) return `#${current}${url}`;
+    const m = url.match(PAGE);
+    if (m) return book.pages[m[1]] ? `#${m[1]}${m[2] ?? ""}` : null;
+    if (/^https:\/\/[^\s]+$/i.test(url)) return url;
+    if (/^http:\/\/(decurion\.localhost|localhost|127\.0\.0\.1)(:\d+)?(\/[^\s]*)?$/i.test(url)) return url;
+    return null;
+  };
+
+  // The contents, from the book's own SUMMARY.md: "# Part" headings and
+  // "- [Title](file.md)" lines, plus the opening page.
+  function contents() {
+    const parts = [];
+    let list = null;
+    for (const line of book.summary.split("\n")) {
+      let m;
+      if ((m = line.match(/^#\s+(.*)$/)) && m[1] !== "Summary") {
+        parts.push(el("h2", {}, m[1]));
+        parts.push(list = el("ul"));
+      } else if ((m = line.match(/^\s*-?\s*\[([^\]]+)\]\(([^)]+\.md)\)\s*$/)) && book.pages[m[2]]) {
+        order.push([m[2], m[1]]);
+        if (!list) parts.push(list = el("ul"));
+        list.append(el("li", {}, el("a", { href: `#${m[2]}`, dataset: { page: m[2] } }, m[1])));
+      }
+    }
+    $("toc").replaceChildren(...parts);
+  }
+
+  function show() {
+    const raw = decodeURIComponent(location.hash.slice(1));
+    const m = raw.match(/^([a-z0-9-]+\.md)(?:#([a-z0-9-]+))?$/);
+    const name = current = m && book.pages[m[1]] ? m[1] : "README.md";
+    $("main").classList.toggle("reading", !!m);
+    for (const a of $("toc").querySelectorAll("a")) a.setAttribute("aria-current", a.dataset.page === name ? "page" : "false");
+    const at = order.findIndex(([n]) => n === name);
+    const prev = order[at - 1], next = order[at + 1];
+    const title = order[at]?.[1] ?? "Help";
+    document.title = `${title} · Decurion help`;
+    $("doc").replaceChildren(
+      el("a", { className: "btn all", href: "#" }, D.icon("left"), "All help pages"),
+      D.richText(book.pages[name], { links, headings: true }),
+      el("nav", { className: "next", "aria-label": "Next and previous" },
+        prev ? el("a", { className: "btn", href: `#${prev[0]}` }, D.icon("left"), prev[1]) : el("span"),
+        next ? el("a", { className: "btn", href: `#${next[0]}` }, next[1], D.icon("right")) : el("span")));
+    const part = m?.[2] && document.getElementById(m[2]);
+    if (part) part.scrollIntoView();
+    else window.scrollTo(0, 0);
+  }
+
+  fetch("/help/book.json", { cache: "no-cache" })
+    .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
+    .then((b) => {
+      book = b;
+      contents();
+      show();
+      addEventListener("hashchange", show);
+    })
+    .catch(() => {
+      $("doc").replaceChildren(el("p", { className: "err" }, "Help didn't load. Check that Decurion is running on this PC, then reload this page."));
+    });
+})();
+</script>
+</body>
+</html>
