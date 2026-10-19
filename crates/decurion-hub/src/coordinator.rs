@@ -18,7 +18,7 @@ use decurion_proto::goal::{
     GoalView, HelperClaim, HelperKind, HelperResult, HelperSource, NewGoal, OwnerAnswers, PageInfo,
     PageKind, Piece, Plan, ReviewState, ReviewVerdict, MAX_PAGE_BYTES,
 };
-use decurion_proto::goal::{Evidence, ReviewClaim};
+use decurion_proto::goal::{Evidence, PlanPiece, ReviewClaim, Road};
 use decurion_proto::{MessageKind, NewMessage, Thread, ThreadState};
 use serde::Serialize;
 use sqlx::sqlite::SqliteRow;
@@ -101,6 +101,9 @@ pub struct PieceOf {
     /// The app's rule today: whether a piece that passes its check is sent
     /// by itself (`AppRules::send_checked`), or waits for the owner's Accept.
     pub sends_checked: bool,
+    /// Where it is on its way from built to live, the same steps and words
+    /// as on the goal page ([`crate::road`]). `None` for research.
+    pub road: Option<Road>,
 }
 
 /// What the runner gets when it asks for helper work.
@@ -405,9 +408,12 @@ Its agent changes no code: it studies the app and writes a report page with each
 A plan can hold research pieces and building pieces side by side.
 4. If the owner asks for changes, propose a new plan. Once the owner approves, the work starts; while \
 it runs you can answer questions, but do not propose a new plan until it is finished.
-5. If the app has a file .decurion/protected-paths, it lists the parts the owner wants to see before any \
-change to them goes out. Set \"touches_protected\" to true on each piece likely to change one of them, and \
-say in the plan's summary, in plain words, that this piece will wait for one tap from the owner at the end.
+5. If the app has a file .decurion/protected-paths, it lists the app's protected parts: a change to one \
+always waits for the owner to look. Set \"touches_protected\" to true on each piece likely to change one of \
+them, and say in the plan's summary, in plain words, which pieces may change a protected part. Call them \
+protected parts; say nothing about them when no piece is likely to change one.
+6. Do not tell the owner what happens to the work after it is built and checked (GitHub, pull requests, \
+merging, going live, or what they must tap): Decurion shows them that itself, from the app's own rules.
 
 Write to the owner in plain, friendly words: short sentences, no jargon and no code. Lead with what \
 matters to them. Before a plan is built, a designer draws it as a visual page with mockups, so describe \
@@ -871,6 +877,57 @@ async fn save_notes(
 }
 
 /// Queues the reports once every piece is settled.
+/// Closes goal `goal_id` when nothing of it is left on the way: every piece
+/// is merged (and, when `goes_live`, live too), or ended without going to
+/// GitHub (failed, or stopped); a piece still being built or checked, or
+/// sent but not merged (or not live) yet, keeps the goal open. A research
+/// piece never goes to GitHub, so it never keeps the goal open. Returns the
+/// phone notice when it closed.
+async fn close_if_finished(
+    tx: &mut Transaction<'_, Sqlite>,
+    goal_id: i64,
+    goes_live: bool,
+) -> Result<Option<News>> {
+    let open: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM goal_pieces p JOIN threads t ON t.id = p.thread_id
+         WHERE p.goal_id = ? AND NOT t.research
+           AND NOT (t.state = 'failed' AND t.gh_state IS NULL)
+           AND (p.merged_at IS NULL
+                OR (? AND NOT EXISTS (SELECT 1 FROM pr_watches w
+                                      WHERE w.thread_id = p.thread_id AND w.live_at IS NOT NULL)))",
+    )
+    .bind(goal_id)
+    .bind(goes_live)
+    .fetch_one(&mut **tx)
+    .await?;
+    let merged: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM goal_pieces WHERE goal_id = ? AND merged_at IS NOT NULL",
+    )
+    .bind(goal_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if open > 0 || merged == 0 {
+        return Ok(None);
+    }
+    cancel_queued(tx, goal_id).await?;
+    let (words, head) = if goes_live {
+        (
+            "Every piece is merged and live, so this goal is done.",
+            "goal done, everything is live",
+        )
+    } else {
+        (
+            "Every pull request is merged, so this goal is done.",
+            "goal done, everything is merged",
+        )
+    };
+    note(tx, goal_id, words).await?;
+    set_state(tx, goal_id, GoalState::Done).await?;
+    let (app_id, title) = goal_row(tx, goal_id).await?;
+    let app = app_name(tx, app_id).await?;
+    Ok(Some(News::goal(&app, goal_id, head, &title)))
+}
+
 async fn maybe_report(tx: &mut Transaction<'_, Sqlite>, goal_id: i64) -> Result<()> {
     if goal_state(tx, goal_id).await? != GoalState::Working {
         return Ok(());
@@ -1184,13 +1241,15 @@ impl Store {
 
     pub async fn goal_view(&self, id: i64) -> Result<GoalView> {
         let goal = self.goal(id).await?;
+        // Asked before the read below: it may ask the app's clone (read-only).
+        let rules = self.road_rules(goal.app_id).await?;
         let mut tx = self.pool().begin().await?; // read-only: a reader never waits on writers
         let app_name = app_name(&mut tx, goal.app_id).await?;
         let messages = messages_in(&mut tx, id).await?;
         let rows = sqlx::query(
             "SELECT p.thread_id, p.goal_id, p.title, p.done_when, p.review, p.rounds,
                     p.review_summary, p.review_issues, p.review_evidence, p.review_claims,
-                    t.state, t.branch, t.research, p.merged_at,
+                    t.state, t.branch, t.research, p.merged_at, w.live_at,
                     t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error,
                     EXISTS (SELECT 1 FROM piece_reports r WHERE r.thread_id = p.thread_id) AS report,
                     (SELECT json_extract(e.body, '$.summary') FROM events e
@@ -1198,15 +1257,33 @@ impl Store {
                        AND json_extract(e.body, '$.ok') = 1
                      ORDER BY e.id DESC LIMIT 1) AS agent_summary
              FROM goal_pieces p JOIN threads t ON t.id = p.thread_id
+             LEFT JOIN pr_watches w ON w.thread_id = p.thread_id
              WHERE p.goal_id = ? ORDER BY p.thread_id",
         )
         .bind(id)
         .fetch_all(&mut *tx)
         .await?;
         let mut pieces = Vec::new();
+        let mut roads = Vec::new();
         for r in &rows {
             let review: String = r.try_get("review")?;
             let state: String = r.try_get("state")?;
+            let research: bool = r.try_get("research")?;
+            let road = if research {
+                None
+            } else {
+                Some(crate::road::piece_road(
+                    &crate::road::facts_from(r)?,
+                    &rules,
+                ))
+            };
+            // A piece that ended without reaching GitHub (stopped or
+            // rejected) is off the road; the rest say where the goal is.
+            let off = state == ThreadState::Failed.as_str()
+                && r.try_get::<Option<String>, _>("gh_state")?.is_none();
+            if let (Some(road), false) = (&road, off) {
+                roads.push((r.try_get::<String, _>("title")?, road.clone()));
+            }
             pieces.push(Piece {
                 thread_id: r.try_get("thread_id")?,
                 goal_id: r.try_get("goal_id")?,
@@ -1231,6 +1308,7 @@ impl Store {
                 review_claims: serde_json::from_str(&r.try_get::<String, _>("review_claims")?)
                     .unwrap_or_default(),
                 usage: None,
+                road,
             });
         }
         let mut piece_tokens = Vec::with_capacity(pieces.len());
@@ -1261,7 +1339,22 @@ impl Store {
                 created_at: r.try_get("created_at")?,
             });
         }
-        let latest = latest_plan(&mut tx, id).await?.map(|(m, _)| m);
+        let latest_plan = latest_plan(&mut tx, id).await?;
+        let latest = latest_plan.as_ref().map(|(m, _)| *m);
+        // The latest plan's pieces that change code, and those expected to
+        // change a protected part, for the road ahead and its story.
+        let building: Vec<&PlanPiece> = latest_plan
+            .iter()
+            .flat_map(|(_, p)| p.pieces.iter())
+            .filter(|p| !p.research)
+            .collect();
+        let protected: Vec<String> = building
+            .iter()
+            .filter(|p| p.touches_protected)
+            .map(|p| p.title.clone())
+            .collect();
+        let road = crate::road::goal_road(goal.state, &roads, !building.is_empty(), &rules);
+        let story = crate::road::story(&rules, &protected);
         let drawing: bool =
             match latest {
                 Some(m) => sqlx::query_scalar(
@@ -1285,6 +1378,8 @@ impl Store {
             drawing,
             live,
             usage,
+            road,
+            story,
         })
     }
 
@@ -1619,7 +1714,12 @@ impl Store {
             return Err(StoreError::Conflict);
         }
         cancel_queued(&mut tx, id).await?;
-        note(&mut tx, id, "Goal marked done.").await?;
+        note(
+            &mut tx,
+            id,
+            "You closed this goal. Nothing changed on GitHub or in the live app.",
+        )
+        .await?;
         set_state(&mut tx, id, GoalState::Done).await?;
         // To-do items this goal was started to fix are done with it.
         crate::plan::tick_fixed(&mut tx, id).await?;
@@ -2546,10 +2646,22 @@ impl Store {
     /// Records that the pull request of piece `thread_id` was merged, as the
     /// hub's watch of its pull requests saw it. When every piece of the goal
     /// that went to GitHub is merged and none is left unsettled, the goal
-    /// closes by itself, so the owner never has to mark it done after
-    /// merging. Returns the phone notice for that, if the goal closed. Safe
-    /// to call again, and for threads that are not pieces of a goal.
+    /// closes by itself, so the owner never has to close it after merging.
+    /// For an app whose merged work still has a step to go (it deploys from
+    /// Decurion, or it is Decurion's own code), the goal closes once that
+    /// is done too ([`Store::piece_live`]). Returns the phone notice for
+    /// that, if the goal closed. Safe to call again, and for threads that
+    /// are not pieces of a goal.
     pub async fn piece_merged(&self, thread_id: i64) -> Result<Option<News>> {
+        let app: Option<i64> = sqlx::query_scalar("SELECT app_id FROM threads WHERE id = ?")
+            .bind(thread_id)
+            .fetch_optional(self.pool())
+            .await?;
+        // Asked before the transaction: it may ask the app's clone.
+        let goes_live = match app {
+            Some(a) => self.road_rules(a).await?.goes_live(),
+            None => false,
+        };
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         let goal: Option<i64> = sqlx::query_scalar(
             "UPDATE goal_pieces SET merged_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -2568,48 +2680,39 @@ impl Store {
             tx.commit().await?;
             return Ok(None);
         }
-        // Every piece is either merged, or ended without going to GitHub
-        // (failed, or stopped); a piece still being built or checked, or
-        // sent but not merged yet, keeps the goal open. A research piece
-        // never goes to GitHub, so it never keeps the goal open.
-        let open: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM goal_pieces p JOIN threads t ON t.id = p.thread_id
-             WHERE p.goal_id = ? AND p.merged_at IS NULL AND NOT t.research
-               AND NOT (t.state = 'failed' AND t.gh_state IS NULL)",
-        )
-        .bind(goal_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        let merged: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM goal_pieces WHERE goal_id = ? AND merged_at IS NOT NULL",
-        )
-        .bind(goal_id)
-        .fetch_one(&mut *tx)
-        .await?;
         let piece: String = sqlx::query_scalar("SELECT title FROM goal_pieces WHERE thread_id = ?")
             .bind(thread_id)
             .fetch_one(&mut *tx)
             .await?;
         note(&mut tx, goal_id, format!("{piece} was merged on GitHub.")).await?;
-        let mut news = None;
-        if open == 0 && merged > 0 {
-            cancel_queued(&mut tx, goal_id).await?;
-            note(
-                &mut tx,
-                goal_id,
-                "Every pull request is merged, so this goal is done.",
-            )
-            .await?;
-            set_state(&mut tx, goal_id, GoalState::Done).await?;
-            let (app_id, title) = goal_row(&mut tx, goal_id).await?;
-            let app = app_name(&mut tx, app_id).await?;
-            news = Some(News::goal(
-                &app,
-                goal_id,
-                "goal done, everything is merged",
-                &title,
-            ));
-        }
+        let news = close_if_finished(&mut tx, goal_id, goes_live).await?;
+        tx.commit().await?;
+        Ok(news)
+    }
+
+    /// Called once the pull request of piece `thread_id` is known to be
+    /// live (in a release from Decurion, or in the Decurion that runs now),
+    /// to close its goal when that was the last step left. Returns the
+    /// phone notice, if the goal closed. Safe to call again, and for
+    /// threads that are not pieces of a goal.
+    pub async fn piece_live(&self, thread_id: i64) -> Result<Option<News>> {
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        let goal: Option<i64> =
+            sqlx::query_scalar("SELECT goal_id FROM goal_pieces WHERE thread_id = ?")
+                .bind(thread_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let news = match goal {
+            Some(g)
+                if matches!(
+                    goal_state(&mut tx, g).await?,
+                    GoalState::Working | GoalState::ForReview
+                ) =>
+            {
+                close_if_finished(&mut tx, g, true).await?
+            }
+            _ => None,
+        };
         tx.commit().await?;
         Ok(news)
     }
@@ -2648,6 +2751,8 @@ impl Store {
         .bind(t.app_id)
         .fetch_one(self.pool())
         .await?;
+        let rules = self.road_rules(t.app_id).await?;
+        let road = self.piece_road(thread_id, &rules).await?;
         Ok(Some(PieceOf {
             goal_id: row.try_get("goal_id")?,
             goal_title: row.try_get("title")?,
@@ -2655,6 +2760,7 @@ impl Store {
             by_plan: !t.research && t.state == ThreadState::Done && sent_by_plan,
             held,
             sends_checked,
+            road,
         }))
     }
 

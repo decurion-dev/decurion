@@ -121,6 +121,15 @@ pub(crate) fn is_held(review: Option<&str>, summary: Option<&str>) -> bool {
     review == Some("needs_a_look") && summary.is_some_and(|s| s.starts_with("Held for you:"))
 }
 
+/// The protected files a held piece's summary names, read back from the
+/// list in brackets that [`Hold::reason`] wrote, for the owner's screens.
+/// `None` when it names none (the hub could not tell which).
+pub(crate) fn held_files(summary: &str) -> Option<String> {
+    let rest = summary.strip_prefix("Held for you: this changes protected parts of the app (")?;
+    let (list, _) = rest.split_once("). ")?;
+    Some(list.to_owned())
+}
+
 /// Whether a piece the checker passed must wait for the owner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Hold {
@@ -152,7 +161,7 @@ impl Hold {
                 }
                 Some(format!(
                     "Held for you: this changes protected parts of the app ({list}). The checker \
-passed it, but you asked to look at changes like this yourself."
+passed it, but changes to protected parts always wait for you to look."
                 ))
             }
             Self::Unchecked(_) => Some(
@@ -465,8 +474,12 @@ mod tests {
             few.reason().as_deref(),
             Some(
                 "Held for you: this changes protected parts of the app (a, b). The checker \
-passed it, but you asked to look at changes like this yourself."
+passed it, but changes to protected parts always wait for you to look."
             )
+        );
+        assert_eq!(
+            held_files(&few.reason().expect("reason")).as_deref(),
+            Some("a, b")
         );
         let many = Hold::Protected((1..=8).map(|i| format!("f{i}")).collect());
         let why = many.reason().expect("reason");

@@ -51,10 +51,18 @@ work, each with how you will know it is done.
   when you are done.
 - Want something different? Type it. You get a new plan.
 - Happy with it? Press **Approve plan**, tap **Yes, do it**, or just type
-  "yes" or "go ahead". That is the only approval the goal needs, and it works
-  even while your project lead is still answering.
-- A piece marked **Changes a protected part** waits for one tap from you at
-  the end, because you asked to see changes to those parts yourself.
+  "yes" or "go ahead". All three do the same thing: they start the plan you
+  see. That is the only approval the goal needs, and it works even while your
+  project lead is still answering.
+- Under the plan, **What happens next** says what Decurion does with each
+  piece once it is checked. It follows your app's rules (see
+  [Choose your rules](choose-your-rules.md)), so it may say a piece goes to
+  GitHub by itself, or that each piece waits for your **Accept**.
+- A piece marked **May change a protected part of the app** waits for your
+  **Accept** at the end, even when the checker passes it. Protected parts are
+  files the app lists as ones that always wait for you (see
+  [Protected parts](improve-decurion-itself.md#protected-parts)). The plan
+  says which pieces may change one. When none do, it says nothing about them.
 
 ## While the work runs
 
@@ -71,12 +79,32 @@ and found, so you never have to pass them along yourself.
 To find something out without changing the app, or to ask why a piece was
 done a certain way, see [Research, Ask why, and the checker's proof](research-and-ask-why.md).
 
-A piece that passes goes to GitHub as a pull request by itself. You approved
-the plan, so you are not asked again. Open the piece on the board and its
-**Overview** says so: "Sent to GitHub by itself because you approved the plan",
-with a link back to the goal. While the checker is still looking, it says the
-piece goes by itself if it passes. A piece that changes a protected part says
-**Held for you** and waits for you to tap **Accept**.
+With the app's rule **Checked work goes to GitHub by itself** on (it is on
+for new apps), a piece that passes goes to GitHub as a pull request by itself.
+You approved the plan, so you are not asked again. Open the piece on the board
+and its **Overview** says so: "It went to GitHub by itself because you
+approved the plan", with a link back to the goal. With that rule off, each
+piece waits for you to tap **Accept**. A piece that changes a protected part
+always waits for your **Accept**, and its step bar says **Needs you · tap
+Accept** and names the protected files.
+
+## Follow each piece to live
+
+The goal's page, and the panel of each of its pieces, show the same step bar:
+
+**Built**, **Checked**, **On GitHub**, **Merged**, **Live**
+
+A tick marks each step that is done and a dot marks the one it is on. Under the
+bar, one line says what happens next and who does it, such as "It is on GitHub
+as a pull request. You or your reviewer merge it there. Decurion sees the
+merge by itself." Steps that do not apply are left out: **Live** shows only
+for an app that deploys from Decurion (see
+[Deploy your app in one tap](deploy-your-app.md)), or for Decurion itself
+(see [Update Decurion](improve-decurion-itself.md#update-decurion)). Before
+you approve the plan, every step is still to come.
+
+A finished piece never just says Done. Its label says the step it is on, such
+as **On GitHub** or **Merged**.
 
 You can stop the goal at any time with **Stop goal**, under the **•••** button.
 
@@ -88,8 +116,16 @@ wrong or out of date.
 
 When every piece is finished, your project lead writes up what was done in
 plain words and your phone gets a notice. Under the report you see each pull
-request, numbered in the order to merge them. Merge them on GitHub. When they
-are all merged, the goal closes by itself; you can also press **Mark done**.
+request, numbered in the order to merge them, each with the step it is on.
+Merge them on GitHub (or with **Merge**, if the app's rules allow it).
+
+When every piece is merged, the goal closes by itself. For an app that deploys
+from Decurion, and for Decurion itself, it closes once every piece is also
+live. This works for pull requests you opened yourself from Decurion's
+**Open pull request on GitHub** link too.
+
+To end a goal sooner, press **Close this goal**. It moves the goal to your
+finished goals. Nothing changes on GitHub or in your live app.
 See [Review and merge work](review-and-merge.md).
 
 ## Tips for a good goal

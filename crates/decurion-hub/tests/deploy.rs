@@ -486,7 +486,7 @@ async fn a_merged_goal_is_ready_to_deploy_until_a_deploy_carries_it_live() {
         .as_i64()
         .expect("thread id");
     let goal: i64 = sqlx::query_scalar(
-        "INSERT INTO goals (app_id, title, state, session_id) VALUES (?, 'Fix login', 'done', 's') RETURNING id",
+        "INSERT INTO goals (app_id, title, state, session_id) VALUES (?, 'Fix login', 'for_review', 's') RETURNING id",
     )
     .bind(h.app)
     .fetch_one(h.store.pool())
@@ -536,6 +536,11 @@ async fn a_merged_goal_is_ready_to_deploy_until_a_deploy_carries_it_live() {
     };
     let view = ok(&h.r, OWNER, "GET", &format!("/api/goals/{goal}"), json!({})).await;
     assert_eq!(view["live"], false, "{view}");
+    assert_eq!(view["road"]["label"], "Needs you · deploy", "{view}");
+    assert_eq!(
+        view["goal"]["state"], "for_review",
+        "merged is not live: {view}"
+    );
     let plan = ok(
         &h.r,
         OWNER,
@@ -556,6 +561,9 @@ async fn a_merged_goal_is_ready_to_deploy_until_a_deploy_carries_it_live() {
 
     let view = ok(&h.r, OWNER, "GET", &format!("/api/goals/{goal}"), json!({})).await;
     assert_eq!(view["live"], true, "{view}");
+    // Live was its last step, so the goal closed by itself.
+    assert_eq!(view["goal"]["state"], "done", "{view}");
+    assert_eq!(view["road"]["label"], "Live", "{view}");
     let plan = ok(
         &h.r,
         OWNER,

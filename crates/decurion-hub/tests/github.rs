@@ -41,6 +41,8 @@ struct Fake {
     /// out) and the commit at its head, by number.
     merge_state: HashMap<i64, String>,
     heads: HashMap<i64, String>,
+    /// The commit GitHub made on the base branch for each merged one.
+    merge_commits: HashMap<i64, String>,
     /// Comments on lines of code, plain comments and reviews, as GitHub
     /// lists them.
     line: Vec<Value>,
@@ -118,6 +120,7 @@ async fn fake_pr(
         "merged": merged,
         "user": { "login": ME },
         "head": { "sha": f.heads.get(&n) },
+        "merge_commit_sha": f.merge_commits.get(&n),
         "mergeable": state != "unknown",
         "mergeable_state": state,
     }))
@@ -217,6 +220,8 @@ struct Hub {
     store: Store,
     dir: PathBuf,
     fake: FakeState,
+    /// The fake API's address.
+    api: String,
 }
 
 impl Drop for Hub {
@@ -262,6 +267,7 @@ async fn hub(tok: Tok) -> Hub {
         store,
         dir,
         fake,
+        api,
     }
 }
 
@@ -1437,6 +1443,16 @@ async fn run_helper(h: &Hub, kind: &str, text: &str) {
 /// the piece's thread, its commit and `origin`'s bare repo with its main.
 async fn approved_piece(h: &Hub, rules: Value) -> (i64, i64, String, PathBuf, String) {
     let (repo, bare) = app_repo(&h.dir, Origin::GitHub);
+    approved_piece_in(h, rules, &repo, bare).await
+}
+
+/// [`approved_piece`] for an app folder the test made.
+async fn approved_piece_in(
+    h: &Hub,
+    rules: Value,
+    repo: &Path,
+    bare: PathBuf,
+) -> (i64, i64, String, PathBuf, String) {
     let main_before = branch_at(&bare, "main").expect("main");
     let app = ok(
         &h.r,
@@ -1779,4 +1795,232 @@ async fn merge_waits_until_github_says_the_pull_request_is_ready() {
     assert!(v.as_str().expect("text").contains("pushed"), "{v}");
     assert!(merges(&h).is_empty(), "never asked GitHub to merge");
     assert_eq!(watched(&h).await[0]["state"], "open");
+}
+
+// ---------- One story from request to live ----------
+
+async fn goal_view(h: &Hub, goal: i64) -> Value {
+    ok(
+        &h.r,
+        OWNER,
+        "GET",
+        &format!("/api/goals/{goal}"),
+        Value::Null,
+    )
+    .await
+}
+
+fn road_now(road: &Value) -> String {
+    road["steps"]
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["mark"] == "now"))
+        .and_then(|s| s["label"].as_str())
+        .unwrap_or("")
+        .to_owned()
+}
+
+#[tokio::test]
+async fn a_pull_request_opened_from_decurions_link_is_found_and_watched_until_the_goal_closes() {
+    // No token when the piece goes up, so Decurion gives a link instead of
+    // opening the pull request.
+    let h = hub(Tok::None).await;
+    let (goal, thread, _head, _bare, _main) = approved_piece(&h, json!({})).await;
+    let v = goal_view(&h, goal).await;
+    assert!(
+        v["story"]
+            .as_str()
+            .expect("story")
+            .contains("goes to GitHub by itself"),
+        "{v}"
+    );
+    run_helper(
+        &h,
+        "review",
+        r#"{"pass": true, "summary": "Sign-in works."}"#,
+    )
+    .await;
+    let t = settled(&h, thread).await;
+    assert_eq!(t["github"]["pull_request"], false, "{t}");
+    let road = &goal_view(&h, goal).await["road"];
+    assert_eq!(road_now(road), "Merged", "{road}");
+    assert_eq!(road["label"], "Needs you · open the pull request", "{road}");
+    let labels: Vec<_> = road["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .map(|s| s["label"].as_str().unwrap_or("").to_owned())
+        .collect();
+    assert_eq!(labels, ["Built", "Checked", "On GitHub", "Merged"]);
+    let of = ok(
+        &h.r,
+        OWNER,
+        "GET",
+        &format!("/api/threads/{thread}/goal"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(of["road"], *road, "the panel tells the same story");
+
+    // With a token, Decurion looks for it. Someone's pull request from
+    // another branch is never taken up.
+    let state = h
+        .state
+        .clone()
+        .with_github(GitHub::new(&h.api, Tokens::Fixed(TOKEN.into())).expect("github"));
+    h.fake.lock().expect("fake").prs.push((
+        "someone/else".into(),
+        "https://github.com/acme/demo/pull/1".into(),
+    ));
+    assert_eq!(decurion_hub::pr_watch::poll(&state).await, 0);
+    assert!(watched(&h).await.as_array().expect("list").is_empty());
+
+    // The owner opens it from Decurion's link: its head is Decurion's branch.
+    let branch = t["github"]["branch"].as_str().expect("branch").to_owned();
+    h.fake
+        .lock()
+        .expect("fake")
+        .prs
+        .push((branch, "https://github.com/acme/demo/pull/2".into()));
+    assert_eq!(decurion_hub::pr_watch::poll(&state).await, 1);
+    let w = watched(&h).await;
+    assert_eq!(w[0]["thread_id"], thread, "{w}");
+    assert_eq!(w[0]["number"], 2);
+    let t = ok(
+        &h.r,
+        OWNER,
+        "GET",
+        &format!("/api/threads/{thread}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(t["github"]["pull_request"], true, "{t}");
+    assert_eq!(t["github"]["url"], "https://github.com/acme/demo/pull/2");
+    let road = &goal_view(&h, goal).await["road"];
+    assert_eq!(road["label"], "Needs you · merge on GitHub", "{road}");
+
+    // Merged on GitHub: the app does not deploy, so merged is the end and
+    // the goal closes by itself.
+    h.fake.lock().expect("fake").merged.push(2);
+    assert_eq!(decurion_hub::pr_watch::poll(&state).await, 1);
+    let v = goal_view(&h, goal).await;
+    assert_eq!(v["goal"]["state"], "done", "{v}");
+    assert_eq!(v["road"]["done"], true, "{v}");
+    assert_eq!(v["road"]["label"], "Merged", "{v}");
+    // Looking again finds nothing more to take up.
+    let before = requests(&h).len();
+    assert_eq!(decurion_hub::pr_watch::poll(&state).await, 0);
+    assert_eq!(requests(&h).len(), before);
+}
+
+#[tokio::test]
+async fn decurions_own_change_waits_for_an_update_then_is_live_and_the_goal_closes() {
+    let h = hub(Tok::Fixed).await;
+    // The app is Decurion's own code: its clone has Decurion's files.
+    let (repo, bare) = app_repo(&h.dir, Origin::GitHub);
+    write(&repo, "crates/decurion-hub/build.rs", "fn main() {}\n");
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "--quiet", "-m", "decurion"]);
+    git(&repo, &["push", "--quiet", &bare.to_string_lossy(), "main"]);
+    git(&repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    let running = git(&repo, &["rev-parse", "HEAD"]);
+    let (goal, thread, _head, _bare, _main) = approved_piece_in(&h, json!({}), &repo, bare).await;
+    let v = goal_view(&h, goal).await;
+    let story = v["story"].as_str().expect("story");
+    assert!(
+        story.contains("keeps running its old version until you update it"),
+        "{story}"
+    );
+    run_helper(
+        &h,
+        "review",
+        r#"{"pass": true, "summary": "Sign-in works."}"#,
+    )
+    .await;
+    settled(&h, thread).await;
+    let road = &goal_view(&h, goal).await["road"];
+    let last = road["steps"]
+        .as_array()
+        .and_then(|s| s.last())
+        .expect("steps");
+    assert_eq!(last["label"], "Update Decurion", "{road}");
+
+    // GitHub merges it; the owner's clone gets the merge when they pull.
+    git(
+        &repo,
+        &[
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "Merge pull request #1",
+        ],
+    );
+    let merge = git(&repo, &["rev-parse", "HEAD"]);
+    {
+        let mut f = h.fake.lock().expect("fake");
+        f.merge_commits.insert(1, merge.clone());
+        f.merged.push(1);
+    }
+    assert_eq!(decurion_hub::pr_watch::poll(&h.state).await, 1);
+    let v = goal_view(&h, goal).await;
+    assert_ne!(v["goal"]["state"], "done", "merged is not live here: {v}");
+    let road = &v["road"];
+    assert_eq!(road_now(road), "Update Decurion", "{road}");
+    assert_eq!(road["you"], true);
+    assert!(
+        road["next"].as_str().expect("next").starts_with(
+            "Merged. This Decurion still runs the old version. Update it to use the change."
+        ),
+        "{road}"
+    );
+    assert!(
+        !road["update"].as_array().expect("how").is_empty(),
+        "{road}"
+    );
+
+    // The Decurion still running the old commit is not live.
+    assert!(h
+        .store
+        .mark_self_live(&running)
+        .await
+        .expect("look")
+        .is_empty());
+    assert_eq!(
+        goal_view(&h, goal).await["goal"]["state"],
+        v["goal"]["state"]
+    );
+    // A hub that does not know its commit marks nothing.
+    assert!(h
+        .store
+        .mark_self_live("unknown")
+        .await
+        .expect("look")
+        .is_empty());
+
+    // The owner updates: the hub now runs a commit that holds the merge.
+    git(
+        &repo,
+        &["commit", "--quiet", "--allow-empty", "-m", "later"],
+    );
+    let updated = git(&repo, &["rev-parse", "HEAD"]);
+    let before = git(&repo, &["status", "--porcelain"]);
+    let news = h.store.mark_self_live(&updated).await.expect("look");
+    assert_eq!(news.len(), 1, "the goal closed");
+    assert_eq!(
+        git(&repo, &["rev-parse", "HEAD"]),
+        updated,
+        "the clone is only read"
+    );
+    assert_eq!(git(&repo, &["status", "--porcelain"]), before);
+    let v = goal_view(&h, goal).await;
+    assert_eq!(v["goal"]["state"], "done", "{v}");
+    assert_eq!(v["road"]["done"], true);
+    assert_eq!(v["road"]["label"], "Live");
+    // Once is enough.
+    assert!(h
+        .store
+        .mark_self_live(&updated)
+        .await
+        .expect("again")
+        .is_empty());
 }

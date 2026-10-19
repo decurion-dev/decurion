@@ -368,7 +368,8 @@ $("tabbar").replaceWith(D.phoneTabs("inbox"));
 // What each state in the inbox means, in one plain line.
 const MEANS = {
   needs_you: "The agent stopped to ask for something only you can decide.",
-  in_review: "Looks right? Accept keeps it and sends it to GitHub as a pull request for you to merge there. Questions or changes? Tell the agent.",
+  // Its words are built from the app's rules where the card is drawn.
+  in_review: "",
   // A research piece in review: it changed no code.
   research: "Research is done and changed no code. Fix what it found opens the app's master plan, where its findings wait to be built.",
   failed: "This piece of work could not finish. You can retry it.",
@@ -727,7 +728,10 @@ function inboxCard(t, anim) {
     el("h2", { className: "h" }, ttl));
   if (asks.length) card.append(D.askBox(t, asks, { onSent: leave, guessed: !fromBlock,
     onTalk: (prefill) => D.openWork(t, refresh, { talk: true, prefill }) }));
-  card.append(el("p", { className: "means" }, MEANS[t.research && t.state === "in_review" ? "research" : t.state]));
+  // What Accept leads to comes from the app's rules (D.acceptWords).
+  card.append(el("p", { className: "means" }, t.state === "in_review" && !t.research
+    ? `Looks right? Accept keeps it. ${D.acceptWords(t.app_id)} Questions or changes? Tell the agent.`
+    : MEANS[t.research && t.state === "in_review" ? "research" : t.state]));
   if (said) {
     const q = el("div", { className: "q" + (S.open.has(t.id) ? " open" : "") }, D.richText(said));
     const more = el("button", { type: "button", className: "more", hidden: true, "aria-expanded": S.open.has(t.id) ? "true" : "false" },
