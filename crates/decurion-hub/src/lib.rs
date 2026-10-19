@@ -30,6 +30,7 @@ pub mod dismiss;
 pub mod folders;
 pub mod github;
 pub mod limits;
+pub mod live;
 pub mod merge;
 pub mod messages;
 pub(crate) mod netgit;
@@ -380,6 +381,8 @@ pub fn router(state: AppState) -> Router {
         .route("/runner/threads/{id}/credential", post(runner_credential))
         // The Today strip: owner only, never cloud workers (today.rs).
         .route("/today", get(today::list))
+        // Helper agents working or lined up, for the board: owner only (live.rs).
+        .route("/helpers", get(live::list))
         // A research piece's report page, escaped inside JSON (research.rs).
         .route(
             "/runner/threads/{id}/report",
@@ -1042,15 +1045,17 @@ async fn add_app(
     }
 }
 
-async fn list_threads(State(st): State<AppState>) -> ApiResult<Vec<decurion_proto::Thread>> {
-    Ok(Json(st.store.threads().await?))
+/// Work as the screens read it: each thread with what is alive about it now
+/// (live.rs). Extra fields only, so a reader of plain threads still parses it.
+async fn list_threads(State(st): State<AppState>) -> ApiResult<Vec<live::ThreadView>> {
+    Ok(Json(st.store.thread_views().await?))
 }
 
 async fn get_thread(
     State(st): State<AppState>,
     Path(id): Path<i64>,
-) -> ApiResult<decurion_proto::Thread> {
-    Ok(Json(st.store.thread(id).await?))
+) -> ApiResult<live::ThreadView> {
+    Ok(Json(st.store.thread_view(id).await?))
 }
 
 async fn add_thread(

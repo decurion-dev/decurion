@@ -448,6 +448,37 @@ pub struct Piece {
     /// Tokens this piece used: its building runs and its checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<crate::tokens::TokenLine>,
+    /// The check coming for it, while one is: the screens say the checker
+    /// is at work or waiting, and offer no Accept until it has finished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<CheckNow>,
+}
+
+/// Where a helper agent's job (a piece's check, a project lead's turn, a
+/// visual plan being drawn) is right now, so the screens can show work that
+/// is alive. Only for showing; nothing is decided from it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckNow {
+    pub state: JobNow,
+    /// When it started, while it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    /// Why it cannot start yet, in plain words, when something other than
+    /// waiting for a free agent holds it up (such as the Max plan being out
+    /// of usage for now).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
+    /// When that wait should end by itself, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+}
+
+/// A helper job that has not finished: lined up, or running now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobNow {
+    Queued,
+    Running,
 }
 
 /// One thing the checker actually did, such as running the tests or opening

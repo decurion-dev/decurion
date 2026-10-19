@@ -11,6 +11,7 @@ Work moves to **In review** only when the agent has finished and saved its chang
 3. Choose one:
    - **Accept** if you are happy with it. The work moves to **Done**, and Decurion sends it to GitHub for you. See the next part. Typing "yes", "push" or "do it" in the message box does the same, as long as the agent did not ask you a question.
    - Pieces of a goal skip this step: when the checker passes one, your approval of the plan already counts as Accept, so it goes to GitHub by itself. Its **Overview** says so: "Sent to GitHub by itself because you approved the plan", with a link to the goal. One that changes a protected part of the app says **Held for you** instead, and waits for your **Accept**. Work you started with **Just do it** always waits for you.
+   - While a piece of a goal waits for its check, it shows no **Accept**, **Send back** or **Reject**, and typing "yes" does not accept it. It says "Nothing to do. The checker looks at it first." The buttons come back once the check has finished.
    - **Send back** if it needs more. The agent runs again and picks up where it left off. To say what to change, type it under **Tell the agent something** and click **Send back with this answer** instead.
    - **Reject** if you do not want it. Click **Reject work** to confirm. The work moves to **Failed**, and its changes stay on its branch.
 

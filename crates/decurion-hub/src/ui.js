@@ -89,7 +89,20 @@
       }
       s.append(p);
     }
-    if (name === "running") s.classList.add("spin");
+    if (name === "running") {
+      s.classList.add("spin");
+      // With reduce motion on, a still spinner reads as stuck: ui.css swaps
+      // the arc for this dot in a ring, the sign of something live.
+      const still = document.createElementNS(SVG, "g");
+      still.setAttribute("class", "still");
+      for (const [r, cls] of [[9, "ring"], [4, "core"]]) {
+        const c = document.createElementNS(SVG, "circle");
+        c.setAttribute("cx", "12"); c.setAttribute("cy", "12"); c.setAttribute("r", String(r));
+        c.setAttribute("class", cls);
+        still.append(c);
+      }
+      s.append(still);
+    }
     return s;
   };
 
@@ -254,18 +267,76 @@
   // One line for a card: what the work is doing now, or asking.
   D.cardLine = (t, ev) => {
     if (t.state === "queued") return t.session_id ? "Waiting to pick up where it left off" : "Waiting to start";
-    if (!ev?.length) return t.state === "running" ? "Starting up" : "";
+    // A piece waiting for its check: what the checker is doing (live.rs).
+    if (t.state === "in_review" && t.check) return D.checkLine(t.check);
+    if (!ev?.length) return t.state === "running" ? (t.last_note ? noteLine(t.last_note) : "Starting up") : "";
     if (t.state === "running") {
       // A blocked website visit is a side note, not what the work is doing.
       const e = [...ev].reverse().find((r) => r.event.kind !== "blocked")?.event;
+      if (e?.kind === "limit_hit") return "Paused: the Claude Max account ran out of usage";
+      // The agent's own newest words, from the hub, with when it said them.
+      // A raw command stays in Activity and Pro view; the card says it plainly.
+      if (t.last_note) return noteLine(t.last_note);
       if (!e) return "Working";
       if (e.kind === "started") return "Starting up its box";
-      if (e.kind === "limit_hit") return "Paused: the Claude Max account ran out of usage";
-      if (e.kind === "tool") return e.summary ? `${e.name}: ${e.summary}` : `Using ${e.name}`;
+      if (e.kind === "tool") return D.toolWords(e.name, e.summary);
       if (e.kind === "message") return e.text;
     }
     return D.lastWords(ev);
   };
+  const noteLine = (n) => `${n.text} · ${D.ago(n.at)}`;
+
+  // A tool step in plain words, for cards. The common ones are named; any
+  // other is "Working on the code". Checked in order: a command that waits
+  // first, then tests before building (running tests builds too).
+  const SHELL_WORDS = [
+    [/^\s*(cd\s+[^;&|]+(&&|;)\s*)?(sleep|timeout|wait)\b/, "Waiting for the build to finish"],
+    [/\b(test|tests|pytest|jest|vitest|mocha|rspec|phpunit|playwright)\b/, "Running the tests"],
+    [/\b(build|compile|check|clippy|tsc|make|webpack|vite|esbuild|rollup|gradle|mvn|msbuild)\b/, "Building the code"],
+    [/\b(npm|pnpm|yarn|pip3?|cargo|bundle|composer|dotnet)\s+(install|ci|add|fetch|restore|i)\b/, "Getting what the app needs"],
+    [/\bgit\s+(commit|add)\b/, "Saving its changes"],
+    [/\b(sleep|wait|tail\s+-f)\b/, "Waiting for the build to finish"],
+    [/^\s*(cd\s+[^;&|]+(&&|;)\s*)?(cat|ls|grep|rg|find|head|tail|sed\s+-n|wc|tree|git\s+(diff|log|status|show))\b/, "Reading the code"],
+  ];
+  D.toolWords = (name, summary) => {
+    const n = String(name ?? ""), s = String(summary ?? "");
+    if (/^(Read|Glob|Grep|LS|NotebookRead)$/.test(n)) return "Reading the code";
+    if (/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(n)) return "Editing files";
+    if (/^(WebFetch|WebSearch)$/.test(n)) return "Looking something up";
+    if (/^TodoWrite$/.test(n)) return "Planning its next steps";
+    if (/^(Bash|PowerShell|bash|shell)$/.test(n)) return SHELL_WORDS.find(([re]) => re.test(s))?.[1] ?? "Working on the code";
+    return "Working on the code";
+  };
+
+  // A helper job's line (a check, a project lead's turn, a drawing), from
+  // the hub's `CheckNow` (live.rs): working since when, waiting for a free
+  // agent, or waiting on something named in plain words.
+  const untilWhen = (iso) => {
+    const d = new Date(iso);
+    if (isNaN(d)) return "later";
+    return d.toDateString() === new Date().toDateString() ? D.clock(iso)
+      : d.toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" });
+  };
+  D.jobLine = (now, who = "checker") => {
+    const [busy, free] = {
+      checker: ["Checker working", "Waiting for a free agent to check it"],
+      project_lead: ["Project lead working", "Waiting for a free agent for the project lead"],
+      designer: ["Drawing the visual plan", "Waiting for a free agent to draw the visual plan"],
+    }[who] ?? ["Helper working", "Waiting for a free agent"];
+    if (now?.state === "running") return now.started_at ? `${busy} · started ${D.clock(now.started_at)}` : busy;
+    if (now?.waiting) return `Waiting: ${now.waiting}${now.until ? ` It starts by itself about ${untilWhen(now.until)}.` : ""}`;
+    return free;
+  };
+  D.checkLine = (check) => D.jobLine(check, "checker");
+  // While a check is coming the screens offer no Accept: the checker looks
+  // first, and the buttons come back once it has finished.
+  D.checking = (t) => t.state === "in_review" && !!t.check;
+  D.checkNote = (t, { small = false } = {}) => D.el("div", { className: `check-note${small ? " sm" : ""}`, role: "status" },
+    D.icon(t.check?.state === "running" ? "running" : t.check?.waiting ? "alert" : "queued"),
+    D.el("div", { className: "grow" }, D.el("b", {}, "Nothing to do."), " The checker looks at it first.",
+      small ? null : D.el("div", { className: "hint" }, D.checkLine(t.check))));
+  // When the work last did anything: its newest step or note (live.rs).
+  D.lastActivity = (t) => t.last_activity_at ?? t.updated_at;
 
   // ---------- Words and numbers ----------
   D.money = (n) => "$" + (n ?? 0).toFixed(2);
@@ -1115,7 +1186,8 @@
         try {
           // With the Accept on screen and no question from the agent, a
           // plain "yes" is that Accept (the hub decides what counts as yes).
-          const res = await D.send(`/threads/${id}/messages`, { kind, text, accept_on_yes: t.state === "in_review" && !c.asked });
+          // While the checker looks first there is no Accept on screen.
+          const res = await D.send(`/threads/${id}/messages`, { kind, text, accept_on_yes: t.state === "in_review" && !c.asked && !D.checking(t) });
           delete drafts[id];
           ta.value = "";
           const doneText = t.research
@@ -1156,7 +1228,8 @@
         ta.setSelectionRange(end, end);
       },
       update(t, n) {
-        box.hidden = t.state === "done";
+        // Sending now would send it back past the checker, so not while it looks.
+        box.hidden = t.state === "done" || D.checking(t);
         const idle = IDLE.has(t.state);
         title.textContent = t.state === "in_review" || t.state === "needs_you" ? "Answer the agent" : "Tell the agent something";
         how.textContent = HOW[t.state] ?? howIdle(t.state);
@@ -1192,6 +1265,8 @@
   // buttons; this only says what each one does.
   function whatNext(c, asks, said) {
     const t = c.t, s = t.state;
+    // While its check is coming there is nothing to choose yet; the footer says so.
+    if (D.checking(t)) return null;
     const rows = [];
     const row = (head, text, btn) => rows.push(el("div", { className: "nx" },
       el("p", { className: "nx-h" }, head), el("p", { className: "nx-t" }, ...[text].flat()), btn || null));
@@ -1259,11 +1334,15 @@
       el("span", { className: "grow" }, text, " ", el("a", { href: `/goals#goal-${g.goal_id}` }, "Open the goal")));
   }
 
+  // The header's time: the newest step or note, not when the work started,
+  // so long quiet work still shows it is alive. Kept fresh on every load.
+  const activityText = (t) => `Last activity ${D.ago(D.lastActivity(t))}`;
+
   function draw(c) {
     const t = c.t, ev = c.ev, app = apps[t.app_id];
     const kids = kidsOf(t.id), parent = t.parent_id != null ? all.find((p) => p.id === t.parent_id) : null;
     const waiting = c.msgs ? c.msgs.filter((m) => m.delivered_at == null).length : 0;
-    const sig = JSON.stringify([t.state, t.place, cloud, t.updated_at, t.title, t.github, c.goal, ev.length, D.pro, D.offline, waiting, parent?.title,
+    const sig = JSON.stringify([t.state, t.place, cloud, t.updated_at, t.title, t.github, c.goal, t.check, ev.length, D.pro, D.offline, waiting, parent?.title,
       kids.map((k) => [k.id, k.state, k.title, k.background])]);
     if (sig === c.sig) return;
     c.sig = sig;
@@ -1309,7 +1388,7 @@
         el("span", { className: "tag" }, icon("app"), D.appName(t.app_id) || "Unknown app"),
         app && el("span", { className: "tag dot-sep" }, icon("ai"), D.aiLabel(app, t)),
         el("span", { className: "tag dot-sep" }, icon(D.PLACES[t.place]?.[0] ?? "pc"), D.PLACES[t.place]?.[1] ?? "Your PC"),
-        el("span", { className: "tag dot-sep updated" }, `Updated ${D.ago(t.updated_at)}`)),
+        p.when = el("span", { className: "tag dot-sep updated", title: new Date(D.lastActivity(t)).toLocaleString() }, activityText(t))),
       p.tabs.el);
     p.head.replaceWith(head);
     p.head = head;
@@ -1394,7 +1473,9 @@
     }
     p.lower.replaceChildren(...lower);
 
-    const moves = D.moveButtons(t, {
+    // No Accept, Send back or Reject while the checker looks first.
+    const checking = D.checking(t);
+    const moves = checking ? [] : D.moveButtons(t, {
       onMoved: () => { panel.close(); c.changed(); },
       onError: (m) => { p.err.hidden = false; p.err.replaceChildren(icon("alert"), el("span", { className: "grow" }, m)); },
     });
@@ -1429,8 +1510,9 @@
     }
     moves.forEach((b, i) => { b.disabled = D.offline; b.dataset.key = `wk-move-${i}`; });
     // On a computer the main button sits on the right.
-    const foot = el("footer", { className: "work-foot", hidden: !moves.length && !D.offline }, ...moves.reverse());
+    const foot = el("footer", { className: "work-foot", hidden: !moves.length && !D.offline && !checking }, ...moves.reverse());
     if (D.offline) foot.prepend(el("p", { className: "hint", style: "width:100%" }, "Answer when your PC is back."));
+    if (checking) foot.prepend(D.checkNote(t));
     p.foot.replaceWith(foot);
     p.foot = foot;
 
@@ -1575,6 +1657,7 @@
         if (msgs) c.msgs = msgs;
         c.goal = goal;
         draw(c);
+        if (c.parts?.when) c.parts.when.textContent = activityText(c.t);
       } catch (e) {
         if (cur === c && !c.parts) {
           panel.querySelector(".work-body").replaceChildren(el("div", { className: "notice bad" }, icon("alert"),

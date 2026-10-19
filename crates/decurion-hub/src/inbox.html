@@ -416,7 +416,8 @@ const byNewest = (a, b) => b.updated_at.localeCompare(a.updated_at);
 // What is waiting on a decision comes first, then failures, then reviews.
 const URGENCY = { needs_you: 0, failed: 1, done: 1, in_review: 2 };
 // Accepted work is done, unless it could not be sent to GitHub.
-const needsYou = (t) => t.state === "done" ? t.github?.state === "failed" : t.state in MEANS;
+// A piece the checker looks at first waits on nothing from you until then.
+const needsYou = (t) => t.state === "done" ? t.github?.state === "failed" : t.state in MEANS && !D.checking(t);
 // Dismissed work never waits in the inbox; it stays under Dismissed on the board tab.
 const inboxItems = () => (S.threads ?? []).filter((t) => needsYou(t) && !t.dismissed_at).sort((a, b) => URGENCY[a.state] - URGENCY[b.state] || byNewest(a, b));
 const counts = (list = S.threads ?? []) => {
