@@ -2,3 +2,6 @@
 target
 **/target
 .git
+# A copy's own Cargo settings, such as a build folder outside the copy, would
+# send the image's build output where the Dockerfile does not look for it.
+.cargo
