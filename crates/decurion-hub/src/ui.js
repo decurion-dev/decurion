@@ -1460,7 +1460,7 @@
       fix.onclick = () => afterClose(() => D.fixWork(t, said));
     }
     if (s === "in_review" && t.research) {
-      row("Want what it found fixed?", ["Tap ", b("Fix what it found"), " at the bottom. Its findings are on the app's master plan: tap the × next to anything you don't want (Take off the plan), then Fix all that are left, or Fix this when only one is left."]);
+      row("Want what it found fixed?", ["Tap ", b("Fix what it found"), " at the bottom. Its findings are on the app's master plan: tap the trash can next to anything you don't want (Delete), then Fix all that are left, or Fix this when only one is left."]);
       row(asks.length ? "Want to answer in your own words, or ask for more?" : "Has a question, or want it to look further?",
         "Your message goes back to the agent, and it picks up where it left off.", talk("Answer the agent"));
       row("Done with it?", [b("Mark done"), " closes it. Research changes no code, so nothing goes to GitHub."]);

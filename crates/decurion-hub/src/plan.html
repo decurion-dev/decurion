@@ -154,6 +154,8 @@
   .fix-link .fs { font-weight: 600; }
   .fix-link .fs.done { color: var(--green); }
   .drop { color: var(--faint) !important; }
+  .drop svg, .del-row .mk svg, .empty-state .mark svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .empty-state .mark svg { width: 24px; height: 24px; }
   .drop:hover { color: var(--red) !important; background: var(--red-soft) !important; }
 
   /* The tick box: a big target around a small box. */
@@ -193,6 +195,16 @@
   .empty-state p { max-width: 460px; }
   .empty-state .mark { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 14px; background: var(--surface-2); color: var(--muted); }
   .loading { display: grid; gap: 12px; margin-top: 16px; }
+
+  /* ---------- Deleted tab ---------- */
+  .del-tools { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; margin-bottom: 12px; }
+  .del-tools .hint { margin-right: auto; }
+  .del-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+  .del-row { display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l); }
+  .del-main { flex: 1; min-width: 0; }
+  .del-title { font: 650 15px/1.35 var(--font-display); overflow-wrap: anywhere; }
+  .del-meta { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 3px; font-size: 13px; color: var(--faint); }
+  .del-meta .st { font-weight: 600; }
 
   /* ---------- Pages tab ---------- */
   .pg-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
@@ -266,6 +278,7 @@
     .todo { grid-template-columns: auto minmax(0, 1fr); }
     .todo-acts { grid-column: 2; justify-content: flex-start; flex-wrap: wrap; margin-left: -6px; }
     .row.todo-row .todo { grid-template-columns: auto minmax(0, 1fr); }
+    .del-row { flex-wrap: wrap; }
     .tickwrap { width: 40px; height: 40px; margin: -10px -6px -10px -8px; }
     .add-box .line { flex-direction: column; }
     .pg-groups { grid-template-columns: 1fr; }
@@ -298,6 +311,7 @@
   <div class="ptabs" role="tablist" aria-label="Show">
     <button class="ptab" type="button" role="tab" id="pt-plan" aria-controls="panel-plan" aria-selected="true">Plan</button>
     <button class="ptab" type="button" role="tab" id="pt-pages" aria-controls="panel-pages" aria-selected="false" tabindex="-1">Pages<span class="ct" id="pages-ct"></span></button>
+    <button class="ptab" type="button" role="tab" id="pt-deleted" aria-controls="panel-deleted" aria-selected="false" tabindex="-1">Deleted<span class="ct" id="deleted-ct"></span></button>
   </div>
 
   <section id="panel-plan" role="tabpanel" aria-labelledby="pt-plan">
@@ -321,6 +335,10 @@
       <button class="fchip" type="button" id="only-waiting" aria-pressed="false"><span class="dot" aria-hidden="true"></span><span id="only-waiting-t">Needs you</span></button>
     </div>
     <div id="pages-body"></div>
+  </section>
+
+  <section id="panel-deleted" role="tabpanel" aria-labelledby="pt-deleted" hidden>
+    <div id="deleted-body"></div>
   </section>
 </main>
 
@@ -348,6 +366,7 @@
     up: [["path", { d: "m18 15-6-6-6 6" }]],
     down: [["path", { d: "m6 9 6 6 6-6" }]],
     picture: [["rect", { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ["circle", { cx: 9, cy: 10, r: 1.6 }], ["path", { d: "m3 17 5-4 4 3 3-2 6 4" }]],
+    trash: [["path", { d: "M3 6h18" }], ["path", { d: "M8 6V4h8v2" }], ["path", { d: "M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" }]],
     layout: [["rect", { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ["path", { d: "M3 9h18" }], ["path", { d: "M9 9v11" }]],
   };
   function shape(name) {
@@ -396,7 +415,7 @@
     drafts: new Map(),      // goal row id -> { open, text, err }
     busy: new Set(),        // item ids with a tap on the way
     cards: new Map(),       // page id -> { node, thumb, sig }
-    pagesShape: "",
+    pagesShape: "", deletedSig: null,
     topSig: "", emptySig: null,
     loading: false,
   };
@@ -407,23 +426,25 @@
   $("tabbar").replaceWith(D.phoneTabs("plan"));
 
   // ---------- Routing: #app=3&tab=pages ----------
+  const TABS = ["plan", "pages", "deleted"];
   function readHash() {
     const h = new URLSearchParams(location.hash.slice(1));
     const app = Number(h.get("app"));
-    return { app: Number.isInteger(app) && app > 0 ? app : null, tab: h.get("tab") === "pages" ? "pages" : "plan" };
+    return { app: Number.isInteger(app) && app > 0 ? app : null, tab: TABS.includes(h.get("tab")) ? h.get("tab") : "plan" };
   }
   function writeHash() {
     const h = new URLSearchParams();
     // Before the apps load, keep the app the address asked for.
     const app = S.app ?? readHash().app;
     if (app != null) h.set("app", app);
-    if (S.tab === "pages") h.set("tab", "pages");
+    if (S.tab !== "plan") h.set("tab", S.tab);
     const next = "#" + h.toString();
     if (location.hash !== next) history.replaceState(null, "", next);
   }
   function setTab(tab, focus = false) {
     S.tab = tab;
-    for (const [t, b] of [["plan", $("pt-plan")], ["pages", $("pt-pages")]]) {
+    for (const t of TABS) {
+      const b = $(`pt-${t}`);
       b.setAttribute("aria-selected", String(t === tab));
       b.tabIndex = t === tab ? 0 : -1;
       $(`panel-${t}`).hidden = t !== tab;
@@ -431,13 +452,16 @@
     if (focus) $(`pt-${tab}`).focus();
     writeHash();
     if (tab === "pages") renderPages();
+    if (tab === "deleted") renderDeleted();
   }
   $("pt-plan").onclick = () => setTab("plan");
   $("pt-pages").onclick = () => setTab("pages");
+  $("pt-deleted").onclick = () => setTab("deleted");
   document.querySelector(".ptabs").addEventListener("keydown", (e) => {
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
     e.preventDefault();
-    setTab(S.tab === "plan" ? "pages" : "plan", true);
+    const n = TABS.length;
+    setTab(TABS[(TABS.indexOf(S.tab) + (e.key === "ArrowRight" ? 1 : n - 1)) % n], true);
   });
   window.addEventListener("hashchange", () => {
     const h = readHash();
@@ -474,9 +498,11 @@
     S.plan = S.lib = null;
     S.rows.clear(); S.cards.clear();
     S.pagesShape = S.topSig = "";
+    S.deletedSig = null;
     S.emptySig = null;
     $("rows").replaceChildren();
     $("pages-body").replaceChildren();
+    $("deleted-body").replaceChildren();
     writeHash();
     skeleton();
     load();
@@ -497,6 +523,7 @@
       showBanner(D.offline ? "Can't reach your PC right now. Showing the last plan it sent." : "");
       renderPlan();
       renderPages();
+      renderDeleted();
     } catch (e) {
       showBanner(e.message);
     } finally {
@@ -615,6 +642,7 @@
         el("span", { className: `mk ${look.tone}` }, shape(look.sym)),
         el("div", { className: "row-main" }, title,
           el("div", { className: "row-meta" }, el("span", { className: `st ${look.tone}` }, look.word), el("span", { className: "dot-sep" }, when))),
+        CLOSED.has(g?.state) ? deleteButton(it) : null,
         orderButtons(it, pos)),
       extra);
   }
@@ -684,11 +712,7 @@
       b.onclick = () => fix([t.id], b, label);
       acts.append(b);
     }
-    if (t.state === "open") {
-      const d = el("button", { type: "button", className: "btn icon sm quiet drop", "aria-label": `Take off the plan: ${t.title}`, title: "Take off the plan", disabled: busy, dataset: { key: `drop-${t.id}` } }, icon("close"));
-      d.onclick = () => edit(t, { state: "dropped" }, "Taken off the plan. Turn off Hide finished to put it back.");
-      acts.append(d);
-    }
+    acts.append(deleteButton(t));
     if (dropped) {
       const b = el("button", { type: "button", className: "btn sm quiet", disabled: busy, dataset: { key: `back-${t.id}` } }, "Put back");
       b.onclick = () => edit(t, { state: "open" }, "Back on the plan.");
@@ -708,6 +732,13 @@
       el("div", { className: "row-head" },
         el("div", { className: "row-main" }, todoItem(it, true)),
         orderButtons(it, pos)));
+  }
+
+  // Delete hides a row in the Deleted tab; nothing is lost until Empty.
+  function deleteButton(it) {
+    const b = el("button", { type: "button", className: "btn icon sm quiet drop", "aria-label": `Delete: ${it.title}`, title: "Delete", disabled: S.busy.has(it.id), dataset: { key: `del-${it.id}` } }, shape("trash"));
+    b.onclick = () => del(it);
+    return b;
   }
 
   // "Add a to-do here", inside a goal's card. What you type survives refreshes.
@@ -772,6 +803,99 @@
       renderPlan();
       load();
     }
+  }
+
+  // The hub answers a delete, a bring back and an empty with the new plan.
+  function takePlan(app, plan) {
+    if (app !== S.app || !plan) return;
+    S.plan = plan;
+    renderPlan();
+    renderDeleted();
+  }
+  const short = (s) => (s.length > 60 ? `${s.slice(0, 57)}…` : s);
+
+  async function del(it) {
+    if (S.busy.has(it.id)) return;
+    const yes = await D.confirm(["Are you sure?", `Delete "${it.title}"? You can bring it back from the Deleted tab.`, "Delete", "Cancel"]);
+    if (!yes) return;
+    const app = S.app;
+    S.busy.add(it.id);
+    renderPlan();
+    try {
+      takePlan(app, await D.api(`/plan/items/${it.id}/delete`, { method: "POST", body: "{}" }));
+      D.toast(`Deleted "${short(it.title)}".`, "archive", () => bringBack(it, true));
+    } catch (e) {
+      D.toast(`Not deleted. ${e.message}`, "alert");
+    } finally {
+      S.busy.delete(it.id);
+      renderPlan();
+      renderDeleted();
+    }
+  }
+
+  async function bringBack(it, undo = false) {
+    if (S.busy.has(it.id)) return;
+    const app = S.app;
+    S.busy.add(it.id);
+    renderDeleted();
+    try {
+      takePlan(app, await D.api(`/plan/items/${it.id}/restore`, { method: "POST", body: "{}" }));
+      D.toast(undo ? "Undone." : `Brought back "${short(it.title)}".`);
+    } catch (e) {
+      D.toast(`Not brought back. ${e.message}`, "alert");
+    } finally {
+      S.busy.delete(it.id);
+      renderPlan();
+      renderDeleted();
+    }
+  }
+
+  async function emptyDeleted() {
+    const yes = await D.confirm(["Are you sure?", "Remove these for good? This can't be undone. The work and its history stay.", "Remove for good", "Cancel"]);
+    if (!yes) return;
+    const app = S.app;
+    try {
+      takePlan(app, await D.api(`/apps/${app}/plan/empty`, { method: "POST", body: "{}" }));
+      D.toast("The Deleted list is empty.");
+    } catch (e) {
+      D.toast(`Not emptied. ${e.message}`, "alert");
+    }
+  }
+
+  function renderDeleted() {
+    const list = S.plan?.deleted ?? [];
+    const ct = $("deleted-ct");
+    ct.textContent = list.length ? String(list.length) : "";
+    $("pt-deleted").setAttribute("aria-label", list.length ? `Deleted, ${list.length}` : "Deleted");
+    if (S.tab !== "deleted" || !S.plan) return;
+    const sig = JSON.stringify([list, [...S.busy]]);
+    if (sig === S.deletedSig) return;
+    S.deletedSig = sig;
+    const body = $("deleted-body");
+    const a = document.activeElement;
+    const key = body.contains(a) ? a.dataset?.key : null;
+    if (!list.length) {
+      body.replaceChildren(el("div", { className: "empty-state" },
+        el("div", { className: "mark" }, shape("trash")),
+        el("h3", {}, "Nothing deleted.")));
+    } else {
+      const empty = el("button", { type: "button", className: "btn sm", dataset: { key: "empty-deleted" } }, "Empty the Deleted list");
+      empty.onclick = emptyDeleted;
+      body.replaceChildren(
+        el("div", { className: "del-tools" }, el("p", { className: "hint" }, "Deleted rows wait here until you bring them back or empty the list."), empty),
+        el("ul", { className: "del-list", "aria-label": "Deleted, newest first" }, ...list.map((it) => {
+          const goal = it.kind === "goal";
+          const back = el("button", { type: "button", className: "btn sm", disabled: S.busy.has(it.id), "aria-label": `Bring back: ${it.title}`, dataset: { key: `back-del-${it.id}` } }, "Bring back");
+          back.onclick = () => bringBack(it);
+          const meta = [el("span", {}, goal ? "Goal" : "To-do")];
+          if (goal) meta.push(el("span", { className: `st ${it.goal?.state === "done" ? "done" : "stopped"}` }, (GOAL[it.goal?.state] ?? GOAL.stopped)[0]));
+          meta.push(el("span", {}, `Deleted ${ago(it.deleted_at)}`));
+          return el("li", { className: "del-row" },
+            el("div", { className: "del-main" }, el("div", { className: "del-title" }, it.title), el("div", { className: "del-meta" }, ...meta)),
+            back);
+        })));
+    }
+    if (key) document.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
   }
 
   async function move(it, dir) {

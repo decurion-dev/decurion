@@ -47,8 +47,9 @@ small bug, a missing detail, a good next step. These show under the goal as
 - **Fix this** starts a new goal to fix just that one. You go straight to it,
   and your project lead talks it through with you as usual.
 - **Fix all that are left** starts one goal for every open one under that goal.
-- **✕** takes it off the plan. Turn off **Hide finished** and tap **Put back**
-  to bring it back.
+- The **trash can** deletes it. See [Delete and bring back](#delete-and-bring-back).
+  A to-do taken off the plan earlier shows **Put back**. Turn off **Hide
+  finished** to see it.
 
 When a goal started this way is done, the things it fixed are ticked for you.
 Each one links to the goal fixing it: **Being fixed in** while it runs,
@@ -57,6 +58,26 @@ Each one links to the goal fixing it: **Being fixed in** while it runs,
 You can add your own: tap **Add a to-do here** inside a goal, or use **Add to
 the plan** at the bottom for something on its own. A to-do of your own has a
 **Make it a goal** button when you are ready to have it built.
+
+## Delete and bring back
+
+You can delete a to-do of any kind, and a goal that is **Done** or
+**Stopped**. Tap the **trash can**, then **Delete** when it asks **Are you
+sure?**. A goal that is still going has no trash can: stop it or finish it
+first.
+
+Deleting a goal only takes it off the plan. Its work, its history and its pages
+stay on the Goals screen and in Pages. The to-dos under it go with it.
+
+Deleted things wait in the **Deleted** tab, newest first. Tap **Bring back**
+and the row returns to the place it had. Bringing back a goal also brings back
+the to-dos that went with it. A to-do you deleted on its own earlier stays
+there until you bring it back too. If its goal is deleted, bring the goal back
+first.
+
+Tap **Empty the Deleted list** to remove everything there for good. It asks
+**Are you sure?** first, and it cannot be undone. The work and its history
+stay. Deleted things do not count in **done** or **left**.
 
 ## The Pages tab
 
