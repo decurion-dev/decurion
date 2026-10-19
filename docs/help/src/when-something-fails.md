@@ -31,6 +31,8 @@ You do not lose work. Decurion saves every step as it happens.
 
 When Decurion starts again, it stops any workspaces that were left behind. Work that was running goes back to **Queued**, and the agent picks up where it left off.
 
+While Decurion is stopped, open pages show **Decurion is restarting or updating.** They keep trying quietly and come back by themselves once Decurion answers. If they don't come back in a few minutes, check that Decurion is running on your PC. On a device with no internet, the note says **This device is offline.** instead.
+
 ## Other problems
 
 - **"another Decurion runner is already running on this computer"** Decurion is already open in another window. Close the extra copy.

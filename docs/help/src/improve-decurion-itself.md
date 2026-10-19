@@ -52,8 +52,19 @@ You can protect parts of your own apps the same way. Add a file named `protected
 
 1. Review the work as usual. See [Review and merge work](review-and-merge.md).
 2. If you are happy with it, tap **Accept**. Decurion sends it to GitHub as a new branch with a pull request, and Decurion's checks run there. It never merges and never changes the main branch.
-3. Merge the pull request on GitHub when the checks pass, then get the new code into your Decurion code folder. In GitHub Desktop, click **Fetch origin**, then **Pull origin**.
-4. The new version runs only after you update Decurion. Install the new version when it comes out. If Decurion runs from your code folder, restart it from there.
+3. Merge the pull request on GitHub when the checks pass.
+4. The new version runs only after you update Decurion. See [Update Decurion](#update-decurion) below.
+
+## Update Decurion
+
+After a change to Decurion is merged, the step bar on its goal says **Needs you · update Decurion**: "Merged. This Decurion still runs the old version. Update it to use the change." Decurion never updates or restarts itself, and it never changes your code folder. Updating is always yours:
+
+- **If you installed Decurion,** install the new version when it comes out.
+- **If Decurion runs from your code folder,** get the new code there first. In GitHub Desktop, click **Fetch origin**, then **Pull origin**. Then rebuild Decurion and restart it from that folder.
+
+While Decurion restarts, open pages show **Decurion is restarting or updating.** They keep trying by themselves and come back once Decurion answers. You do not need to reload them.
+
+Once the Decurion you run has the merged change, the step says **Live** by itself, and the goal closes when every piece is live.
 
 A cloud worker updates itself to match your PC, using the code on Decurion's GitHub page. A change that is only in your own folder does not reach it.
 

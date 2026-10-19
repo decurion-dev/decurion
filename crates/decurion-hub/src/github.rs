@@ -254,6 +254,16 @@ pub fn github_repo(url: &str) -> Option<Repo> {
     })
 }
 
+/// The repo a page on github.com belongs to, such as the link that opens a
+/// pull request (`https://github.com/o/r/compare/...`). `None` for any
+/// other address.
+pub fn repo_of_page(url: &str) -> Option<Repo> {
+    let path = url.strip_prefix("https://github.com/")?;
+    let mut parts = path.split(['/', '?', '#']);
+    let (owner, name) = (parts.next()?, parts.next()?);
+    github_repo(&format!("https://github.com/{owner}/{name}"))
+}
+
 /// The page on GitHub that opens a pull request for `branch` in one tap,
 /// against `base` (GitHub picks the default branch when it is not known).
 pub fn compare_url(repo: &Repo, base: Option<&str>, branch: &str) -> String {
@@ -586,7 +596,7 @@ impl GitHub {
 
     /// A pull request already open (or closed) for `branch`, so a resend
     /// never opens a second one.
-    async fn find_pr(
+    pub(crate) async fn find_pr(
         &self,
         t: &Token,
         r: &Repo,
@@ -1245,10 +1255,12 @@ impl Sender {
                         &note,
                     )
                     .await;
-                let head = if sent.url.is_some() {
-                    "ready to merge on GitHub"
-                } else {
-                    "sent as a branch"
+                // Merging is the owner's next step only once a pull
+                // request is open; with only its link, opening it is.
+                let head = match (&sent.url, sent.pull_request) {
+                    (Some(_), true) => "ready to merge on GitHub",
+                    (Some(_), false) => "on GitHub, open its pull request",
+                    (None, _) => "sent as a branch",
                 };
                 (ended, head, sent.url.unwrap_or_else(|| "/inbox".into()))
             }
@@ -1720,6 +1732,11 @@ mod tests {
             compare_url(&repo, Some("rel #1"), "decurion/shop-7"),
             "https://github.com/acme/shop/compare/rel%20%231...decurion/shop-7?expand=1"
         );
+        // The link names its repo, so a pull request opened from it can be found.
+        let link = compare_url(&repo, Some("main"), "decurion/shop-7");
+        assert_eq!(repo_of_page(&link), Some(repo));
+        assert_eq!(repo_of_page("https://gitlab.com/acme/shop/compare/x"), None);
+        assert_eq!(repo_of_page("https://github.com/acme"), None);
     }
 
     #[test]

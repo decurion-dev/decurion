@@ -122,6 +122,9 @@
   // both menus agree. The pages are published online, not served by the hub,
   // so Help opens them in a new browser tab and leaves Decurion open.
   D.HELP_URL = "https://github.com/decurion-dev/decurion/tree/main/docs/help/src";
+  // One help page by its file name (no ending), so a page links to it in
+  // one place if the help moves.
+  D.helpPage = (name) => `${D.HELP_URL.replace("/tree/", "/blob/")}/${name}.md`;
 
   // The phone's bottom tabs, the same on the inbox and the goals page so the
   // phone feels like one app. Inbox, Board and Settings are hash routes of
@@ -185,7 +188,7 @@
   // stop work, which always ask first.
   D.MOVES = {
     in_review: [
-      { to: "done", label: "Accept", kind: "primary", done: "Accepted. Decurion is sending it to GitHub for you to merge there." },
+      { to: "done", label: "Accept", kind: "primary", done: (t) => `Accepted. ${D.acceptWords(t.app_id)}` },
       { to: "queued", label: "Send back", kind: "", done: "Sent back. The agent will pick up where it left off." },
       { to: "failed", label: "Reject", kind: "danger", done: "Rejected.",
         confirm: (t) => [`Reject "${t.title}"?`, "Its changes stay on its branch, but the work is closed.", "Reject work", "Keep it"] },
@@ -241,6 +244,111 @@
     if (r.status === 401) { const e = new Error(D.signedOutText); e.signedOut = true; throw e; }
     if (!r.ok) throw new Error((await r.text()) || `The hub said ${r.status}.`);
     return r.text();
+  };
+
+  // ---------- When the hub goes away ----------
+  // While Decurion restarts or updates, its requests fail. After a few
+  // seconds of that, a calm full-page note covers the page (every page that
+  // loads ui.js gets it, whatever it uses to ask the hub), the page keeps
+  // asking quietly, and once the hub answers again it reloads, so it comes
+  // back on the version that now runs. A short blip shows nothing. The hub
+  // answers some requests with 502 or 503 itself, so those only make the
+  // page ask /healthz; Tailscale's own 502 for a hub that is down fails it.
+  const LOST_MS = 6000, PROBE_MS = 3000;
+  const realFetch = window.fetch.bind(window);
+  let lostSince = null, lostNote = null, probing = null;
+  const ours = (input) => {
+    try { return new URL(typeof input === "string" ? input : input.url, location.href).origin === location.origin; }
+    catch (_) { return false; }
+  };
+  function hubLost() {
+    if (lostSince == null) lostSince = Date.now();
+    if (!lostNote && Date.now() - lostSince >= LOST_MS) showLost();
+    if (!probing) probing = setInterval(probe, PROBE_MS);
+  }
+  function hubBack() {
+    lostSince = null;
+    if (lostNote) { location.reload(); return; }
+    clearInterval(probing);
+    probing = null;
+  }
+  async function probe() {
+    try { const r = await realFetch("/healthz", { cache: "no-store" }); if (r.ok) hubBack(); else hubLost(); }
+    catch (_) { hubLost(); }
+  }
+  function showLost() {
+    D.ensureStyle();
+    lostNote = D.el("div", { className: "hub-lost", role: "status", "aria-live": "polite" },
+      D.el("div", { className: "hub-lost-box" },
+        // A device that knows it has no connection says so instead.
+        D.el("p", { className: "hub-lost-h" }, navigator.onLine === false ? "This device is offline." : "Decurion is restarting or updating."),
+        D.el("p", {}, "This page comes back by itself."),
+        D.el("p", { className: "hub-lost-hint" }, "If it doesn't come back in a few minutes, check that Decurion is running on your PC.")));
+    document.body.append(lostNote);
+  }
+  window.fetch = async (input, init) => {
+    if (!ours(input)) return realFetch(input, init);
+    let r;
+    try {
+      r = await realFetch(input, init);
+    } catch (e) {
+      if (e?.name !== "AbortError") hubLost();
+      throw e;
+    }
+    if (r.status === 502 || r.status === 504) probe(); else hubBack();
+    return r;
+  };
+
+  // The shared look of the pieces above and of D.road, added once to the
+  // page, since some pages (the goal page) keep their own look without
+  // ui.css. Colors fall back from ui.css's names to the goal page's.
+  let styled = false;
+  D.ensureStyle = () => {
+    if (styled) return;
+    styled = true;
+    document.head.append(D.el("style", {}, `
+.hub-lost { position: fixed; inset: 0; z-index: 2147483000; display: grid; place-items: center; padding: 24px;
+  background: var(--bg, #f5f6f8); color: var(--ink, #14171c); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; text-align: center; }
+.hub-lost-box { max-width: 420px; }
+.hub-lost-h { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+.hub-lost p { margin: 0 0 8px; }
+.hub-lost-hint { color: var(--muted, #545d6b); font-size: 14px; }
+.road { display: grid; gap: 6px; min-width: 0; }
+.road-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
+.road-steps li { display: inline-flex; align-items: center; gap: 5px; color: var(--muted, #545d6b); }
+.road-steps .mk { font-weight: 700; width: 1.1em; text-align: center; }
+.road-steps .done { color: var(--green, var(--ok-ink, #18703a)); }
+.road-steps .now { color: var(--ink, #14171c); font-weight: 600; }
+.road-steps .now.you { color: var(--amber, var(--warn-ink, #8a5300)); }
+.road-next { margin: 0; font-size: 14px; }
+.road.you .road-next { border-left: 3px solid var(--amber-line, var(--warn, #b97a0f)); padding-left: 8px; }
+.road-update { margin: 0; padding-left: 18px; font-size: 13.5px; }
+.road .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .hub-lost { background: var(--bg, #0e1014); color: var(--ink, #e9ecf1); }
+}`));
+  };
+
+  // Where a goal's work is, from Built to Live (road.rs works it out from
+  // the app's rules, so every screen tells the same story): the steps, each
+  // with a word and a symbol, and one line on what happens next and who
+  // does it. For Decurion's own code, merged but not running yet, how to
+  // update it and the help page that says more.
+  const MARKS = { done: ["✓", "done"], now: ["●", "now"], todo: ["○", "not yet"], skipped: ["–", "skipped"] };
+  D.road = (road) => {
+    if (!road) return null;
+    D.ensureStyle();
+    const steps = D.el("ol", { className: "road-steps", "aria-label": "From built to live" }, ...road.steps.map((s) => {
+      const you = s.mark === "now" && road.you;
+      const [mk, words] = you ? ["!", "needs you"] : MARKS[s.mark] ?? ["○", ""];
+      return D.el("li", { className: `${s.mark}${you ? " you" : ""}`, "aria-current": s.mark === "now" ? "step" : null },
+        D.el("span", { className: "mk", "aria-hidden": "true" }, mk), D.el("span", {}, s.label), D.el("span", { className: "sr" }, `, ${words}`));
+    }));
+    const update = road.update?.length ? [
+      D.el("ul", { className: "road-update" }, ...road.update.map((l) => D.el("li", {}, l))),
+      D.el("p", { className: "road-next" }, D.el("a", { href: D.helpPage("improve-decurion-itself"), target: "_blank", rel: "noopener noreferrer" }, "How to update Decurion")),
+    ] : [];
+    return D.el("div", { className: `road${road.you ? " you" : ""}` }, steps, D.el("p", { className: "road-next" }, road.next), ...update);
   };
 
   // Events come in pages of 500; fetch them all so the outcome is never cut off.
@@ -500,6 +608,13 @@
   let apps = {};
   D.setApps = (list) => { apps = Object.fromEntries(list.map((a) => [a.id, a])); };
   D.appName = (id) => apps[id]?.name ?? "";
+  // What happens after Accept, by the app's own rules (road.rs tells the
+  // same story for a goal's pieces): it goes to GitHub as a pull request,
+  // and the merge is the owner's, on GitHub or with one Merge tap.
+  D.mergeWords = (id) => (apps[id]?.rules?.merge
+    ? "Then tap Merge on it once GitHub's checks pass."
+    : "Then you or your reviewer merge it on GitHub.");
+  D.acceptWords = (id) => `Decurion sends it to GitHub as a pull request, a proposed change to your app's code. ${D.mergeWords(id)}`;
 
   document.body.classList.toggle("pro", D.pro);
 })();
@@ -957,7 +1072,7 @@
     if (m.confirm && !(await D.confirm(m.confirm(t)))) return false;
     try {
       await D.send(`/threads/${t.id}/move`, { to: m.to, expect: t.state });
-      D.toast(m.done, m.to === "failed" ? "close" : "done");
+      D.toast(typeof m.done === "function" ? m.done(t) : m.done, m.to === "failed" ? "close" : "done");
       return true;
     } catch (e) {
       const msg = `"${m.label}" did not go through. ${e.message}`;
@@ -1016,8 +1131,8 @@
         icon("branch"), g.pull_request ? "Open pull request" : "Open pull request on GitHub");
       if (link) link.onclick = (ev) => ev.stopPropagation();
       if (small) return el("p", { className: "gh" }, link || `Sent as the branch ${g.branch}`);
-      const words = g.pull_request ? "Sent to GitHub. The pull request is ready for you to look over and merge there."
-        : link ? "Sent to GitHub as a branch. Open the pull request in one tap, then merge it there."
+      const words = g.pull_request ? "On GitHub as a pull request: a proposed change to your app's code. Nothing changes in the app until it is merged."
+        : link ? "On GitHub as a branch, with no pull request yet. Tap Open pull request on GitHub, then Create pull request there. Decurion finds it by itself."
         : `Sent to the app's git server as the branch ${g.branch}.`;
       return el("div", { className: "gh notice" }, icon("done"),
         el("div", { className: "grow" }, words, g.error ? el("div", { className: "hint" }, g.error) : null), link || null);
@@ -1287,7 +1402,10 @@
         "Your message goes back to the agent, and it picks up where it left off.", talk("Answer the agent"));
       row("Done with it?", [b("Mark done"), " closes it. Research changes no code, so nothing goes to GitHub."]);
     } else if (s === "in_review") {
-      row("Looks right?", ["Tap ", b("Accept"), " at the bottom. Decurion sends it to GitHub as a pull request, and you merge it there."]);
+      // A goal's piece the checker has yet to pass waits for it (road.rs):
+      // the owner is not asked to Accept it now.
+      const checking = !!c.goal?.road && !c.goal.road.you && c.goal.road.steps.some((x) => x.step === "checked" && x.mark === "now");
+      if (!checking) row("Looks right?", ["Tap ", b("Accept"), ` at the bottom. ${D.acceptWords(t.app_id)}`]);
       row(asks.length ? "Want to answer in your own words, or ask for changes?" : "Has a question, or want changes?",
         "Your message goes back to the agent, and it picks up where it left off.", talk("Answer the agent"));
       if (fix) row("Want what it found fixed?", "Start new work from this summary. This piece stays as it is.", fix);
@@ -1302,7 +1420,8 @@
     } else if (s === "done") {
       // An app whose rules allow merging from Decurion gets a Merge button
       // on the pull request's card (board's Today, phone's inbox) instead.
-      if (t.github?.state === "sent" && t.github.pull_request) {
+      // A goal's piece has its step bar above, which says the same.
+      if (t.github?.state === "sent" && t.github.pull_request && !c.goal?.road) {
         if (apps[t.app_id]?.rules?.merge) row("Merge it", ["Tap ", b("Merge"), " on its pull request on the board's Today strip or in your phone's inbox. Decurion merges once GitHub says the checks passed. You can also merge it on GitHub."]);
         else row("Merge it on GitHub", "Open the pull request above, look it over, and merge it there. This app's rules leave merging to you or your reviewer.");
       }
@@ -1312,31 +1431,36 @@
     return el("section", {}, el("div", { className: "section-title" }, "What next?"), el("div", { className: "next" }, ...rows));
   }
 
-  // A piece of a goal says why it did or didn't wait for your Accept: the
-  // plan's approval covers each piece that passes its check, except one
-  // held for the app's protected parts (finish_helper in coordinator.rs).
-  // Work added straight to the board has no line: Accept is always yours.
+  // A piece of a goal shows the goal's step bar for it (road.rs works it out
+  // from the app's rules: the same steps and words as the goal page) and
+  // says how it reached GitHub: by the plan's approval, or the owner's own
+  // Accept. Work added straight to the board has no line: Accept is always
+  // yours.
   function pieceLine(c) {
     const t = c.t, g = c.goal;
     if (!g) return null;
-    const goal = `“${g.goal_title}”`;
-    const held = g.held && t.state === "in_review";
-    const checking = t.state === "in_review" && !t.research && ["building", "reviewing", "fixing"].includes(g.review);
-    const waits = t.state === "in_review" && !t.research && g.review === "passed" && !g.held;
-    const text = g.by_plan ? `Sent to GitHub by itself because you approved the plan for ${goal}.`
-      : held ? `Held for you: it may change a part of the app you protect, so approving the plan for ${goal} doesn't cover it. Look it over, then tap Accept.`
-      : waits ? `Part of your goal ${goal}. It passed its check. This app's rules say passed pieces wait for you, so tap Accept to send it to GitHub.`
-      : checking && g.sends_checked ? `Part of your goal ${goal}. A checker looks at it first. If it passes, it goes to GitHub by itself, because you approved the plan.`
-      : checking ? `Part of your goal ${goal}. A checker looks at it first. Then it waits for your Accept, as this app's rules say.`
-      : t.state === "done" && !t.research ? `Part of your goal ${goal}. You accepted it yourself.`
-      : `Part of your goal ${goal}.`;
-    return el("div", { className: `notice${held ? " warn" : ""}` }, icon(held ? "shield" : "plan"),
-      el("span", { className: "grow" }, text, " ", el("a", { href: `/goals#goal-${g.goal_id}` }, "Open the goal")));
+    const how = g.by_plan ? " It went to GitHub by itself because you approved the plan."
+      : t.state === "done" && !t.research ? " You accepted it yourself." : "";
+    const head = el("span", {}, `Part of your goal “${g.goal_title}”.${how} `, el("a", { href: `/goals#goal-${g.goal_id}` }, "Open the goal"));
+    const you = !!g.road?.you;
+    return el("div", { className: `notice${you ? " warn" : ""}` }, icon(g.held && t.state === "in_review" ? "shield" : "plan"),
+      el("div", { className: "grow" }, head, g.road ? el("div", { style: "margin-top:8px" }, D.road(g.road)) : null));
   }
 
   // The header's time: the newest step or note, not when the work started,
   // so long quiet work still shows it is alive. Kept fresh on every load.
   const activityText = (t) => `Last activity ${D.ago(D.lastActivity(t))}`;
+  // A finished piece says where it is on its way to live, never just Done
+  // while nothing is merged: its goal's road, or else how its send went.
+  D.statePill = (t, road) => {
+    if (t.state !== "done" || t.research) return D.pill(t.state);
+    const g = t.github;
+    const [cls, word] = road ? [road.done ? "done" : road.you ? "needs_you" : "queued", road.label]
+      : !g ? ["done", "Accepted"]
+      : g.state === "sent" ? ["queued", g.pull_request ? "On GitHub" : "On GitHub as a branch"]
+      : g.state === "failed" ? ["failed", "Not sent to GitHub"] : ["queued", "Sending to GitHub"];
+    return el("span", { className: `pill ${cls}` }, icon(cls), word);
+  };
 
   function draw(c) {
     const t = c.t, ev = c.ev, app = apps[t.app_id];
@@ -1382,7 +1506,7 @@
     const close = el("button", { type: "button", className: "btn icon quiet close", "aria-label": "Close", dataset: { key: "wk-close" } }, icon("close", "l"));
     close.onclick = () => panel.close();
     const head = el("header", { className: "work-head" },
-      el("div", { className: "top" }, D.pill(t.state), el("span", { className: "grow" }), close),
+      el("div", { className: "top" }, D.statePill(t, c.goal?.road), el("span", { className: "grow" }), close),
       el("h2", { id: "wk-title" }, t.title),
       el("div", { className: "meta" },
         el("span", { className: "tag" }, icon("app"), D.appName(t.app_id) || "Unknown app"),
