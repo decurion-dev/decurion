@@ -41,6 +41,7 @@ pub mod pr_watch;
 pub mod preview;
 pub mod protected;
 pub mod push;
+pub mod remove;
 pub mod research;
 pub mod road;
 pub mod secrets;
@@ -340,6 +341,7 @@ pub fn router(state: AppState) -> Router {
         .route("/apps/{id}/pay-per-use", post(set_pay_per_use))
         .route("/apps/{id}/sites", post(set_sites))
         .route("/apps/{id}/edit", post(edit_app))
+        .route("/apps/{id}/remove", post(remove::remove))
         .route("/apps/{id}/rules", post(set_rules))
         .route("/apps/{id}/first", post(set_first_today))
         .route("/sites/built-in", get(built_in_sites))

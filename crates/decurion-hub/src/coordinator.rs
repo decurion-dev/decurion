@@ -1230,9 +1230,12 @@ async fn approve_in(
 
 impl Store {
     pub async fn goals(&self) -> Result<Vec<Goal>> {
-        let rows = sqlx::query(&format!("{GOAL_SELECT} ORDER BY g.id DESC"))
-            .fetch_all(self.pool())
-            .await?;
+        let rows = sqlx::query(&format!(
+            "{GOAL_SELECT} WHERE g.app_id IN (SELECT id FROM apps WHERE removed_at IS NULL)
+             ORDER BY g.id DESC"
+        ))
+        .fetch_all(self.pool())
+        .await?;
         rows.iter().map(goal_from).collect()
     }
 

@@ -509,7 +509,7 @@ impl Store {
         let rows = sqlx::query(
             "SELECT w.thread_id, w.owner, w.repo, w.number, w.url, t.title, a.name AS app
              FROM pr_watches w JOIN threads t ON t.id = w.thread_id JOIN apps a ON a.id = w.app_id
-             WHERE w.state = 'open' ORDER BY w.thread_id",
+             WHERE w.state = 'open' AND a.removed_at IS NULL ORDER BY w.thread_id",
         )
         .fetch_all(self.pool())
         .await?;
@@ -609,9 +609,9 @@ impl Store {
                     (SELECT json_group_array(c.author) FROM pr_comments c
                       WHERE c.thread_id = w.thread_id AND {OPEN_COMMENT}) AS authors
              FROM pr_watches w JOIN threads t ON t.id = w.thread_id JOIN apps a ON a.id = w.app_id
-             WHERE w.state = 'open' OR w.thread_id IN (
+             WHERE a.removed_at IS NULL AND (w.state = 'open' OR w.thread_id IN (
                  SELECT thread_id FROM pr_watches WHERE state <> 'open'
-                 ORDER BY COALESCE(event_at, created_at) DESC LIMIT 20)
+                 ORDER BY COALESCE(event_at, created_at) DESC LIMIT 20))
              ORDER BY w.state <> 'open', COALESCE(w.event_at, w.created_at) DESC"
         ))
         .fetch_all(self.pool())

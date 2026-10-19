@@ -35,6 +35,10 @@ To take the cap off, click **Remove cap**. The app then stops only at the caps i
 
 While some of the app's work is running, or paused partway, Decurion keeps the old name and folder, because that work keeps its files under them. Wait until the work finishes (or stop it), then change them. You can change the plan, the reviewer and the rules at any time.
 
+## Remove an app
+
+On the same **Name and folder** tab, **Remove app** hides the app from Decurion. See [Remove an app](add-your-first-app.md#remove-an-app).
+
 ## Let one app go first today
 
 When one app matters most today, do one of these:

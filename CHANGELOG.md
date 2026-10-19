@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Remove an app.** An app's page in Settings has a **Remove app** button on the **Name and folder** tab. It asks once, then hides the app everywhere and keeps its past work and spending. Your folder and GitHub are not touched. It is refused while the app has work going, and you can add the same name and folder again later.
+
 - **Help in the menu.** A **Help** link sits under Settings in the menu on the PC and next to Settings in the phone's bottom bar. It opens Decurion's help pages in a new tab and leaves Decurion open.
 - **Starts when you sign in, with its own logo.** The Windows installer now offers to start Decurion when you sign in to Windows (checked by default), so work keeps going after a restart. It starts minimized and does not open the board until you ask. The installer, the Start menu entries and the uninstall entry show the Decurion logo.
 - **Add-ons: extra tools for your agents.** Settings has a new **Add-ons** tab. Paste an add-on's link and Decurion shows one card saying in plain words what it will be able to do, which websites it talks to and which test key it uses; tap **Add** once, and turn it on for the apps you choose. Each tool runs in a sealed box of its own beside the agent, with none of your code and never your Claude sign-in. Decurion keeps the exact version you approved and refuses it if one byte changes. **Check for an update** applies a new version straight away when it asks for nothing more, and otherwise shows only what is new. Add-ons that would send messages, deploy, touch live data or spend money are refused. Every add, update, switch and use is in **What add-ons did lately**. This first version adds tools only.

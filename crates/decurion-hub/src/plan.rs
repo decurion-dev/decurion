@@ -89,7 +89,7 @@ impl Store {
     /// Pages agents drew, newest first, for one app, one goal, or all.
     pub async fn library(&self, app: Option<i64>, goal: Option<i64>) -> Result<Vec<LibraryPage>> {
         let rows = sqlx::query(&format!(
-            "{PAGE_SELECT} WHERE (?1 IS NULL OR g.app_id = ?1) AND (?2 IS NULL OR gp.goal_id = ?2)
+            "{PAGE_SELECT} WHERE a.removed_at IS NULL AND (?1 IS NULL OR g.app_id = ?1) AND (?2 IS NULL OR gp.goal_id = ?2)
              ORDER BY gp.id DESC"
         ))
         .bind(app)
@@ -496,10 +496,11 @@ pub(crate) async fn tick_fixed(tx: &mut Transaction<'_, Sqlite>, goal_id: i64) -
 }
 
 async fn app_exists(tx: &mut Transaction<'_, Sqlite>, app_id: i64) -> Result<()> {
-    let found: Option<i64> = sqlx::query_scalar("SELECT id FROM apps WHERE id = ?")
-        .bind(app_id)
-        .fetch_optional(&mut **tx)
-        .await?;
+    let found: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM apps WHERE id = ? AND removed_at IS NULL")
+            .bind(app_id)
+            .fetch_optional(&mut **tx)
+            .await?;
     found.map(|_| ()).ok_or(StoreError::NotFound)
 }
 

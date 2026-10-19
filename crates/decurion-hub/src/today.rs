@@ -365,7 +365,8 @@ impl Store {
         for r in sqlx::query(
             "SELECT t.id, t.app_id, t.state FROM threads t
              LEFT JOIN goal_pieces p ON p.thread_id = t.id
-             WHERE t.dismissed_at IS NULL AND (
+             WHERE t.dismissed_at IS NULL
+               AND t.app_id IN (SELECT id FROM apps WHERE removed_at IS NULL) AND (
                  t.state IN ('needs_you', 'failed')
                  OR (t.state = 'done' AND t.gh_state = 'failed')
                  OR (t.state = 'in_review' AND NOT (p.thread_id IS NOT NULL AND t.research = 0
@@ -523,6 +524,7 @@ impl Store {
                     (w.state = 'open' AND a.can_merge) AS can_merge
              FROM pr_watches w LEFT JOIN threads t ON t.id = w.thread_id
                   JOIN apps a ON a.id = w.app_id
+             WHERE a.removed_at IS NULL
              ORDER BY COALESCE(w.event_at, w.created_at) DESC, w.created_at DESC, w.thread_id DESC",
         )
         .fetch_all(self.pool())
@@ -599,12 +601,13 @@ impl Store {
             }
         }
 
-        let can_deploy: std::collections::HashSet<i64> =
-            sqlx::query_scalar::<_, i64>("SELECT id FROM apps WHERE can_deploy = 1")
-                .fetch_all(self.pool())
-                .await?
-                .into_iter()
-                .collect();
+        let can_deploy: std::collections::HashSet<i64> = sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM apps WHERE can_deploy = 1 AND removed_at IS NULL",
+        )
+        .fetch_all(self.pool())
+        .await?
+        .into_iter()
+        .collect();
         for d in self.deploy_cards().await? {
             let app_id = d.app_id;
             facts.entry(app_id).or_default().deploy = Some(d);
