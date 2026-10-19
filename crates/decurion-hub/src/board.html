@@ -315,6 +315,7 @@
 
   // Settings (settings.js) keeps its own copy of spend, accounts and workers.
   let apps = [], threads = [], limits = [];
+  let helpers = [];             // checkers and project leads at work or lined up (GET /api/helpers)
   let hasCloud = false;
   let previews = [];            // open Run it sessions (GET /api/previews)
   const limitErr = {};          // profile -> message from a failed "Continue on pay-per-use"
@@ -416,6 +417,8 @@
         D.api("/limits").catch(() => []), // older hubs have no /limits
         D.api("/workers").catch(() => []),
         D.api("/accounts").catch(() => null)]);
+      // Older hubs have no /helpers: then only building agents count.
+      helpers = await D.api("/helpers").catch(() => helpers);
       // Settings keeps a website list saved while this was loading, which is newer.
       D.settings.update({ apps: a, spend: sp, accounts: ac, workers: wk, seq });
       apps = a; threads = th; limits = Array.isArray(lim) ? lim : [];
@@ -717,7 +720,8 @@
     seen.add(t.id);
     const hit = el("button", { type: "button", className: "hit", dataset: { key: `card-${t.id}` } }, t.title);
     hit.onclick = () => D.openWork(t, refresh);
-    const acts = (t.state === "needs_you" || t.state === "in_review")
+    // No Accept, Send back or Reject while the checker looks first (D.checking).
+    const acts = (t.state === "needs_you" || t.state === "in_review") && !D.checking(t)
       ? D.moveButtons(t, { quiet: true, size: "sm", onMoved: refresh }) : [];
     acts.forEach((b, i) => { b.dataset.key = `act-${t.id}-${i}`; b.disabled = D.offline; });
     // Finished work can be put out of the way; dismissed work can come back.
@@ -741,7 +745,7 @@
         el("span", { className: "tag ai dot-sep", title: `Done by ${aiOf(t, app, true)}` }, icon("ai"), el("span", {}, aiOf(t, app))),
         hasCloud && el("span", { className: "tag place dot-sep", title: t.place === "cloud" ? "Runs in the cloud" : "Runs on your PC" },
           icon(t.place === "cloud" ? "cloud" : "pc"), el("span", {}, t.place === "cloud" ? "Cloud" : "PC")),
-        el("span", { className: "when", title: new Date(t.updated_at).toLocaleString() }, D.ago(t.updated_at))),
+        el("span", { className: "when", title: `Last activity ${new Date(D.lastActivity(t)).toLocaleString()}` }, D.ago(D.lastActivity(t)))),
       el("h3", { className: "t" }, hit),
       line && el("p", { className: "says" }, line),
       D.treeLine(t) && el("p", { className: "tree" }, D.treeLine(t)),
@@ -750,9 +754,29 @@
       (acts.length || t.state === "running") && el("div", { className: "foot" },
         acts.length ? el("span", { className: "acts" }, ...acts) : null,
         t.state === "running" ? el("span", { className: "working" }, icon("running"), "Working") : null),
+      D.checking(t) && el("div", { className: "foot" }, D.checkNote(t, { small: true })),
     ];
     c.append(...parts.filter(Boolean));
     return c;
+  }
+
+  // ---------- Helper agents: checkers and project leads ----------
+  // They work for a goal, not as a piece of work of their own, but they hold
+  // an agent all the same: a check that runs for twenty minutes counts in
+  // Running, and one lined up counts in Queued. The hub's words (live.rs).
+  const HELPER = { checker: "Checker", project_lead: "Project lead", designer: "Designer" };
+  const helpersIn = (st) => helpers.filter((h) => h.state === st && inFilter(h));
+  function helperCard(h) {
+    const piece = h.thread_id != null ? threads.find((t) => t.id === h.thread_id) : null;
+    const hit = el("button", { type: "button", className: "hit", dataset: { key: `job-${h.job_id}` } }, h.piece_title ?? h.goal_title);
+    hit.onclick = () => { if (piece) D.openWork(piece, refresh); else location.href = `/goals#goal-${h.goal_id}`; };
+    return el("article", { className: "wcard seen helper", dataset: { state: h.state, job: String(h.job_id) } },
+      el("div", { className: "meta" },
+        el("span", { className: "tag app" }, icon("app"), el("span", {}, D.appName(h.app_id) || "Unknown app")),
+        el("span", { className: "tag ai dot-sep" }, icon("ai"), el("span", {}, HELPER[h.kind] ?? "Helper"))),
+      el("h3", { className: "t" }, hit),
+      el("p", { className: "says" }, D.jobLine(h, h.kind)),
+      h.state === "running" && el("div", { className: "foot" }, el("span", { className: "working" }, icon("running"), "Working")));
   }
 
   function renderBoard() {
@@ -771,13 +795,14 @@
 
     const shown = shownThreads(), gone = dismissedThreads();
     const sig = ["board", filter, D.pro, D.offline, hasCloud, folds, [...openDismissed], gone.map((t) => [t.id, t.state, t.dismissed_at, t.title, t.github]), Math.floor(Date.now() / 30000), apps.map((a) => [a.id, a.name, a.pay_per_use, a.profile]),
-      shown.map((t) => [t.id, t.state, t.ai, t.place, t.updated_at, t.title, t.branch, t.github, lineOf(t), D.treeLine(t)])];
+      shown.map((t) => [t.id, t.state, t.ai, t.place, t.updated_at, t.last_activity_at, t.check, t.title, t.branch, t.github, lineOf(t), D.treeLine(t)]),
+      helpers.filter(inFilter)];
     if (!changed("board", sig)) return;
 
     keepFocus(() => {
       const board = $("board");
       if (!apps.length) { board.replaceChildren(); return; }
-      if (!shown.length && !gone.length) {
+      if (!shown.length && !gone.length && !helpers.some(inFilter)) {
         const all = filter === "all";
         const btn = !all && Object.assign(el("button", { type: "button", className: "btn sm" }, "Show all apps"), { onclick: () => setFilter("all") });
         board.replaceChildren(el("div", { className: "empty-state board-empty", style: "flex:1" },
@@ -789,12 +814,14 @@
       }
       board.replaceChildren(...COLS.map((st) => {
         const mine = shown.filter((t) => t.state === st);
-        if (isFolded(st, mine.length)) return foldedCol(st, mine.length);
+        // Running and Queued also count the helper agents (checkers, project leads).
+        const jobs = helpersIn(st), n = mine.length + jobs.length;
+        if (isFolded(st, n)) return foldedCol(st, n);
         const pill = D.pill(st);
-        if (st === "running" && !mine.length) pill.querySelector("svg")?.classList.remove("spin");
+        if (st === "running" && !n) pill.querySelector("svg")?.classList.remove("spin");
         const fold = el("button", { type: "button", className: "ghost", dataset: { key: `fold-${st}` }, "aria-expanded": "true",
           "aria-label": `Fold ${D.STATES[st].col}`, title: "Fold this column" }, icon("left"));
-        fold.onclick = () => toggleFold(st, mine.length);
+        fold.onclick = () => toggleFold(st, n);
         // Done and Failed: Dismiss all on top, and the dismissed ones folded at the bottom.
         let clear = null, kept = [];
         if (st === "done" || st === "failed") {
@@ -821,9 +848,9 @@
           }
         }
         const empty = st === "done" && kept.length ? "All cleared. Dismissed work is kept below." : EMPTY_COL[st];
-        return el("section", { className: "col", dataset: { state: st }, "aria-label": `${D.STATES[st].col}, ${mine.length}` },
-          el("header", { className: "col-h" }, el("h2", {}, pill), el("span", { className: "ct" }, String(mine.length)), el("span", { className: "grow" }), fold),
-          el("div", { className: "cards" }, clear && el("div", { className: "col-tools" }, clear), ...(mine.length ? mine.map(card) : [el("div", { className: "col-empty" }, empty)]), ...kept));
+        return el("section", { className: "col", dataset: { state: st }, "aria-label": `${D.STATES[st].col}, ${n}` },
+          el("header", { className: "col-h" }, el("h2", {}, pill), el("span", { className: "ct" }, String(n)), el("span", { className: "grow" }), fold),
+          el("div", { className: "cards" }, clear && el("div", { className: "col-tools" }, clear), ...(n ? [...mine.map(card), ...jobs.map(helperCard)] : [el("div", { className: "col-empty" }, empty)]), ...kept));
       }));
     });
   }

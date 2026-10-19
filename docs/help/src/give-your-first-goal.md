@@ -65,6 +65,15 @@ most two checks; if it still has problems, it is marked **Needs you · take a lo
 checker lists what it ran and marks each thing it says as **Checked** or
 **Guessed**.
 
+A check can take a while. While it runs, the checker counts under
+**Running** on the board, with its own card, and the piece says "Checker
+working" and when it started. A check lined up behind other work counts
+under **Queued** and says "Waiting for a free agent to check it". If
+something else holds it up, such as the Max plan being out of usage for now,
+it says so and when it starts by itself. Until the check is done, the piece
+says "Nothing to do. The checker looks at it first." and offers no
+**Accept**; the buttons come back once the check has finished.
+
 Pieces built later in a goal read short notes on what the earlier pieces did
 and found, so you never have to pass them along yourself.
 

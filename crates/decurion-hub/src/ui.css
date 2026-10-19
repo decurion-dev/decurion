@@ -387,9 +387,24 @@ details.fold[open] > summary svg.i { transform: rotate(90deg); }
   .toasts { left: 16px; right: 16px; bottom: calc(80px + env(safe-area-inset-bottom)); max-width: none; }
 }
 
+/* A piece whose check is coming (D.checkNote): said where the moves would be. */
+.check-note { display: flex; gap: 8px; align-items: flex-start; width: 100%; font-size: 14px; color: var(--ink); }
+.check-note svg.i { margin-top: 2px; color: var(--muted); }
+.check-note .hint { margin-top: 2px; }
+.check-note.sm { font-size: 13px; color: var(--muted); }
+.check-note.sm svg.i { width: 13px; height: 13px; }
+
+/* The working sign's still form (D.icon "running"): hidden while the arc spins. */
+svg.i .still { display: none; }
+svg.i .still .core { fill: currentColor; stroke: none; }
+svg.i .still .ring { opacity: .45; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   .spin { animation: none !important; }
+  /* A frozen spinner looks stuck: working work shows a dot in a ring instead. */
+  svg.i.spin > path { display: none; }
+  svg.i.spin > .still { display: inline; }
 }
 
 /* ---------- Live test browser (D.browserView in ui.js) ---------- */

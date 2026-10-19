@@ -320,6 +320,7 @@
   .piece-top { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
   .piece h4 { margin:0; font-size:15px; }
   .piece .pp-done { margin-top:6px; }
+  .piece .check-line { display:flex; align-items:center; gap:8px; margin:8px 0 0; font-size:13.5px; color:var(--accent-ink); }
   .facts { display:flex; flex-wrap:wrap; gap:4px 16px; margin:10px 0 0; font-size:13px; }
   .facts div { display:flex; gap:4px; }
   .facts dt { color:var(--muted); }
@@ -1561,6 +1562,8 @@ function renderPieces(v) {
     return el("article", { class: "piece", "data-review": p.review },
       el("div", { class: "piece-top" }, el("h4", null, p.title), pill(label, tone)),
       p.research ? el("span", { class: "research-tag" }, "Research · no code is changed") : null,
+      // The check coming for it, from the hub (live.rs): working, lined up, or why it waits.
+      p.check ? el("p", { class: "check-line", role: "status" }, p.check.state === "running" ? dots(true) : null, D.checkLine(p.check)) : null,
       el("div", { class: "pp-done" }, el("b", null, p.research ? "Answers: " : "Done when: "), p.done_when),
       el("dl", { class: "facts" },
         el("div", null, el("dt", null, "Agent:"), el("dd", null, THREAD_STATES[p.thread_state] ?? p.thread_state)),

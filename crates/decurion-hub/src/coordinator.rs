@@ -1231,6 +1231,7 @@ impl Store {
                 review_claims: serde_json::from_str(&r.try_get::<String, _>("review_claims")?)
                     .unwrap_or_default(),
                 usage: None,
+                check: None,
             });
         }
         let mut piece_tokens = Vec::with_capacity(pieces.len());
@@ -1238,6 +1239,11 @@ impl Store {
             let t = crate::tokens::piece(&mut tx, p.thread_id).await?;
             p.usage = crate::tokens::piece_line(t);
             piece_tokens.push(t);
+        }
+        // What the screens show while a piece's check is coming (live.rs).
+        let checks = crate::live::checks(&mut tx, None).await?;
+        for p in &mut pieces {
+            p.check = checks.get(&p.thread_id).cloned();
         }
         let usage = crate::tokens::goal(&mut tx, id, &piece_tokens).await?;
         let page_rows = sqlx::query(
