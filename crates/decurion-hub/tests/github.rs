@@ -859,6 +859,94 @@ async fn a_branch_already_there_with_other_changes_is_never_overwritten() {
     assert!(h.fake.lock().expect("fake").seen.is_empty());
 }
 
+/// The owner's folder as a real clone of its bare `origin`, with git's
+/// usual fetch rule (`+refs/heads/*:refs/remotes/origin/*`).
+fn cloned_app(dir: &Path) -> (PathBuf, PathBuf) {
+    let (_, bare) = app_repo(dir, Origin::None);
+    let folder = dir.join("owner");
+    git(
+        dir,
+        &[
+            "clone",
+            "--quiet",
+            &bare.to_string_lossy(),
+            &folder.to_string_lossy(),
+        ],
+    );
+    (folder, bare)
+}
+
+/// Every remote-tracking ref in the owner's folder, with its commit.
+fn tracking(folder: &Path) -> String {
+    git(
+        folder,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/remotes",
+        ],
+    )
+}
+
+/// Sends accepted work from a cloned folder and checks the folder is left
+/// as it was: the same tracking refs, and fetch and fsck still work.
+async fn send_leaves_the_folder_whole(older: bool) {
+    let h = hub(Tok::None).await;
+    let (folder, bare) = cloned_app(&h.dir);
+    let (thread, head) = reviewed_work(&h, &folder).await;
+    let branch = format!("decurion/demo-{thread}-fix-the-login-page");
+    if older {
+        // The branch is already on the server at a commit the folder has,
+        // as it is when a fix moves a pull request's branch forward.
+        git(
+            &folder,
+            &[
+                "push",
+                "--quiet",
+                "origin",
+                &format!("main:refs/heads/{branch}"),
+            ],
+        );
+        let main = git(&folder, &["rev-parse", "main"]);
+        assert_eq!(
+            git(
+                &folder,
+                &["rev-parse", &format!("refs/remotes/origin/{branch}")]
+            ),
+            main
+        );
+    }
+    let before = tracking(&folder);
+
+    accept(&h, thread, "accept-receipt-tracking").await;
+    let t = settled(&h, thread).await;
+    assert_eq!(t["github"]["state"], "sent", "{t}");
+    assert_eq!(branch_at(&bare, &branch).as_deref(), Some(head.as_str()));
+
+    // No tracking ref names the commit the folder never got.
+    assert_eq!(tracking(&folder), before);
+    // The owner's own fetch and a full check still work afterwards.
+    git(&folder, &["fetch", "--quiet", "origin"]);
+    git(&folder, &["fsck", "--connectivity-only"]);
+    assert_eq!(
+        git(
+            &folder,
+            &["rev-parse", &format!("refs/remotes/origin/{branch}")]
+        ),
+        head
+    );
+}
+
+#[tokio::test]
+async fn a_send_never_leaves_a_new_tracking_ref_the_folder_cannot_read() {
+    send_leaves_the_folder_whole(false).await;
+}
+
+#[tokio::test]
+async fn a_send_puts_back_an_older_tracking_ref_the_folder_had() {
+    send_leaves_the_folder_whole(true).await;
+}
+
 #[tokio::test]
 async fn work_never_goes_to_the_default_branch_whatever_the_branch_says() {
     let h = hub(Tok::Fixed).await;
