@@ -11,7 +11,13 @@
 //!   tap, is [`crate::merge`].
 //! - **The owner starts every fix.** New comments only make an inbox card.
 //!   A fix run starts on the owner's tap ([`Store::start_fix`]), with a
-//!   receipt, so a resent tap starts nothing twice.
+//!   receipt, so a resent tap starts nothing twice. The one exception is an
+//!   app whose rules the owner set to fix conflicts with main by itself
+//!   (`AppRules::update_conflicts`): then a look that finds the pushed head
+//!   conflicting starts a Bring up to date run ([`auto_update`]), at most once
+//!   per pushed head and base tip. Only the start is automatic. The result
+//!   waits in review for the owner's Accept like any other work, and is
+//!   never sent by itself.
 //! - **Comments are other people's words.** A fix run gets them as data in
 //!   a marked block ([`fix_prompt`]), with plain rules to weigh them and
 //!   never to follow them as instructions. They never reach a box any
@@ -458,6 +464,9 @@ pub struct Watched {
     pub line: Option<String>,
     /// A fix the owner started is still under way.
     pub fixing: bool,
+    /// The work under way is a Bring up to date Decurion started by itself
+    /// because the pull request conflicts with its base branch.
+    pub auto_fixing: bool,
     /// Still open, and the app's rules let the owner merge it from Decurion
     /// ([`crate::merge`]).
     pub can_merge: bool,
@@ -473,6 +482,13 @@ pub struct Watched {
 /// sent.
 pub(crate) const FIX_UNDER_WAY: &str =
     "EXISTS (SELECT 1 FROM threads f WHERE f.fix_of = w.thread_id
+     AND (f.state NOT IN ('done', 'failed')
+          OR (f.state = 'done' AND f.gh_state IN ('waiting', 'sending'))))";
+
+/// The work under way on a pull request ([`FIX_UNDER_WAY`]) is a Bring up
+/// to date Decurion started by itself ([`auto_update`]).
+pub(crate) const AUTO_UNDER_WAY: &str =
+    "EXISTS (SELECT 1 FROM threads f WHERE f.fix_of = w.thread_id AND f.auto_started = 1
      AND (f.state NOT IN ('done', 'failed')
           OR (f.state = 'done' AND f.gh_state IN ('waiting', 'sending'))))";
 
@@ -672,6 +688,7 @@ impl Store {
         let rows = sqlx::query(&format!(
             "SELECT w.thread_id, w.app_id, a.name AS app, t.title, w.number, w.url, w.state,
                     a.reviewer, w.event, w.event_at, {FIX_UNDER_WAY} AS fixing,
+                    {AUTO_UNDER_WAY} AS auto_fixing,
                     (w.state = 'open' AND a.can_merge) AS can_merge,
                     (w.state = 'open' AND w.clash) AS clash,
                     CASE WHEN w.state = 'open' AND w.health_head = w.head THEN w.health END AS health,
@@ -708,6 +725,7 @@ impl Store {
                     },
                     line: (state == "open" && !authors.is_empty()).then(|| left_words(&authors)),
                     fixing: r.try_get("fixing")?,
+                    auto_fixing: r.try_get("auto_fixing")?,
                     can_merge: r.try_get("can_merge")?,
                     clash: r.try_get("clash")?,
                     health: health_words(
@@ -843,25 +861,53 @@ impl Store {
         Ok(target)
     }
 
+    /// Whether a look should start a Bring up to date by itself on this
+    /// pull request: its app's rule is on, it is open, and GitHub said the
+    /// commit Decurion last pushed conflicts with its base branch (never
+    /// for behind). A pure read, so a pull request that does not qualify
+    /// fetches nothing.
+    async fn wants_auto_update(&self, thread_id: i64) -> Result<bool> {
+        // read-only
+        let wants: Option<bool> = sqlx::query_scalar(
+            "SELECT a.update_conflicts AND w.state = 'open' AND w.health = 'dirty'
+                    AND w.health_head = w.head
+             FROM pr_watches w JOIN apps a ON a.id = w.app_id WHERE w.thread_id = ?",
+        )
+        .bind(thread_id)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(wants.unwrap_or(false))
+    }
+
     /// Creates the Bring up to date run, in one write transaction that
     /// checks the receipt and the pull request again: `merge_from` was
     /// fetched before it opened. The run starts from the last commit
     /// Decurion pushed to the pull request and stays on the PC.
+    ///
+    /// Started by the watcher, it also checks again that the app's rule is
+    /// on and GitHub says that commit conflicts, and that the same pushed
+    /// head and base tip were never tried by itself before; it saves them
+    /// as tried in the same transaction, so each pair is tried once.
     async fn create_update(
         &self,
         thread_id: i64,
         seen: &UpdateTarget,
         merge_from: &str,
-        receipt: Option<&str>,
+        by: Starter<'_>,
     ) -> Result<(i64, bool)> {
+        let receipt = match by {
+            Starter::Owner(r) => r,
+            Starter::Watcher => None,
+        };
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         if let Some(id) = receipt_result(&mut tx, receipt, "pr_update").await? {
             tx.commit().await?;
             return Ok((id, false));
         }
         let row = sqlx::query(&format!(
-            "SELECT w.state, w.head, w.base_ref, {FIX_UNDER_WAY} AS fixing
-             FROM pr_watches w WHERE w.thread_id = ?"
+            "SELECT w.state, w.head, w.base_ref, {FIX_UNDER_WAY} AS fixing,
+                    a.update_conflicts, w.health, w.health_head, w.auto_update_for
+             FROM pr_watches w JOIN apps a ON a.id = w.app_id WHERE w.thread_id = ?"
         ))
         .bind(thread_id)
         .fetch_optional(&mut *tx)
@@ -881,12 +927,38 @@ impl Store {
                     .into(),
             ));
         }
+        let auto = matches!(by, Starter::Watcher);
+        if auto {
+            let tried = format!("{}:{merge_from}", seen.head);
+            let dirty = row.try_get::<bool, _>("update_conflicts")?
+                && row.try_get::<Option<String>, _>("health")?.as_deref() == Some("dirty")
+                && row.try_get::<Option<String>, _>("health_head")?.as_deref()
+                    == Some(seen.head.as_str());
+            if !dirty {
+                return Err(StoreError::Refused(
+                    "The rule is off now, or GitHub no longer says this pull request conflicts."
+                        .into(),
+                ));
+            }
+            if row
+                .try_get::<Option<String>, _>("auto_update_for")?
+                .as_deref()
+                == Some(&tried)
+            {
+                return Err(StoreError::Refused(ALREADY_TRIED.into()));
+            }
+            sqlx::query("UPDATE pr_watches SET auto_update_for = ? WHERE thread_id = ?")
+                .bind(&tried)
+                .bind(thread_id)
+                .execute(&mut *tx)
+                .await?;
+        }
         let base = seen.base_ref.as_deref().unwrap_or("main");
         let short: String = seen.title.chars().take(80).collect();
         let id = sqlx::query_scalar::<_, i64>(
             "INSERT INTO threads (app_id, title, prompt, place, ai, fix_of, base_commit, merge_from,
-                                  merge_ref)
-             VALUES (?, ?, ?, 'pc', ?, ?, ?, ?, ?) RETURNING id",
+                                  merge_ref, auto_started)
+             VALUES (?, ?, ?, 'pc', ?, ?, ?, ?, ?, ?) RETURNING id",
         )
         .bind(seen.app_id)
         .bind(format!("Bring up to date: {short}"))
@@ -896,6 +968,7 @@ impl Store {
         .bind(&seen.head)
         .bind(merge_from)
         .bind(base)
+        .bind(auto)
         .fetch_one(&mut *tx)
         .await?;
         save_receipt(&mut tx, receipt, "pr_update", id).await?;
@@ -903,6 +976,17 @@ impl Store {
         Ok((id, true))
     }
 }
+
+/// Who starts a Bring up to date run: the owner's tap, with its receipt,
+/// or the watcher under the app's rule to fix conflicts by itself.
+#[derive(Debug, Clone, Copy)]
+enum Starter<'a> {
+    Owner(Option<&'a str>),
+    Watcher,
+}
+
+/// Why the watcher did not start a run it started before.
+const ALREADY_TRIED: &str = "Decurion already tried this conflict on these same commits by itself.";
 
 /// A watched pull request, as Bring up to date sees it.
 #[derive(Debug, Clone)]
@@ -982,6 +1066,20 @@ pub async fn start_update(
     if let Some(id) = store.update_receipt(receipt).await? {
         return Ok((store.thread(id).await?, false));
     }
+    let (id, fresh) = begin_update(store, files, thread_id, Starter::Owner(receipt)).await?;
+    Ok((store.thread(id).await?, fresh))
+}
+
+/// What the owner's tap and the watcher share: the pull request is checked
+/// (open, nothing under way, its base branch known), the newest commit of
+/// that branch is fetched and pinned outside any write transaction, a pull
+/// request that already holds it is refused, and the run is created.
+async fn begin_update(
+    store: &Store,
+    files: Option<&crate::checkpoints::Files>,
+    thread_id: i64,
+    by: Starter<'_>,
+) -> Result<(i64, bool)> {
     let target = store.update_target(thread_id).await?;
     let files = files.ok_or_else(|| {
         StoreError::Refused(
@@ -1007,10 +1105,49 @@ pub async fn start_update(
             "Already up to date with {base}. Nothing was started."
         )));
     }
-    let (id, fresh) = store
-        .create_update(thread_id, &target, &merge_from, receipt)
-        .await?;
-    Ok((store.thread(id).await?, fresh))
+    store
+        .create_update(thread_id, &target, &merge_from, by)
+        .await
+}
+
+/// After a look: when the app's rule is on and GitHub says the commit
+/// Decurion last pushed conflicts with its base branch, starts a Bring up
+/// to date run by itself, through the same checks as the owner's tap, minus
+/// the receipt. Each pushed head and base tip is tried once
+/// (`auto_update_for`). A refusal says nothing to the owner, only a log
+/// line. Starting is all it does: the run's result waits in review for the
+/// owner's Accept, and nothing here sends, pushes or merges.
+pub(crate) async fn auto_update(
+    store: &Store,
+    files: Option<&crate::checkpoints::Files>,
+    thread_id: i64,
+) {
+    match store.wants_auto_update(thread_id).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            tracing::error!(error = %e, thread = thread_id, "could not read whether to fix conflicts by itself");
+            return;
+        }
+    }
+    match begin_update(store, files, thread_id, Starter::Watcher).await {
+        Ok((id, _)) => tracing::info!(
+            thread = thread_id,
+            update = id,
+            "Decurion started fixing the conflicts with main by itself"
+        ),
+        Err(StoreError::Refused(why)) if why == ALREADY_TRIED => {
+            tracing::debug!(
+                thread = thread_id,
+                "this conflict was already tried by itself"
+            )
+        }
+        Err(e) => tracing::info!(
+            thread = thread_id,
+            reason = %e,
+            "did not start fixing the conflicts with main by itself"
+        ),
+    }
 }
 
 // ---------- Looking ----------
@@ -1144,6 +1281,9 @@ pub async fn poll(state: &AppState) -> usize {
         };
         if let (Some(p), Some(n)) = (&s.push, notice) {
             p.send(&s.store, &n).await;
+        }
+        if l.state == PrState::Open && l.health.health == Some("dirty") {
+            auto_update(&s.store, Some(&s.files), w.thread_id).await;
         }
     }
     looked
