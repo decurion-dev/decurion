@@ -23,7 +23,7 @@ Below the two buttons, each rule has its own switch. If you mix them, the app sh
   2. In **Live site**, type the address of the live app, such as `https://app.example.com`. This is optional. **Open site** goes there when a deploy finishes.
   3. Tap **Save and turn on** (or **Save** when Deploy is already on).
 - **Checked work goes to GitHub by itself.** On for new apps. A piece of a goal you approved goes up as a pull request once the checker passes it. Turn it off to have each piece wait for your **Accept** instead.
-- **Fix conflicts with main by itself.** Off for new apps. When one of its pull requests conflicts with main, Decurion starts **Bring up to date** by itself, and the result still waits for your **Accept**. See [Fix conflicts with main by itself](review-and-merge.md#fix-conflicts-with-main-by-itself).
+- **Fix conflicts with main by itself.** Off for new apps. When one of its pull requests conflicts with main, Decurion starts **Bring up to date** by itself, once for each version of the pull request it sends, and the result still waits for your **Accept**. See [Fix conflicts with main by itself](review-and-merge.md#fix-conflicts-with-main-by-itself).
 - **Its live version holds patient data.** On for new apps. Agents are told to use made-up data only, never real records. Decurion never sees patient data either way.
 
 ## Choose who reviews
