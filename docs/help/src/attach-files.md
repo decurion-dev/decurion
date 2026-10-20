@@ -13,7 +13,8 @@ does not handle health or personal data.
 
 ## Add files to an app
 
-1. Open **Settings**, then **Apps**, then the app.
+1. Open **Apps**, then the app. (Or open **Settings**, then **Apps**, then
+   the app: it has the same files.)
 2. Open its **Files** tab.
 3. Click **Add files** and choose one or more files. On a PC you can also drag
    files onto that box.
@@ -31,7 +32,7 @@ Each file shows **Adding** and its name while it goes up. Then it shows in the l
 On a wide screen there are no tabs: the files show under **Pieces of work**.
 
 The **Files** tab also shows the app's own files, under **For the whole app**.
-You add and remove those on the app's **Files** tab in **Settings**.
+You add and remove those on the app's **Files** tab under **Apps**.
 
 ## What agents can read
 

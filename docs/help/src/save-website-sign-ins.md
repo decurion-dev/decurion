@@ -12,7 +12,7 @@ Why: most of what keeps a browser signed in is locked away from the agent, but s
 
 ## Add a website sign-in
 
-1. Open the board and click **Settings**.
+1. Open Decurion on your PC and click **Settings** in the menu.
 2. Open the **Website sign-ins** tab and find the app the sign-in is for.
 3. In **Name**, type your own name for it, such as `Staging admin`.
 4. In **Sign-in page**, paste the address of the website's sign-in page. It must start with `https://`. Sites running on your own PC (`localhost`) can't be signed in to this way yet. Don't put a name or password in the address.
@@ -28,10 +28,10 @@ The list now shows **Signed in**, until when, and which websites the sign-in cov
 
 Sign-ins run out, like they do in your own browser. Decurion tells you:
 
-- A day before a sign-in runs out, the inbox shows **Sign in to … again**.
-- When it has run out, or an agent's browser finds the website signed out, the inbox shows the same card and your phone gets a notification.
+- A day before a sign-in runs out, **Needs you** on Home, on your PC and your phone, shows **Sign in to … again**, and **Settings**, **Sign-ins** shows it amber.
+- When it has run out, or an agent's browser finds the website signed out, your phone shows the same card and gets a notification.
 
-Tap the card, or **Sign in again** on the board, and sign in once more. Agents get the new sign-in from their next run.
+Tap the card, or **Sign in again** in **Settings**, **Sign-ins** on your PC, and sign in once more. Agents get the new sign-in from their next run.
 
 ## Good to know
 

@@ -11,7 +11,16 @@
 //!   tap, is [`crate::merge`].
 //! - **The owner starts every fix.** New comments only make an inbox card.
 //!   A fix run starts on the owner's tap ([`Store::start_fix`]), with a
-//!   receipt, so a resent tap starts nothing twice.
+//!   receipt, so a resent tap starts nothing twice. The one exception is an
+//!   app whose rules the owner set to fix conflicts with main by itself
+//!   (`AppRules::update_conflicts`): then a look that finds the pushed head
+//!   conflicting starts a Bring up to date run ([`auto_update`]), at most once
+//!   per pushed head, whatever main does: a run that failed or was rejected
+//!   waits for the owner until Decurion pushes a new head, so a conflict an
+//!   agent cannot solve never spends again by itself. Only the start is
+//!   automatic. The result
+//!   waits in review for the owner's Accept like any other work, and is
+//!   never sent by itself.
 //! - **Comments are other people's words.** A fix run gets them as data in
 //!   a marked block ([`fix_prompt`]), with plain rules to weigh them and
 //!   never to follow them as instructions. They never reach a box any
@@ -204,6 +213,7 @@ struct Look {
     /// GitHub says it clashes with newer changes on its base branch; `None`
     /// while GitHub is still working that out.
     clash: Option<bool>,
+    health: Health,
 }
 
 /// Whether GitHub says an open pull request clashes with its base branch:
@@ -217,7 +227,56 @@ pub(crate) fn clashes(pr: &serde_json::Value) -> Option<bool> {
     }
 }
 
-async fn get_json(
+/// How a pull request stands against its base branch, as GitHub said in
+/// the pull request itself. Only `mergeable` and `mergeable_state` are
+/// read: never check runs, so no extra token permission is needed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Health {
+    /// `dirty` (conflicts), `behind`, `checking` (GitHub is still working
+    /// it out), or `None` when there is nothing to say.
+    pub health: Option<&'static str>,
+    /// The head commit GitHub said this about.
+    pub head: Option<String>,
+    /// The branch the pull request merges into (`base.ref`).
+    pub base_ref: Option<String>,
+}
+
+/// Reads [`Health`] from a pull request as GitHub's API returns it.
+pub fn health_of(pr: &serde_json::Value) -> Health {
+    let health = if pr["mergeable"].is_null() {
+        Some("checking")
+    } else {
+        match pr["mergeable_state"].as_str() {
+            Some("dirty") => Some("dirty"),
+            Some("behind") => Some("behind"),
+            _ => None,
+        }
+    };
+    Health {
+        health,
+        head: pr["head"]["sha"]
+            .as_str()
+            .filter(|s| crate::checkpoints::is_commit(s))
+            .map(str::to_owned),
+        base_ref: pr["base"]["ref"]
+            .as_str()
+            .filter(|b| crate::protected::plain_branch(b) && b.len() <= 200)
+            .map(str::to_owned),
+    }
+}
+
+/// The plain line the board and inbox show for a pull request's health,
+/// or `None` for nothing to say (or GitHub still checking).
+pub fn health_words(health: Option<&str>, base_ref: Option<&str>) -> Option<String> {
+    let base = base_ref.unwrap_or("main");
+    match health? {
+        "dirty" => Some(format!("Conflicts with {base}")),
+        "behind" => Some(format!("Behind {base}")),
+        _ => None,
+    }
+}
+
+pub(crate) async fn get_json(
     s: &Sender,
     t: &Token,
     path: &str,
@@ -254,6 +313,11 @@ async fn look(s: &Sender, t: &Token, r: &Repo, n: i64) -> std::result::Result<Lo
         .filter(|c| (40..=64).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_hexdigit()))
         .filter(|_| state == PrState::Merged)
         .map(str::to_owned);
+    let health = if state == PrState::Open {
+        health_of(&pr)
+    } else {
+        Health::default()
+    };
     let mut comments = Vec::new();
     // Comments only matter while there is still something to fix.
     if state == PrState::Open {
@@ -288,6 +352,7 @@ async fn look(s: &Sender, t: &Token, r: &Repo, n: i64) -> std::result::Result<Lo
         merge_commit,
         author,
         comments,
+        health,
     })
 }
 
@@ -325,10 +390,11 @@ pub(crate) async fn sent(
     let (Some((repo, number)), Some(url), Some(head)) = (watch, url, head) else {
         return Ok(());
     };
-    let fix_of: Option<i64> = sqlx::query_scalar("SELECT fix_of FROM threads WHERE id = ?")
-        .bind(id)
-        .fetch_one(&mut **tx)
-        .await?;
+    let (fix_of, merge_from): (Option<i64>, Option<String>) =
+        sqlx::query_as("SELECT fix_of, merge_from FROM threads WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await?;
     match fix_of {
         Some(w) => {
             let fixed: i64 =
@@ -336,12 +402,15 @@ pub(crate) async fn sent(
                     .bind(id)
                     .fetch_one(&mut **tx)
                     .await?;
-            let event = match fixed {
-                1 => "Fix sent for 1 comment".to_owned(),
-                n => format!("Fix sent for {n} comments"),
+            let event = match (merge_from.is_some(), fixed) {
+                (true, _) => "Brought up to date".to_owned(),
+                (false, 1) => "Fix sent for 1 comment".to_owned(),
+                (false, n) => format!("Fix sent for {n} comments"),
             };
+            // A new head: what GitHub said about the old one no longer
+            // holds, until the next look.
             sqlx::query(
-                "UPDATE pr_watches SET head = ?, event = ?,
+                "UPDATE pr_watches SET head = ?, event = ?, health = NULL, health_head = NULL,
                      event_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                  WHERE thread_id = ?",
             )
@@ -404,13 +473,50 @@ pub struct Watched {
     /// Still open, and GitHub says it clashes with newer changes on its base
     /// branch, so it can't be merged as it is.
     pub clash: bool,
+    /// "Conflicts with main" or "Behind main", while GitHub says so about
+    /// the commit Decurion last pushed. Nothing otherwise.
+    pub health: Option<String>,
 }
 
 /// A fix is under way while its work is unfinished, or accepted but not yet
 /// sent.
-const FIX_UNDER_WAY: &str = "EXISTS (SELECT 1 FROM threads f WHERE f.fix_of = w.thread_id
+pub(crate) const FIX_UNDER_WAY: &str =
+    "EXISTS (SELECT 1 FROM threads f WHERE f.fix_of = w.thread_id
      AND (f.state NOT IN ('done', 'failed')
           OR (f.state = 'done' AND f.gh_state IN ('waiting', 'sending'))))";
+
+/// The state of the Bring up to date Decurion started by itself
+/// ([`auto_update`]) on the commit it last pushed to this pull request, if
+/// any: what [`auto_words`] says about it.
+pub(crate) const AUTO_STATE: &str = "(SELECT f.state FROM threads f
+     WHERE f.fix_of = w.thread_id AND f.auto_started = 1 AND f.base_commit = w.head
+     ORDER BY f.id DESC LIMIT 1)";
+
+/// What the board's line for a pull request says about the Bring up to
+/// date Decurion started by itself, in that run's `state`: that it is
+/// fixing the conflicts while it is queued or running, that it waits for
+/// the owner's review while in review, and nothing once accepted, failed
+/// or waiting on the owner for another reason (the usual words say it).
+pub fn auto_words(state: Option<&str>, base_ref: Option<&str>) -> Option<String> {
+    let base = base_ref.unwrap_or("main");
+    match state? {
+        "queued" | "running" => Some(format!(
+            "Decurion is fixing the conflicts with {base} by itself"
+        )),
+        "in_review" => Some(format!(
+            "Decurion started a fix for the conflicts with {base}. It waits for your review."
+        )),
+        _ => None,
+    }
+}
+
+/// A Bring up to date was already tried on the commit Decurion last pushed
+/// to this pull request: an update run (`merge_from` set) that started from
+/// that head, started by the watcher or the owner's tap, in any state. The
+/// watcher starts one by itself only when there is none, so each pushed
+/// head gets one automatic try, and a new main alone never gets another.
+const TRIED_ON_HEAD: &str = "EXISTS (SELECT 1 FROM threads u WHERE u.fix_of = w.thread_id
+     AND u.base_commit = w.head AND u.merge_from IS NOT NULL)";
 
 /// Work sent as its own `decurion/` branch with only a link to open its
 /// pull request, not watched yet.
@@ -579,7 +685,8 @@ impl Store {
                  checked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                  event = COALESCE(?, event),
                  event_at = CASE WHEN ? IS NULL THEN event_at
-                                 ELSE strftime('%Y-%m-%dT%H:%M:%fZ', 'now') END
+                                 ELSE strftime('%Y-%m-%dT%H:%M:%fZ', 'now') END,
+                 health = ?, health_head = ?, base_ref = COALESCE(?, base_ref)
              WHERE thread_id = ?",
         )
         .bind(l.state.as_str())
@@ -588,6 +695,9 @@ impl Store {
         .bind(l.clash)
         .bind(&event)
         .bind(&event)
+        .bind(l.health.health)
+        .bind(&l.health.head)
+        .bind(&l.health.base_ref)
         .bind(thread_id)
         .execute(&mut *tx)
         .await?;
@@ -606,6 +716,8 @@ impl Store {
                     a.reviewer, w.event, w.event_at, {FIX_UNDER_WAY} AS fixing,
                     (w.state = 'open' AND a.can_merge) AS can_merge,
                     (w.state = 'open' AND w.clash) AS clash,
+                    CASE WHEN w.state = 'open' AND w.health_head = w.head THEN w.health END AS health,
+                    w.base_ref,
                     (SELECT json_group_array(c.author) FROM pr_comments c
                       WHERE c.thread_id = w.thread_id AND {OPEN_COMMENT}) AS authors
              FROM pr_watches w JOIN threads t ON t.id = w.thread_id JOIN apps a ON a.id = w.app_id
@@ -640,6 +752,10 @@ impl Store {
                     fixing: r.try_get("fixing")?,
                     can_merge: r.try_get("can_merge")?,
                     clash: r.try_get("clash")?,
+                    health: health_words(
+                        r.try_get::<Option<String>, _>("health")?.as_deref(),
+                        r.try_get::<Option<String>, _>("base_ref")?.as_deref(),
+                    ),
                     state,
                 })
             })
@@ -729,6 +845,412 @@ impl Store {
         save_receipt(&mut tx, receipt, "pr_fix", fix).await?;
         tx.commit().await?;
         Ok((self.thread(fix).await?, true))
+    }
+
+    /// The thread a receipt already started a Bring up to date for, if any.
+    /// Read before anything is fetched, so a resent tap answers at once.
+    async fn update_receipt(&self, receipt: Option<&str>) -> Result<Option<i64>> {
+        let mut tx = self.pool().begin().await?; // read-only
+        let done = receipt_result(&mut tx, receipt, "pr_update").await?;
+        tx.commit().await?;
+        Ok(done)
+    }
+
+    /// What Bring up to date needs to know about a watched pull request.
+    /// A pure read; [`UpdateTarget::check`] says whether it may start.
+    async fn update_target(&self, thread_id: i64) -> Result<UpdateTarget> {
+        // read-only
+        let row = sqlx::query(&format!(
+            "SELECT w.state, w.head, w.url, w.base_ref, w.app_id, a.repo_path, t.title, t.ai,
+                    {FIX_UNDER_WAY} AS fixing
+             FROM pr_watches w JOIN threads t ON t.id = w.thread_id JOIN apps a ON a.id = w.app_id
+             WHERE w.thread_id = ?"
+        ))
+        .bind(thread_id)
+        .fetch_optional(self.pool())
+        .await?
+        .ok_or(StoreError::NotFound)?;
+        Ok(UpdateTarget {
+            open: row.try_get::<String, _>("state")? == "open",
+            head: row.try_get("head")?,
+            url: row.try_get("url")?,
+            base_ref: row.try_get("base_ref")?,
+            app_id: row.try_get("app_id")?,
+            repo_path: row.try_get("repo_path")?,
+            title: row.try_get("title")?,
+            ai: row.try_get("ai")?,
+            fixing: row.try_get("fixing")?,
+        })
+    }
+
+    /// What a look needs to decide whether to start a Bring up to date by
+    /// itself on this pull request ([`CONFLICTS_ON_HEAD`], [`TRIED_ON_HEAD`]).
+    /// A pure read, so a pull request that does not qualify, or was already
+    /// tried, fetches nothing and takes no git lock.
+    async fn auto_look(&self, thread_id: i64) -> Result<Option<AutoLook>> {
+        // read-only
+        let row: Option<(bool, bool, String)> = sqlx::query_as(&format!(
+            "SELECT {CONFLICTS_ON_HEAD}, {TRIED_ON_HEAD}, w.head
+             FROM pr_watches w JOIN apps a ON a.id = w.app_id WHERE w.thread_id = ?"
+        ))
+        .bind(thread_id)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(row.map(|(conflicts, tried, head)| AutoLook {
+            conflicts,
+            tried,
+            head,
+        }))
+    }
+
+    /// Creates the Bring up to date run, in one write transaction that
+    /// checks the receipt and the pull request again: `merge_from` was
+    /// fetched before it opened. The run starts from the last commit
+    /// Decurion pushed to the pull request and stays on the PC.
+    ///
+    /// Started by the watcher, it also checks again that the pushed head
+    /// still conflicts under the app's rule ([`CONFLICTS_ON_HEAD`]) and no
+    /// update was tried on it yet ([`TRIED_ON_HEAD`]). The run it creates is
+    /// that try, in the same transaction, so each pushed head is tried once.
+    async fn create_update(
+        &self,
+        thread_id: i64,
+        seen: &UpdateTarget,
+        merge_from: &str,
+        by: Starter<'_>,
+    ) -> std::result::Result<(i64, bool), NotStarted> {
+        let receipt = match by {
+            Starter::Owner(r) => r,
+            Starter::Watcher => None,
+        };
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(id) = receipt_result(&mut tx, receipt, "pr_update").await? {
+            tx.commit().await?;
+            return Ok((id, false));
+        }
+        let row = sqlx::query(&format!(
+            "SELECT w.state, w.head, w.base_ref, {FIX_UNDER_WAY} AS fixing,
+                    {CONFLICTS_ON_HEAD} AS conflicts, {TRIED_ON_HEAD} AS tried
+             FROM pr_watches w JOIN apps a ON a.id = w.app_id WHERE w.thread_id = ?"
+        ))
+        .bind(thread_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(StoreError::NotFound)?;
+        let now = UpdateTarget {
+            open: row.try_get::<String, _>("state")? == "open",
+            fixing: row.try_get("fixing")?,
+            head: row.try_get("head")?,
+            base_ref: row.try_get("base_ref")?,
+            ..seen.clone()
+        };
+        now.check()?;
+        if now.head != seen.head || now.base_ref != seen.base_ref {
+            return Err(NotStarted::Refused(
+                "This pull request changed while Decurion was getting ready. Tap Bring up to date again."
+                    .into(),
+            ));
+        }
+        let auto = matches!(by, Starter::Watcher);
+        if auto {
+            if !row.try_get::<bool, _>("conflicts")? {
+                return Err(NotStarted::NotConflicting);
+            }
+            if row.try_get::<bool, _>("tried")? {
+                return Err(NotStarted::Tried);
+            }
+        }
+        let base = seen.base_ref.as_deref().unwrap_or("main");
+        let short: String = seen.title.chars().take(80).collect();
+        let id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO threads (app_id, title, prompt, place, ai, fix_of, base_commit, merge_from,
+                                  merge_ref, auto_started)
+             VALUES (?, ?, ?, 'pc', ?, ?, ?, ?, ?, ?) RETURNING id",
+        )
+        .bind(seen.app_id)
+        .bind(format!("Bring up to date: {short}"))
+        .bind(update_prompt(&seen.title, &seen.url, base))
+        .bind(&seen.ai)
+        .bind(thread_id)
+        .bind(&seen.head)
+        .bind(merge_from)
+        .bind(base)
+        .bind(auto)
+        .fetch_one(&mut *tx)
+        .await?;
+        save_receipt(&mut tx, receipt, "pr_update", id).await?;
+        tx.commit().await?;
+        Ok((id, true))
+    }
+}
+
+/// Who starts a Bring up to date run: the owner's tap, with its receipt,
+/// or the watcher under the app's rule to fix conflicts by itself.
+#[derive(Debug, Clone, Copy)]
+enum Starter<'a> {
+    Owner(Option<&'a str>),
+    Watcher,
+}
+
+/// Why a Bring up to date did not start.
+#[derive(Debug)]
+enum NotStarted {
+    /// One of the plain refusals both starts share, in the words the
+    /// owner's tap shows: merged or closed, work under way, not read from
+    /// GitHub yet, or already up to date.
+    Refused(String),
+    /// Watcher only: the app's rule is off, or GitHub no longer says the
+    /// pushed head conflicts.
+    NotConflicting,
+    /// Watcher only: an update was already tried on this pushed head.
+    Tried,
+    /// Something went wrong: the base branch could not be fetched, or the
+    /// database.
+    Failed(StoreError),
+}
+
+impl From<StoreError> for NotStarted {
+    fn from(e: StoreError) -> Self {
+        Self::Failed(e)
+    }
+}
+
+impl From<sqlx::Error> for NotStarted {
+    fn from(e: sqlx::Error) -> Self {
+        Self::Failed(e.into())
+    }
+}
+
+impl From<NotStarted> for StoreError {
+    fn from(n: NotStarted) -> Self {
+        match n {
+            NotStarted::Refused(words) => StoreError::Refused(words),
+            NotStarted::NotConflicting | NotStarted::Tried => StoreError::Refused(
+                "Decurion did not bring this pull request up to date by itself.".into(),
+            ),
+            NotStarted::Failed(e) => e,
+        }
+    }
+}
+
+/// The app's rule is on, the pull request is open, and GitHub said the
+/// commit Decurion last pushed conflicts with its base branch (never for
+/// behind). The one place this is decided: read before anything is
+/// fetched, and again in the transaction that creates the run. A column
+/// GitHub has said nothing about yet (NULL) counts as no.
+const CONFLICTS_ON_HEAD: &str =
+    "COALESCE(a.update_conflicts AND w.state = 'open' AND w.health = 'dirty'
+              AND w.health_head = w.head, 0)";
+
+/// What [`Store::auto_look`] read.
+#[derive(Debug)]
+struct AutoLook {
+    conflicts: bool,
+    tried: bool,
+    /// The commit Decurion last pushed there.
+    head: String,
+}
+
+/// A watched pull request, as Bring up to date sees it.
+#[derive(Debug, Clone)]
+struct UpdateTarget {
+    open: bool,
+    fixing: bool,
+    /// The last commit Decurion pushed there.
+    head: String,
+    url: String,
+    base_ref: Option<String>,
+    app_id: i64,
+    repo_path: String,
+    title: String,
+    ai: String,
+}
+
+impl UpdateTarget {
+    fn check(&self) -> std::result::Result<(), NotStarted> {
+        if !self.open {
+            return Err(NotStarted::Refused(
+                "This pull request was merged or closed, so there is nothing to bring up to date."
+                    .into(),
+            ));
+        }
+        if self.fixing {
+            return Err(NotStarted::Refused(
+                "Work on this pull request is already under way. Wait for it to finish, then try again."
+                    .into(),
+            ));
+        }
+        if self.base_ref.is_none() {
+            return Err(NotStarted::Refused(
+                "Decurion has not read this pull request from GitHub yet. Try again in a few minutes."
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The brief for a Bring up to date run. The newest commit of the base
+/// branch is in the run's copy as the local branch `decurion-main`; the
+/// run merges it in (never a rebase, so the branch only moves forward and
+/// the hub can send it as a plain fast-forward), fixes conflicts and the
+/// app's own failing checks, and commits. It never pushes.
+pub fn update_prompt(title: &str, url: &str, base: &str) -> String {
+    format!(
+        "Bring the pull request for \"{title}\" ({url}) up to date with {base}. The newest {base} \
+is in this copy as the local branch decurion-main.\n\n\
+1. Merge it into this branch with `git merge --no-ff --no-edit decurion-main`. Never rebase, never \
+reset, and never rewrite or remove earlier commits on this branch.\n\
+2. If the merge stops on conflicts, resolve each one: keep what {base} does now, and add this \
+branch's change on top of it. Then commit the merge.\n\
+3. If the app numbers its database migrations and {base} added new ones, renumber this branch's \
+new ones so they come after {base}'s highest, and update any list of migrations.\n\
+4. Run all of the app's own checks (build, lint, tests) and fix what fails. {db}\n\
+5. Commit the merge and your fixes on this branch. Do not push.\n\n\
+In your summary, say which files had conflicts and how you resolved them, and what else you fixed.\n",
+        db = decurion_proto::local_database!().trim_end(),
+    )
+}
+
+/// The owner's Bring up to date on a watched pull request (`thread_id` is
+/// the work that opened it). In order: a resent receipt answers with the
+/// first run at once; the pull request is checked; the newest commit of its
+/// base branch is fetched from the app's git server and pinned, outside any
+/// write transaction; then the run is created in one, which checks the
+/// receipt and the pull request again. Refused, with nothing created, when
+/// that branch cannot be had or the pull request already has it.
+pub async fn start_update(
+    store: &Store,
+    files: Option<&crate::checkpoints::Files>,
+    thread_id: i64,
+    receipt: Option<&str>,
+) -> Result<(Thread, bool)> {
+    check_receipt(receipt)?;
+    if let Some(id) = store.update_receipt(receipt).await? {
+        return Ok((store.thread(id).await?, false));
+    }
+    let files = files.ok_or_else(|| {
+        StoreError::Refused(
+            "This hub keeps no saved work, so it cannot bring pull requests up to date.".into(),
+        )
+    })?;
+    let (id, fresh) = begin_update(store, files, thread_id, Starter::Owner(receipt)).await?;
+    Ok((store.thread(id).await?, fresh))
+}
+
+/// What the owner's tap and the watcher share: the pull request is checked
+/// (open, nothing under way, its base branch known), the newest commit of
+/// that branch is fetched and pinned outside any write transaction, a pull
+/// request that already holds it is refused, and the run is created.
+async fn begin_update(
+    store: &Store,
+    files: &crate::checkpoints::Files,
+    thread_id: i64,
+    by: Starter<'_>,
+) -> std::result::Result<(i64, bool), NotStarted> {
+    let target = store.update_target(thread_id).await?;
+    target.check()?;
+    let base = target.base_ref.clone().unwrap_or_else(|| "main".into());
+    let merge_from =
+        crate::upstream::branch_tip(files, target.app_id, &target.repo_path, &base).await?;
+    let has_it = {
+        let _held = files.git_lock.lock().await;
+        crate::checkpoints::git(
+            &files.app_cache(target.app_id),
+            &["merge-base", "--is-ancestor", &merge_from, &target.head],
+        )
+        .await
+        .is_ok()
+    };
+    // Already holding that commit, a run could only fail its merge check,
+    // whatever GitHub last said.
+    if has_it {
+        return Err(NotStarted::Refused(format!(
+            "Already up to date with {base}. Nothing was started."
+        )));
+    }
+    store
+        .create_update(thread_id, &target, &merge_from, by)
+        .await
+}
+
+/// What the watcher last logged about each pull request it did not fix by
+/// itself, so one reason on one pushed head is logged once, not on every
+/// look.
+#[derive(Debug, Default)]
+struct Said(std::sync::Mutex<std::collections::HashMap<i64, String>>);
+
+impl Said {
+    /// True the first time `why` is given for pull request `thread` at
+    /// `head`; false while the same reason on the same head repeats.
+    fn first(&self, thread: i64, head: &str, why: &str) -> bool {
+        let key = format!("{head}:{why}");
+        let mut seen = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if seen.get(&thread) == Some(&key) {
+            return false;
+        }
+        seen.insert(thread, key);
+        true
+    }
+}
+
+static SAID: std::sync::OnceLock<Said> = std::sync::OnceLock::new();
+
+fn said() -> &'static Said {
+    SAID.get_or_init(Said::default)
+}
+
+/// After a look: when the app's rule is on and GitHub says the commit
+/// Decurion last pushed conflicts with its base branch, starts a Bring up
+/// to date run by itself, through the same checks as the owner's tap, minus
+/// the receipt. Each pushed head is tried once ([`TRIED_ON_HEAD`]), checked
+/// before anything is fetched. A refusal says nothing to the owner, only a
+/// log line, once per reason and pushed head. Starting is all it does: the
+/// run's result waits in review for the owner's Accept, and nothing here
+/// sends, pushes or merges.
+pub(crate) async fn auto_update(store: &Store, files: &crate::checkpoints::Files, thread_id: i64) {
+    let look = match store.auto_look(thread_id).await {
+        Ok(Some(l)) if l.conflicts => l,
+        Ok(_) => return,
+        Err(e) => {
+            tracing::error!(error = %e, thread = thread_id, "could not read whether to fix conflicts by itself");
+            return;
+        }
+    };
+    let quiet = |why: &str| {
+        if said().first(thread_id, &look.head, why) {
+            tracing::debug!(
+                thread = thread_id,
+                reason = why,
+                "did not start fixing the conflicts by itself"
+            );
+        }
+    };
+    if look.tried {
+        quiet("an update was already tried on this version");
+        return;
+    }
+    match begin_update(store, files, thread_id, Starter::Watcher).await {
+        Ok((id, _)) => tracing::info!(
+            thread = thread_id,
+            update = id,
+            "Decurion started fixing the conflicts by itself"
+        ),
+        Err(NotStarted::Refused(words)) => quiet(&words),
+        Err(NotStarted::NotConflicting) => quiet("it no longer conflicts, or the rule is off"),
+        Err(NotStarted::Tried) => quiet("an update was already tried on this version"),
+        Err(NotStarted::Failed(e)) => {
+            if said().first(thread_id, &look.head, "failed") {
+                tracing::warn!(
+                    thread = thread_id,
+                    error = %e,
+                    "could not start fixing the conflicts by itself"
+                );
+            }
+        }
     }
 }
 
@@ -864,6 +1386,9 @@ pub async fn poll(state: &AppState) -> usize {
         if let (Some(p), Some(n)) = (&s.push, notice) {
             p.send(&s.store, &n).await;
         }
+        if l.state == PrState::Open {
+            auto_update(&s.store, &s.files, w.thread_id).await;
+        }
     }
     looked
 }
@@ -934,9 +1459,93 @@ pub(crate) async fn fix(
     }
 }
 
+/// The owner's "Bring up to date".
+pub(crate) async fn update(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    UrlPath(id): UrlPath<i64>,
+    Json(b): Json<Fix>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("bringing pull requests up to date");
+    }
+    match start_update(&st.store, st.files.as_deref(), id, b.receipt.as_deref()).await {
+        Ok((t, fresh)) => {
+            if fresh {
+                tracing::info!(
+                    thread = id,
+                    update = t.id,
+                    "the owner started bringing a pull request up to date"
+                );
+            }
+            Json(t).into_response()
+        }
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GitHub said it conflicts but not about which commit (no head in its
+    /// answer): the read says no, rather than failing on the empty answer.
+    #[tokio::test]
+    async fn a_conflict_github_tied_to_no_commit_is_not_fixed_by_itself() {
+        let store = Store::open("sqlite::memory:").await.expect("store");
+        for q in [
+            "INSERT INTO apps (name, repo_path, profile, update_conflicts) VALUES ('demo', 'demo', 'A', 1)",
+            "INSERT INTO threads (app_id, title, prompt) VALUES (1, 'Fix the login page', 'p')",
+            "INSERT INTO pr_watches (thread_id, app_id, owner, repo, number, url, branch, head, health)
+             VALUES (1, 1, 'acme', 'demo', 1, 'https://github.com/acme/demo/pull/1',
+                     'decurion/demo-1', '0123456789abcdef0123456789abcdef01234567', 'dirty')",
+        ] {
+            sqlx::query(q).execute(store.pool()).await.expect("seed");
+        }
+        let look = |s: &Store| {
+            let s = s.clone();
+            async move { s.auto_look(1).await.expect("read").expect("watched") }
+        };
+        assert!(!look(&store).await.conflicts);
+        sqlx::query("UPDATE pr_watches SET health_head = head")
+            .execute(store.pool())
+            .await
+            .expect("said");
+        let l = look(&store).await;
+        assert!(l.conflicts && !l.tried, "{l:?}");
+    }
+
+    #[test]
+    fn the_board_says_decurion_is_fixing_only_while_its_run_works() {
+        assert_eq!(
+            auto_words(Some("running"), Some("trunk")).as_deref(),
+            Some("Decurion is fixing the conflicts with trunk by itself")
+        );
+        assert_eq!(
+            auto_words(Some("queued"), None).as_deref(),
+            Some("Decurion is fixing the conflicts with main by itself")
+        );
+        let review = auto_words(Some("in_review"), Some("trunk")).expect("review");
+        assert!(review.contains("Decurion started a fix"), "{review}");
+        assert!(review.contains("trunk"), "{review}");
+        for s in ["done", "failed", "needs_you"] {
+            assert_eq!(auto_words(Some(s), None), None, "{s}");
+        }
+        assert_eq!(auto_words(None, None), None);
+    }
+
+    #[test]
+    fn a_refusal_is_logged_once_per_pull_request_head_and_reason() {
+        let said = Said::default();
+        let (a, b) = ("a".repeat(40), "b".repeat(40));
+        assert!(said.first(1, &a, "under way"));
+        assert!(!said.first(1, &a, "under way"));
+        assert!(!said.first(1, &a, "under way"));
+        assert!(said.first(2, &a, "under way"), "another pull request");
+        assert!(said.first(1, &a, "failed"), "another reason");
+        assert!(said.first(1, &b, "failed"), "a new pushed head");
+        assert!(!said.first(1, &b, "failed"));
+    }
 
     #[test]
     fn comments_go_to_a_fix_as_data_that_cannot_close_its_block() {
@@ -958,6 +1567,48 @@ mod tests {
         assert!(p.contains("\\u003c/review-comments\\u003e"));
         assert!(p.contains("\"author\": \"param\""));
         assert!(!p.contains('\u{2014}'), "no long dashes");
+    }
+
+    #[test]
+    fn health_comes_only_from_mergeable_and_mergeable_state() {
+        let head = "0123456789abcdef0123456789abcdef01234567";
+        let pr = |mergeable: serde_json::Value, state: &str| {
+            serde_json::json!({"mergeable": mergeable, "mergeable_state": state,
+                "head": {"sha": head}, "base": {"ref": "main"}})
+        };
+        let h = health_of(&pr(serde_json::json!(false), "dirty"));
+        assert_eq!(h.health, Some("dirty"));
+        assert_eq!(h.head.as_deref(), Some(head));
+        assert_eq!(h.base_ref.as_deref(), Some("main"));
+        assert_eq!(
+            health_of(&pr(serde_json::json!(true), "behind")).health,
+            Some("behind")
+        );
+        // GitHub still working it out: shown as nothing yet.
+        let checking = health_of(&pr(serde_json::Value::Null, "unknown"));
+        assert_eq!(checking.health, Some("checking"));
+        // Failing checks are not read here; clean and the rest say nothing.
+        for s in ["clean", "unstable", "blocked", "has_hooks", "draft"] {
+            assert_eq!(
+                health_of(&pr(serde_json::json!(true), s)).health,
+                None,
+                "{s}"
+            );
+        }
+        // Only a full commit id and a plain branch name are kept.
+        let odd = health_of(&serde_json::json!({"mergeable": true,
+            "head": {"sha": "HEAD"}, "base": {"ref": "-x"}}));
+        assert_eq!((odd.head, odd.base_ref), (None, None));
+        assert_eq!(
+            health_words(Some("dirty"), Some("trunk")).as_deref(),
+            Some("Conflicts with trunk")
+        );
+        assert_eq!(
+            health_words(Some("behind"), None).as_deref(),
+            Some("Behind main")
+        );
+        assert_eq!(health_words(Some("checking"), None), None);
+        assert_eq!(health_words(None, None), None);
     }
 
     #[test]

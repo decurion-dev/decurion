@@ -1,6 +1,6 @@
 # Install Decurion
 
-This page helps you install Decurion and open the board for the first time.
+This page helps you install Decurion and open it for the first time.
 
 ## What you need
 
@@ -51,7 +51,7 @@ After that, clicking **Decurion** in the Start menu opens your board directly. I
 
 When Decurion starts by itself at sign-in, its window stays small on the taskbar and waits up to 10 minutes for Docker Desktop. Close that window to stop Decurion.
 
-If the board does not open, the window shows a link. Paste it into Chrome or Edge. This link works only until Decurion restarts. Use it only on your own PC.
+If Decurion does not open in your browser, the window shows a link. Paste it into Chrome or Edge. This link works only until Decurion restarts. Use it only on your own PC.
 
 ## Install on Mac or Linux
 
@@ -64,8 +64,8 @@ If the board does not open, the window shows a link. Paste it into Chrome or Edg
 6. Run `decurion-start`. If the terminal says the command is not found, use the full path that `install.sh` showed at the end, such as `~/.local/bin/decurion-start`.
 7. If Docker is not running, Decurion waits for it. On a Mac, it starts Docker Desktop for you.
 8. The first time, Decurion gets the agent workspace, the workspace for ChatGPT and Grok work, and the agents' website gate ready. This takes a few minutes.
-9. The first time, your browser opens a page called **Sign in to Decurion**. Click **Sign in**. After that, `decurion-start` opens your board directly. If nothing opens, paste the link from the terminal into Chrome or Edge.
-10. Sign in to your Claude accounts from the board. See [Connect your Claude accounts](connect-claude-accounts.md).
+9. The first time, your browser opens a page called **Sign in to Decurion**. Click **Sign in**. After that, `decurion-start` opens Decurion's **Home** directly. If nothing opens, paste the link from the terminal into Chrome or Edge.
+10. Sign in to your Claude accounts in Decurion's **Settings**. See [Connect your Claude accounts](connect-claude-accounts.md).
 
 Keep the terminal open while you use Decurion. Press Ctrl+C in it to stop Decurion. On a Mac or Linux, Decurion does not start by itself when you sign in.
 
@@ -83,7 +83,7 @@ Your saved boards and settings stay until you delete them. See [Back up and rest
 - **"Could not prepare the agent workspace."** or **"Could not prepare the agents' website gate."** Check that Docker Desktop is running and that you are online. Then open Decurion again.
 - **"Could not prepare the workspace for ChatGPT and Grok work."** Claude work still runs. Check that you are online. Decurion tries again the next time you open it.
 - **"Decurion could not start."** or **"Decurion is taking too long to start."** The details are in `hub-errors.log`. On Windows it is in `%LOCALAPPDATA%\decurion\logs`. On a Mac or Linux it is in `~/decurion/logs`. See [When something fails](when-something-fails.md).
-- **The board says "Not signed in."** This browser was removed in **Settings**, its cookies were cleared, or it was not used for a year. Close Decurion and open it again. Then click **Sign in** on the page that opens.
+- **Decurion says "Not signed in."** This browser was removed in **Settings**, its cookies were cleared, or it was not used for a year. Close Decurion and open it again. Then click **Sign in** on the page that opens.
 - **"This is not a Decurion sign-in link."** Part of the link is missing. Copy the whole link again.
 - **"wrong or expired login code"** Decurion was restarted after the link was made. Use the newest link.
 - **The link does not open.** Use Chrome or Edge. They know that `decurion.localhost` means your own PC.

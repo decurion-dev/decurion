@@ -6,8 +6,11 @@
 //! pick a colour from the row's `tone`.
 //!
 //! It also owns the one meaning of "needs you" ([`Store::needs_you`],
-//! `GET /api/needs-you`): the app rows, the board's Needs you column and the
-//! phone's inbox all count exactly that list, so the three never disagree.
+//! `GET /api/needs-you`): the app rows, the board's Needs you button and
+//! column, the phone's inbox and the goals list all count exactly that list,
+//! so they never disagree. A goal is on it when its journey says the next
+//! move is the owner's ([`crate::journey`]), and a goal's piece that waits
+//! on the owner is counted once, as its goal.
 //!
 //! This only reads. Watched pull requests and their comments are written by
 //! the code that keeps an eye on GitHub; a fix of comments starts from its own
@@ -82,6 +85,17 @@ pub struct LastPr {
     /// Still open, and the app's rules let the owner merge it from Decurion
     /// (`POST /api/threads/{id}/pr/merge`).
     pub can_merge: bool,
+    /// "Conflicts with main" or "Behind main", while GitHub says so about
+    /// the commit Decurion last pushed (see [`crate::pr_watch::health_words`]).
+    pub health: Option<String>,
+    /// Still open with no fix or update under way: Bring up to date can
+    /// start (`POST /api/threads/{id}/pr/update`).
+    pub can_update: bool,
+    /// Still open, and Decurion started a Bring up to date on it by itself
+    /// because it conflicts with its base branch (the app's rule): the
+    /// words for that run while it works or waits for review
+    /// ([`crate::pr_watch::auto_words`]). Nothing otherwise.
+    pub auto_line: Option<String>,
 }
 
 /// One app's row.
@@ -127,23 +141,42 @@ pub struct TodayRow {
     /// Tokens the app's agents used today, once any did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used_today: Option<decurion_proto::tokens::TokenLine>,
+    /// On Decurion's own app only, and only while this PC runs an older
+    /// Decurion than GitHub has: what is waiting ([`crate::version`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decurion: Option<crate::version::Version>,
 }
 
 /// Everything only the owner can move on right now, in one list. The app
-/// rows (`needs_you`), the board's Needs you column and the phone's inbox
-/// all count this, so they always say the same number.
+/// rows (`needs_you`), the board's Needs you button and column, the phone's
+/// inbox and the goals list all count this, so they always say the same
+/// number. The rule:
+///
+/// - **Goals** (not closed, not dismissed) whose journey waits on the owner
+///   (`journey.you`): a reply, a plan to approve, a stuck project lead, the
+///   finished work to review, or one of its pieces waiting on them (an
+///   agent's question, a look, a push to retry, a pull request to open or
+///   merge, an update or deploy). Each goal counts once, however many of its
+///   pieces wait.
+/// - **Work** that is no piece of an open goal and asks the owner
+///   something, is ready for them to check (in review with no checker still
+///   coming), could not finish, was accepted but did not reach GitHub, or is
+///   on GitHub as a branch with no pull request. Work the owner dismissed is
+///   left out.
+/// - **Pull requests** with review comments to answer, or waiting for the
+///   owner's Merge tap, not while a fix of their comments is under way, and
+///   not when the work that opened them is a piece of a goal already
+///   counted.
+///
+/// `total` is `work`, `goals` and `prs` together; `by_app` splits it by app.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct NeedsYou {
-    /// Work that asks the owner something, is ready for them to check (in
-    /// review, and no checker is still coming), could not finish, or was
-    /// accepted but did not reach GitHub. Work the owner dismissed is left
-    /// out.
+    /// Work outside open goals that waits on the owner.
     pub work: Vec<WorkWait>,
-    /// Goals that wait on the owner.
+    /// Goals whose journey waits on the owner.
     pub goals: Vec<GoalWait>,
     /// Open pull requests with review comments to answer, or waiting for the
-    /// owner's Merge tap, by the work that opened them. Not while a fix of
-    /// their comments is under way.
+    /// owner's Merge tap, by the work that opened them.
     pub prs: Vec<PrWait>,
     /// How many of all three each app has.
     pub by_app: std::collections::BTreeMap<i64, i64>,
@@ -155,7 +188,7 @@ pub struct NeedsYou {
 pub struct WorkWait {
     pub thread_id: i64,
     pub app_id: i64,
-    /// `answer`, `check`, `failed` or `not_sent`.
+    /// `answer`, `check`, `failed`, `not_sent` or `no_pull_request`.
     pub why: &'static str,
 }
 
@@ -165,8 +198,27 @@ pub struct GoalWait {
     pub goal_id: i64,
     pub app_id: i64,
     /// `plan` (approve it), `answer` (the project lead asked or said
-    /// something), `review` (its work is built and checked) or `stuck`.
+    /// something), `review` (its work is built and checked), `stuck`, or
+    /// `piece` (one of its pieces waits on the owner: `thread_id` and the
+    /// journey say which and what for).
     pub why: &'static str,
+    /// The piece the owner's move is about, for `piece`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<i64>,
+    /// The goal's journey: its label is the words to show.
+    pub journey: decurion_proto::goal::Journey,
+}
+
+/// Why a goal waits, in the words [`GoalWait::why`] has always used, from
+/// its journey's action.
+fn goal_why(j: &decurion_proto::goal::Journey) -> &'static str {
+    match (j.action.as_ref().map(|a| a.kind.as_str()), j.piece) {
+        (_, Some(_)) => "piece",
+        (Some("approve"), None) => "plan",
+        (Some("retry"), None) => "stuck",
+        (Some("review"), None) => "review",
+        _ => "answer",
+    }
 }
 
 /// One pull request in [`NeedsYou`].
@@ -207,10 +259,15 @@ struct Facts {
     work_failed: i64,
     /// Accepted work that did not reach GitHub, not dismissed.
     work_not_sent: i64,
+    /// Finished work on GitHub as a branch with no pull request, not
+    /// dismissed.
+    work_no_pr: i64,
     plans_ready: i64,
     goals_for_review: i64,
     goals_talking: i64,
     goals_stuck: i64,
+    /// Goals one of whose pieces waits on the owner: its journey's words.
+    goal_asks: Vec<String>,
     lead_thinking: bool,
     working_goal: bool,
     pieces: Option<Pieces>,
@@ -241,6 +298,17 @@ fn who(by: &[(String, i64)]) -> String {
     }
 }
 
+/// A journey's label as a row's ask: "Needs you · merge on GitHub" says
+/// "Merge on GitHub".
+fn ask_words(label: &str) -> String {
+    let rest = label.strip_prefix("Needs you · ").unwrap_or(label);
+    let mut c = rest.chars();
+    match c.next() {
+        Some(first) => first.to_uppercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+
 /// Picks the row's tone and words. The first thing that waits on the owner
 /// wins the line; the others are counted after it.
 fn words(f: &Facts) -> (Tone, &'static str, String) {
@@ -266,6 +334,7 @@ fn words(f: &Facts) -> (Tone, &'static str, String) {
     if f.goals_stuck > 0 {
         asks.push("Your project lead got stuck. Try again".to_owned());
     }
+    asks.extend(f.goal_asks.iter().cloned());
     match f.deploy.as_ref().map(|d| d.state.as_str()) {
         Some("waiting") => asks.push("Merged · ready to deploy".to_owned()),
         Some("failed") => asks.push("Deploy failed. Try again".to_owned()),
@@ -293,6 +362,12 @@ fn words(f: &Facts) -> (Tone, &'static str, String) {
         asks.push(format!(
             "{} GitHub",
             plural(f.work_not_sent, "piece didn't reach", "pieces didn't reach")
+        ));
+    }
+    if f.work_no_pr > 0 {
+        asks.push(format!(
+            "{} on GitHub with no pull request",
+            plural(f.work_no_pr, "piece is", "pieces are")
         ));
     }
     if let Some(first) = asks.first() {
@@ -362,13 +437,19 @@ impl Store {
         let mut n = NeedsYou::default();
         // A piece of a goal in review with its check still to come waits on
         // the checker, not the owner (the same rule as its work panel).
+        // A piece of an open goal is counted with its goal, below.
         for r in sqlx::query(
-            "SELECT t.id, t.app_id, t.state FROM threads t
+            "SELECT t.id, t.app_id, t.state, t.gh_state FROM threads t
              LEFT JOIN goal_pieces p ON p.thread_id = t.id
              WHERE t.dismissed_at IS NULL
-               AND t.app_id IN (SELECT id FROM apps WHERE removed_at IS NULL) AND (
+               AND t.app_id IN (SELECT id FROM apps WHERE removed_at IS NULL)
+               AND NOT EXISTS (SELECT 1 FROM goals g WHERE g.id = p.goal_id
+                               AND g.state NOT IN ('done', 'stopped'))
+               AND (
                  t.state IN ('needs_you', 'failed')
                  OR (t.state = 'done' AND t.gh_state = 'failed')
+                 OR (t.state = 'done' AND t.gh_state = 'sent' AND t.gh_pr = 0
+                     AND t.research = 0 AND t.gh_url LIKE 'https://github.com/%')
                  OR (t.state = 'in_review' AND NOT (p.thread_id IS NOT NULL AND t.research = 0
                      AND p.review IN ('building', 'reviewing', 'fixing'))))
              ORDER BY t.id",
@@ -383,28 +464,52 @@ impl Store {
                     "needs_you" => "answer",
                     "in_review" => "check",
                     "failed" => "failed",
+                    _ if r.try_get::<Option<String>, _>("gh_state")?.as_deref() == Some("sent") => {
+                        "no_pull_request"
+                    }
                     _ => "not_sent",
                 },
             });
         }
-        for g in self.goals().await? {
-            let why = match g.state {
-                GoalState::Done | GoalState::Stopped => continue,
-                _ if g.stuck && !g.busy => "stuck",
-                GoalState::Talking | GoalState::PlanReady if g.busy => continue,
-                GoalState::PlanReady => "plan",
-                GoalState::Talking => "answer",
-                GoalState::ForReview => "review",
-                GoalState::Working => continue,
+        let open: Vec<decurion_proto::goal::Goal> = self
+            .goals()
+            .await?
+            .into_iter()
+            .filter(|g| !g.state.is_closed() && g.dismissed_at.is_none())
+            .collect();
+        let mut journeys = self.journeys(&open).await?;
+        for g in &open {
+            let Some(journey) = journeys.remove(&g.id).filter(|j| j.you) else {
+                continue;
             };
             n.goals.push(GoalWait {
                 goal_id: g.id,
                 app_id: g.app_id,
-                why,
+                why: goal_why(&journey),
+                thread_id: journey.piece,
+                journey,
             });
         }
+        // Pull requests opened by a piece of a goal counted above are that
+        // goal's: counted once, there.
+        let counted: std::collections::HashSet<i64> = n.goals.iter().map(|g| g.goal_id).collect();
+        let piece_goal: HashMap<i64, i64> = if counted.is_empty() {
+            HashMap::new()
+        } else {
+            sqlx::query_as::<_, (i64, i64)>("SELECT thread_id, goal_id FROM goal_pieces")
+                .fetch_all(self.pool())
+                .await?
+                .into_iter()
+                .collect()
+        };
         for w in self.watched_prs().await? {
             if w.state != "open" || w.fixing {
+                continue;
+            }
+            if piece_goal
+                .get(&w.thread_id)
+                .is_some_and(|g| counted.contains(g))
+            {
                 continue;
             }
             let why = if w.open_comments > 0 {
@@ -463,6 +568,7 @@ impl Store {
                 "answer" => f.work_needs_you += 1,
                 "check" => f.work_in_review += 1,
                 "failed" => f.work_failed += 1,
+                "no_pull_request" => f.work_no_pr += 1,
                 _ => f.work_not_sent += 1,
             }
         }
@@ -476,23 +582,25 @@ impl Store {
             }
             let f = facts.entry(g.app_id).or_default();
             let talking = matches!(g.state, GoalState::Talking | GoalState::PlanReady);
-            if g.stuck && !g.busy {
-                f.goals_stuck += 1;
-            } else if talking && g.busy {
+            if talking && g.busy {
                 f.lead_thinking = true;
-            } else {
-                match g.state {
-                    GoalState::PlanReady => f.plans_ready += 1,
-                    GoalState::Talking => f.goals_talking += 1,
-                    GoalState::ForReview => f.goals_for_review += 1,
-                    GoalState::Working => {
-                        if !f.working_goal {
-                            newest_working.insert(g.id, g.app_id);
-                        }
-                        f.working_goal = true;
-                    }
-                    _ => {}
+            } else if g.state == GoalState::Working && !(g.stuck && !g.busy) {
+                if !f.working_goal {
+                    newest_working.insert(g.id, g.app_id);
                 }
+                f.working_goal = true;
+            }
+        }
+        // What waits on the owner in goals, as the one list counts it: by
+        // each goal's journey, so the row says what the goal page says.
+        for g in &needs.goals {
+            let f = facts.entry(g.app_id).or_default();
+            match g.why {
+                "plan" => f.plans_ready += 1,
+                "review" => f.goals_for_review += 1,
+                "stuck" => f.goals_stuck += 1,
+                "piece" => f.goal_asks.push(ask_words(&g.journey.label)),
+                _ => f.goals_talking += 1,
             }
         }
         for r in sqlx::query(
@@ -518,15 +626,22 @@ impl Store {
 
         // Newest happening first: when it last changed, else when it opened.
         let mut watches = Vec::new();
-        for r in sqlx::query(
+        for r in sqlx::query(&format!(
             "SELECT w.thread_id, w.app_id, w.number, w.url, w.state, w.event, w.event_at,
                     COALESCE(t.dismissed_at IS NOT NULL, 0) AS dismissed,
-                    (w.state = 'open' AND a.can_merge) AS can_merge
+                    (w.state = 'open' AND a.can_merge) AS can_merge,
+                    CASE WHEN w.state = 'open' AND w.health_head = w.head THEN w.health END AS health,
+                    w.base_ref,
+                    (w.state = 'open' AND w.base_ref IS NOT NULL
+                        AND NOT {under_way}) AS can_update,
+                    CASE WHEN w.state = 'open' THEN {auto} END AS auto_state
              FROM pr_watches w LEFT JOIN threads t ON t.id = w.thread_id
                   JOIN apps a ON a.id = w.app_id
              WHERE a.removed_at IS NULL
              ORDER BY COALESCE(w.event_at, w.created_at) DESC, w.created_at DESC, w.thread_id DESC",
-        )
+            under_way = crate::pr_watch::FIX_UNDER_WAY,
+            auto = crate::pr_watch::AUTO_STATE
+        ))
         .fetch_all(self.pool())
         .await?
         {
@@ -540,6 +655,15 @@ impl Store {
                     event: r.try_get("event")?,
                     event_at: r.try_get("event_at")?,
                     can_merge: r.try_get("can_merge")?,
+                    health: crate::pr_watch::health_words(
+                        r.try_get::<Option<String>, _>("health")?.as_deref(),
+                        r.try_get::<Option<String>, _>("base_ref")?.as_deref(),
+                    ),
+                    can_update: r.try_get("can_update")?,
+                    auto_line: crate::pr_watch::auto_words(
+                        r.try_get::<Option<String>, _>("auto_state")?.as_deref(),
+                        r.try_get::<Option<String>, _>("base_ref")?.as_deref(),
+                    ),
                 },
                 dismissed: r.try_get("dismissed")?,
             });
@@ -639,19 +763,46 @@ impl Store {
                     status: status.to_owned(),
                     line,
                     used_today: used.remove(&a.id),
+                    decurion: None,
                 }
             })
             .collect();
-        rows.sort_by(|a, b| {
-            a.tone
-                .rank()
-                .cmp(&b.tone.rank())
-                .then(b.first_today.cmp(&a.first_today))
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-                .then(a.app_id.cmp(&b.app_id))
-        });
+        sort_rows(&mut rows);
         Ok(rows)
     }
+}
+
+/// Rows that need the owner first, then running ones, then by star and name.
+fn sort_rows(rows: &mut [TodayRow]) {
+    rows.sort_by(|a, b| {
+        a.tone
+            .rank()
+            .cmp(&b.tone.rank())
+            .then(b.first_today.cmp(&a.first_today))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then(a.app_id.cmp(&b.app_id))
+    });
+}
+
+/// Puts `v`, this PC's older Decurion, on Decurion's own row, which then
+/// needs the owner: updating is theirs to do. A row that already needs them
+/// keeps its words; a quiet or finished one says what is waiting instead.
+fn add_version(rows: &mut [TodayRow], v: crate::version::Version) {
+    let Some(row) = rows.iter_mut().find(|r| Some(r.app_id) == v.app_id) else {
+        return;
+    };
+    if row.tone != Tone::NeedsYou {
+        if matches!(row.tone, Tone::Quiet | Tone::Done) {
+            row.line = match v.behind {
+                1 => "Update Decurion · 1 change waiting".to_owned(),
+                n => format!("Update Decurion · {n} changes waiting"),
+            };
+        }
+        row.tone = Tone::NeedsYou;
+        row.status = "Needs you".to_owned();
+    }
+    row.decurion = Some(v);
+    sort_rows(rows);
 }
 
 /// `GET /api/needs-you`: owner only.
@@ -671,7 +822,12 @@ pub(crate) async fn list(State(st): State<AppState>, Extension(c): Extension<Cal
         return forbidden("seeing every app at a glance");
     }
     match st.store.today().await {
-        Ok(rows) => Json(rows).into_response(),
+        Ok(mut rows) => {
+            if let Some(v) = crate::version::for_today(&st).await {
+                add_version(&mut rows, v);
+            }
+            Json(rows).into_response()
+        }
         Err(e) => ApiError(e).into_response(),
     }
 }
@@ -717,5 +873,24 @@ mod tests {
         assert_eq!(tone, Tone::Merge);
         assert_eq!(status, "Your merge");
         assert_eq!(line, "PR #7 · yours to merge on GitHub");
+    }
+
+    #[test]
+    fn work_on_github_with_no_pull_request_needs_the_owner() {
+        let f = Facts {
+            work_no_pr: 2,
+            open_prs: 1,
+            newest_open: Some(7),
+            ..Facts::default()
+        };
+        let (tone, status, line) = words(&f);
+        assert_eq!(tone, Tone::NeedsYou);
+        assert_eq!(status, "Needs you");
+        assert_eq!(line, "2 pieces are on GitHub with no pull request");
+        let one = Facts {
+            work_no_pr: 1,
+            ..Facts::default()
+        };
+        assert_eq!(words(&one).2, "1 piece is on GitHub with no pull request");
     }
 }

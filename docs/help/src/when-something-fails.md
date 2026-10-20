@@ -4,11 +4,11 @@ This page helps you find out why work failed and get it going again.
 
 ## Find out what happened
 
-1. On the board, look in the **Failed** column. On your phone, failed work shows in the inbox, marked **Failed**.
-2. Click the card. The activity log shows what the agent did, step by step.
+1. On **Home**, failed work waits under **Needs you**, marked **Failed**, on your PC and on your phone. A failed piece of a goal also shows on Home's **Board**, in red under **Waiting on you**. (In **Pro view**, Home's **By status** also lists it under **Failed**.)
+2. Tap it. Its **Activity** shows what the agent did, step by step.
 3. Look at the last lines of the log. The list below explains what they mean.
 4. Fix the cause if you can.
-5. Click **Retry**. The work goes back to **Queued**, and the agent picks up where it left off.
+5. Tap **Retry**. The work goes back to **Queued**, and the agent picks up where it left off.
 
 ## What the log tells you
 
@@ -36,8 +36,8 @@ While Decurion is stopped, open pages show **Decurion is restarting or updating.
 ## Other problems
 
 - **"another Decurion runner is already running on this computer"** Decurion is already open in another window. Close the extra copy.
-- **The board says "Not signed in."** Close Decurion and open it again, then click **Sign in** on the page that opens. See [Install Decurion](install.md).
-- **The board says "Your PC's hub isn't answering. Showing the last known board."** Decurion may have stopped. Your work is safe. Start Decurion again.
+- **Decurion says "Not signed in."** Close Decurion and open it again, then click **Sign in** on the page that opens. See [Install Decurion](install.md).
+- **Decurion says "Your PC's hub isn't answering. Showing the last known work."** Decurion may have stopped. Your work is safe. Start Decurion again.
 - **"Decurion stopped because of a problem."** Look in `hub-errors.log`. See [Decurion's log files](#decurions-log-files) below.
 
 ## Decurion's log files
@@ -49,8 +49,8 @@ Decurion writes down what it does in log files. They help you, or someone helpin
 
 | File | What is in it |
 | --- | --- |
-| `hub.log` | What the board side of Decurion did. |
-| `hub-errors.log` | Problems on the board side. Look here first if Decurion will not start. |
+| `hub.log` | What the hub did: the part of Decurion that shows your screens and keeps your work. |
+| `hub-errors.log` | Problems in the hub. Look here first if Decurion will not start. |
 | `runner.log` | What the part that starts agents did. |
 | `runner-errors.log` | Problems starting or running agents. |
 
@@ -58,8 +58,8 @@ Each time Decurion starts, it keeps the logs from the start before as `.previous
 
 ## Stop work you no longer want
 
-1. Click the card.
-2. Click the button for its state:
+1. Open the work: tap it on **Home**, or tap its piece on Home's **Board**.
+2. Tap the button for its state:
    - Work in **Queued**: **Cancel**.
    - Work that is **Running** or in **Needs you**: **Stop**.
 3. Confirm with **Cancel work** or **Stop work**. Click **Keep it** if you changed your mind.

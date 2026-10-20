@@ -508,7 +508,7 @@ fn pr_trouble_row(mut r: Light, trouble: &[crate::github::PrTrouble], saved: boo
             "Open the token you made for Decurion and tap Edit.".to_owned(),
             format!("Under Repository access, make sure the repo for {apps} is picked."),
             "Under Permissions, set Pull requests to Read and write. Tap Update.".to_owned(),
-            "Done. The next piece of work opens its pull request by itself. For work already sent, tap Open a pull request.".to_owned(),
+            "Done. The next piece of work opens its pull request by itself. For work already sent, tap Open the pull request on it.".to_owned(),
         ]
     } else {
         vec![

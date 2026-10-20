@@ -392,7 +392,7 @@ async fn a_late_request_gets_the_bundle_of_the_start_that_won() {
 
     // The late one answers with the winner, header and contents alike.
     let (sha, path) = files
-        .settle_base(&h.store, t, app, &folder, late)
+        .settle_base(&h.store, t, app, &folder, late, None)
         .await
         .expect("settle");
     assert_eq!(sha, b2);
@@ -978,4 +978,59 @@ async fn a_goal_with_no_start_gets_one_when_its_plan_is_approved() {
         Some(b2.clone())
     );
     assert_eq!(h.store.base_commit(piece).await.expect("read"), Some(b2));
+}
+
+/// A Bring up to date run's late request, too, gets the start that won,
+/// and its bundle still holds the main the run merges.
+#[tokio::test]
+async fn a_late_update_request_still_gets_main_with_the_start_that_won() {
+    let h = hub().await;
+    let s = setup(&h.dir);
+    let app = add_app(&h, &s.folder).await;
+    let t = new_work(&h, app).await;
+    let folder = s.folder.to_string_lossy().into_owned();
+    let files = Files::new(h.dir.join("saved"));
+    // Main (b, the server's default) is in the hub's copy, as Bring up to
+    // date pins it.
+    assert_eq!(
+        files.base_bundle(app, &folder, None).await.expect("main").0,
+        s.b
+    );
+    let cache = h
+        .dir
+        .join("saved")
+        .join("repos")
+        .join(format!("app-{app}.git"));
+    git(
+        &cache,
+        &["update-ref", &format!("refs/decurion/merge/{}", s.b), &s.b],
+    );
+    let late = files
+        .base_bundle_with(app, &folder, Some(&s.a), Some(&s.b))
+        .await
+        .expect("bundle");
+    sqlx::query("UPDATE threads SET base_commit = ?, merge_from = ? WHERE id = ?")
+        .bind(&s.c)
+        .bind(&s.b)
+        .bind(t)
+        .execute(h.store.pool())
+        .await
+        .expect("won");
+    let (sha, path) = files
+        .settle_base(&h.store, t, app, &folder, late, Some(&s.b))
+        .await
+        .expect("settle");
+    assert_eq!(sha, s.c);
+    let heads = git(
+        Path::new("."),
+        &["bundle", "list-heads", &path.to_string_lossy()],
+    );
+    assert!(
+        heads.contains(&format!("{} refs/heads/decurion-main", s.b)),
+        "{heads}"
+    );
+    assert!(
+        heads.contains(&format!("{} refs/heads/decurion-base", s.c)),
+        "{heads}"
+    );
 }

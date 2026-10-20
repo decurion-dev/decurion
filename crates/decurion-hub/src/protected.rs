@@ -149,24 +149,32 @@ impl Hold {
     pub fn reason(&self) -> Option<String> {
         match self {
             Self::Clear => None,
-            Self::Protected(paths) => {
-                let mut list = paths
-                    .iter()
-                    .take(SHOWN)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                if paths.len() > SHOWN {
-                    list.push_str(&format!(" and {} more", paths.len() - SHOWN));
-                }
-                Some(format!(
-                    "Held for you: this changes protected parts of the app ({list}). The checker \
-passed it, but changes to protected parts always wait for you to look."
-                ))
-            }
+            Self::Protected(paths) => Some(format!(
+                "Held for you: this changes protected parts of the app ({}). The checker passed it, but changes to protected parts always wait for you to look.",
+                shown(paths)
+            )),
             Self::Unchecked(_) => Some(
                 "Held for you: the hub could not check whether this changes protected parts of \
 the app, so it waits for you to look. The checker passed it."
+                    .to_owned(),
+            ),
+        }
+    }
+
+    /// [`Hold::reason`] for a Bring up to date run, which no checker looks
+    /// at: what it changes is compared with the main it merged. It starts
+    /// "Held for you:" too.
+    pub fn update_reason(&self) -> Option<String> {
+        match self {
+            Self::Clear => None,
+            Self::Protected(paths) => Some(format!(
+                "Held for you: compared with main, this changes protected parts of the app ({}). \
+No checker looks at an update, so look it over yourself before you accept it.",
+                shown(paths)
+            )),
+            Self::Unchecked(_) => Some(
+                "Held for you: Decurion could not check whether this update changes protected \
+parts of the app, so look it over yourself before you accept it."
                     .to_owned(),
             ),
         }
@@ -184,6 +192,20 @@ the app, so it waits for you to look. The checker passed it."
             )),
         }
     }
+}
+
+/// A few changed paths for the owner, then "and N more".
+fn shown(paths: &[String]) -> String {
+    let mut list = paths
+        .iter()
+        .take(SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if paths.len() > SHOWN {
+        list.push_str(&format!(" and {} more", paths.len() - SHOWN));
+    }
+    list
 }
 
 /// What the hub needs to know about the work a review job checked.
@@ -336,6 +358,84 @@ pub async fn hold_for(store: &Store, files: &Files, job_id: i64, res: &HelperRes
             tracing::warn!(job_id, error = %e, "could not check protected parts; holding the piece");
             Hold::Unchecked(e.to_string())
         }
+    }
+}
+
+/// The hold for a Bring up to date run as it reaches review. Such a run has
+/// no goal piece and no checker, so this is its own path, with the same
+/// matcher and words. The question is the owner's at merge time: does the
+/// pull request, compared with the main it merged (`merge_from`), change a
+/// protected file? So the paths are everything that differs between
+/// `merge_from` and the run's saved head, and the list is read from
+/// `merge_from` (main's current list). A pull request that already touched
+/// protected files is held again, and one whose merge kept an old copy of
+/// a file main had changed is held too. Never fails: when the check itself
+/// goes wrong, the work is held.
+pub async fn update_hold(store: &Store, files: &Files, thread_id: i64) -> Hold {
+    match check_update(store, files, thread_id).await {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(thread = thread_id, error = %e, "could not check protected parts; holding the update");
+            Hold::Unchecked(e.to_string())
+        }
+    }
+}
+
+async fn check_update(store: &Store, files: &Files, thread_id: i64) -> Result<Hold> {
+    let row = sqlx::query(
+        "SELECT t.app_id, a.repo_path, t.merge_from, t.branch,
+             (SELECT MAX(c.id) FROM checkpoints c WHERE c.thread_id = t.id) AS checkpoint
+         FROM threads t JOIN apps a ON a.id = t.app_id WHERE t.id = ?",
+    )
+    .bind(thread_id)
+    .fetch_optional(store.pool())
+    .await?
+    .ok_or(StoreError::NotFound)?;
+    let app_id: i64 = row.try_get("app_id")?;
+    let repo_path: String = row.try_get("repo_path")?;
+    let main = row
+        .try_get::<Option<String>, _>("merge_from")?
+        .filter(|m| is_commit(m))
+        .ok_or_else(|| StoreError::Invalid("this work merges no main".into()))?;
+    let branch = row
+        .try_get::<Option<String>, _>("branch")?
+        .unwrap_or_else(|| format!("decurion/thread-{thread_id}"));
+    let checkpoint: i64 = row
+        .try_get::<Option<i64>, _>("checkpoint")?
+        .ok_or_else(|| StoreError::Invalid("the hub has no saved copy of this work".into()))?;
+    let list = files.protected_list(app_id, &repo_path, &main).await?;
+    let deploy_files = store
+        .deploy_rule(app_id)
+        .await?
+        .map(|r| crate::deploy::named_files(&r.steps))
+        .unwrap_or_default();
+    if list.is_none() && deploy_files.is_empty() {
+        return Ok(Hold::Clear);
+    }
+    let list = format!("{}\n{}", list.unwrap_or_default(), deploy_files.join("\n"));
+    let changed = files
+        .changed_paths(app_id, thread_id, checkpoint, &main, &branch)
+        .await?;
+    let hit = protected_changes(&parse(&list), &changed);
+    Ok(if hit.is_empty() {
+        Hold::Clear
+    } else {
+        Hold::Protected(hit)
+    })
+}
+
+impl Store {
+    /// Saves the hold for work with no goal piece (a Bring up to date run),
+    /// as plain words, or clears it.
+    pub(crate) async fn set_thread_hold(&self, thread_id: i64, hold: &Hold) -> Result<()> {
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query("UPDATE threads SET hold = ? WHERE id = ?")
+            .bind(hold.update_reason())
+            .bind(thread_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
     }
 }
 
@@ -497,6 +597,28 @@ passed it, but changes to protected parts always wait for you to look."
             .note("Reset link")
             .expect("note")
             .contains("held for you"));
+    }
+
+    #[test]
+    fn an_update_is_never_said_to_have_passed_a_checker() {
+        let many = Hold::Protected((1..=7).map(|i| format!("f{i}")).collect());
+        for h in [many, Hold::Unchecked("git: boom".into())] {
+            let why = h.update_reason().expect("reason");
+            assert!(is_held(Some("needs_a_look"), Some(&why)), "{why}");
+            assert!(
+                !why.contains("checker passed") && !why.contains("The checker"),
+                "{why}"
+            );
+            assert!(!why.contains("boom"), "{why}");
+        }
+        let why = Hold::Protected(vec!["src/app.rs".into()])
+            .update_reason()
+            .expect("reason");
+        assert!(
+            why.contains("compared with main") && why.contains("(src/app.rs)"),
+            "{why}"
+        );
+        assert_eq!(Hold::Clear.update_reason(), None);
     }
 
     #[test]

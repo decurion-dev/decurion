@@ -4,7 +4,7 @@ While Claude works on an app, it can open the app in a test browser to check its
 
 ## Watch the browser
 
-1. On the board, click the card for work that is **Running** with Claude.
+1. Open work that is running with Claude: on **Home**, switch to **Board** and tap its piece under **Building**, or tap a quick job under **Working**.
 2. Under **Test browser**, click **Watch the browser**.
 
 A live picture of the browser appears, with the address of the page above it. The address comes from the browser itself, so a page cannot pretend to be somewhere else.

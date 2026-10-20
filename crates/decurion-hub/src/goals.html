@@ -46,7 +46,7 @@
   code { font:13px/1.4 ui-monospace, Consolas, monospace; background:var(--neutral-soft); padding:1px 5px; border-radius:5px; }
 
   /* Menu. On a PC: the shared rail down the left (D.pcNav, menu.css), the same menu and logo as the
-     Board and the Master plan, with the connection light at its foot. On a phone the rail hides
+     Home and Apps, with the connection light at its foot. On a phone the rail hides
      (the bottom tabs take over) and this slim header shows the logo and the light instead. */
   .top { flex:none; display:flex; align-items:center; gap:14px; padding:8px 16px; padding-top:max(8px, env(safe-area-inset-top)); border-bottom:1px solid var(--line); }
   .brand { display:flex; align-items:center; gap:9px; font-weight:700; font-size:17px; color:var(--ink); text-decoration:none; letter-spacing:-.01em; }
@@ -165,6 +165,12 @@
   .gh-meta { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; font-size:13px; color:var(--muted); margin-top:2px; }
   .gh-actions { display:flex; align-items:center; gap:8px; flex:none; }
   .goal-road { flex:none; padding:8px 20px 10px; border-bottom:1px solid var(--line); }
+  /* The goal's road (D.journey) and its Next line (D.nextLine): one road, the same on every screen. */
+  .goal-road.journey-on { display:grid; gap:10px; padding:12px 20px; }
+  .goal-road .journey { max-width:620px; }
+  .goal-road .jnext { max-width:860px; }
+  .gh-main .crumbs { margin-bottom:2px; }
+  .gi-meta .jbars { margin-left:-2px; }
   @media (max-width: 759px) { .goal-road { padding:6px 12px 8px; } }
   .piece-road { margin:8px 0; }
   .plan-story { margin:8px 0 0; }
@@ -410,7 +416,9 @@
   .tabbar .tab[aria-current="page"] { color:var(--accent-ink); }
   .tabbar .tab[aria-current="page"] .ind { background:var(--accent-soft); }
   .tabbar .tab:focus-visible { outline-offset:-4px; }
-  .tabbar .badge { display:none; }
+  /* The one count of what needs you, on Inbox (D.showNeeds in ui.js), as on the inbox page. */
+  .tabbar .badge { position:absolute; top:-3px; left:calc(50% + 5px); min-width:18px; height:18px; padding:0 5px; border-radius:99px;
+    background:var(--warn-ink); color:var(--card); box-shadow:0 0 0 2px var(--card); font-size:11px; font-weight:700; line-height:18px; text-align:center; font-variant-numeric:tabular-nums; }
   @media (max-width: 759px) {
     body:not(.has-goal) .tabbar { display:block; }
     body:not(.has-goal) .side { padding-bottom:20px; }
@@ -504,6 +512,8 @@
       <div class="goal-head">
         <a class="back btn ghost" href="#goals" aria-label="Back to all goals">‹ Goals</a>
         <div class="gh-main">
+          <!-- Where this goal sits: Apps › its app › this goal (D.trail in ui.js). -->
+          <div id="g-trail"></div>
           <h2 id="g-title"></h2>
           <div class="gh-meta"><span id="g-app"></span><span id="g-state" class="pill"></span></div>
         </div>
@@ -547,7 +557,7 @@
           </form>
         </section>
         <section class="pieces-panel" id="pieces" aria-labelledby="pieces-h">
-          <div class="pp-head"><h3 id="pieces-h">Pieces of work</h3><a class="btn ghost" href="/" data-board>Open the board</a></div>
+          <div class="pp-head"><h3 id="pieces-h">Pieces of work</h3><a class="btn ghost" href="/" data-board>Open the app's Board</a></div>
           <div id="pieces-body"></div>
         </section>
         <section class="files-panel" id="files" aria-labelledby="files-h">
@@ -599,7 +609,8 @@ const phone = matchMedia("(max-width: 759px)");
 const installed = matchMedia("(display-mode: standalone)");
 const inApp = () => phone.matches || installed.matches;
 // The phone's board is the inbox's Board tab.
-const boardHref = () => (inApp() ? "/inbox#board" : "/");
+// A goal's work on a board: its app's Board tab (Apps), or Home with no app.
+const boardHref = (appId) => (appId != null ? `/plan#app=${appId}&tab=board` : inApp() ? "/inbox#home" : "/");
 
 // ---------- helpers ----------
 const $ = id => document.getElementById(id);
@@ -692,6 +703,8 @@ function inline(s) {
   return frag;
 }
 const pill = (label, tone) => el("span", { class: `pill ${tone}` }, label);
+/** The colour of a goal's pill from its road: amber when it waits on you, green when done, grey once closed, else blue (working). */
+const journeyTone = (j, closed) => (j.you ? "attn" : j.done ? "ok" : closed ? "muted" : "accent");
 const dots = small => el("span", { class: small ? "dots small" : "dots", "aria-hidden": "true" }, el("i"), el("i"), el("i"));
 const pageUrl = (goalId, pageId) => `/pages/${goalId}/${pageId}?from=goal`;
 /** A page an agent drew, in the page viewer. On the PC it opens in a new tab; on a phone it opens in place, and the viewer's Back returns here. */
@@ -729,6 +742,8 @@ async function tick() {
   try {
     const jobs = [loadGoals()];
     if (S.appsSig === null || D.offline || Date.now() - S.appsAt > 30000) jobs.push(loadApps());
+    // The one count of what needs you, on the menus (ui.js), every ten seconds.
+    if (!(Date.now() - (S.needsAt ?? 0) < 10000)) { S.needsAt = Date.now(); D.needsYou(); }
     if (S.id != null) jobs.push(loadGoal(S.id));
     await Promise.all(jobs);
     setError("");
@@ -805,6 +820,7 @@ function renderList() {
       // The project lead asked or answered and waits for you (the plan has its own label).
       turn: g.state === "talking" && !g.busy && !g.stuck,
       when: ago(g.updated_at), sel: g.id === S.id, closed, dismissed: closed && !!g.dismissed_at,
+      journey: g.journey ?? null,
     };
   });
   const sig = JSON.stringify([rows, S.showDismissed]);
@@ -817,14 +833,18 @@ function renderList() {
     return;
   }
   const item = r => {
-    const [label, tone] = GOAL_STATES[r.state] ?? [r.state, "neutral"];
+    const j = r.journey;
+    // With the hub's road, its words are the goal's state, the same as in
+    // its header, on the Roadmap and in the inbox.
+    const [label, tone] = j ? [j.label, journeyTone(j, r.closed)] : GOAL_STATES[r.state] ?? [r.state, "neutral"];
     return el("li", null, el("a", { class: "goal-item", href: `#goal-${r.id}`, "data-goal": r.id, "aria-current": r.sel ? "page" : null },
       el("span", { class: "gi-title" }, r.title),
       el("span", { class: "gi-meta" },
         pill(label, tone),
+        j ? D.journey(j, { size: "small" }) : null,
         r.busy ? el("span", { class: "gi-hint thinking" }, dots(true), "Thinking…") : null,
-        r.stuck ? el("span", { class: "gi-hint retry" }, "Needs you · try again") : null,
-        r.turn ? el("span", { class: "gi-hint turn" }, "Needs you · reply") : null,
+        r.stuck && !j ? el("span", { class: "gi-hint retry" }, "Needs you · try again") : null,
+        r.turn && !j ? el("span", { class: "gi-hint turn" }, "Needs you · reply") : null,
         el("span", null, [r.app, r.when].filter(Boolean).join(" · ")))));
   };
   const open = rows.filter(r => !r.closed), closed = rows.filter(r => r.closed && !r.dismissed), gone = rows.filter(r => r.dismissed);
@@ -873,7 +893,7 @@ const newWork = D.composer({
     S.forceStick = true;
     tick();
   },
-  onStarted: () => { closeNewGoal(); location.href = boardHref(); },
+  onStarted: (thread) => { closeNewGoal(); location.href = thread?.id != null ? D.workHref(thread.id) : boardHref(); },
 });
 /** Tells the box the apps and computers; only once they have loaded, so it never shows "Add your first app" too soon. */
 function drawNewWork() {
@@ -1005,13 +1025,49 @@ function context(v) {
   return { v, g: v.goal, byId, answeredBy, latestQ, latestPlan, pages, closed: CLOSED.has(v.goal.state) };
 }
 
-/** The goal's step bar, Built to Live, and what happens next (road.rs). */
+/**
+ * The goal's road, Ask to Live, and its one Next line with one button (the
+ * hub's journey). On an older hub, the step bar from Built to Live and what
+ * happens next (road.rs). Each piece keeps its own bar in Pieces of work.
+ */
 function renderRoad(v) {
-  const sig = JSON.stringify(v.road ?? null);
+  const j = v.journey ?? v.goal?.journey ?? null;
+  const sig = JSON.stringify([j, j ? null : v.road ?? null, D.offline, shownPlan(v)]);
   if (sig === S.roadSig) return;
   S.roadSig = sig;
-  $("g-road").hidden = !v.road;
-  $("g-road").replaceChildren(...(v.road ? [D.road(v.road)] : []));
+  const box = $("g-road");
+  box.classList.toggle("journey-on", !!j);
+  if (j) {
+    box.hidden = false;
+    box.replaceChildren(...[D.journey(j), D.nextLine(j, roadActions(v))].filter(Boolean));
+    return;
+  }
+  box.hidden = !v.road;
+  box.replaceChildren(...(v.road ? [D.road(v.road)] : []));
+}
+/**
+ * What the Next line's button does on this page: approve the plan shown
+ * here, put the cursor in the reply box, show where each piece is, or try
+ * the last turn again. The rest (answer a piece's agent, open, merge or
+ * update its pull request) are the same taps as everywhere (ui.js).
+ */
+function roadActions(v) {
+  const g = v.goal;
+  const base = D.journeyActions(g, { onChanged: () => { S.tailSig = S.headSig = S.roadSig = ""; tick(); } });
+  return {
+    ...base,
+    approve: btn => {
+      const plan = shownPlan(v);
+      if (plan == null) { setTab("chat"); return; }
+      approve(plan, btn, $("goal-err"));
+    },
+    reply: () => { setTab("chat"); $("say").focus(); },
+    review: (btn, j) => {
+      if (j.piece != null) { base.review(btn, j); return; }
+      setTab("chat"); $("tail").scrollIntoView({ block: "start", behavior: reducedMotion.matches ? "auto" : "smooth" });
+    },
+    retry: (btn, j) => (j.piece == null ? goalAction("retry", "Try again") : base.retry(btn, j)),
+  };
 }
 
 /** What "Close this goal" does, said wherever its button is. */
@@ -1021,17 +1077,26 @@ const closeButton = (cls) => el("button", { class: cls, type: "button", "data-ac
 function renderHead(v) {
   const g = v.goal, closed = CLOSED.has(g.state);
   const app = S.appsById.get(g.app_id)?.name ?? v.app_name ?? "";
-  const sig = JSON.stringify([g.title, app, g.state, g.busy, g.stuck, v.road?.label, v.road?.you, v.road?.done]);
+  const j = v.journey ?? g.journey ?? null;
+  const sig = JSON.stringify([g.title, app, g.state, g.busy, g.stuck, v.road?.label, v.road?.you, v.road?.done, j?.label, j?.you, j?.done]);
   if (sig === S.headSig) return;
   S.headSig = sig;
   $("g-title").textContent = g.title;
   $("g-app").textContent = app;
+  // Where this goal sits: Apps, its app's page, then this goal.
+  $("g-trail").replaceChildren(D.trail([{ label: "Apps", href: "/plan#apps" }, { label: app, href: D.planHref(g.app_id) }, { label: g.title }]) ?? "");
+  // "Open the board" beside its pieces opens its app's Board tab.
+  document.querySelectorAll("a[data-board]").forEach(a => { a.href = boardHref(g.app_id); });
+  // The trail names the app, so the line under the title doesn't again.
+  $("g-app").hidden = !!app;
   let [label, tone] = GOAL_STATES[g.state] ?? [g.state, "neutral"];
   // While its work is on the way, the goal says the step it is on.
   if ((g.state === "working" || g.state === "for_review") && v.road?.label) {
     label = v.road.label;
     tone = v.road.you ? "attn" : v.road.done ? "ok" : "accent";
   }
+  // With the hub's road, its words, the same as everywhere else.
+  if (j) [label, tone] = [j.label, journeyTone(j, CLOSED.has(g.state))];
   $("g-state").textContent = label; $("g-state").className = `pill ${tone}`;
   const acts = [];
   if (g.stuck && !g.busy && !closed) acts.push(el("button", { class: "btn primary", type: "button", "data-action": "retry", onclick: () => goalAction("retry", "Try again") }, "Try again"));
@@ -1426,8 +1491,8 @@ async function approve(msgId, btn, err) {
 // ---------- tail: thinking, stuck, review, closed ----------
 function renderTail(v) {
   const g = v.goal;
-  const prs = (v.pieces ?? []).map(p => [p.thread_id, p.github?.state, p.github?.url, p.github?.error, p.github?.clash, p.merged, p.review, p.thread_state, p.road?.label]);
-  const sig = JSON.stringify([g.busy, g.stuck, g.state, g.dismissed_at, boardHref(), prs, v.live, v.road]);
+  const prs = (v.pieces ?? []).map(p => [p.thread_id, p.github?.state, p.github?.url, p.github?.error, p.github?.clash, p.github?.pull_request, p.github?.closed, p.merged, p.review, p.thread_state, p.road?.label, p.road?.why]);
+  const sig = JSON.stringify([g.busy, g.stuck, g.state, g.dismissed_at, boardHref(g.app_id), prs, v.live, v.road]);
   if (sig === S.tailSig) return false;
   S.tailSig = sig;
   const parts = [];
@@ -1443,9 +1508,9 @@ function renderTail(v) {
   const onlyResearch = (v.pieces ?? []).length > 0 && v.pieces.every(p => p.research && p.review === "passed");
   if (g.state === "for_review" && onlyResearch) {
     // Research changed no code: nothing to try on the board or merge. What it
-    // found is on the app's master plan, ready to be built.
+    // found is on the app's Roadmap, ready to be built.
     parts.push(el("div", { class: "callout attn" },
-      el("p", null, "The research is done and nothing in the app was changed. Read what it found below. To turn it into real changes, open the master plan, tap the × next to anything you don't want (Take off the plan), and tap Fix all that are left (or Fix this when only one is left). Or tap Turn into a goal on the report."),
+      el("p", null, "The research is done and nothing in the app was changed. Read what it found below. To turn it into real changes, open the app's Roadmap, tap the × next to anything you don't want (Take off the Roadmap), and tap Fix all that are left (or Fix this when only one is left). Or tap Turn into a goal on the report."),
       el("a", { class: "btn primary", href: D.planHref(g.app_id) }, "Fix what it found"),
       closeButton("btn"),
       el("p", { class: "hint" }, CLOSE_WORDS)));
@@ -1453,14 +1518,15 @@ function renderTail(v) {
     const sent = (v.pieces ?? []).some(p => p.github);
     // The goal closes by itself at the road's last step: merged, or live
     // where the app deploys or is Decurion itself (road.rs).
-    const last = v.road?.steps?.[v.road.steps.length - 1]?.step;
-    const ends = last === "live" ? "live" : "merged";
+    // For Decurion's own code that last step is On your PC, not Live.
+    const lastStep = v.road?.steps?.[v.road.steps.length - 1];
+    const ends = lastStep?.step !== "live" ? "merged" : lastStep.label === "On your PC" ? "on your PC" : "live";
     parts.push(el("div", { class: "callout attn" },
       el("p", null, sent
         ? `Everything is built and checked. Here is where each piece is, in the order to merge them. The goal closes by itself once every piece is ${ends}.`
-        : "Everything is built and checked. Try it out from the board, then close the goal."),
+        : `Everything is built and checked. ${onePiece(v) != null ? "Open the piece to try it out" : "Try it out from the app's Board"}, then close the goal.`),
       finishList(v),
-      el("a", { class: "btn", href: boardHref() }, "Open the board"),
+      el("a", { class: "btn", href: onePiece(v) != null ? D.workHref(onePiece(v)) : boardHref(g.app_id) }, onePiece(v) != null ? "Open this piece" : "Open the app's Board"),
       closeButton(sent ? "btn" : "btn primary"),
       el("p", { class: "hint" }, CLOSE_WORDS)));
   } else if (CLOSED.has(g.state)) {
@@ -1470,6 +1536,7 @@ function renderTail(v) {
       : v.road && !v.road.done ? v.road.next
       // An app that deploys: merged is not live until a deploy finishes.
       : v.live === false ? "Merged · ready to deploy. Tap Deploy on Today to put it live."
+      : v.road?.done && v.road.label === "On your PC" ? v.road.next
       : v.live === true || v.road?.label === "Live" ? "Live. Every piece is merged and live."
       : merged ? "Every pull request is merged, so this goal is done."
       : "You closed this goal. Nothing changed on GitHub or in the live app.";
@@ -1484,6 +1551,19 @@ function renderTail(v) {
   return true;
 }
 
+/** The one piece of work a goal has (research aside), so a link to the board can open it; null when there are several. */
+function onePiece(v) {
+  const real = (v.pieces ?? []).filter(p => !p.research);
+  return real.length === 1 ? real[0].thread_id : null;
+}
+
+/** Opens the pull request for a piece pushed with none: the hub finds or opens it, then watches it (D.openPullRequest). */
+function prButton(p) {
+  const b = el("button", { class: "btn primary", type: "button", "data-key": `open-pr-${p.thread_id}` }, "Open the pull request");
+  b.addEventListener("click", () => D.openPullRequest({ id: p.thread_id, title: p.title }, b, () => tick()));
+  return b;
+}
+
 /** Each piece's pull request, in plan order (the order to merge), with where it stands. */
 function finishList(v) {
   // Research pieces change no code, so they have no pull request to merge.
@@ -1494,11 +1574,15 @@ function finishList(v) {
     let what;
     // Merged, and Live where that is a step: the same words as the step bar.
     if (p.merged) what = pill(p.road?.done ? p.road.label : "Merged", p.road && !p.road.done ? "attn" : "ok");
-    else if (gh?.state === "sent" && gh.url) what = el("a", { class: "btn", href: gh.url, target: "_blank", rel: "noopener" }, gh.pull_request ? "Open the pull request" : "Open a pull request");
+    // On GitHub as a branch with no pull request: it can't be merged until
+    // one is open, so the hub opens it (the same tap as the piece's panel).
+    else if (gh?.state === "sent" && gh.closed) what = pill(p.road?.label ?? "Closed · not merged", "neutral");
+    else if (gh?.state === "sent" && !gh.pull_request && /^https:\/\/github\.com\//.test(gh.url ?? "")) what = prButton(p);
+    else if (gh?.state === "sent" && gh.url) what = el("a", { class: "btn", href: gh.url, target: "_blank", rel: "noopener" }, gh.pull_request ? "Open the pull request" : "Open on GitHub");
     else if (gh?.state === "sent") what = pill("Sent", "neutral");
-    else if (gh?.state === "failed") what = el("a", { class: "btn", href: boardHref() }, "Didn't reach GitHub: open the board");
+    else if (gh?.state === "failed") what = el("a", { class: "btn", href: D.workHref(p.thread_id) }, "Didn't reach GitHub: open this piece");
     else if (gh) what = el("span", { class: "hint" }, "Sending to GitHub…");
-    else if (p.review === "needs_a_look") what = el("a", { class: "btn", href: boardHref() }, "Needs your look on the board");
+    else if (p.review === "needs_a_look") what = el("a", { class: "btn", href: D.workHref(p.thread_id) }, "Needs your look: open this piece");
     else what = el("span", { class: "hint" }, p.review === "failed" ? "Couldn't be finished" : "Not sent");
     // Why Decurion didn't open it, and what GitHub's warnings there mean,
     // in the same plain words as the piece's own panel.
@@ -1630,7 +1714,7 @@ function renderPieces(v) {
       // The check coming for it, from the hub (live.rs): working, lined up, or why it waits.
       p.check ? el("p", { class: "check-line", role: "status" }, p.check.state === "running" ? dots(true) : null, D.checkLine(p.check)) : null,
       el("div", { class: "pp-done" }, el("b", null, p.research ? "Answers: " : "Done when: "), p.done_when),
-      p.road ? el("div", { class: "piece-road" }, D.road(p.road)) : null,
+      p.road ? el("div", { class: "piece-road" }, D.road(p.road, { github: p.github })) : null,
       el("dl", { class: "facts" },
         el("div", null, el("dt", null, "Agent:"), el("dd", null, THREAD_STATES[p.thread_state] ?? p.thread_state)),
         p.research ? null : el("div", null, el("dt", null, "Checked:"), el("dd", null, rounds)),
@@ -1649,7 +1733,7 @@ function renderPieces(v) {
         check ? el("a", { class: "btn built", ...pageLink(v.goal.id, check.id) }, inApp() ? "See it as built" : "See it as built ↗", newTabNote()) : null,
         turn,
         built(p) && !CLOSED.has(v.goal.state) && !S.why.has(`${v.goal.id}:${p.thread_id}`) ? whyBox(v, p) : null,
-        el("a", { class: "btn ghost", href: boardHref() }, "On the board")),
+        el("a", { class: "btn ghost", href: D.workHref(p.thread_id) }, "Open this piece")),
       built(p) && !CLOSED.has(v.goal.state) && S.why.has(`${v.goal.id}:${p.thread_id}`) ? whyBox(v, p) : null,
       err);
   }));
@@ -1750,12 +1834,14 @@ function setConn(text, off) {
   document.querySelectorAll(".conn").forEach(c => { c.textContent = text; c.classList.toggle("off", off); });
 }
 document.querySelector(".shell").after(D.phoneTabs("goals"));
+// The phone's small "?" for help, at the end of its top bar (Help is no phone tab).
+if (D.helpButton) document.querySelector(".top").append(D.helpButton());
 $("tab-goals").addEventListener("click", e => {
   e.preventDefault();
   document.querySelector(".side").scrollTo({ top: 0, behavior: reducedMotion.matches ? "auto" : "smooth" });
 });
 function placeLinks() {
-  document.querySelectorAll("a[data-board]").forEach(a => { a.href = boardHref(); });
+  document.querySelectorAll("a[data-board]").forEach(a => { a.href = boardHref(S.view?.goal?.app_id); });
   // On a phone, apps are added in Settings.
   // The new-work box's "Add an app" goes to Settings on the board, or in the phone's inbox.
   $("ng-no-apps").querySelector("p").textContent = `An app is a git folder on ${inApp() ? "your" : "this"} PC. Add one in Settings, then say what you want here.`;

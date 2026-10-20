@@ -212,7 +212,14 @@ impl Store {
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
-        rows.iter().map(|r| view_from(r, &checks)).collect()
+        let mut views = rows
+            .iter()
+            .map(|r| view_from(r, &checks))
+            .collect::<Result<Vec<_>>>()?;
+        // Asked after the read: it may ask an app's clone (read-only).
+        self.with_roads(views.iter_mut().map(|v| &mut v.thread))
+            .await?;
+        Ok(views)
     }
 
     /// One piece of work, with what is alive about it now.
@@ -227,7 +234,9 @@ impl Store {
         .await?
         .ok_or(StoreError::NotFound)?;
         tx.commit().await?;
-        view_from(&row, &checks)
+        let mut view = view_from(&row, &checks)?;
+        self.with_roads([&mut view.thread]).await?;
+        Ok(view)
     }
 
     /// Helper agents' jobs running now or lined up, oldest first. A job

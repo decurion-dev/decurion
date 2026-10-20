@@ -1,4 +1,4 @@
-//! The master plan and the page library: what each app's goals have done,
+//! The Roadmap and the page library: what each app's goals have done,
 //! what is left, and every page agents drew, beside the goal and piece it
 //! belongs to. Shapes and rules are in [`decurion_proto::plan`].
 //!
@@ -343,6 +343,7 @@ fn todo_item(row: ItemRow, fix_goal: Option<GoalRef>) -> PlanItem {
         state: row.state,
         goal: fix_goal,
         steps: Vec::new(),
+        journey: None,
         found: Vec::new(),
         pages: Vec::new(),
         created_at: row.created_at,
@@ -373,10 +374,10 @@ fn live_goal(r: &SqliteRow) -> Result<LiveGoal> {
 /// A top-level row of the plan while it is put together.
 enum Top {
     Goal(ItemRow),
-    Todo(PlanItem),
+    Todo(Box<PlanItem>),
 }
 
-/// Puts a goal on its app's master plan, at the end of the top level.
+/// Puts a goal on its app's Roadmap, at the end of the top level.
 /// Called in the transaction that starts the goal. Returns the row's id.
 pub(crate) async fn add_goal_row(
     tx: &mut Transaction<'_, Sqlite>,
@@ -513,7 +514,7 @@ fn fix_text(
 ) -> String {
     let mut s = match found_in {
         Some(g) => format!("Please fix these, found while working on \"{g}\":\n"),
-        None => "Please take care of these, from this app's master plan:\n".to_owned(),
+        None => "Please take care of these, from this app's Roadmap:\n".to_owned(),
     };
     for (title, detail) in items {
         match detail {
@@ -541,12 +542,21 @@ fn fix_title(items: &[(String, Option<String>)]) -> String {
 }
 
 impl Store {
-    /// An app's master plan: top-level rows in the owner's order, each goal
+    /// An app's Roadmap: top-level rows in the owner's order, each goal
     /// with its steps, what it found and its pages.
     pub async fn plan_view(&self, app_id: i64) -> Result<PlanView> {
         let app = self.app(app_id).await?;
         // Read before the transaction, which holds this task's one connection.
         let live = self.goals_live(Some(app_id)).await?;
+        // Each goal row's state words are its journey's, the same ones the
+        // goals list, the board and the phone show.
+        let app_goals: Vec<Goal> = self
+            .goals()
+            .await?
+            .into_iter()
+            .filter(|g| g.app_id == app_id)
+            .collect();
+        let mut journeys = self.journeys(&app_goals).await?;
         let mut tx = self.pool().begin().await?; // read-only: a reader never waits on writers
         let rows = sqlx::query(&format!(
             "SELECT {ITEM_COLS} FROM plan_items WHERE app_id = ? ORDER BY position, id"
@@ -621,16 +631,20 @@ impl Store {
         for row in rows {
             match row.kind {
                 ItemKind::Todo => {
-                    count(row.state);
                     let fix = row
                         .fix_goal_id
                         .and_then(|id| goals.get(&id))
                         .map(|g| g.goal.clone());
+                    // A to-do handed to a goal that is not stopped is carried by
+                    // that goal's own row, so it is counted once, there.
+                    if fix.as_ref().is_none_or(|g| g.state == GoalState::Stopped) {
+                        count(row.state);
+                    }
                     let parent = row.parent_id;
                     let item = todo_item(row, fix);
                     match parent {
                         Some(p) => children.entry(p).or_default().push(item),
-                        None => top.push(Top::Todo(item)),
+                        None => top.push(Top::Todo(Box::new(item))),
                     }
                 }
                 ItemKind::Goal => {
@@ -645,7 +659,7 @@ impl Store {
         for entry in top {
             let row = match entry {
                 Top::Todo(item) => {
-                    items.push(item);
+                    items.push(*item);
                     continue;
                 }
                 Top::Goal(row) => row,
@@ -672,6 +686,7 @@ impl Store {
                     can_deploy,
                     live.get(&id).copied(),
                 ),
+                journey: journeys.remove(&id),
                 found: children.remove(&row.id).unwrap_or_default(),
                 pages: pages.remove(&id).unwrap_or_default(),
                 created_at: row.created_at,
@@ -1008,7 +1023,7 @@ async fn fix_checks(
     })
 }
 
-/// `GET /api/apps/{id}/plan`: the app's master plan.
+/// `GET /api/apps/{id}/plan`: the app's Roadmap.
 pub(crate) async fn view(
     State(st): State<AppState>,
     Extension(c): Extension<Caller>,

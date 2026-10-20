@@ -41,12 +41,9 @@ On the same **Name and folder** tab, **Remove app** hides the app from Decurion.
 
 ## Let one app go first today
 
-When one app matters most today, do one of these:
+When one app matters most today, open **Settings**, **Apps**, then the app's **Plan and money** tab, and click **Go first today**.
 
-- On the app's **Plan and money** tab, click **Go first today**.
-- On the board, click the star next to the app's name in the list of apps.
-
-Its waiting work then starts before other apps' work. The star ends by itself at the end of the day. To take it off sooner, click it again. It changes only the order: the money caps and plan limits still apply.
+Its waiting work then starts before other apps' work, and its line on Home says **First today**. It ends by itself at the end of the day. To end it sooner, click **Going first today**. It changes only the order: the money caps and plan limits still apply.
 
 ## Apps take turns
 

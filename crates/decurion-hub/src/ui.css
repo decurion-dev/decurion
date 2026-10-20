@@ -236,6 +236,30 @@ input[aria-invalid="true"] { border-color: var(--red); }
 .gh.notice { flex-wrap: wrap; align-items: center; }
 .gh.notice .grow { flex: 1 1 220px; }
 .gh.notice .btn { margin-top: 0; margin-bottom: 0; margin-left: auto; }
+/* Open the pull request (or Try again) and the GitHub link, side by side, wrapping on a phone. */
+.gh.notice .gh-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.gh.notice .gh-acts .btn { margin-left: 0; }
+@media (max-width: 640px) { .gh.notice .gh-acts .btn { min-height: 44px; } }
+
+/* Which Decurion this PC runs (D.versionNote): on the Decurion app's Today
+   row while it is behind. Amber says it needs the owner; What's new and How
+   to update are blue because they are pressed. Above the row's tap area. */
+.ver-note { position: relative; z-index: 1; display: grid; gap: 2px; justify-items: start; min-width: 0; font-size: 13px; }
+.ver-line { display: flex; gap: 6px; align-items: flex-start; margin: 0; color: var(--amber); font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
+.ver-line svg.i { width: 14px; height: 14px; margin-top: 2px; }
+.ver-new { min-width: 0; max-width: 100%; }
+.ver-new > summary, .ver-how { min-height: 28px; display: inline-flex; align-items: center; gap: 4px; color: var(--accent-ink); font-weight: 600; text-decoration: none; cursor: pointer; }
+.ver-new > summary svg.i, .ver-how svg.i { width: 14px; height: 14px; }
+.ver-how:hover, .ver-new > summary:hover { text-decoration: underline; }
+.ver-changes { margin: 2px 0 4px; padding-left: 18px; display: grid; gap: 2px; color: var(--ink); overflow-wrap: anywhere; }
+.ver-num { color: var(--muted); }
+@media (max-width: 640px) { .ver-new > summary, .ver-how { min-height: 44px; } }
+/* Settings, Decurion tab: the version row, the hub's words, the waiting changes and how to update. */
+#decurion-version { display: grid; gap: 10px; min-width: 0; }
+#decurion-version .sub-h { margin: 6px 0 0; }
+#decurion-version .ver-words { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+#decurion-version .ver-changes { margin: 0; font-size: 14px; }
+.ver-how-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 14px; overflow-wrap: anywhere; }
 @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
 .skeleton { border-radius: var(--radius); background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2)); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; }
@@ -886,4 +910,148 @@ ul.dl-mono { list-style: square; }
   .dl-sheet-foot { padding-left: 16px; padding-right: 16px; }
   .dl-sheet-foot .btn { flex: 1 1 0; }
   .dl-log { max-height: none; flex: 1; }
+}
+
+/* ---------- Home (ui.js): its switch, its three lists, the app rows and the board by goal ---------- */
+/* The same look on the PC (board.html) and the phone (inbox.html). */
+.home-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; min-width: 0; }
+.home-head .grow { flex: 1; }
+.app-pick {
+  width: auto; max-width: 240px; min-height: 32px; padding: 0 30px 0 10px;
+  font: 600 13px/1 var(--font); color: var(--ink); background-color: var(--surface-2); border-color: transparent;
+}
+.app-pick:hover { border-color: var(--field-line); }
+.home-tabs .ptab .need-i { color: var(--amber); }
+.home-tabs .ptab .need-i[hidden] { display: none; }
+/* A phone keeps all three of Home's tabs in sight. */
+@media (max-width: 420px) { .home-tabs { gap: 0; } .home-tabs .ptab { padding-left: 7px; padding-right: 7px; gap: 4px; font-size: 14px; } .home-tabs .ptab .ct { min-width: 20px; padding: 0 5px; } }
+@media (max-width: 380px) { .home-tabs .ptab { padding-left: 4px; padding-right: 4px; } }
+.hpanel { display: grid; gap: 12px; padding-top: 14px; align-content: start; min-width: 0; }
+.hlist { display: grid; gap: 10px; min-width: 0; }
+.hempty { padding: 28px 16px; }
+.hempty .btn { margin-top: 4px; }
+/* "See all finished work" at the end of Done today (D.allFinishedLink), and "‹ Home" back from it. */
+.hall, .back-link {
+  justify-self: start; display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 8px; margin-left: -8px;
+  border-radius: var(--radius-s); font: 600 13.5px/1.2 var(--font); color: var(--accent-ink); text-decoration: none;
+}
+.hall:hover, .back-link:hover { text-decoration: underline; }
+.hall svg.i, .back-link svg.i { width: 16px; height: 16px; }
+@media (max-width: 640px) { .hall, .back-link { min-height: 44px; font-size: 15px; } }
+
+/* A small switch between views of one thing (D.segmented): the open one looks pressed. */
+.hseg { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--radius-s); background: var(--surface-2); max-width: 100%; }
+.hseg-b {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px;
+  border: 0; border-radius: 6px; background: none; cursor: pointer;
+  font: 600 13px/1 var(--font); color: var(--muted); white-space: nowrap;
+  transition: background-color .12s var(--ease), color .12s var(--ease);
+}
+.hseg-b:hover { color: var(--ink); }
+.hseg-b svg.i { width: 15px; height: 15px; }
+.hseg-b[aria-checked="true"] { background: var(--surface); color: var(--accent-ink); box-shadow: 0 0 0 1px var(--line), 0 1px 2px rgba(15, 18, 24, 0.08); }
+
+/* One row on a list: a goal (D.goalRow), a job of its own (D.workRow) or a pull request (D.prRow). */
+.hrow {
+  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px 16px; min-width: 0;
+  padding: 12px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  cursor: pointer; transition: border-color .12s var(--ease);
+}
+.hrow:hover { border-color: var(--field-line); }
+.hrow[data-tone="you"] { background: color-mix(in srgb, var(--amber-soft) 75%, var(--surface)); border-color: var(--amber-line); }
+.hrow[data-tone="failed"] { border-color: var(--red-line); }
+.hrow-main { flex: 1 1 300px; min-width: 0; display: grid; gap: 4px; }
+.hrow-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; font-size: 12.5px; color: var(--muted); }
+.hrow-meta .dot-sep::before { margin: 0 8px 0 0; }
+.hrow-kind { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; white-space: nowrap; }
+.hrow-kind svg.i { width: 13px; height: 13px; }
+.hrow-h { margin: 0; font-size: 15.5px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
+.hrow-title { padding: 0; border: 0; background: none; font: inherit; color: var(--ink); text-align: left; text-decoration: none; cursor: pointer; overflow-wrap: anywhere; }
+.hrow-title:hover { text-decoration: underline; }
+.hrow-road { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13px; font-weight: 600; color: var(--ink); }
+.hrow[data-tone="you"] .hrow-label { color: var(--amber); }
+.hrow[data-tone="done"] .hrow-label { color: var(--green); }
+.hrow-next { font-size: 13.5px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.hrow[data-tone="you"] .hrow-next { color: var(--ink); }
+.hrow-act { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; flex: 0 1 auto; }
+.hrow-links { display: flex; flex-wrap: wrap; gap: 2px 6px; margin-left: -8px; }
+.hrow .rmarks { margin-top: 2px; }
+.hrow .check-note { margin-top: 2px; }
+@media (max-width: 640px) {
+  .hrow { padding: 12px; }
+  .hrow-act { justify-content: flex-start; width: 100%; }
+  .hrow-act .btn, .hrow-links .btn { min-height: 44px; }
+  .hrow-h .hrow-title { display: inline-block; padding: 12px 0; margin: -12px 0; }
+  .hseg-b { min-height: 44px; padding: 0 14px; font-size: 14px; }
+  .app-pick { min-height: 44px; font-size: 15px; }
+}
+
+/* Each app's row (D.todayList): what it waits on, with its buttons. */
+.happs { display: grid; min-width: 0; padding: 2px 14px 4px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.happs-h { margin: 0; padding: 10px 0 4px; font: 600 13px/1.2 var(--font); color: var(--muted); }
+.happ { display: grid; gap: 6px; min-width: 0; padding: 10px 0; }
+.happ + .happ { border-top: 1px solid var(--line); }
+.happ-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0; }
+.happ-words { flex: 1 1 220px; min-width: 0; display: grid; gap: 2px; }
+.happ-name { justify-self: start; padding: 0; border: 0; background: none; font: 600 14.5px/1.3 var(--font); color: var(--ink); text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+button.happ-name:hover { text-decoration: underline; }
+.happ-name[aria-pressed="true"] { color: var(--accent-ink); }
+.happ-line { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.happ-health { font-size: 13px; color: var(--ink); overflow-wrap: anywhere; }
+.happ-use, .happ-first { font-size: 12px; color: var(--faint); }
+.happ-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.happ .pill svg.i.spin { animation: none; }
+.pill.t-merge { color: var(--accent-ink); background: var(--accent-soft); }
+@media (max-width: 640px) {
+  .happ-acts .btn { min-height: 44px; }
+  button.happ-name { min-height: 44px; }
+}
+@media (max-width: 399px) { .happ .run-btn .lbl { display: none; } .happ .run-btn { width: 44px; padding: 0; } }
+
+/* The board, by goal (D.laneBoard): one lane per open goal, four columns.
+   Narrow, each lane is a list under its column words; nothing scrolls sideways. */
+.lanes { display: grid; gap: 10px; min-width: 0; container-type: inline-size; }
+.lanes-head, .lane { display: grid; grid-template-columns: minmax(150px, 1.15fr) repeat(4, minmax(0, 1fr)); gap: 10px; }
+.lanes-head { padding: 0 11px; font-size: 12.5px; font-weight: 700; color: var(--muted); }
+.lane { align-items: start; padding: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.lane.quick { background: color-mix(in srgb, var(--surface-2) 45%, var(--surface)); }
+.lane-goal { display: grid; gap: 4px; align-content: start; min-width: 0; }
+.lane-title { margin: 0; font-size: 14.5px; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere; }
+.lane-title a { color: var(--ink); text-decoration: none; }
+.lane-title a:hover { text-decoration: underline; }
+.lane-sub { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.lane-road { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12.5px; font-weight: 600; color: var(--ink); }
+.lane-road.you > span:last-child { color: var(--amber); }
+.lane-help { display: flex; align-items: flex-start; gap: 6px; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.lane-help svg.i { width: 13px; height: 13px; margin-top: 2px; }
+.lane-cell { display: grid; gap: 6px; align-content: start; min-width: 0; min-height: 40px; padding: 4px; border-radius: var(--radius-s); background: var(--bg); }
+.lane-col { display: none; }
+.lane-more { padding: 0 4px; font-size: 12px; color: var(--muted); }
+.lpc {
+  display: grid; gap: 4px; width: 100%; min-width: 0; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface);
+  font: 500 13px/1.35 var(--font); color: var(--ink); text-align: left; text-decoration: none; cursor: pointer;
+  transition: border-color .12s var(--ease);
+}
+.lpc:hover { border-color: var(--field-line); }
+.lpc.you { background: var(--amber-soft); border-color: var(--amber-line); }
+.lpc.failed { background: var(--red-soft); border-color: var(--red-line); }
+.lpc-t { font-weight: 600; overflow-wrap: anywhere; }
+.lpc-w, .lpc-s { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.lpc-w { color: var(--amber); }
+.lpc-s { color: var(--muted); }
+.lpc-s.fin { color: var(--green); }
+.lpc-s.bad { color: var(--red); }
+.lpc svg.i { width: 13px; height: 13px; }
+.lane-sk { height: 96px; border-radius: var(--radius); }
+.lanes-empty { border: 1px dashed var(--line); border-radius: var(--radius-l); }
+@container (max-width: 640px) {
+  .lanes-head { display: none; }
+  .lane { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 12px; }
+  .lane-cell { min-height: 0; padding: 0; background: none; }
+  .lane-cell.empty { display: none; }
+  .lane-col { display: flex; align-items: center; gap: 8px; margin: 6px 0 0; font: 600 13px/1.2 var(--font); color: var(--muted); }
+  .lane-col .ct { font-size: 12px; min-width: 20px; padding: 1px 6px; border-radius: 99px; background: var(--surface-2); text-align: center; font-variant-numeric: tabular-nums; }
+  .lpc { min-height: 44px; padding: 10px 12px; font-size: 14px; }
+  .lane-title a { display: inline-block; padding: 10px 0; margin: -10px 0; }
 }
