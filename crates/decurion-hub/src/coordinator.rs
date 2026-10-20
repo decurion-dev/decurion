@@ -384,7 +384,7 @@ fn transcript(messages: &[GoalMessage]) -> String {
 
 const REPLY_SHAPE: &str = r#"End every answer with one JSON object and nothing after it, in this shape:
 {"say": "...", "questions": [{"id": "q1", "text": "...", "choices": ["...", "..."], "recommended": 0}], "plan": {"summary": "...", "pieces": [{"title": "...", "brief": "...", "done_when": "...", "touches_protected": false, "research": true}]}, "remember": ["..."], "todo": [{"title": "...", "detail": "..."}]}
-Leave out "questions" or "plan" when you have none, and never send both in one answer. Put "research": true only on a research piece and leave it out for every piece that builds. "remember" is for lasting facts about this app that will help in later goals, such as how to run its tests; usually leave it out. "todo" adds items to this app's master plan, under this goal: things that were found and still need doing, or follow-ups worth doing later, one item each (at most 10), with a short title in plain words and a detail if it helps. Nothing happens to them until the owner decides. While you are still talking a goal through, usually leave it out."#;
+Leave out "questions" or "plan" when you have none, and never send both in one answer. Put "research": true only on a research piece and leave it out for every piece that builds. "remember" is for lasting facts about this app that will help in later goals, such as how to run its tests; usually leave it out. "todo" adds items to this app's Roadmap, under this goal: things that were found and still need doing, or follow-ups worth doing later, one item each (at most 10), with a short title in plain words and a detail if it helps. Nothing happens to them until the owner decides. While you are still talking a goal through, usually leave it out."#;
 
 fn coordinator_brief(app: &str, notes: &[String]) -> String {
     let mut s = format!(
@@ -1382,6 +1382,11 @@ impl Store {
             };
         tx.commit().await?;
         let live = self.goal_live(id).await?;
+        let journey = self
+            .journeys(std::slice::from_ref(&goal))
+            .await?
+            .remove(&id)
+            .unwrap_or_default();
         Ok(GoalView {
             goal,
             app_name,
@@ -1393,6 +1398,7 @@ impl Store {
             usage,
             road,
             story,
+            journey,
         })
     }
 
@@ -2301,7 +2307,7 @@ impl Store {
                             .bind(&purpose)
                             .execute(&mut *tx)
                             .await?;
-                        // Findings and follow-ups go on the master plan under this
+                        // Findings and follow-ups go on the Roadmap under this
                         // goal. They do nothing until the owner taps, so they are
                         // kept from report turns too.
                         crate::plan::add_lead_todos(&mut tx, app_id, goal_id, &title, &reply.todo)

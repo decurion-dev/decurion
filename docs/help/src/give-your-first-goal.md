@@ -97,6 +97,34 @@ piece waits for you to tap **Accept**. A piece that changes a protected part
 always waits for your **Accept**, and its step bar says **Needs you · tap
 Accept** and names the protected files.
 
+## See where a goal is
+
+Every goal has one road, and every screen shows the same one: the Goals
+page, the goal's own page, the board, your phone and the
+[Roadmap](follow-your-roadmap.md). Its stages are:
+
+**Ask**, **Plan**, **Build**, **Check**, **Merge**, **Live**
+
+- **Ask**: you and your project lead talk it through.
+- **Plan**: the plan waits for your one approval.
+- **Build**: agents build the pieces.
+- **Check**: a checker agent tries each piece.
+- **Merge**: each piece goes to GitHub as a pull request and is merged.
+- **Live**: only for an app that deploys from Decurion. For Decurion itself
+  this stage is called **On your PC**. Other apps end with **Merge**.
+
+The stage the goal is on has a dot, and one that waits for you is amber.
+Next to the stages, one status says where the goal is, such as **Talking it
+through**, **Working**, **Needs you · approve the plan**, **Needs you ·
+answer the agent** or **Needs you · merge on GitHub**, and one line says what
+happens next, who does it, and what Decurion does by itself. When a goal
+needs you, it has one button for that, such as **Approve the plan** or
+**Merge on GitHub**.
+
+A goal with many pieces sits where its slowest piece is. When any piece
+waits for you, the goal says so, and it counts once in **Needs you**, however
+many of its pieces wait.
+
 ## Follow each piece to live
 
 The goal's page, each piece's card and its panel, on the PC and the phone,

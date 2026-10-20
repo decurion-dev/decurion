@@ -1174,8 +1174,8 @@ async fn the_inbox_replaces_a_subscription_made_with_another_key() {
 }
 
 /// Finished research changed no code, so its card and its goal point to the
-/// fixes on the app's master plan, never to Accept and GitHub. A link to one
-/// app's master plan opens that app, not the last one picked.
+/// fixes on the app's Roadmap, never to Accept and GitHub. A link to one
+/// app's Roadmap opens that app, not the last one picked.
 #[tokio::test]
 async fn finished_research_points_to_its_fixes() {
     let (r, _) = hub().await;
@@ -2037,10 +2037,10 @@ async fn pages_load_their_shared_look_without_signing_in() {
     }
 }
 
-/// The Board, Goals and the Master plan show one menu and one logo on a PC,
+/// The Board, Goals and the Roadmap show one menu and one logo on a PC,
 /// so moving between them never feels like changing apps.
 #[tokio::test]
-async fn the_board_goals_and_master_plan_share_one_pc_menu() {
+async fn the_board_goals_and_roadmap_share_one_pc_menu() {
     let (r, _) = hub().await;
     for (path, call) in [
         ("/", "D.pcNav(\"board\")"),

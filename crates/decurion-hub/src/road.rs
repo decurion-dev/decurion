@@ -444,7 +444,7 @@ fn checked_mark(f: &Facts) -> StepMark {
 
 /// How many steps are behind a road: the index of its step now, or all of
 /// them once it is done.
-fn progress(r: &Road) -> usize {
+pub(crate) fn progress(r: &Road) -> usize {
     r.steps
         .iter()
         .position(|s| s.mark == StepMark::Now)

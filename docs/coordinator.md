@@ -70,7 +70,7 @@ all merged, the goal closes by itself.
   buttons beside the page, never inside it, and your answers reach the
   coordinator as a message from you. Questions in the wrong shape are dropped;
   the page is still shown.
-- The coordinator can add to-do items to the app's **master plan**, under the
+- The coordinator can add to-do items to the app's **Roadmap**, under the
   goal it is working on (`"todo": [{"title", "detail"}]` in its answer, at most
   10): what an audit or finished work found that still needs doing, and
   follow-ups worth doing. Its report asks for every finding there, one item
@@ -99,7 +99,7 @@ Owner calls (board browser, paired phone, or owner key):
 | `GET /api/goals/{id}/pages/{page}/questions` | A page's questions and, once given, your answers (`PageQuestions`) |
 | `POST /api/goals/{id}/pages/{page}/answer` `{answers:[{question_id, choice?, other?}], receipt?}` | Answers a page's questions, once |
 | `GET /api/apps/{id}/notes` | The coordinator's notes about an app |
-| `GET /api/apps/{id}/plan` | The app's master plan (`PlanView`): goals with their steps, findings and pages, and to-dos |
+| `GET /api/apps/{id}/plan` | The app's Roadmap (`PlanView`): goals with their steps, findings and pages, and to-dos |
 | `POST /api/apps/{id}/plan/items` `{title, detail?, parent_id?, receipt?}` | Adds a to-do at the end, or under a goal's row; 201 with the item (200 for a resent receipt) |
 | `POST /api/plan/items/{id}` `{state?, title?, detail?}` | Ticks, reopens, drops or rewords a to-do; goal rows refuse |
 | `POST /api/plan/items/{id}/move` `{direction: "up"\|"down"}` | Moves a row one place among the rows beside it; returns the plan |

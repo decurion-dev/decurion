@@ -41,7 +41,7 @@ If you merge again before you tap, the same card moves to the newest version. Yo
 
 For an app that deploys, a goal is not finished at the merge. Its last step is **Live**:
 
-- On the goal's page, the master plan and the **Today** row, a merged goal says **Merged · ready to deploy** until a deploy carries that merge.
+- On the goal's page, the Roadmap and the **Today** row, a merged goal says **Merged · ready to deploy** until a deploy carries that merge.
 - Once the deploy finishes, the same goal says **Live**.
 
 Apps that don't deploy from Decurion show **Done** at the merge, as before.

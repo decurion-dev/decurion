@@ -30,6 +30,7 @@ pub mod dismiss;
 pub mod folders;
 pub mod github;
 pub mod help;
+pub mod journey;
 pub mod limits;
 pub mod live;
 pub mod merge;
@@ -486,7 +487,7 @@ pub fn router(state: AppState) -> Router {
             "/ui.css",
             get(|| async { asset("text/css; charset=utf-8", include_str!("ui.css")) }),
         )
-        // The PC menu's look, shared by the board, goals and the master plan.
+        // The PC menu's look, shared by the board, goals and the Roadmap.
         .route(
             "/menu.css",
             get(|| async { asset("text/css; charset=utf-8", include_str!("menu.css")) }),
@@ -810,7 +811,7 @@ async fn goals_page() -> Response {
     page(include_str!("goals.html"))
 }
 
-/// The master plan and the page library. Data comes from `/api/apps/{id}/plan`
+/// The Roadmap and the page library. Data comes from `/api/apps/{id}/plan`
 /// and `/api/library`.
 async fn plan_page() -> Response {
     page(include_str!("plan.html"))

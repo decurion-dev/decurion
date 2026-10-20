@@ -1,5 +1,5 @@
 /* The PC menu (D.pcNav in ui.js): the logo and the four places, the same on
-   the Board, Goals and the Master plan. It is its own file because goals.html
+   the Board, Goals and the Roadmap. It is its own file because goals.html
    has its own look and does not load ui.css, so it uses only the colour names
    both looks define (--bg, --ink, --muted, --line, --accent-soft,
    --accent-ink) and falls back for the rest. Blue marks the page you are on,
@@ -24,6 +24,17 @@
 .pcnav-item[aria-current="page"] { background: var(--accent-soft); color: var(--accent-ink); }
 .pcnav-item svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .pcnav-item .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The one count of what needs you, on Board (D.showNeeds): amber, as
+   everything that waits on the owner. The words for screen readers are on
+   the link itself. */
+.pcnav-item { position: relative; }
+.pcnav-needs {
+  margin-left: auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; display: inline-grid; place-items: center;
+  font: 700 11.5px/1 var(--font, inherit); font-variant-numeric: tabular-nums;
+  color: var(--amber, var(--warn-ink, #8a5300)); background: var(--amber-soft, var(--warn-soft, #fff6e5));
+  box-shadow: inset 0 0 0 1px var(--amber-line, var(--warn, #b97a0f));
+}
+.pcnav-needs[hidden] { display: none; }
 
 /* The rail: a narrow column down the left edge, each label under its icon.
    The page gives its body the has-rail class so its own content starts
@@ -44,6 +55,7 @@ body.has-rail { padding-left: var(--pcnav-rail); }
 }
 .pcnav.rail .pcnav-item svg.i { width: 20px; height: 20px; }
 .pcnav.rail .pcnav-item .nm { white-space: normal; }
+.pcnav.rail .pcnav-needs { position: absolute; top: 4px; right: 8px; margin: 0; min-width: 18px; height: 18px; padding: 0 5px; font-size: 10.5px; }
 .pcnav-foot { margin-top: auto; display: flex; justify-content: center; }
 
 @media (prefers-reduced-motion: reduce) {

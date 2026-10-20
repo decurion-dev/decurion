@@ -130,18 +130,20 @@
   // The phone's bottom tabs, the same on the inbox and the goals page so the
   // phone feels like one app. Inbox, Board and Settings are hash routes of
   // /inbox (a link to another hash of the page you are on does not reload
-  // it); Goals and Plan (the master plan) are pages of their own. Each page
+  // it); Goals and the Roadmap (/plan) are pages of their own. Each page
   // styles .tabbar in its own look.
-  // The badges start hidden; the page fills them in.
+  // The one badge is on Inbox: the hub's one count of what needs you
+  // (D.showNeeds), the same number as the PC menu's and the board's. It
+  // starts hidden; it shows only once the hub has said.
   D.phoneTabs = (current) => D.el("nav", { className: "tabbar", "aria-label": "Sections" },
     D.el("div", { className: "tabs" }, [
       ["inbox", "/inbox#inbox", "Inbox", "inbox", "badge"],
       ["board", "/inbox#board", "Board", "board"],
-      ["goals", "/goals", "Goals", "send", "goals-badge"],
-      ["plan", "/plan", "Plan", "plan"],
+      ["goals", "/goals", "Goals", "send"],
+      ["plan", "/plan", "Roadmap", "plan"],
       ["settings", "/inbox#settings", "Settings", "settings"],
     ].map(([tab, href, label, icon, badge]) => D.el("a", { className: "tab", id: `tab-${tab}`, href, "aria-current": tab === current ? "page" : null },
-      D.el("span", { className: "ind" }, D.icon(icon), badge && D.el("span", { className: "badge", id: badge, hidden: true })),
+      D.el("span", { className: "ind" }, D.icon(icon), badge && D.el("span", { className: "badge", id: badge, hidden: true, dataset: { needsBadge: "inbox" } })),
       D.el("span", {}, label))).concat(
       // Help leaves Decurion: no badge, never the current page.
       D.el("a", { className: "tab", id: "tab-help", href: D.HELP_URL, target: "_blank", rel: "noopener noreferrer" },
@@ -149,24 +151,26 @@
         D.el("span", {}, "Help")))));
 
   // The PC menu: the logo and the same four places in the same order on the
-  // Board, Goals and the Master plan, so moving between them feels like one
+  // Board, Goals and the Roadmap, so moving between them feels like one
   // app. Its look lives once, in menu.css (goals.html has no ui.css). The
   // board shows it at the top of its sidebar; `rail` is the narrow one for
   // pages that need the width, each label under its icon. `foot` sits at the
   // bottom of a rail. Board and Settings are hash routes of the board page,
   // so on the board they switch without a reload; data-route lets the board
   // mark the one it shows. Phones use D.phoneTabs instead: each page hides
-  // this menu at its own phone width.
+  // this menu at its own phone width. Board carries the one count of what
+  // needs you (D.showNeeds), hidden until the hub has said.
   D.pcNav = (current, { rail = false, foot = null } = {}) => D.el("div", { className: rail ? "pcnav rail" : "pcnav" },
     D.el("a", { className: "pcnav-brand", href: "/#board", title: rail ? "Decurion" : null },
       D.mark(rail ? 32 : 28), D.el("span", { className: "nm" }, "Decurion")),
     D.el("nav", { className: "pcnav-items", "aria-label": "Pages" }, [
-      ["board", "/#board", "Board", "board"],
+      ["board", "/#board", "Board", "board", true],
       ["goals", "/goals", "Goals", "send"],
-      ["plan", "/plan", "Master plan", "plan"],
+      ["plan", "/plan", "Roadmap", "plan"],
       ["settings", "/#settings", "Settings", "settings"],
-    ].map(([page, href, label, icon]) => D.el("a", { className: "pcnav-item", href, dataset: { route: page }, "aria-current": page === current ? "page" : null },
-      D.icon(icon), D.el("span", { className: "nm" }, label))).concat(
+    ].map(([page, href, label, icon, needs]) => D.el("a", { className: "pcnav-item", href, dataset: { route: page }, "aria-current": page === current ? "page" : null },
+      D.icon(icon), D.el("span", { className: "nm" }, label),
+      needs ? D.el("span", { className: "pcnav-needs", hidden: true, dataset: { needsBadge: "menu" } }) : null)).concat(
       // Help leaves Decurion: no data-route, never the current page.
       D.el("a", { className: "pcnav-item", href: D.HELP_URL, target: "_blank", rel: "noopener noreferrer" },
         D.icon("help"), D.el("span", { className: "nm" }, "Help")))),
@@ -327,21 +331,79 @@
 .road.you .road-next { border-left: 3px solid var(--amber-line, var(--warn, #b97a0f)); padding-left: 8px; }
 .road-why { margin: 0; font-size: 13px; color: var(--muted, #545d6b); overflow-wrap: anywhere; }
 .road-update { margin: 0; padding-left: 18px; font-size: 13.5px; }
-.road .sr, .trail .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-.trail { display: grid; gap: 2px; min-width: 0; margin-top: 8px; font-size: 13px; }
-.trail-row { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 8px; min-width: 0; }
-.trail-marks { list-style: none; margin: 0; padding: 0; display: inline-flex; gap: 2px; flex: none; }
-.trail-marks li { width: 1.2em; text-align: center; font-weight: 700; line-height: 1.4; color: var(--muted, #545d6b); }
-.trail-marks .done { color: var(--green, var(--ok-ink, #18703a)); }
-.trail-marks .now { color: var(--ink, #14171c); }
-.trail-marks .now.you { color: var(--amber, var(--warn-ink, #8a5300)); }
-.trail-marks .now.failed { color: var(--red, var(--bad-ink, #b42318)); }
-.trail-label { font-weight: 600; color: var(--ink, #14171c); min-width: 0; overflow-wrap: anywhere; }
-.trail.you .trail-label { color: var(--amber, var(--warn-ink, #8a5300)); }
-.trail.done .trail-label { color: var(--green, var(--ok-ink, #18703a)); }
-.trail.failed .trail-label { color: var(--red, var(--bad-ink, #b42318)); }
-.trail-why { margin: 0; color: var(--muted, #545d6b); overflow-wrap: anywhere; }
-.trail.small .trail-why { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.road .sr, .rmarks .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.rmarks { display: grid; gap: 2px; min-width: 0; margin-top: 8px; font-size: 13px; }
+.rmarks-row { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 8px; min-width: 0; }
+.rmarks-marks { list-style: none; margin: 0; padding: 0; display: inline-flex; gap: 2px; flex: none; }
+.rmarks-marks li { width: 1.2em; text-align: center; font-weight: 700; line-height: 1.4; color: var(--muted, #545d6b); }
+.rmarks-marks .done { color: var(--green, var(--ok-ink, #18703a)); }
+.rmarks-marks .now { color: var(--ink, #14171c); }
+.rmarks-marks .now.you { color: var(--amber, var(--warn-ink, #8a5300)); }
+.rmarks-marks .now.failed { color: var(--red, var(--bad-ink, #b42318)); }
+.rmarks-label { font-weight: 600; color: var(--ink, #14171c); min-width: 0; overflow-wrap: anywhere; }
+.rmarks.you .rmarks-label { color: var(--amber, var(--warn-ink, #8a5300)); }
+.rmarks.done .rmarks-label { color: var(--green, var(--ok-ink, #18703a)); }
+.rmarks.failed .rmarks-label { color: var(--red, var(--bad-ink, #b42318)); }
+.rmarks-why { margin: 0; color: var(--muted, #545d6b); overflow-wrap: anywhere; }
+.rmarks.small .rmarks-why { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.crumbs { min-width: 0; font-size: 12.5px; line-height: 1.45; color: var(--muted, #545d6b); }
+.crumbs ol { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; }
+.crumbs li { display: block; min-width: 0; overflow-wrap: anywhere; }
+.crumbs li + li::before { content: "›"; margin-right: 6px; color: var(--faint, var(--muted, #6b7380)); }
+.crumbs a { color: var(--accent-ink, #1f4fd1); font-weight: 600; text-decoration: none; border-radius: 4px; }
+.crumbs a:hover { text-decoration: underline; }
+.crumbs [aria-current] { color: var(--ink, #14171c); font-weight: 600; }
+.journey { list-style: none; margin: 0; padding: 0; display: flex; align-items: flex-start; min-width: 0; }
+.journey li { flex: 1 1 0; min-width: 0; position: relative; display: grid; justify-items: center; gap: 4px;
+  font-size: 12px; font-weight: 600; line-height: 1.25; color: var(--muted, #545d6b); text-align: center; overflow-wrap: anywhere; }
+.journey li::before { content: ""; position: absolute; top: 11px; left: -50%; right: 50%; height: 2px; background: var(--surface-3, var(--line-strong, #dfe3ea)); }
+.journey li:first-child::before { display: none; }
+.journey li.jm-done + li::before { background: var(--green, var(--ok, #18703a)); }
+.journey .jdot { position: relative; z-index: 1; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 13px; font-weight: 700; line-height: 1; box-sizing: border-box;
+  background: var(--surface, var(--card, #fff)); border: 2px solid var(--surface-3, var(--line-strong, #cfcabe)); }
+.journey .jm-done .jdot { background: var(--green, var(--ok, #18703a)); border-color: var(--green, var(--ok, #18703a)); color: var(--surface, var(--card, #fff)); }
+.journey .jm-now .jdot { border-color: var(--accent, #2553d6); box-shadow: 0 0 0 4px var(--accent-soft, #e8eefc); }
+.journey .jm-now .jdot::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent, #2553d6); }
+.journey .jm-now { color: var(--accent-ink, #1f4fd1); }
+.journey .jm-you .jdot { background: var(--amber-line, var(--warn, #b97a0f)); border-color: var(--amber-line, var(--warn, #b97a0f)); color: #fff; }
+.journey .jm-you { color: var(--amber, var(--warn-ink, #8a5300)); }
+.journey .jm-done { color: var(--ink, #14171c); }
+.journey .jm-skipped { opacity: .55; }
+.journey .jm-skipped .jdot { border-style: dashed; color: var(--muted, #545d6b); }
+.journey .sr, .jbars .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.jbars { display: inline-flex; align-items: center; gap: 3px; flex: none; vertical-align: middle; }
+.jbars i { width: 12px; height: 5px; border-radius: 3px; background: var(--surface-3, var(--line-strong, #cfcabe)); }
+.jbars i.jm-done { background: var(--green, var(--ok, #18703a)); }
+.jbars i.jm-now { background: var(--accent, #2553d6); }
+.jbars i.jm-you { background: var(--amber-line, var(--warn, #b97a0f)); }
+.jbars i.jm-skipped { background: none; box-shadow: inset 0 0 0 1px var(--surface-3, var(--line-strong, #cfcabe)); }
+.jnext { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 10px 12px; border-radius: 10px;
+  font-size: 14px; line-height: 1.45; color: var(--ink, #14171c);
+  background: var(--amber-soft, var(--warn-soft, #fff6e5)); border: 1px solid var(--amber-line, var(--warn, #b97a0f)); }
+.jnext.calm { background: var(--accent-soft, #e8eefc); border-color: transparent; }
+.jnext p { margin: 0; flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.jnext .btn { flex: none; }
+.gs { display: grid; gap: 10px; min-width: 0; padding: 14px 16px; border-radius: var(--radius, 12px);
+  background: var(--surface, var(--card, #fff)); border: 1px solid var(--line, #e1e4ea); }
+.gs-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.gs-head h2 { flex: 1; min-width: 0; margin: 0; font-size: 15px; font-weight: 650; line-height: 1.3; }
+.gs-bar { height: 6px; border-radius: 3px; overflow: hidden; background: var(--surface-3, var(--line-strong, #e3e7ed)); }
+.gs-bar span { display: block; height: 100%; border-radius: 3px; background: var(--green, var(--ok, #18703a)); }
+.gs-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13.5px; color: var(--muted, #545d6b); }
+.gs-steps li { display: inline-flex; align-items: center; gap: 6px; }
+.gs-steps .mk { width: 1.1em; text-align: center; font-weight: 700; }
+.gs-steps .gs-done { color: var(--green, var(--ok-ink, #18703a)); }
+.gs-steps .gs-now { color: var(--ink, #14171c); font-weight: 600; }
+.gs-next { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.gs-next p { margin: 0; flex: 1 1 240px; min-width: 0; font-size: 14px; }
+.gs-x { flex: none; color: var(--muted, #545d6b); }
+.gs-x:hover { color: var(--ink, #14171c); }
+@media (pointer: coarse), (max-width: 640px) {
+  .crumbs a { padding: 12px 4px; margin: 0 -4px; }
+  .jnext .btn, .gs-next .btn { min-height: 44px; }
+  .gs-x { min-width: 44px; min-height: 44px; }
+}
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .hub-lost { background: var(--bg, #0e1014); color: var(--ink, #e9ecf1); }
 }`));
@@ -389,18 +451,264 @@
   // has its step's name and state for screen readers and on hover. It
   // wraps rather than grow sideways, so it fits a 360px phone. A card that
   // is itself a button can hold it: nothing in it is a control.
-  D.trail = (road, { small = false, github: g = null } = {}) => {
+  D.roadMarks = (road, { small = false, github: g = null } = {}) => {
     if (!road) return null;
     D.ensureStyle();
     const tone = roadTone(road, g);
-    const marks = D.el("ol", { className: "trail-marks", "aria-label": "From built to live" }, ...(road.steps ?? []).map((s) => {
+    const marks = D.el("ol", { className: "rmarks-marks", "aria-label": "From built to live" }, ...(road.steps ?? []).map((s) => {
       const [cls, mk, words] = stepMark(s, road, g);
       return D.el("li", { className: cls, title: `${s.label}: ${words}`, "aria-current": s.mark === "now" ? "step" : null },
         D.el("span", { "aria-hidden": "true" }, mk), D.el("span", { className: "sr" }, `${s.label}, ${words}`));
     }));
-    return D.el("div", { className: `trail${small ? " small" : ""}${tone ? ` ${tone}` : ""}` },
-      D.el("div", { className: "trail-row" }, marks, D.el("span", { className: "trail-label" }, road.label)),
-      road.why ? D.el("p", { className: "trail-why", title: road.why }, road.why) : null);
+    return D.el("div", { className: `rmarks${small ? " small" : ""}${tone ? ` ${tone}` : ""}` },
+      D.el("div", { className: "rmarks-row" }, marks, D.el("span", { className: "rmarks-label" }, road.label)),
+      road.why ? D.el("p", { className: "rmarks-why", title: road.why }, road.why) : null);
+  };
+
+  // ---------- Where you are, and the one count of what needs you ----------
+  // A phone shows one pane at a time (the goals page's own rule, 759px), and
+  // an installed app has no address bar: there, a piece of work opens on the
+  // phone's board (/inbox), not the PC board.
+  D.onPhone = () => matchMedia("(max-width: 759px)").matches || matchMedia("(display-mode: standalone)").matches;
+  // The link that opens one piece of work's panel, on the board that fits
+  // this screen. `answer` opens it with the cursor in its message box. Both
+  // boards read #work-N (and #work-N/answer) when they load.
+  D.workHref = (id, { answer = false } = {}) => `${D.onPhone() ? "/inbox" : "/"}#work-${id}${answer ? "/answer" : ""}`;
+  // Reads a #work-N or #work-N/answer address: { id, answer } or null.
+  D.workHash = (h = location.hash) => {
+    const m = /^#work-(\d+)(\/answer)?$/.exec(h);
+    return m ? { id: Number(m[1]), answer: !!m[2] } : null;
+  };
+
+  // The trail at the top of a screen: where this is, from the widest place
+  // to here. `parts` are { label, href? }; the last is where you are, as
+  // plain text. Parts with no label are left out, so a trail drawn before
+  // its names load just starts shorter. It wraps on a phone, never scrolls.
+  D.trail = (parts) => {
+    D.ensureStyle();
+    const shown = (parts ?? []).filter((p) => p && p.label);
+    if (!shown.length) return null;
+    return D.el("nav", { className: "crumbs", "aria-label": "You are here" },
+      D.el("ol", {}, ...shown.map((p, i) => D.el("li", {}, i < shown.length - 1 && p.href
+        ? D.el("a", { href: p.href }, p.label)
+        : D.el("span", { "aria-current": i === shown.length - 1 ? "location" : null }, p.label)))));
+  };
+
+  // What needs you, counted once: GET /api/needs-you (today.rs) is the one
+  // list the board's Needs you column, the app rows and the inbox use, so
+  // every badge says the same number. A page that already asked the hub
+  // passes its answer to D.showNeeds; D.needsYou asks and shows. When the
+  // hub can't say, every badge hides: no number is better than a wrong one.
+  const countOf = (x) => (Array.isArray(x) ? x.length : Number.isFinite(x) ? x : 0);
+  D.needsTotal = (n) => (n && Number.isFinite(n.total) ? n.total : null);
+  D.needsGoals = (n) => countOf(n?.goals);
+  D.showNeeds = (n) => {
+    const total = D.needsTotal(n);
+    for (const b of document.querySelectorAll("[data-needs-badge]")) {
+      b.hidden = !total;
+      b.textContent = total ? (total > 99 ? "99+" : String(total)) : "";
+      const link = b.closest("a");
+      if (!link) continue;
+      const name = b.dataset.needsBadge === "inbox" ? "Inbox" : "Board";
+      if (total) link.setAttribute("aria-label", `${name}, ${total} ${total === 1 ? "needs" : "need"} you`);
+      else link.removeAttribute("aria-label");
+    }
+  };
+  D.needsYou = async () => {
+    let n = null;
+    try { n = await D.api("/needs-you"); } catch (_) { n = null; }
+    if (D.needsTotal(n) == null) n = null;
+    D.showNeeds(n);
+    return n;
+  };
+
+  // ---------- The goal road: Ask, Plan, Build, Check, Merge, Live ----------
+  // One road per goal, worked out by the hub (the goal's `journey`), so the
+  // goal page, the goal list, the Roadmap, the inbox and the board all say
+  // the same thing. Each step has a word, a symbol and a colour: done is a
+  // green tick, the step being worked on now a blue ring, the step waiting
+  // on you an amber "!", one still to come an empty circle, a skipped one
+  // faded. The words are the hub's; a missing journey draws nothing.
+  const JMARK = {
+    done: ["✓", "done"], now: ["", "being worked on now"], you: ["!", "needs you"],
+    todo: ["", "still to come"], skipped: ["–", "skipped"],
+  };
+  const jWords = (s) => JMARK[s.mark]?.[1] ?? JMARK.todo[1];
+  // The step the goal is on: the one waiting on you, else the one being
+  // worked on, else the first still to come.
+  const jCurrent = (j) => {
+    const steps = j?.steps ?? [];
+    return steps.find((s) => s.mark === "you") ?? steps.find((s) => s.mark === "now") ?? steps.find((s) => s.mark === "todo") ?? null;
+  };
+  D.journeyWords = (j) => {
+    const steps = j?.steps ?? [], cur = jCurrent(j);
+    if (j?.done || !cur) return `${j?.label ?? "Done"}. Every step is done.`;
+    return `Step ${steps.indexOf(cur) + 1} of ${steps.length}, ${cur.label}: ${jWords(cur)}`;
+  };
+  D.journey = (j, { size = "big" } = {}) => {
+    if (!j || !Array.isArray(j.steps) || !j.steps.length) return null;
+    D.ensureStyle();
+    if (size === "small") {
+      const words = D.journeyWords(j);
+      return D.el("span", { className: "jbars", role: "img", "aria-label": words, title: words },
+        ...j.steps.map((s) => D.el("i", { className: `jm-${JMARK[s.mark] ? s.mark : "todo"}` })));
+    }
+    return D.el("ol", { className: "journey", "aria-label": "Where this goal is" }, ...j.steps.map((s) => {
+      const mark = JMARK[s.mark] ? s.mark : "todo";
+      return D.el("li", { className: `jm-${mark}`, "aria-current": s === jCurrent(j) && !j.done ? "step" : null },
+        D.el("span", { className: "jdot", "aria-hidden": "true" }, JMARK[mark][0]),
+        D.el("span", { className: "jlab" }, s.label),
+        D.el("span", { className: "sr" }, `: ${jWords(s)}`));
+    }));
+  };
+  // The one plain line under a goal's road: what happens next, and the one
+  // button for it. Amber when it waits on you, soft blue when Decurion is
+  // on it. `handlers` maps the action's kind (reply, approve, answer, merge,
+  // open_pr, review, retry, update) to what that tap does on this screen;
+  // a kind the screen has no handler for gets no button. The button is the
+  // owner's own tap: nothing here runs by itself.
+  D.journeyButton = (j, handlers = {}, { className = "btn primary", key = "next" } = {}) => {
+    const a = j?.action, run = a && handlers[a.kind];
+    if (!run || !a.label) return null;
+    const btn = D.el("button", { type: "button", className, dataset: { key: `${key}-${a.kind}` } }, a.label);
+    btn.disabled = D.offline;
+    btn.onclick = (e) => { e.stopPropagation(); run(btn, j); };
+    return btn;
+  };
+  D.nextLine = (j, handlers = {}) => {
+    if (!j?.next) return null;
+    D.ensureStyle();
+    return D.el("div", { className: `jnext${j.you ? "" : " calm"}`, role: "status" },
+      D.el("p", {}, D.el("b", {}, "Next: "), j.next), D.journeyButton(j, handlers));
+  };
+  // What a road's button does anywhere a goal shows. A screen passes the
+  // ones it does better itself (the goal page approves the plan it shows).
+  // The ones here only open the right place, or make the same owner tap as
+  // the piece's own panel (open the pull request, bring it up to date,
+  // merge where the app's rules allow and GitHub says it can). Approving a
+  // plan always happens where the plan is shown.
+  D.journeyActions = (g, { onChanged = () => {} } = {}) => {
+    const goal = (extra = "") => () => { location.href = `/goals#goal-${g.id}${extra}`; };
+    const piece = (answer = false) => (b, j) => {
+      if (j.piece == null) { goal()(); return; }
+      location.href = D.workHref(j.piece, { answer });
+    };
+    const send = (path, ok) => async (b, j) => {
+      if (j.piece == null) { goal()(); return; }
+      b.disabled = true;
+      try { await D.send(`/threads/${j.piece}${path}`, {}); D.toast(ok); onChanged(); } catch (e) { D.toast(e.message, "alert"); }
+      b.disabled = D.offline;
+    };
+    return {
+      reply: goal(), approve: goal(),
+      // With a piece named, review and retry are about that piece (its panel);
+      // without one, about the goal and its project lead (the goal page).
+      review: (b, j) => (j.piece == null ? goal()() : piece()(b, j)),
+      answer: piece(true), retry: piece(),
+      // Deploy is only ever the owner's Deploy tap on the app's Today row,
+      // bound to the merged commit shown there (deploy.rs): this only opens it.
+      deploy: () => { location.href = D.onPhone() ? "/inbox#inbox" : "/#board"; },
+      open_pr: (b, j) => (j.piece == null ? goal()() : D.openPullRequest({ id: j.piece, title: g.title }, b, onChanged)),
+      update: send("/pr/update", "Started work that brings the pull request up to date."),
+      // Merge where the app's rules let Decurion merge it (the hub merges
+      // only once GitHub says it can); else open the pull request on GitHub,
+      // where the owner merges it. Nothing merges without this tap.
+      merge: async (b, j) => {
+        if (j.piece == null) { goal()(); return; }
+        b.disabled = true;
+        try {
+          const prs = await D.api("/prs").catch(() => []);
+          const pr = (Array.isArray(prs) ? prs : []).find((p) => p.thread_id === j.piece && p.state === "open");
+          if (pr?.can_merge) {
+            await D.send(`/threads/${j.piece}/pr/merge`, {});
+            D.toast("Merged on GitHub.");
+            onChanged();
+          } else {
+            const t = pr?.url ? null : await D.api(`/threads/${j.piece}`).catch(() => null);
+            const url = pr?.url ?? t?.github?.url;
+            if (typeof url === "string" && url.startsWith("https://github.com/")) window.open(url, "_blank", "noopener");
+            else location.href = D.workHref(j.piece);
+          }
+        } catch (e) { D.toast(e.message, "alert"); }
+        b.disabled = D.offline;
+      },
+    };
+  };
+
+  // ---------- Getting started ----------
+  // A card for the first weeks, the same on the PC board and the phone's
+  // inbox: the five things that make Decurion work, ticked off from what the
+  // hub already knows (no new questions, no new stops: only words and
+  // links). The next one left gets one plain sentence and one button. The
+  // owner can hide it for good with ✕ (on this device only); it also hides
+  // itself once all five are done. `phone`: this screen is the phone, so
+  // pairing a phone is done by being here.
+  const GS_HIDE = "decurion.start.hidden";
+  // The browser that signs in with the PC's login link is named this way
+  // (lib.rs); a phone or another browser paired with a code is named for
+  // what it is.
+  const PC_BROWSER = "Browser on this PC";
+  const lit = (lights, group) => (lights?.items ?? []).some((i) => i.group === group && (i.light === "green" || i.light === "amber"));
+  const GS_STEPS = [
+    { id: "claude", name: "Sign in to Claude", button: "Sign in", href: "#settings/sign-ins",
+      line: "Sign in to Claude on your PC, so agents can work for you." },
+    { id: "app", name: "Add an app", button: "Add an app", href: "#settings/apps",
+      line: "Add an app: the folder on your PC that holds your app's code." },
+    { id: "github", name: "Connect GitHub", button: "Connect GitHub", href: "#settings/github",
+      line: "Connect GitHub, so finished work goes there as a pull request you can merge." },
+    { id: "phone", name: "Pair your phone", button: "Pair your phone", href: "#settings/phones",
+      line: "Pair your phone, so it can tell you when an agent needs you." },
+    { id: "goal", name: "Start your first goal", button: "New work",
+      line: "Start your first goal: say what you want in your own words. Your project lead plans it with you." },
+  ];
+  D.gettingStarted = ({ phone = false } = {}) => {
+    D.ensureStyle();
+    const box = D.el("section", { className: "gs", "aria-labelledby": "gs-h", hidden: true });
+    let sig = "";
+    const hiddenForGood = () => D.store.get(GS_HIDE) === "1";
+    const draw = (done) => {
+      const n = GS_STEPS.filter((s) => done[s.id]).length;
+      const s = JSON.stringify([done, D.offline]);
+      if (hiddenForGood() || n === GS_STEPS.length) { box.hidden = true; return; }
+      box.hidden = false;
+      if (s === sig) return;
+      sig = s;
+      const next = GS_STEPS.find((x) => !done[x.id]);
+      const x = D.el("button", { type: "button", className: "btn icon quiet gs-x", "aria-label": "Hide Getting started for good", title: "Hide this for good" }, D.icon("close"));
+      x.onclick = () => { D.store.set(GS_HIDE, "1"); box.hidden = true; D.toast("Getting started is hidden on this device.", "done"); };
+      let go;
+      if (next.href) go = D.el("a", { className: "btn primary", href: next.href }, next.button);
+      else {
+        go = D.el("button", { type: "button", className: "btn primary" }, D.icon("plus"), next.button);
+        go.onclick = () => { if (typeof D.newWork === "function") D.newWork({}); else location.href = "/goals#new"; };
+      }
+      box.replaceChildren(
+        D.el("div", { className: "gs-head" }, D.el("h2", { id: "gs-h" }, `Getting started · ${n} of ${GS_STEPS.length} done`), x),
+        D.el("div", { className: "gs-bar", role: "progressbar", "aria-label": "Getting started", "aria-valuemin": "0", "aria-valuemax": String(GS_STEPS.length), "aria-valuenow": String(n) },
+          D.el("span", { style: `width:${Math.round((100 * n) / GS_STEPS.length)}%` })),
+        D.el("ol", { className: "gs-steps" }, ...GS_STEPS.map((st) => D.el("li", { className: done[st.id] ? "gs-done" : st === next ? "gs-now" : "" },
+          D.el("span", { className: "mk", "aria-hidden": "true" }, done[st.id] ? "✓" : st === next ? "→" : "○"),
+          D.el("span", {}, st.name),
+          D.el("span", { className: "sr-only" }, done[st.id] ? ", done" : st === next ? ", next" : ", not yet")))),
+        D.el("div", { className: "gs-next" }, D.el("p", {}, D.el("b", {}, "Next: "), next.line), go));
+    };
+    // Reads what the hub knows; a list it can't read counts as not done
+    // yet, and the card waits for a full answer before it shows at all.
+    box.refresh = async () => {
+      if (hiddenForGood()) { box.hidden = true; return; }
+      const [lights, apps, devices, goals] = await Promise.all([
+        D.api("/sign-in-lights").catch(() => null), D.api("/apps").catch(() => null),
+        phone ? null : D.api("/devices").catch(() => null), D.api("/goals").catch(() => null)]);
+      if (!lights || !Array.isArray(apps) || !Array.isArray(goals) || (!phone && !Array.isArray(devices))) return;
+      draw({
+        claude: lit(lights, "claude"),
+        app: apps.length > 0,
+        github: lit(lights, "github"),
+        phone: phone || devices.some((d) => d.name !== PC_BROWSER),
+        goal: goals.length > 0,
+      });
+    };
+    return box;
   };
 
   // Which Decurion this PC runs (GET /api/decurion/version, version.rs).
@@ -669,7 +977,7 @@
 
   // Research changed no code, so it has nothing to accept or send to
   // GitHub: the owner reads what it found and turns that into changes from
-  // the app's master plan, then closes it.
+  // the app's Roadmap, then closes it.
   D.RESEARCH_REVIEW = [
     { to: "done", label: "Mark done", kind: "", done: "Marked done. Research changes no code, so nothing goes to GitHub." },
     { to: "failed", label: "Reject", kind: "danger", done: "Rejected.",
@@ -1590,7 +1898,7 @@
       fix.onclick = () => afterClose(() => D.fixWork(t, said));
     }
     if (s === "in_review" && t.research) {
-      row("Want what it found fixed?", ["Tap ", b("Fix what it found"), " at the bottom. Its findings are on the app's master plan: tap the × next to anything you don't want (Take off the plan), then Fix all that are left, or Fix this when only one is left."]);
+      row("Want what it found fixed?", ["Tap ", b("Fix what it found"), " at the bottom. Its findings are on the app's Roadmap: tap the × next to anything you don't want (Take off the Roadmap), then Fix all that are left, or Fix this when only one is left."]);
       row(asks.length ? "Want to answer in your own words, or ask for more?" : "Has a question, or want it to look further?",
         "Your message goes back to the agent, and it picks up where it left off.", talk("Answer the agent"));
       row("Done with it?", [b("Mark done"), " closes it. Research changes no code, so nothing goes to GitHub."]);
@@ -1684,7 +1992,7 @@
     const t = c.t, ev = c.ev, app = apps[t.app_id];
     const kids = kidsOf(t.id), parent = t.parent_id != null ? all.find((p) => p.id === t.parent_id) : null;
     const waiting = c.msgs ? c.msgs.filter((m) => m.delivered_at == null).length : 0;
-    const sig = JSON.stringify([t.state, t.place, cloud, t.updated_at, t.title, t.github, t.road, t.hold, c.goal, t.check, ev.length, D.pro, D.offline, waiting, parent?.title,
+    const sig = JSON.stringify([t.state, t.place, cloud, t.updated_at, t.title, t.github, t.road, t.hold, c.goal, t.check, ev.length, D.pro, D.offline, waiting, parent?.title, D.appName(t.app_id),
       kids.map((k) => [k.id, k.state, k.title, k.background])]);
     if (sig === c.sig) return;
     c.sig = sig;
@@ -1725,6 +2033,13 @@
     close.onclick = () => panel.close();
     const head = el("header", { className: "work-head" },
       el("div", { className: "top" }, D.statePill(t, c.goal?.road), el("span", { className: "grow" }), close),
+      // Where this piece sits: its app's Roadmap, its goal when it is part
+      // of one, then this piece.
+      D.trail([
+        { label: D.appName(t.app_id), href: D.planHref(t.app_id) },
+        c.goal ? { label: c.goal.goal_title, href: `/goals#goal-${c.goal.goal_id}` } : null,
+        { label: t.title },
+      ]),
       el("h2", { id: "wk-title" }, t.title),
       el("div", { className: "meta" },
         el("span", { className: "tag" }, icon("app"), D.appName(t.app_id) || "Unknown app"),

@@ -95,6 +95,13 @@
   .col-also { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: var(--radius); background: var(--amber-soft); color: var(--ink); font-size: 13.5px; text-decoration: none; box-shadow: inset 0 0 0 1px var(--amber-line); }
   a.col-also:hover { text-decoration: underline; }
   .col-also .grow { flex: 1; min-width: 0; }
+  /* A goal that waits on you, with its road (D.journey) and its one button. */
+  .col-goal { display: grid; gap: 6px; padding: 10px 12px; border-radius: var(--radius); background: var(--amber-soft); box-shadow: inset 0 0 0 1px var(--amber-line); font-size: 13.5px; }
+  .col-goal .gt { font-weight: 600; color: var(--ink); text-decoration: none; overflow-wrap: anywhere; }
+  .col-goal .gt:hover { text-decoration: underline; }
+  .col-goal .gl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; color: var(--amber); font-weight: 600; }
+  .col-goal .btn { justify-self: start; }
+  .gs { margin-bottom: 18px; }
   .col-empty { padding: 16px 12px; border: 1px dashed var(--line); border-radius: var(--radius); color: var(--faint); font-size: 13px; text-align: center; }
   .strip {
     width: 46px; min-height: 180px; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 12px 0;
@@ -290,6 +297,8 @@
     <div class="content" id="view-board">
       <div class="limits live" id="limits" hidden></div>
       <section class="today live" id="today" aria-label="Today: what each app waits on" hidden></section>
+      <!-- Getting started (D.gettingStarted in ui.js), the same card as on the phone's inbox, until all five are done or it is hidden. -->
+      <div id="start"></div>
       <!-- The new-work form, drawn by compose.js (D.composer), the same as on the phone. -->
       <section class="composer live" id="composer" aria-label="New work"></section>
       <div id="board-note" class="board-note" hidden></div>
@@ -342,6 +351,7 @@
   // sent), so the column, the top bar and the app rows agree. Null on an
   // older hub: then only work that asks you counts.
   let needs = null;
+  let goals = [];               // the goals waiting on you, with their road (GET /api/goals, only while some wait)
   const needWork = () => new Set((needs?.work ?? []).map((w) => w.thread_id));
   const colOf = (t, ids) => (t.state === "needs_you" || ids.has(t.id) ? "needs_you" : t.state);
   const needsIn = (key) => (needs ? (key === "all" ? needs.total : needs.by_app?.[key] ?? 0)
@@ -396,6 +406,15 @@
     onStarted: () => refresh(),
   });
   window.addEventListener("scroll", () => $("topbar").classList.toggle("scrolled", window.scrollY > 4), { passive: true });
+  // Getting started, above "What do you want?". It reads Settings' own
+  // lists, so it asks twice a minute, not on every refresh.
+  const startCard = D.gettingStarted();
+  $("start").replaceWith(startCard);
+  startCard.tick = () => {
+    if (Date.now() - (startCard.at ?? 0) < 30000) return;
+    startCard.at = Date.now();
+    startCard.refresh();
+  };
 
   // ---------- Routes: #board and #settings ----------
   let view = "board";
@@ -441,6 +460,11 @@
         D.api("/accounts").catch(() => null),
         D.api("/needs-you").catch(() => null)]);
       needs = nd && Array.isArray(nd.work) ? nd : null;
+      // The one count of what needs you, on the menu's Board too (ui.js).
+      D.showNeeds(needs);
+      // Goals that wait on you show here with their road: asked only then.
+      if (needs?.goals?.length) goals = await D.api("/goals").then((l) => (Array.isArray(l) ? l : goals), () => goals);
+      startCard.tick();
       // Older hubs have no /helpers: then only building agents count.
       helpers = await D.api("/helpers").catch(() => helpers);
       // Settings keeps a website list saved while this was loading, which is newer.
@@ -757,11 +781,22 @@
   // One line each for the goals and pull requests that wait on you, at the
   // top of the Needs you column: where to go for them.
   function alsoLines(also) {
-    const goals = also.filter((x) => x.goal_id != null), prs = also.filter((x) => x.goal_id == null);
+    const waits = also.filter((x) => x.goal_id != null), prs = also.filter((x) => x.goal_id == null);
     const out = [];
-    if (goals.length) {
-      out.push(el("a", { className: "col-also", href: goals.length === 1 ? `/goals#goal-${goals[0].goal_id}` : "/goals" }, icon("plan"),
-        el("span", { className: "grow" }, goals.length === 1 ? `A goal waits on you: ${GOAL_WAIT[goals[0].why] ?? "open it"}` : `${goals.length} goals wait on you`), icon("right")));
+    // With the hub's road for each goal: one line each, its road, the
+    // road's words and its one button.
+    const roads = waits.map((w) => goals.find((g) => g.id === w.goal_id)).filter((g) => g?.journey);
+    if (roads.length && roads.length === waits.length) {
+      for (const g of roads) {
+        const act = D.journeyButton(g.journey, D.journeyActions(g, { onChanged: refresh }), { className: "btn primary sm", key: `goal-act-${g.id}` });
+        out.push(el("div", { className: "col-goal", dataset: { goal: String(g.id) } },
+          el("a", { className: "gt", href: `/goals#goal-${g.id}` }, g.title),
+          el("div", { className: "gl" }, D.journey(g.journey, { size: "small" }), el("span", {}, g.journey.label)),
+          act));
+      }
+    } else if (waits.length) {
+      out.push(el("a", { className: "col-also", href: waits.length === 1 ? `/goals#goal-${waits[0].goal_id}` : "/goals" }, icon("plan"),
+        el("span", { className: "grow" }, waits.length === 1 ? `A goal waits on you: ${GOAL_WAIT[waits[0].why] ?? "open it"}` : `${waits.length} goals wait on you`), icon("right")));
     }
     if (prs.length) {
       out.push(el("p", { className: "col-also" }, icon("branch"),
@@ -823,7 +858,7 @@
       D.pro && el("div", { className: "pro" }, icon("branch"), `${t.branch || "no branch yet"} · #${t.id}`),
       // Where finished work is, from Built to Live or On your PC (the hub's
       // road), or on an older hub how its send went.
-      t.state === "done" && (t.road ? D.trail(t.road, { small: true, github: t.github }) : D.github(t, refresh, { small: true })),
+      t.state === "done" && (t.road ? D.roadMarks(t.road, { small: true, github: t.github }) : D.github(t, refresh, { small: true })),
       (acts.length || t.state === "running") && el("div", { className: "foot" },
         acts.length ? el("span", { className: "acts" }, ...acts) : null,
         t.state === "running" ? el("span", { className: "working" }, icon("running"), "Working") : null),
@@ -872,7 +907,7 @@
     const also = needs ? [...needs.goals, ...needs.prs].filter((x) => filter === "all" || String(x.app_id) === filter) : [];
     const sig = ["board", filter, D.pro, D.offline, hasCloud, folds, [...ids], also, [...openDismissed], gone.map((t) => [t.id, t.state, t.dismissed_at, t.title, t.github, t.road]), Math.floor(Date.now() / 30000), apps.map((a) => [a.id, a.name, a.pay_per_use, a.profile]),
       shown.map((t) => [t.id, t.state, t.ai, t.place, t.updated_at, t.last_activity_at, t.check, t.title, t.branch, t.github, t.road, lineOf(t), D.treeLine(t)]),
-      helpers.filter(inFilter)];
+      helpers.filter(inFilter), goals.map((g) => [g.id, g.title, g.journey])];
     if (!changed("board", sig)) return;
 
     keepFocus(() => {
@@ -970,15 +1005,21 @@
   D.onPro(() => { renderBoard(); renderToday(); });
 
   // ---------- Start ----------
-  if (/^#work-\d+$/.test(location.hash)) {
-    const id = +location.hash.slice(6);
+  // A link to one piece of work (/#work-N, from a goal or the Roadmap)
+  // opens its panel; /#work-N/answer opens it on the message box.
+  const openFromHash = () => {
+    const w = D.workHash();
+    if (!w) return false;
     history.replaceState(null, "", location.pathname + location.search);
-    (async () => { try { D.openWork(await D.api(`/threads/${id}`), refresh); } catch (_) { /* gone */ } })();
-  }
+    (async () => { try { D.openWork(await D.api(`/threads/${w.id}`), refresh, { talk: w.answer }); } catch (_) { /* gone */ } })();
+    return true;
+  };
+  window.addEventListener("hashchange", () => { if (D.workHash() && !history.state?.work) openFromHash(); });
   D.settings.mount($("view-settings"), { refresh: () => refresh(), onSignedOut: () => signedOut(), place: "pc" });
   skeleton();
   route();
-  refresh();
+  // After the first load, so the panel knows the app's name.
+  refresh().then(openFromHash);
   timer = setInterval(() => { refresh(); D.settings.tick(); }, 3000);
 })();
 </script>

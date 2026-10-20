@@ -6,8 +6,11 @@
 //! pick a colour from the row's `tone`.
 //!
 //! It also owns the one meaning of "needs you" ([`Store::needs_you`],
-//! `GET /api/needs-you`): the app rows, the board's Needs you column and the
-//! phone's inbox all count exactly that list, so the three never disagree.
+//! `GET /api/needs-you`): the app rows, the board's Needs you button and
+//! column, the phone's inbox and the goals list all count exactly that list,
+//! so they never disagree. A goal is on it when its journey says the next
+//! move is the owner's ([`crate::journey`]), and a goal's piece that waits
+//! on the owner is counted once, as its goal.
 //!
 //! This only reads. Watched pull requests and their comments are written by
 //! the code that keeps an eye on GitHub; a fix of comments starts from its own
@@ -140,21 +143,35 @@ pub struct TodayRow {
 }
 
 /// Everything only the owner can move on right now, in one list. The app
-/// rows (`needs_you`), the board's Needs you column and the phone's inbox
-/// all count this, so they always say the same number.
+/// rows (`needs_you`), the board's Needs you button and column, the phone's
+/// inbox and the goals list all count this, so they always say the same
+/// number. The rule:
+///
+/// - **Goals** (not closed, not dismissed) whose journey waits on the owner
+///   (`journey.you`): a reply, a plan to approve, a stuck project lead, the
+///   finished work to review, or one of its pieces waiting on them (an
+///   agent's question, a look, a push to retry, a pull request to open or
+///   merge, an update or deploy). Each goal counts once, however many of its
+///   pieces wait.
+/// - **Work** that is no piece of an open goal and asks the owner
+///   something, is ready for them to check (in review with no checker still
+///   coming), could not finish, was accepted but did not reach GitHub, or is
+///   on GitHub as a branch with no pull request. Work the owner dismissed is
+///   left out.
+/// - **Pull requests** with review comments to answer, or waiting for the
+///   owner's Merge tap, not while a fix of their comments is under way, and
+///   not when the work that opened them is a piece of a goal already
+///   counted.
+///
+/// `total` is `work`, `goals` and `prs` together; `by_app` splits it by app.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct NeedsYou {
-    /// Work that asks the owner something, is ready for them to check (in
-    /// review, and no checker is still coming), could not finish, was
-    /// accepted but did not reach GitHub, or is on GitHub as a branch with
-    /// no pull request (so it can't be merged until the owner opens one).
-    /// Work the owner dismissed is left out.
+    /// Work outside open goals that waits on the owner.
     pub work: Vec<WorkWait>,
-    /// Goals that wait on the owner.
+    /// Goals whose journey waits on the owner.
     pub goals: Vec<GoalWait>,
     /// Open pull requests with review comments to answer, or waiting for the
-    /// owner's Merge tap, by the work that opened them. Not while a fix of
-    /// their comments is under way.
+    /// owner's Merge tap, by the work that opened them.
     pub prs: Vec<PrWait>,
     /// How many of all three each app has.
     pub by_app: std::collections::BTreeMap<i64, i64>,
@@ -176,8 +193,27 @@ pub struct GoalWait {
     pub goal_id: i64,
     pub app_id: i64,
     /// `plan` (approve it), `answer` (the project lead asked or said
-    /// something), `review` (its work is built and checked) or `stuck`.
+    /// something), `review` (its work is built and checked), `stuck`, or
+    /// `piece` (one of its pieces waits on the owner: `thread_id` and the
+    /// journey say which and what for).
     pub why: &'static str,
+    /// The piece the owner's move is about, for `piece`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<i64>,
+    /// The goal's journey: its label is the words to show.
+    pub journey: decurion_proto::goal::Journey,
+}
+
+/// Why a goal waits, in the words [`GoalWait::why`] has always used, from
+/// its journey's action.
+fn goal_why(j: &decurion_proto::goal::Journey) -> &'static str {
+    match (j.action.as_ref().map(|a| a.kind.as_str()), j.piece) {
+        (_, Some(_)) => "piece",
+        (Some("approve"), None) => "plan",
+        (Some("retry"), None) => "stuck",
+        (Some("review"), None) => "review",
+        _ => "answer",
+    }
 }
 
 /// One pull request in [`NeedsYou`].
@@ -225,6 +261,8 @@ struct Facts {
     goals_for_review: i64,
     goals_talking: i64,
     goals_stuck: i64,
+    /// Goals one of whose pieces waits on the owner: its journey's words.
+    goal_asks: Vec<String>,
     lead_thinking: bool,
     working_goal: bool,
     pieces: Option<Pieces>,
@@ -255,6 +293,17 @@ fn who(by: &[(String, i64)]) -> String {
     }
 }
 
+/// A journey's label as a row's ask: "Needs you · merge on GitHub" says
+/// "Merge on GitHub".
+fn ask_words(label: &str) -> String {
+    let rest = label.strip_prefix("Needs you · ").unwrap_or(label);
+    let mut c = rest.chars();
+    match c.next() {
+        Some(first) => first.to_uppercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+
 /// Picks the row's tone and words. The first thing that waits on the owner
 /// wins the line; the others are counted after it.
 fn words(f: &Facts) -> (Tone, &'static str, String) {
@@ -280,6 +329,7 @@ fn words(f: &Facts) -> (Tone, &'static str, String) {
     if f.goals_stuck > 0 {
         asks.push("Your project lead got stuck. Try again".to_owned());
     }
+    asks.extend(f.goal_asks.iter().cloned());
     match f.deploy.as_ref().map(|d| d.state.as_str()) {
         Some("waiting") => asks.push("Merged · ready to deploy".to_owned()),
         Some("failed") => asks.push("Deploy failed. Try again".to_owned()),
@@ -382,10 +432,14 @@ impl Store {
         let mut n = NeedsYou::default();
         // A piece of a goal in review with its check still to come waits on
         // the checker, not the owner (the same rule as its work panel).
+        // A piece of an open goal is counted with its goal, below.
         for r in sqlx::query(
             "SELECT t.id, t.app_id, t.state, t.gh_state FROM threads t
              LEFT JOIN goal_pieces p ON p.thread_id = t.id
-             WHERE t.dismissed_at IS NULL AND (
+             WHERE t.dismissed_at IS NULL
+               AND NOT EXISTS (SELECT 1 FROM goals g WHERE g.id = p.goal_id
+                               AND g.state NOT IN ('done', 'stopped'))
+               AND (
                  t.state IN ('needs_you', 'failed')
                  OR (t.state = 'done' AND t.gh_state = 'failed')
                  OR (t.state = 'done' AND t.gh_state = 'sent' AND t.gh_pr = 0
@@ -411,24 +465,45 @@ impl Store {
                 },
             });
         }
-        for g in self.goals().await? {
-            let why = match g.state {
-                GoalState::Done | GoalState::Stopped => continue,
-                _ if g.stuck && !g.busy => "stuck",
-                GoalState::Talking | GoalState::PlanReady if g.busy => continue,
-                GoalState::PlanReady => "plan",
-                GoalState::Talking => "answer",
-                GoalState::ForReview => "review",
-                GoalState::Working => continue,
+        let open: Vec<decurion_proto::goal::Goal> = self
+            .goals()
+            .await?
+            .into_iter()
+            .filter(|g| !g.state.is_closed() && g.dismissed_at.is_none())
+            .collect();
+        let mut journeys = self.journeys(&open).await?;
+        for g in &open {
+            let Some(journey) = journeys.remove(&g.id).filter(|j| j.you) else {
+                continue;
             };
             n.goals.push(GoalWait {
                 goal_id: g.id,
                 app_id: g.app_id,
-                why,
+                why: goal_why(&journey),
+                thread_id: journey.piece,
+                journey,
             });
         }
+        // Pull requests opened by a piece of a goal counted above are that
+        // goal's: counted once, there.
+        let counted: std::collections::HashSet<i64> = n.goals.iter().map(|g| g.goal_id).collect();
+        let piece_goal: HashMap<i64, i64> = if counted.is_empty() {
+            HashMap::new()
+        } else {
+            sqlx::query_as::<_, (i64, i64)>("SELECT thread_id, goal_id FROM goal_pieces")
+                .fetch_all(self.pool())
+                .await?
+                .into_iter()
+                .collect()
+        };
         for w in self.watched_prs().await? {
             if w.state != "open" || w.fixing {
+                continue;
+            }
+            if piece_goal
+                .get(&w.thread_id)
+                .is_some_and(|g| counted.contains(g))
+            {
                 continue;
             }
             let why = if w.open_comments > 0 {
@@ -501,23 +576,25 @@ impl Store {
             }
             let f = facts.entry(g.app_id).or_default();
             let talking = matches!(g.state, GoalState::Talking | GoalState::PlanReady);
-            if g.stuck && !g.busy {
-                f.goals_stuck += 1;
-            } else if talking && g.busy {
+            if talking && g.busy {
                 f.lead_thinking = true;
-            } else {
-                match g.state {
-                    GoalState::PlanReady => f.plans_ready += 1,
-                    GoalState::Talking => f.goals_talking += 1,
-                    GoalState::ForReview => f.goals_for_review += 1,
-                    GoalState::Working => {
-                        if !f.working_goal {
-                            newest_working.insert(g.id, g.app_id);
-                        }
-                        f.working_goal = true;
-                    }
-                    _ => {}
+            } else if g.state == GoalState::Working && !(g.stuck && !g.busy) {
+                if !f.working_goal {
+                    newest_working.insert(g.id, g.app_id);
                 }
+                f.working_goal = true;
+            }
+        }
+        // What waits on the owner in goals, as the one list counts it: by
+        // each goal's journey, so the row says what the goal page says.
+        for g in &needs.goals {
+            let f = facts.entry(g.app_id).or_default();
+            match g.why {
+                "plan" => f.plans_ready += 1,
+                "review" => f.goals_for_review += 1,
+                "stuck" => f.goals_stuck += 1,
+                "piece" => f.goal_asks.push(ask_words(&g.journey.label)),
+                _ => f.goals_talking += 1,
             }
         }
         for r in sqlx::query(
