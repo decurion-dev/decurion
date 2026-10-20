@@ -4596,7 +4596,7 @@ async fn new_apps_start_at_pr_only_and_the_owner_raises_them() {
     assert_eq!(
         apps[0]["rules"],
         json!({"merge": false, "deploy": false, "deploy_steps": "", "deploy_site": null,
-               "send_checked": true, "patient_data": true})
+               "send_checked": true, "patient_data": true, "update_conflicts": false})
     );
     // Full control for this app, with its deploy steps and live site.
     let (s, app) = call(
@@ -4662,6 +4662,49 @@ async fn new_apps_start_at_pr_only_and_the_owner_raises_them() {
     assert_eq!(a.rules.level(), decurion_proto::RulesLevel::PrOnly);
     assert_eq!(a.rules.deploy_steps(), None, "no Deploy button");
     assert!(a.rules.deploy_steps.contains("deploy-prod"));
+}
+
+/// Fixing conflicts with main by itself is off for every app until the
+/// owner turns it on, and only the owner can.
+#[tokio::test]
+async fn fixing_conflicts_by_itself_starts_off_and_only_the_owner_turns_it_on() {
+    let (r, _) = hub().await;
+    seed(&r).await;
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(apps[0]["rules"]["update_conflicts"], false);
+    let (s, _) = call(
+        &r,
+        "POST",
+        "/api/apps/1/rules",
+        Some(RUNNER),
+        json!({"update_conflicts": true}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(apps[0]["rules"]["update_conflicts"], false);
+    let (s, app) = call(
+        &r,
+        "POST",
+        "/api/apps/1/rules",
+        Some(OWNER),
+        json!({"update_conflicts": true, "receipt": "conflicts-rule-1"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{app}");
+    assert_eq!(app["rules"]["update_conflicts"], true);
+    // The other rules stay as they were.
+    assert_eq!(app["rules"]["send_checked"], true);
+    assert_eq!(app["rules"]["merge"], false);
+    let (_, app) = call(
+        &r,
+        "POST",
+        "/api/apps/1/rules",
+        Some(OWNER),
+        json!({"merge": true, "receipt": "conflicts-rule-2"}),
+    )
+    .await;
+    assert_eq!(app["rules"]["update_conflicts"], true, "{app}");
 }
 
 #[tokio::test]

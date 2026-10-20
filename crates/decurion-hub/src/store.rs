@@ -80,6 +80,8 @@ pub struct RulesEdit {
     #[serde(default)]
     pub patient_data: Option<bool>,
     #[serde(default)]
+    pub update_conflicts: Option<bool>,
+    #[serde(default)]
     pub receipt: Option<String>,
 }
 
@@ -94,7 +96,7 @@ where
 
 pub(crate) const THREAD_COLS: &str =
     "id, app_id, title, prompt, state, ai, session_id, branch, place, updated_at, parent_id, background,
-     gh_state, gh_branch, gh_url, gh_pr, gh_error, fix_of, research, dismissed_at, hold,
+     gh_state, gh_branch, gh_url, gh_pr, gh_error, fix_of, research, dismissed_at, hold, auto_started,
      (SELECT w.state = 'open' AND w.clash FROM pr_watches w WHERE w.thread_id = threads.id) AS gh_clash,
      (SELECT w.state FROM pr_watches w
       WHERE w.thread_id = CASE WHEN threads.fix_of IS NULL THEN threads.id WHEN threads.gh_state = 'sent' THEN threads.fix_of END) AS gh_pr_state,
@@ -113,7 +115,7 @@ pub(crate) const RECEIPT_REUSED: &str = "this receipt was already used for somet
 pub(crate) const APP_COLS: &str =
     "id, name, repo_path, profile, pay_per_use, monthly_cap_micros, sites, reviewer,
      COALESCE(first_on = date('now', 'localtime'), 0) AS first_today,
-     can_merge, can_deploy, deploy_steps, deploy_site, send_checked, patient_data";
+     can_merge, can_deploy, deploy_steps, deploy_site, send_checked, patient_data, update_conflicts";
 
 pub(crate) fn thread_from(row: &SqliteRow) -> Result<Thread> {
     let state: String = row.try_get("state")?;
@@ -139,6 +141,7 @@ pub(crate) fn thread_from(row: &SqliteRow) -> Result<Thread> {
         hold: row.try_get("hold")?,
         // Filled for the screens only ([`Store::with_roads`]).
         road: None,
+        auto_started: row.try_get("auto_started")?,
     })
 }
 
@@ -164,6 +167,7 @@ pub(crate) fn app_from(row: &SqliteRow) -> Result<App> {
             deploy_site: row.try_get("deploy_site")?,
             send_checked: row.try_get("send_checked")?,
             patient_data: row.try_get("patient_data")?,
+            update_conflicts: row.try_get("update_conflicts")?,
         },
     })
 }
@@ -384,6 +388,7 @@ impl Store {
             deploy_site: site.unwrap_or(now.deploy_site),
             send_checked: e.send_checked.unwrap_or(now.send_checked),
             patient_data: e.patient_data.unwrap_or(now.patient_data),
+            update_conflicts: e.update_conflicts.unwrap_or(now.update_conflicts),
         };
         if rules.deploy && rules.deploy_steps().is_none() {
             return Err(StoreError::Invalid(
@@ -393,7 +398,7 @@ impl Store {
         }
         sqlx::query(
             "UPDATE apps SET can_merge = ?, can_deploy = ?, deploy_steps = ?, deploy_site = ?,
-                 send_checked = ?, patient_data = ?
+                 send_checked = ?, patient_data = ?, update_conflicts = ?
              WHERE id = ?",
         )
         .bind(rules.merge)
@@ -402,6 +407,7 @@ impl Store {
         .bind(&rules.deploy_site)
         .bind(rules.send_checked)
         .bind(rules.patient_data)
+        .bind(rules.update_conflicts)
         .bind(app_id)
         .execute(&mut *tx)
         .await?;
@@ -651,6 +657,7 @@ impl Store {
                 "SELECT t.id, t.app_id, t.title, t.prompt, t.state, t.ai, t.session_id, t.branch,
                         t.place, t.updated_at, t.parent_id, t.background, t.pay_per_use AS thread_ppu,
                         t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, t.fix_of, t.research, t.dismissed_at, t.hold,
+                        t.auto_started,
                         t.merge_from,
                         EXISTS (SELECT 1 FROM profile_limits l WHERE l.profile = a.profile
                             AND {ppu}) AS plan_ppu

@@ -1630,7 +1630,8 @@
   // Accept. Work added straight to the board has no line: Accept is always
   // yours.
   // Bring up to date work held for protected parts (t.hold, protected.rs)
-  // says so, in the hub's words. Other finished work shows its own step bar
+  // says so, in the hub's words, and work Decurion started by itself
+  // (t.auto_started) says that. Other finished work shows its own step bar
   // (t.road, the same road without the Checked step), so it is never just
   // Done while nothing is merged.
   function pieceLine(c) {
@@ -1642,6 +1643,14 @@
       return el("section", {}, el("div", { className: "section-title" }, "Where it is"),
         el("div", { className: `notice${t.road.you ? " warn" : ""}` }, icon(t.road.done ? "done" : t.road.you ? "alert" : "branch"),
           el("div", { className: "grow" }, D.road(t.road, { github: t.github }))));
+    }
+    // Started by Decurion under the app's rule to fix conflicts by itself.
+    // Said while it works or waits for review; once accepted or failed,
+    // the usual words alone.
+    if (!g && t.auto_started && ["queued", "running", "in_review"].includes(t.state)) {
+      return el("div", { className: "notice" }, icon("branch"), el("span", { className: "grow" },
+        t.state === "in_review" ? "Started by Decurion. Look it over, then tap Accept."
+          : "Decurion is fixing the conflicts by itself. Nothing goes to GitHub until you tap Accept."));
     }
     if (!g) return null;
     const how = g.by_plan ? " It went to GitHub by itself because you approved the plan."

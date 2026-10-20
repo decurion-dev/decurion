@@ -700,8 +700,11 @@
           update.disabled = D.offline;
         };
       }
-      const health = r.last_pr?.state === "open" && r.last_pr.health
-        ? el("div", { className: "ln health" }, r.last_pr.health) : null;
+      // Under the app's rule to fix conflicts by itself, Decurion may have
+      // started the Bring up to date run itself (pr_watch.rs auto_words):
+      // its words while it works or waits for review, else the health line.
+      const said = r.last_pr?.state === "open" ? (r.last_pr.auto_line ?? r.last_pr.health) : null;
+      const health = said ? el("div", { className: "ln health" }, said) : null;
       return el("article", { className: "today-row", dataset: { tone: r.tone } },
         hit, el("div", { className: "ln", title: r.line + when }, r.line + when), health,
         // The Decurion app's row, while this PC runs an older Decurion than
