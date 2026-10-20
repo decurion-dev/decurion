@@ -512,7 +512,9 @@
 
   const openFix = (t) => t.goal && !CLOSED.has(t.goal.state);
   const finishedRow = (it) => it.state !== "open" && !(it.found ?? []).some((t) => t.state === "open");
-  const visibleRows = () => (S.plan?.items ?? []).filter((it) => !(S.hide && finishedRow(it)));
+  // A to-do handed to a goal that is not stopped is carried by that goal's row.
+  const handedOff = (t) => t.kind !== "goal" && t.goal && t.goal.state !== "stopped";
+  const visibleRows = () => (S.plan?.items ?? []).filter((it) => !handedOff(it) && !(S.hide && finishedRow(it)));
 
   function goalLook(it) {
     const st = it.goal?.state ?? (it.state === "done" ? "done" : it.state === "dropped" ? "stopped" : "working");
@@ -537,7 +539,7 @@
     const list = $("rows");
     const keep = new Set(shown.map((it) => it.id));
     for (const [id, r] of S.rows) if (!keep.has(id)) { r.node.remove(); S.rows.delete(id); }
-    const all = plan.items;
+    const all = plan.items.filter((it) => !handedOff(it));
     const nodes = shown.map((it) => {
       const i = all.indexOf(it);
       const pos = { first: i === 0, last: i === all.length - 1 };
@@ -642,7 +644,7 @@
   }
 
   function foundBlock(it, canAdd) {
-    const all = it.found ?? [];
+    const all = (it.found ?? []).filter((t) => !handedOff(t));
     const live = all.filter((t) => t.state !== "dropped");
     const fixed = live.filter((t) => t.state === "done").length;
     const left = all.filter((t) => t.state === "open" && !openFix(t));
