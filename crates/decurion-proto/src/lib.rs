@@ -442,6 +442,12 @@ pub struct Thread {
     /// the hub when a Bring up to date run reaches review.
     #[serde(default)]
     pub hold: Option<String>,
+    /// For finished work that went to GitHub: where it is on its way from
+    /// pushed to merged (and live), worked out by the hub from the app's
+    /// rules, the same way the goal page tells it. Only the hub fills it,
+    /// and only for screens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub road: Option<goal::Road>,
 }
 
 /// Where sending accepted work to GitHub has got to. Only the hub sends,
@@ -504,6 +510,16 @@ pub struct GitHubSend {
     /// branch, so it can't be merged as it is.
     #[serde(default)]
     pub clash: bool,
+    /// Its pull request was merged on GitHub.
+    #[serde(default)]
+    pub merged: bool,
+    /// Its pull request was closed on GitHub without merging.
+    #[serde(default)]
+    pub closed: bool,
+    /// Its merged change is live: in a release from Decurion, or, for
+    /// Decurion's own code, in the Decurion running on the owner's PC.
+    #[serde(default)]
+    pub live: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -607,16 +607,22 @@ pub struct GoalView {
 }
 
 /// One step on a piece's way from built to live. Every screen names them
-/// the same way: Built, Checked, On GitHub, Merged, Live.
+/// the same way: Built, Checked, Pushed, Pull request, Merged, Live. The
+/// push and the pull request are two steps, so work that went up as a
+/// branch with no pull request never looks like work waiting to be merged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Step {
     Built,
+    /// A checker agent passed it. Only pieces of a goal have this step.
     Checked,
-    OnGithub,
+    /// On GitHub (or the app's own git server) as a branch.
+    Pushed,
+    /// A pull request is open for that branch, so it can be merged.
+    PullRequest,
     Merged,
     /// Live for an app Decurion deploys; for Decurion's own code, the
-    /// running Decurion has the change ("Update Decurion" until then).
+    /// Decurion running on the owner's PC has the change ("On your PC").
     Live,
 }
 
@@ -637,7 +643,7 @@ pub enum StepMark {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoadStep {
     pub step: Step,
-    /// The step's name, such as "On GitHub" or "Update Decurion".
+    /// The step's name, such as "Pull request" or "On your PC".
     pub label: String,
     pub mark: StepMark,
 }
@@ -661,6 +667,11 @@ pub struct Road {
     /// update this Decurion, one plain line per way it may be installed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub update: Vec<String>,
+    /// Why the step it is on is stuck, in the hub's plain words: why the
+    /// push failed, or why no pull request was opened. `None` when nothing
+    /// is stuck.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
 }
 
 /// A goal's tokens, in total and by who used them.

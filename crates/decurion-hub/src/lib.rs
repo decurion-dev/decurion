@@ -54,6 +54,7 @@ pub mod today;
 pub mod tokens;
 pub(crate) mod upstream;
 pub mod usage;
+pub mod version;
 pub mod why;
 pub mod workers;
 
@@ -154,6 +155,8 @@ pub struct AppState {
     pub(crate) github_check: sign_in_lights::GitHubCache,
     /// Lets one deploy, or one look for changes to deploy, run at a time.
     deploy_busy: deploy::Busy,
+    /// Which Decurion this PC runs, and whether GitHub has a newer one.
+    version: version::Checks,
 }
 
 impl AppState {
@@ -179,6 +182,7 @@ impl AppState {
             claude: claude_sign_in::SignIns::default(),
             github_check: sign_in_lights::GitHubCache::default(),
             deploy_busy: deploy::Busy::default(),
+            version: version::Checks::default(),
         }
     }
 
@@ -355,6 +359,12 @@ pub fn router(state: AppState) -> Router {
         .route("/push/subscribe", post(push_subscribe))
         .route("/threads/{id}/place", post(set_place))
         .route("/threads/{id}/github", post(github::retry))
+        // Open the pull request for pushed work: owner only, never cloud
+        // workers; it pushes and merges nothing (github.rs).
+        .route(
+            "/threads/{id}/github/pull-request",
+            post(github::open_pr_tap),
+        )
         .route("/threads/{id}/goal", get(goals::piece_of))
         .route("/threads/{id}/pr/fix", post(pr_watch::fix))
         .route("/threads/{id}/pr/update", post(pr_watch::update))
@@ -387,6 +397,8 @@ pub fn router(state: AppState) -> Router {
         // Helper agents working or lined up, for the board: owner only (live.rs).
         .route("/helpers", get(live::list))
         .route("/needs-you", get(today::needs))
+        // Which Decurion this PC runs: owner only, never cloud workers (version.rs).
+        .route("/decurion/version", get(version::get))
         // A research piece's report page, escaped inside JSON (research.rs).
         .route(
             "/runner/threads/{id}/report",

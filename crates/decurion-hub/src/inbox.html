@@ -142,6 +142,8 @@
   .today-card .run-btn { padding: 0 12px; }
   /* An app's deploy card, under its row. */
   .today-card .deploy-box { padding: 2px 10px 12px 0; }
+  .today-card .ver-note { padding: 0 10px 8px 0; }
+  .today-card .ver-note + .tr { border-top: 1px solid var(--line); }
   .today-card .deploy-box + .tr { border-top: 1px solid var(--line); }
   /* A narrow phone keeps the app's name readable: Run it shows its icon only (its label stays for screen readers). */
   @media (max-width: 399px) { .today-card .run-btn .lbl { display: none; } .today-card .run-btn { width: 40px; padding: 0; } }
@@ -595,8 +597,13 @@ function renderToday() {
     }
     const row = el("div", { className: "tr", dataset: { tone: r.tone } }, go, act, runButton(r));
     const again = () => { todaySig = ""; loadToday(); };
-    if (r.deploy) return [row, D.deployBox(r.deploy, { onChange: again })];
-    return r.can_deploy ? [row, D.deployCheck(r.app_id, r.name, { onChange: again })] : [row];
+    // The Decurion app's row, while this PC runs an older Decurion than
+    // GitHub has (version.rs): what's waiting and how to update, the same
+    // as the board's strip.
+    const ver = D.versionNote(r.decurion);
+    const top = ver ? [row, ver] : [row];
+    if (r.deploy) return [...top, D.deployBox(r.deploy, { onChange: again })];
+    return r.can_deploy ? [...top, D.deployCheck(r.app_id, r.name, { onChange: again })] : top;
   }), ...(more > 0 ? [Object.assign(el("button", { type: "button", className: "btn quiet sm more-apps" }, `and ${D.plural(more, "more app")}`),
     { onclick: () => { todayAll = true; renderToday(); } })] : []));
 }
@@ -744,7 +751,7 @@ function inboxCard(t, anim) {
   const ttl = el("button", { type: "button", className: "ttl" }, t.title);
   ttl.onclick = open;
   card.append(
-    el("div", { className: "meta" }, D.pill(t.state),
+    el("div", { className: "meta" }, D.statePill(t),
       el("span", { className: "app" }, D.appName(t.app_id)),
       el("span", { className: "when", dataset: { at: t.updated_at } }, D.ago(t.updated_at)),
       el("span", { className: "chev" }, D.icon("right"))),
@@ -752,9 +759,13 @@ function inboxCard(t, anim) {
   if (asks.length) card.append(D.askBox(t, asks, { onSent: leave, guessed: !fromBlock,
     onTalk: (prefill) => D.openWork(t, refresh, { talk: true, prefill }) }));
   // What Accept leads to comes from the app's rules (D.acceptWords).
-  card.append(el("p", { className: "means" }, t.state === "in_review" && !t.research
-    ? `Looks right? Accept keeps it. ${D.acceptWords(t.app_id)} Questions or changes? Tell the agent.`
-    : MEANS[t.research && t.state === "in_review" ? "research" : t.state]));
+  // Finished work that waits on you shows its step bar instead: where it
+  // is, what happens next and why it is stuck, in the hub's words.
+  const road = t.state === "done" && t.road ? t.road : null;
+  card.append(road ? el("div", { className: "means road-box" }, D.road(road, { github: t.github }))
+    : el("p", { className: "means" }, t.state === "in_review" && !t.research
+      ? `Looks right? Accept keeps it. ${D.acceptWords(t.app_id)} Questions or changes? Tell the agent.`
+      : MEANS[t.research && t.state === "in_review" ? "research" : t.state]));
   if (said) {
     const q = el("div", { className: "q" + (S.open.has(t.id) ? " open" : "") }, D.richText(said));
     const more = el("button", { type: "button", className: "more", hidden: true, "aria-expanded": S.open.has(t.id) ? "true" : "false" },
@@ -1135,7 +1146,7 @@ function renderInbox() {
       build: (anim) => mergeCard(p, anim),
     })), ...entries.map(({ t, g, w }) => (t ? {
       key: t.id,
-      sig: JSON.stringify([t.state, t.updated_at, t.title, t.github, D.appName(t.app_id), D.lastWords(tailNow(t, 20) ?? []), sinceLines(tailNow(t, 20) ?? []), D.offline]),
+      sig: JSON.stringify([t.state, t.updated_at, t.title, t.github, t.road, D.appName(t.app_id), D.lastWords(tailNow(t, 20) ?? []), sinceLines(tailNow(t, 20) ?? []), D.offline]),
       build: (anim) => inboxCard(t, anim),
     } : {
       key: `goal-${g.id}`,
@@ -1171,8 +1182,10 @@ function readAllText(entries) {
     }
     const { questions, rest } = D.questions(D.rawWords(tailNow(t, 20) ?? []));
     const asks = ASKS_IN.has(t.state) ? questions : [];
-    const head = `${num}${t.title}, in ${D.appName(t.app_id)}. ${D.STATES[t.state]?.word ?? ""}.`;
-    const about = asks.length ? `The agent asks: ${askText(asks)}` : rest.trim().slice(0, 400);
+    // Finished work says the step it is on and what happens next, not Done.
+    const road = t.state === "done" && t.road ? t.road : null;
+    const head = `${num}${t.title}, in ${D.appName(t.app_id)}. ${road ? road.label.replaceAll(" · ", ", ") : D.STATES[t.state]?.word ?? ""}.`;
+    const about = road ? [road.next, road.why].filter(Boolean).join(" ") : asks.length ? `The agent asks: ${askText(asks)}` : rest.trim().slice(0, 400);
     lines.push(head, about);
   });
   return lines.filter(Boolean).join("\n");
@@ -1240,7 +1253,10 @@ function boardCard(t, anim) {
       app && el("span", { className: "tag dot-sep" }, D.aiLabel(app, t))),
     el("div", { className: "t" }, t.title),
     line && el("div", { className: "says" }, line),
-    t.state === "done" && t.github && el("div", { className: "says" }, D.githubText(t.github)),
+    // Where finished work is, from Built to Live or On your PC (the hub's
+    // road); on an older hub, one line on how its send went.
+    t.state === "done" && (t.road ? D.trail(t.road, { small: true, github: t.github })
+      : t.github && el("div", { className: "says" }, D.githubText(t.github))),
     el("div", { className: "foot" },
       t.state === "running" && el("span", { className: "live-dot", "aria-hidden": "true" }),
       el("span", { dataset: { at: t.updated_at } }, D.ago(t.updated_at)),
@@ -1276,7 +1292,7 @@ function renderBoard() {
     const app = S.apps[t.app_id];
     return {
       key: String(t.id),
-      sig: JSON.stringify([t.state, t.updated_at, t.title, t.github, t.dismissed_at, D.appName(t.app_id), D.aiLabel(app, t), D.cardLine(t, tailNow(t, 5))]),
+      sig: JSON.stringify([t.state, t.updated_at, t.title, t.github, t.road, t.dismissed_at, D.appName(t.app_id), D.aiLabel(app, t), D.cardLine(t, tailNow(t, 5))]),
       build: (anim) => boardCard(t, anim),
     };
   };

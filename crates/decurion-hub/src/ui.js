@@ -321,35 +321,110 @@
 .road-steps .done { color: var(--green, var(--ok-ink, #18703a)); }
 .road-steps .now { color: var(--ink, #14171c); font-weight: 600; }
 .road-steps .now.you { color: var(--amber, var(--warn-ink, #8a5300)); }
+.road-steps .now.failed { color: var(--red, var(--bad-ink, #b42318)); }
+.road-steps .now.closed { color: var(--muted, #545d6b); }
 .road-next { margin: 0; font-size: 14px; }
 .road.you .road-next { border-left: 3px solid var(--amber-line, var(--warn, #b97a0f)); padding-left: 8px; }
+.road-why { margin: 0; font-size: 13px; color: var(--muted, #545d6b); overflow-wrap: anywhere; }
 .road-update { margin: 0; padding-left: 18px; font-size: 13.5px; }
-.road .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.road .sr, .trail .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.trail { display: grid; gap: 2px; min-width: 0; margin-top: 8px; font-size: 13px; }
+.trail-row { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 8px; min-width: 0; }
+.trail-marks { list-style: none; margin: 0; padding: 0; display: inline-flex; gap: 2px; flex: none; }
+.trail-marks li { width: 1.2em; text-align: center; font-weight: 700; line-height: 1.4; color: var(--muted, #545d6b); }
+.trail-marks .done { color: var(--green, var(--ok-ink, #18703a)); }
+.trail-marks .now { color: var(--ink, #14171c); }
+.trail-marks .now.you { color: var(--amber, var(--warn-ink, #8a5300)); }
+.trail-marks .now.failed { color: var(--red, var(--bad-ink, #b42318)); }
+.trail-label { font-weight: 600; color: var(--ink, #14171c); min-width: 0; overflow-wrap: anywhere; }
+.trail.you .trail-label { color: var(--amber, var(--warn-ink, #8a5300)); }
+.trail.done .trail-label { color: var(--green, var(--ok-ink, #18703a)); }
+.trail.failed .trail-label { color: var(--red, var(--bad-ink, #b42318)); }
+.trail-why { margin: 0; color: var(--muted, #545d6b); overflow-wrap: anywhere; }
+.trail.small .trail-why { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .hub-lost { background: var(--bg, #0e1014); color: var(--ink, #e9ecf1); }
 }`));
   };
 
-  // Where a goal's work is, from Built to Live (road.rs works it out from
-  // the app's rules, so every screen tells the same story): the steps, each
-  // with a word and a symbol, and one line on what happens next and who
-  // does it. For Decurion's own code, merged but not running yet, how to
-  // update it and the help page that says more.
-  const MARKS = { done: ["✓", "done"], now: ["●", "now"], todo: ["○", "not yet"], skipped: ["–", "skipped"] };
-  D.road = (road) => {
+  // Where work is, from Built to Live or On your PC (road.rs works it out
+  // from the app's rules, so every screen tells the same story): the steps,
+  // each with a word and a symbol, one line on what happens next and who
+  // does it, and why the step it is on is stuck when the hub knows (why).
+  // For Decurion's own code, merged but not running yet, how to update it
+  // and the help page that says more. The step names and every line are
+  // the hub's, drawn as given.
+  const MARKS = { done: ["✓", "done"], now: ["●", "now"], todo: ["○", "not yet"], skipped: ["–", "skipped"], failed: ["✗", "failed"] };
+  D.UPDATE_HELP = () => `${D.helpPage("improve-decurion-itself")}#update-decurion`;
+  // The mark for one step. The step the work is on says more when the
+  // owner holds it (!), when its push failed (✗, red), or when its pull
+  // request was closed without merging (✗, grey): GitHub's own facts on
+  // the send (t.github), since the road's marks only say done, now or to do.
+  const stepMark = (s, road, g) => {
+    if (s.mark !== "now") return [s.mark, ...(MARKS[s.mark] ?? ["○", ""])];
+    if (g?.state === "failed") return ["now failed", "✗", "failed"];
+    if (g?.closed && !g.merged) return ["now closed", "✗", "closed, not merged"];
+    if (road.you) return ["now you", "!", "needs you"];
+    return ["now", ...MARKS.now];
+  };
+  // How the whole road reads: done (green), needs you (amber), failed (red).
+  const roadTone = (road, g) => (road.done ? "done" : g?.state === "failed" ? "failed" : road.you ? "you" : "");
+  D.road = (road, { github: g = null } = {}) => {
     if (!road) return null;
     D.ensureStyle();
-    const steps = D.el("ol", { className: "road-steps", "aria-label": "From built to live" }, ...road.steps.map((s) => {
-      const you = s.mark === "now" && road.you;
-      const [mk, words] = you ? ["!", "needs you"] : MARKS[s.mark] ?? ["○", ""];
-      return D.el("li", { className: `${s.mark}${you ? " you" : ""}`, "aria-current": s.mark === "now" ? "step" : null },
+    const steps = D.el("ol", { className: "road-steps", "aria-label": "From built to live" }, ...(road.steps ?? []).map((s) => {
+      const [cls, mk, words] = stepMark(s, road, g);
+      return D.el("li", { className: cls, "aria-current": s.mark === "now" ? "step" : null },
         D.el("span", { className: "mk", "aria-hidden": "true" }, mk), D.el("span", {}, s.label), D.el("span", { className: "sr" }, `, ${words}`));
     }));
     const update = road.update?.length ? [
       D.el("ul", { className: "road-update" }, ...road.update.map((l) => D.el("li", {}, l))),
-      D.el("p", { className: "road-next" }, D.el("a", { href: `${D.helpPage("improve-decurion-itself")}#update-decurion`, target: "_blank", rel: "noopener noreferrer" }, "How to update Decurion")),
+      D.el("p", { className: "road-next" }, D.el("a", { href: D.UPDATE_HELP(), target: "_blank", rel: "noopener noreferrer" }, "How to update Decurion")),
     ] : [];
-    return D.el("div", { className: `road${road.you ? " you" : ""}` }, steps, D.el("p", { className: "road-next" }, road.next), ...update);
+    return D.el("div", { className: `road${road.you ? " you" : ""}` }, steps, D.el("p", { className: "road-next" }, road.next),
+      road.why ? D.el("p", { className: "road-why" }, road.why) : null, ...update);
+  };
+  // The same road, small, for cards: one mark per step, the road's label
+  // after them, and why it is stuck under them when the hub says. Each mark
+  // has its step's name and state for screen readers and on hover. It
+  // wraps rather than grow sideways, so it fits a 360px phone. A card that
+  // is itself a button can hold it: nothing in it is a control.
+  D.trail = (road, { small = false, github: g = null } = {}) => {
+    if (!road) return null;
+    D.ensureStyle();
+    const tone = roadTone(road, g);
+    const marks = D.el("ol", { className: "trail-marks", "aria-label": "From built to live" }, ...(road.steps ?? []).map((s) => {
+      const [cls, mk, words] = stepMark(s, road, g);
+      return D.el("li", { className: cls, title: `${s.label}: ${words}`, "aria-current": s.mark === "now" ? "step" : null },
+        D.el("span", { "aria-hidden": "true" }, mk), D.el("span", { className: "sr" }, `${s.label}, ${words}`));
+    }));
+    return D.el("div", { className: `trail${small ? " small" : ""}${tone ? ` ${tone}` : ""}` },
+      D.el("div", { className: "trail-row" }, marks, D.el("span", { className: "trail-label" }, road.label)),
+      road.why ? D.el("p", { className: "trail-why", title: road.why }, road.why) : null);
+  };
+
+  // Which Decurion this PC runs (GET /api/decurion/version, version.rs).
+  // The changes merged on GitHub that this PC isn't running yet, newest
+  // first, each with its pull request's number when it has one. Titles are
+  // the commits' own, drawn as text.
+  D.versionChanges = (changes) => (changes?.length ? D.el("ul", { className: "ver-changes" }, ...changes.map((c) =>
+    D.el("li", {}, c.title, c.number != null ? D.el("span", { className: "ver-num" }, ` #${c.number}`) : null))) : null);
+  // On the Decurion app's Today row, only while this PC is behind: one
+  // line, What's new folded under it, and the help page on how to update.
+  // What's new stays open across the row's refreshes.
+  let verOpen = false;
+  D.versionNote = (v) => {
+    if (!v || v.state !== "behind") return null;
+    const n = Number(v.behind) || 0;
+    const list = D.versionChanges(v.changes);
+    const more = list ? D.el("details", { className: "fold ver-new", open: verOpen },
+      D.el("summary", { dataset: { key: "ver-new" } }, D.icon("right"), "What's new"), list) : null;
+    if (more) more.ontoggle = () => { verOpen = more.open; };
+    return D.el("div", { className: "ver-note" },
+      D.el("p", { className: "ver-line" }, D.icon("alert"),
+        D.el("span", {}, `Your PC runs an older Decurion${n ? ` · ${D.plural(n, "change")} waiting` : ""}`)),
+      more,
+      D.el("a", { className: "ver-how", href: D.UPDATE_HELP(), target: "_blank", rel: "noopener noreferrer" }, D.icon("help"), "How to update"));
   };
 
   // Events come in pages of 500; fetch them all so the outcome is never cut off.
@@ -1149,74 +1224,129 @@
   };
 
   // ---------- Sent to GitHub ----------
-  // Accepted work goes to GitHub as a branch, with a pull request or a link
-  // that opens one. Only GitHub links are ever drawn as links.
+  // Accepted work is pushed to GitHub as a branch, then a pull request is
+  // opened for it, merged, and for some apps put live (the road above says
+  // which step it is on). Only GitHub links are ever drawn as links. Work
+  // pushed with no pull request can't be merged, so it always offers Open
+  // the pull request: the hub finds or opens it, then watches it. It never
+  // pushes or merges.
   const ghLink = (u) => typeof u === "string" && u.startsWith("https://github.com/");
+  // Pushed as a branch to GitHub, with no pull request yet.
+  const noPr = (g) => g?.state === "sent" && !g.pull_request && !g.merged && !g.closed && ghLink(g.url);
   // One short line, for cards that are buttons themselves.
   D.githubText = (g) => {
     if (!g) return "";
-    if (g.state === "waiting" || g.state === "sending") return "Sending to GitHub…";
-    if (g.state === "failed") return "Not sent to GitHub. Open it to see why and try again.";
-    if (g.pull_request) return "Pull request ready on GitHub";
-    return ghLink(g.url) ? "On GitHub as a branch. Open it to make the pull request." : `Sent as the branch ${g.branch}`;
+    if (g.state === "waiting" || g.state === "sending") return "Pushing to GitHub…";
+    if (g.state === "failed") return "Not pushed to GitHub. Open it to see why and try again.";
+    if (g.merged) return "Merged on GitHub";
+    if (g.closed) return "Its pull request was closed without merging";
+    if (g.pull_request) return "Pull request open on GitHub";
+    return ghLink(g.url) ? "On GitHub as a branch, with no pull request yet. Open it to open the pull request." : `Pushed as the branch ${g.branch}`;
   };
   // Plain words for what GitHub will show next, so its red warnings are
   // never the first sign. A pull request GitHub says clashes with newer
-  // changes says so; a link that opens one says what "Can't automatically
-  // merge" there means. Null when there is nothing to say.
+  // changes says so; a branch with no pull request yet says what "Can't
+  // automatically merge" there means. Null when there is nothing to say.
   D.githubClash = (g) => {
-    if (!g || g.state !== "sent" || !ghLink(g.url)) return null;
+    if (!g || g.state !== "sent" || !ghLink(g.url) || g.merged || g.closed) return null;
     if (g.pull_request && g.clash) {
       return "This clashes with newer changes on main, so GitHub can't merge it as it is. Ask for the same change again: new work always starts from the latest code. Or have someone fix the clash on GitHub.";
     }
     if (!g.pull_request) {
-      return "If GitHub says \u201cCan't automatically merge\u201d, newer changes on main clash with this work. You can still open the pull request. To have it redone on the latest code, ask for the same change again.";
+      return "If GitHub says “Can't automatically merge”, newer changes on main clash with this work. You can still open the pull request. To have it redone on the latest code, ask for the same change again.";
     }
     return null;
   };
-  // What happened, with the link or Try again. `small` is for board cards.
+  // Open the pull request for work already on GitHub as a branch, with a
+  // receipt like every owner tap. The hub answers with the work as it is
+  // now: its pull request, or GitHub's reason in plain words when it still
+  // won't open one (shown in the toast and under the step bar).
+  D.openPullRequest = async (t, b, onChanged) => {
+    if (D.offline) return;
+    if (b) b.disabled = true;
+    try {
+      const back = await D.send(`/threads/${t.id}/github/pull-request`, {});
+      if (back?.github?.pull_request) D.toast(`Opened the pull request for "${t.title}". Decurion watches it from now on.`, "done");
+      else D.toast(`GitHub didn't open the pull request. ${back?.road?.why ?? back?.github?.error ?? "Try again in a minute."}`, "alert");
+      if (onChanged) onChanged(back);
+    } catch (e) {
+      D.toast(`"Open the pull request" did not go through. ${e.message}`, "alert");
+    }
+    if (b) b.disabled = D.offline;
+  };
+  // Push the work to GitHub again after a failed push.
+  const pushAgain = async (t, b, onChanged) => {
+    if (D.offline) return;
+    b.disabled = true;
+    try {
+      await D.send(`/threads/${t.id}/github`, {});
+      D.toast(`Pushing "${t.title}" to GitHub again.`, "send");
+      if (onChanged) onChanged();
+    } catch (e) {
+      D.toast(`"Try again" did not go through. ${e.message}`, "alert");
+      b.disabled = D.offline;
+    }
+  };
+  // The one thing the owner can do about a send from a card, or null:
+  // Open the pull request for a branch with none, Try again for a failed
+  // push. `small` is for board cards, whose buttons are quiet.
+  D.githubButton = (t, onChanged, { small = false } = {}) => {
+    const g = t.github;
+    if (t.state !== "done" || !g) return null;
+    const cls = small ? "btn quiet sm" : "btn primary sm";
+    let b = null;
+    if (noPr(g)) {
+      b = el("button", { type: "button", className: cls }, icon("branch"), "Open the pull request");
+      b.onclick = (ev) => { ev.stopPropagation(); D.openPullRequest(t, b, onChanged); };
+    } else if (g.state === "failed") {
+      b = el("button", { type: "button", className: cls }, icon("retry"), "Try again");
+      b.onclick = (ev) => { ev.stopPropagation(); pushAgain(t, b, onChanged); };
+    }
+    if (b) b.disabled = D.offline;
+    return b;
+  };
+  // What happened, with the link and the button. `small` is for board cards
+  // with no step bar (t.road); with one, the bar says where the work is and
+  // this only says what GitHub has and what to tap.
   D.github = (t, onChanged, { small = false } = {}) => {
     const g = t.github;
     if (!g) return null;
     const sz = small ? "btn sm quiet" : "btn sm";
     if (g.state === "waiting" || g.state === "sending") {
-      return el("p", { className: "gh hint" }, icon("running"), " Sending to GitHub…");
+      return el("p", { className: "gh hint" }, icon("running"), " Pushing to GitHub…");
     }
     if (g.state === "sent") {
-      const link = ghLink(g.url) && el("a", { className: sz, href: g.url, target: "_blank", rel: "noopener noreferrer" },
-        icon("branch"), g.pull_request ? "Open pull request" : "Open pull request on GitHub");
+      const has = g.pull_request || g.merged || g.closed;
+      const link = ghLink(g.url) && el("a", { className: small || !has ? "btn sm quiet" : sz, href: g.url, target: "_blank", rel: "noopener noreferrer" },
+        icon("branch"), has ? "Open pull request" : "Open on GitHub");
       if (link) link.onclick = (ev) => ev.stopPropagation();
-      if (small) return el("p", { className: "gh" }, link || `Sent as the branch ${g.branch}`);
-      const words = g.pull_request ? "On GitHub as a pull request: a proposed change to your app's code. Nothing changes in the app until it is merged."
-        : link ? "On GitHub as a branch, with no pull request yet. Tap Open pull request on GitHub, then Create pull request there. Decurion finds it by itself."
-        : `Sent to the app's git server as the branch ${g.branch}.`;
+      if (small) return el("p", { className: "gh" }, link || `Pushed as the branch ${g.branch}`);
+      const want = noPr(g);
+      const words = g.merged ? "Merged on GitHub."
+        : g.closed ? "Its pull request was closed on GitHub without merging."
+        : g.pull_request ? "On GitHub as a pull request: a proposed change to your app's code. Nothing changes in the app until it is merged."
+        : want ? (t.road ? "On GitHub as a branch, with no pull request yet."
+          : "On GitHub as a branch, with no pull request yet, so it can't be merged. Tap Open the pull request. Decurion then watches it and sees the merge by itself.")
+        : `Pushed to the app's git server as the branch ${g.branch}.`;
       const clash = D.githubClash(g);
-      return el("div", { className: `gh notice${g.pull_request && g.clash ? " warn" : ""}` }, icon(g.pull_request && g.clash ? "alert" : "done"),
-        el("div", { className: "grow" }, words, g.error ? el("div", { className: "hint" }, g.error) : null,
-          clash ? el("div", { className: "hint" }, clash) : null), link || null);
+      // The step bar already shows the hub's reason; say it once.
+      const why = g.error && g.error !== t.road?.why ? g.error : null;
+      const warn = want || (g.pull_request && g.clash && !g.merged && !g.closed);
+      const btns = [D.githubButton(t, onChanged), link].filter(Boolean);
+      return el("div", { className: `gh notice${warn ? " warn" : ""}` }, icon(warn ? "alert" : g.closed ? "close" : "done"),
+        el("div", { className: "grow" }, words, why ? el("div", { className: "hint" }, why) : null,
+          clash ? el("div", { className: "hint" }, clash) : null),
+        btns.length ? el("div", { className: "gh-acts" }, ...btns) : null);
     }
-    const again = el("button", { type: "button", className: sz }, icon("retry"), "Try again");
-    again.disabled = D.offline;
-    again.onclick = async (ev) => {
-      ev.stopPropagation();
-      if (D.offline) return;
-      again.disabled = true;
-      try {
-        await D.send(`/threads/${t.id}/github`, {});
-        D.toast(`Sending "${t.title}" to GitHub again.`, "send");
-        if (onChanged) onChanged();
-      } catch (e) {
-        D.toast(`"Try again" did not go through. ${e.message}`, "alert");
-        again.disabled = false;
-      }
-    };
+    const again = D.githubButton(t, onChanged, { small });
     if (small) {
       return el("div", { className: "gh-small" },
-        el("p", { className: "gh warn" }, icon("alert"), el("b", {}, "Not sent to GitHub")),
+        el("p", { className: "gh warn" }, icon("alert"), el("b", {}, "Not pushed to GitHub")),
         g.error ? el("p", { className: "says", title: g.error }, g.error) : null, again);
     }
+    const why = g.error && g.error !== t.road?.why ? g.error : "";
     return el("div", { className: "gh notice warn" }, icon("alert"),
-      el("div", { className: "grow" }, el("b", {}, "Not sent to GitHub. "), g.error || "",
+      el("div", { className: "grow" }, el("b", {}, "Not pushed to GitHub. "), why,
         el("div", { className: "hint" }, "The work is still accepted. Nothing was lost.")), again);
   };
 
@@ -1484,7 +1614,7 @@
       // An app whose rules allow merging from Decurion gets a Merge button
       // on the pull request's card (board's Today, phone's inbox) instead.
       // A goal's piece has its step bar above, which says the same.
-      if (t.github?.state === "sent" && t.github.pull_request && !c.goal?.road) {
+      if (t.github?.state === "sent" && t.github.pull_request && !t.github.merged && !t.github.closed && !c.goal?.road) {
         if (apps[t.app_id]?.rules?.merge) row("Merge it", ["Tap ", b("Merge"), " on its pull request on the board's Today strip or in your phone's inbox. Decurion merges once GitHub says the checks passed. You can also merge it on GitHub."]);
         else row("Merge it on GitHub", "Open the pull request above, look it over, and merge it there. This app's rules leave merging to you or your reviewer.");
       }
@@ -1500,11 +1630,18 @@
   // Accept. Work added straight to the board has no line: Accept is always
   // yours.
   // Bring up to date work held for protected parts (t.hold, protected.rs)
-  // says so, in the hub's words.
+  // says so, in the hub's words. Other finished work shows its own step bar
+  // (t.road, the same road without the Checked step), so it is never just
+  // Done while nothing is merged.
   function pieceLine(c) {
     const t = c.t, g = c.goal;
     if (!g && t.hold && t.state === "in_review") {
       return el("div", { className: "notice warn" }, icon("shield"), el("span", { className: "grow" }, t.hold, " Look it over, then tap Accept."));
+    }
+    if (!g && t.road && t.state === "done") {
+      return el("section", {}, el("div", { className: "section-title" }, "Where it is"),
+        el("div", { className: `notice${t.road.you ? " warn" : ""}` }, icon(t.road.done ? "done" : t.road.you ? "alert" : "branch"),
+          el("div", { className: "grow" }, D.road(t.road, { github: t.github }))));
     }
     if (!g) return null;
     const how = g.by_plan ? " It went to GitHub by itself because you approved the plan."
@@ -1512,22 +1649,26 @@
     const head = el("span", {}, `Part of your goal “${g.goal_title}”.${how} `, el("a", { href: `/goals#goal-${g.goal_id}` }, "Open the goal"));
     const you = !!g.road?.you;
     return el("div", { className: `notice${you ? " warn" : ""}` }, icon(g.held && t.state === "in_review" ? "shield" : "plan"),
-      el("div", { className: "grow" }, head, g.road ? el("div", { style: "margin-top:8px" }, D.road(g.road)) : null));
+      el("div", { className: "grow" }, head, g.road ? el("div", { style: "margin-top:8px" }, D.road(g.road, { github: t.github })) : null));
   }
 
   // The header's time: the newest step or note, not when the work started,
   // so long quiet work still shows it is alive. Kept fresh on every load.
   const activityText = (t) => `Last activity ${D.ago(D.lastActivity(t))}`;
   // A finished piece says where it is on its way to live, never just Done
-  // while nothing is merged: its goal's road, or else how its send went.
+  // while nothing is merged: its goal's road, else its own (t.road), or else
+  // how its send went. The label is the hub's (road.rs).
   D.statePill = (t, road) => {
     if (t.state !== "done" || t.research) return D.pill(t.state);
     const g = t.github;
+    road = road ?? t.road;
     const [cls, word] = road ? [road.done ? "done" : road.you ? "needs_you" : "queued", road.label]
       : !g ? ["done", "Accepted"]
-      : g.state === "sent" ? ["queued", g.pull_request ? "On GitHub" : "On GitHub as a branch"]
-      : g.state === "failed" ? ["failed", "Not sent to GitHub"] : ["queued", "Sending to GitHub"];
-    return el("span", { className: `pill ${cls}` }, icon(cls), word);
+      : g.state === "failed" ? ["failed", "Not pushed"]
+      : g.merged ? ["done", "Merged"]
+      : g.state === "sent" ? ["queued", g.closed ? "Closed · not merged" : g.pull_request ? "Pull request open" : "Pushed · no pull request"]
+      : ["queued", "Pushing to GitHub"];
+    return el("span", { className: `pill ${cls}` }, icon(cls === "queued" && g?.state === "sent" ? "branch" : cls), word);
   };
   // "What you asked" is the owner's own words. For a goal's piece that is
   // what they typed to start the goal; the piece's prompt is the project
@@ -1543,7 +1684,7 @@
     const t = c.t, ev = c.ev, app = apps[t.app_id];
     const kids = kidsOf(t.id), parent = t.parent_id != null ? all.find((p) => p.id === t.parent_id) : null;
     const waiting = c.msgs ? c.msgs.filter((m) => m.delivered_at == null).length : 0;
-    const sig = JSON.stringify([t.state, t.place, cloud, t.updated_at, t.title, t.github, t.hold, c.goal, t.check, ev.length, D.pro, D.offline, waiting, parent?.title,
+    const sig = JSON.stringify([t.state, t.place, cloud, t.updated_at, t.title, t.github, t.road, t.hold, c.goal, t.check, ev.length, D.pro, D.offline, waiting, parent?.title,
       kids.map((k) => [k.id, k.state, k.title, k.background])]);
     if (sig === c.sig) return;
     c.sig = sig;

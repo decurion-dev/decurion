@@ -39,6 +39,11 @@
 //! - **A failure never undoes the accept.** The work stays Done, the reason
 //!   is saved in plain words for the board, the owner can tap Try again, and
 //!   the by-hand route (`<data>/review/<app>-<n>.git`) keeps working.
+//! - **Opening a pull request later pushes nothing.** Work already pushed
+//!   as a branch with no pull request gets one on the owner's own tap
+//!   ([`Sender::open_pr`]): the hub only asks GitHub's API, with the token in a
+//!   request header, to find or open the pull request for that same
+//!   `decurion/` branch. It never pushes and never merges.
 //!
 //! The agent's work is read from the hub's own saved copy (the code part of
 //! its latest checkpoint) into the hub's bare copy of the app's repo, with
@@ -67,13 +72,22 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
 
-/// A column for a thread query: whether GitHub says the pull request Decurion
-/// opened for it clashes with newer changes on its base branch. `thread` is
-/// the threads table's name or alias in the query. [`send_from`] reads it.
-pub(crate) fn gh_clash(thread: &str) -> String {
+/// Columns for a thread query about the pull request Decurion watches for
+/// it: whether GitHub says it clashes with newer changes on its base branch,
+/// its state (`open`, `merged`, `closed`), and whether its merge is live. A
+/// fix of review comments reads the pull request it answers, but only once
+/// the fix itself was pushed there: one that never got there must not look
+/// merged because the pull request did. `thread` is
+/// the threads table's name or alias in the query. [`send_from`] reads
+/// them; `store::THREAD_COLS` holds the same.
+pub(crate) fn gh_watch(thread: &str) -> String {
     format!(
         "(SELECT w.state = 'open' AND w.clash FROM pr_watches w
-          WHERE w.thread_id = {thread}.id) AS gh_clash"
+          WHERE w.thread_id = {thread}.id) AS gh_clash,
+         (SELECT w.state FROM pr_watches w
+          WHERE w.thread_id = CASE WHEN {thread}.fix_of IS NULL THEN {thread}.id WHEN {thread}.gh_state = 'sent' THEN {thread}.fix_of END) AS gh_pr_state,
+         (SELECT w.live_at IS NOT NULL FROM pr_watches w
+          WHERE w.thread_id = CASE WHEN {thread}.fix_of IS NULL THEN {thread}.id WHEN {thread}.gh_state = 'sent' THEN {thread}.fix_of END) AS gh_live"
     )
 }
 
@@ -746,26 +760,33 @@ fn pr_url_ok(u: &str) -> bool {
 }
 
 fn unreachable_api() -> String {
-    "Could not reach GitHub to open the pull request. Tap Open a pull request to open it yourself."
-        .into()
+    "Could not reach GitHub to open the pull request. Tap Open the pull request to try again, or Open on GitHub to open it yourself.".into()
 }
 
 fn unreadable_api() -> String {
-    "GitHub's answer could not be read, so no pull request was opened. Tap Open a pull request to open it yourself.".into()
+    "GitHub's answer could not be read, so no pull request was opened. Tap Open the pull request to try again, or Open on GitHub to open it yourself.".into()
 }
 
 /// GitHub would not let the token open a pull request on this repo (it said
 /// 403 or 404). Settings, Sign-ins turns GitHub amber for it, with the steps.
-const NO_PR_ACCESS: &str = "Your GitHub token can send work but can't open pull requests on this app, so none was opened. Tap Open a pull request to open it yourself. To let Decurion open them for you, follow the steps in Settings, Sign-ins, GitHub.";
+const NO_PR_ACCESS: &str = "Your GitHub token can send work but can't open pull requests on this app, so none was opened. Tap Open on GitHub to open it yourself. To let Decurion open them for you, follow the steps in Settings, Sign-ins, GitHub.";
 
 /// GitHub no longer takes the token (it said 401).
-const TOKEN_REFUSED: &str = "GitHub no longer takes your GitHub token, so no pull request was opened. Tap Open a pull request to open it yourself, and save a new token in Settings, GitHub.";
+const TOKEN_REFUSED: &str = "GitHub no longer takes your GitHub token, so no pull request was opened. Tap Open on GitHub to open it yourself, and save a new token in Settings, GitHub.";
+
+/// No token at all when the owner asks Decurion to open a pull request.
+const NO_TOKEN: &str = "Decurion has no GitHub token to open pull requests with, so none was opened. Tap Open on GitHub to open it yourself, or save a token in Settings, GitHub, then tap Open the pull request again.";
+
+/// Asked to open a pull request for work that is not pushed GitHub work
+/// without one.
+const NO_PR_TO_OPEN: &str =
+    "This work is not on GitHub as a branch waiting for a pull request, so there is none to open.";
 
 fn api_refused(status: reqwest::StatusCode) -> String {
     match status.as_u16() {
         401 => TOKEN_REFUSED.into(),
         403 | 404 => NO_PR_ACCESS.into(),
-        _ => format!("GitHub said {} when asked to open the pull request. Tap Open a pull request to open it yourself.", status.as_u16()),
+        _ => format!("GitHub said {} when asked to open the pull request. Tap Open the pull request to try again, or Open on GitHub to open it yourself.", status.as_u16()),
     }
 }
 
@@ -1078,6 +1099,7 @@ pub(crate) fn send_from(row: &SqliteRow) -> Result<Option<GitHubSend>> {
     let Some(state) = row.try_get::<Option<String>, _>("gh_state")? else {
         return Ok(None);
     };
+    let pr_state: Option<String> = row.try_get("gh_pr_state").ok().flatten();
     Ok(Some(GitHubSend {
         state: SendState::from_str(&state).map_err(StoreError::Invalid)?,
         branch: row
@@ -1086,9 +1108,16 @@ pub(crate) fn send_from(row: &SqliteRow) -> Result<Option<GitHubSend>> {
         url: row.try_get("gh_url")?,
         pull_request: row.try_get("gh_pr")?,
         error: row.try_get("gh_error")?,
-        // Read only where the query asks for it ([`gh_clash`]).
+        // Read only where the query asks for them ([`gh_watch`]).
         clash: row
             .try_get::<Option<bool>, _>("gh_clash")
+            .ok()
+            .flatten()
+            .unwrap_or(false),
+        merged: pr_state.as_deref() == Some("merged"),
+        closed: pr_state.as_deref() == Some("closed"),
+        live: row
+            .try_get::<Option<bool>, _>("gh_live")
             .ok()
             .flatten()
             .unwrap_or(false),
@@ -1350,7 +1379,7 @@ impl Store {
                 return Err(StoreError::Duplicate(crate::store::RECEIPT_REUSED.into()));
             }
             tx.commit().await?;
-            return Ok((self.thread(id).await?, false));
+            return Ok((self.thread_with_road(id).await?, false));
         }
         let row: Option<(String, Option<String>)> =
             sqlx::query_as("SELECT state, gh_state FROM threads WHERE id = ?")
@@ -1378,7 +1407,113 @@ impl Store {
         .await?;
         save_receipt(&mut tx, receipt, "github_send", id).await?;
         tx.commit().await?;
-        Ok((self.thread(id).await?, true))
+        Ok((self.thread_with_road(id).await?, true))
+    }
+
+    /// For the owner's Open the pull request: the GitHub repo and the
+    /// commit Decurion pushed for thread `id`, when it is finished work
+    /// pushed to GitHub as a branch with no pull request (and no fix, which
+    /// goes to a pull request already there). Refused otherwise.
+    async fn pushed_without_pr(&self, id: i64) -> Result<(Repo, String)> {
+        let row = sqlx::query(
+            "SELECT state, gh_state, gh_pr, gh_url, gh_head, research, fix_of
+             FROM threads WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(self.pool())
+        .await?
+        .ok_or(StoreError::NotFound)?;
+        let state: String = row.try_get("state")?;
+        let gh: Option<String> = row.try_get("gh_state")?;
+        let url: Option<String> = row.try_get("gh_url")?;
+        let head: Option<String> = row.try_get("gh_head")?;
+        let research: bool = row.try_get("research")?;
+        let fix_of: Option<i64> = row.try_get("fix_of")?;
+        if row.try_get::<bool, _>("gh_pr")? && gh.as_deref() == Some("sent") {
+            return Err(StoreError::Refused(
+                "This work already has a pull request on GitHub.".into(),
+            ));
+        }
+        let repo = url.as_deref().and_then(repo_of_page);
+        match (repo, head) {
+            (Some(repo), Some(head))
+                if state == "done"
+                    && gh.as_deref() == Some("sent")
+                    && !research
+                    && fix_of.is_none() =>
+            {
+                Ok((repo, head))
+            }
+            _ => Err(StoreError::Refused(NO_PR_TO_OPEN.into())),
+        }
+    }
+
+    /// Saves what came of the owner's Open the pull request, with the
+    /// receipt that asked, in one transaction. Opened: the work's link
+    /// becomes the pull request, which is watched from the commit Decurion
+    /// pushed, exactly as after a send. Not opened: the new plain reason is
+    /// kept for the board. Either way the GitHub light learns whether the
+    /// token works on this app.
+    async fn end_open_pr(&self, id: i64, sent: &Sent, receipt: Option<&str>) -> Result<()> {
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if receipt_result(&mut tx, receipt, PR_RECEIPT)
+            .await?
+            .is_some()
+        {
+            tx.commit().await?;
+            return Ok(());
+        }
+        let done = if sent.pull_request {
+            sqlx::query(
+                "UPDATE threads SET gh_url = ?, gh_pr = 1, gh_error = ?
+                 WHERE id = ? AND gh_state = 'sent' AND gh_pr = 0",
+            )
+            .bind(sent.url.as_deref())
+            .bind(sent.note.as_deref())
+            .bind(id)
+            .execute(&mut *tx)
+            .await?
+        } else {
+            sqlx::query(
+                "UPDATE threads SET gh_error = ? WHERE id = ? AND gh_state = 'sent' AND gh_pr = 0",
+            )
+            .bind(sent.note.as_deref())
+            .bind(id)
+            .execute(&mut *tx)
+            .await?
+        };
+        if done.rows_affected() == 1 {
+            let note = match (&sent.url, sent.pull_request) {
+                (Some(u), true) => format!("opened the pull request on GitHub: {u}"),
+                _ => format!(
+                    "could not open the pull request: {}",
+                    sent.note.as_deref().unwrap_or("no reason given")
+                ),
+            };
+            audit(
+                &mut tx,
+                id,
+                crate::store::OWNER,
+                ThreadState::Done,
+                ThreadState::Done,
+                Some(&note),
+            )
+            .await?;
+            if sent.pull_request {
+                crate::pr_watch::sent(
+                    &mut tx,
+                    id,
+                    sent.watch.as_ref(),
+                    sent.url.as_deref(),
+                    sent.head.as_deref(),
+                )
+                .await?;
+            }
+            pr_trouble(&mut tx, id, sent).await?;
+        }
+        save_receipt(&mut tx, receipt, PR_RECEIPT, id).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// After a restart: a send cut off halfway waits again, and every
@@ -1440,6 +1575,10 @@ impl Store {
         Ok(())
     }
 }
+
+/// What an Open the pull request tap is saved as, so a resend of the same
+/// tap asks GitHub nothing again.
+const PR_RECEIPT: &str = "github_pr";
 
 // ---------- Sending ----------
 
@@ -1698,6 +1837,73 @@ impl Sender {
 }
 
 impl Sender {
+    /// The owner's Open the pull request on work already pushed to GitHub
+    /// as a branch with no pull request: finds the pull request open for
+    /// that branch, or opens one with the owner's token, with the same
+    /// title and words as a send, then watches it. It never pushes and
+    /// never merges. GitHub refusing is no error: the reason is saved on
+    /// the work and the thread is returned with it.
+    pub(crate) async fn open_pr(&self, id: i64, receipt: Option<&str>) -> Result<Thread> {
+        check_receipt(receipt)?;
+        // One at a time with sends, so a send and this never open two.
+        let _one = self.gh.sending.lock().await;
+        {
+            let mut tx = self.store.pool().begin().await?; // read-only: the receipt is saved later
+            let done = receipt_result(&mut tx, receipt, PR_RECEIPT).await?;
+            tx.commit().await?;
+            match done {
+                Some(done) if done != id => {
+                    return Err(StoreError::Duplicate(crate::store::RECEIPT_REUSED.into()))
+                }
+                Some(_) => return self.store.thread_with_road(id).await,
+                None => {}
+            }
+        }
+        let (repo, head) = self.store.pushed_without_pr(id).await?;
+        let job = self.store.send_job(id).await?;
+        let failed = |why: String| Sent {
+            url: None,
+            pull_request: false,
+            token: token_trouble(&why).map_or(TokenNews::Nothing, TokenNews::Trouble),
+            note: Some(why),
+            head: None,
+            watch: None,
+        };
+        let sent = match self.gh.tokens.get().await {
+            None => failed(NO_TOKEN.to_owned()),
+            Some(token) => match self
+                .gh
+                .pull_request(&token, &repo, &job.branch, &job.story)
+                .await
+            {
+                Ok(pr) => {
+                    let note = match job.story.reviewer.as_deref() {
+                        Some(login) if is_login(login) => self
+                            .gh
+                            .request_review(&token, &repo, pr.number, login)
+                            .await
+                            .err(),
+                        _ => None,
+                    };
+                    Sent {
+                        url: Some(pr.url),
+                        pull_request: true,
+                        note,
+                        head: Some(head),
+                        watch: Some((repo, pr.number)),
+                        token: TokenNews::Works,
+                    }
+                }
+                Err(why) => {
+                    tracing::warn!(thread = id, reason = %why, "the owner asked for a pull request; none opened");
+                    failed(why)
+                }
+            },
+        };
+        self.store.end_open_pr(id, &sent, receipt).await?;
+        self.store.thread_with_road(id).await
+    }
+
     /// Reads the pull request an update answers, just before sending: it
     /// must still be open and still merge into the branch the update
     /// brought in. Without a token or an answer, the update is not sent.
@@ -1817,6 +2023,32 @@ pub(crate) async fn retry(
             }
             Json(t).into_response()
         }
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// `POST /api/threads/{id}/github/pull-request`: the owner's Open the pull
+/// request on work pushed to GitHub as a branch with no pull request.
+/// Owner only, with a receipt; never in `cloud_reach`. Pushes nothing and
+/// merges nothing.
+pub(crate) async fn open_pr_tap(
+    State(st): State<AppState>,
+    axum::Extension(c): axum::Extension<Caller>,
+    UrlPath(id): UrlPath<i64>,
+    Json(b): Json<Retry>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("opening pull requests on GitHub");
+    }
+    let Some(sender) = st.sender() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this hub is not set up to send work to GitHub",
+        )
+            .into_response();
+    };
+    match sender.open_pr(id, b.receipt.as_deref()).await {
+        Ok(t) => Json(t).into_response(),
         Err(e) => ApiError(e).into_response(),
     }
 }

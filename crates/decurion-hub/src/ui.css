@@ -234,6 +234,30 @@ input[aria-invalid="true"] { border-color: var(--red); }
 .gh.notice { flex-wrap: wrap; align-items: center; }
 .gh.notice .grow { flex: 1 1 220px; }
 .gh.notice .btn { margin-top: 0; margin-bottom: 0; margin-left: auto; }
+/* Open the pull request (or Try again) and the GitHub link, side by side, wrapping on a phone. */
+.gh.notice .gh-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.gh.notice .gh-acts .btn { margin-left: 0; }
+@media (max-width: 640px) { .gh.notice .gh-acts .btn { min-height: 44px; } }
+
+/* Which Decurion this PC runs (D.versionNote): on the Decurion app's Today
+   row while it is behind. Amber says it needs the owner; What's new and How
+   to update are blue because they are pressed. Above the row's tap area. */
+.ver-note { position: relative; z-index: 1; display: grid; gap: 2px; justify-items: start; min-width: 0; font-size: 13px; }
+.ver-line { display: flex; gap: 6px; align-items: flex-start; margin: 0; color: var(--amber); font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
+.ver-line svg.i { width: 14px; height: 14px; margin-top: 2px; }
+.ver-new { min-width: 0; max-width: 100%; }
+.ver-new > summary, .ver-how { min-height: 28px; display: inline-flex; align-items: center; gap: 4px; color: var(--accent-ink); font-weight: 600; text-decoration: none; cursor: pointer; }
+.ver-new > summary svg.i, .ver-how svg.i { width: 14px; height: 14px; }
+.ver-how:hover, .ver-new > summary:hover { text-decoration: underline; }
+.ver-changes { margin: 2px 0 4px; padding-left: 18px; display: grid; gap: 2px; color: var(--ink); overflow-wrap: anywhere; }
+.ver-num { color: var(--muted); }
+@media (max-width: 640px) { .ver-new > summary, .ver-how { min-height: 44px; } }
+/* Settings, Decurion tab: the version row, the hub's words, the waiting changes and how to update. */
+#decurion-version { display: grid; gap: 10px; min-width: 0; }
+#decurion-version .sub-h { margin: 6px 0 0; }
+#decurion-version .ver-words { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+#decurion-version .ver-changes { margin: 0; font-size: 14px; }
+.ver-how-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 14px; overflow-wrap: anywhere; }
 @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
 .skeleton { border-radius: var(--radius); background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2)); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; }

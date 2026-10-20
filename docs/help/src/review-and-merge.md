@@ -26,7 +26,7 @@ Decurion only ever adds a new branch. It never changes your app's main branch, n
 1. Wait a moment. The card says **Sending to GitHub…** while it works.
 2. When it is done, you get a notice on your phone, and the card shows a button:
    - **Open pull request** if Decurion opened the pull request for you. Look it over on GitHub, wait for the checks to pass, then click **Merge pull request** there.
-   - **Open pull request on GitHub** if it did not. Tap it, and GitHub opens a page with the pull request filled in. Click **Create pull request**, then merge it there when you are ready. With a saved GitHub token, Decurion finds that pull request by itself within a few minutes and keeps watch on it like one it opened, so the goal still moves on to **Merged** and closes by itself.
+   - **Open the pull request** if it did not. The card sits under **Needs you**, says why no pull request was opened, and the tap asks Decurion to open it now. If GitHub still won't let it, **Open on GitHub** opens a page with the pull request filled in: click **Create pull request** there. With a saved GitHub token, Decurion finds that pull request by itself within a few minutes and keeps watch on it like one it opened, so the goal still moves on to **Merged** and closes by itself.
 
 The pull request says what was done, what the checker ran and found (each finding marked checked or guessed), and any protected parts that were held for you. It also says that Decurion made it.
 
@@ -87,7 +87,7 @@ Your work is still accepted, and nothing is lost. The card says **Not sent to Gi
 - **A branch with that name is already on GitHub with other changes.** Decurion did not overwrite it. Delete or rename that branch on GitHub, then tap **Try again**.
 - **Could not reach GitHub.** Check this PC's internet connection, then tap **Try again**.
 - **This app's folder is not linked to GitHub.** It has no remote named `origin`. Get the work by hand instead, as shown below.
-- **The pull request was not opened, but the work was sent.** The card still shows **Open pull request on GitHub**, and the goal page and the piece's panel say why beside it. Tap it to make the pull request yourself. If it says the token was not accepted, save a new one in **Settings**, **GitHub**. If it says your token can't open pull requests on this app, **Settings**, **Sign-ins** shows GitHub amber with the steps to fix it. See [Check your sign-ins](check-your-sign-ins.md).
+- **The pull request was not opened, but the work was sent.** The card moves to **Needs you**, its step bar stops at **Pull request**, and it says why under it. Fix what it says, then tap **Open the pull request**, or tap **Open on GitHub** to make it yourself. If it says the token was not accepted, save a new one in **Settings**, **GitHub**. If it says your token can't open pull requests on this app, **Settings**, **Sign-ins** shows GitHub amber with the steps to fix it. See [Check your sign-ins](check-your-sign-ins.md).
 - **"Can't automatically merge."** GitHub shows this when the work changes the same lines as something merged into the main branch since the work started. You can still open the pull request; it just can't be merged with one click yet. Once it is open, GitHub's **Resolve conflicts** button lets you pick which lines to keep, or ask someone who knows the code. When a pull request Decurion opened clashes like this, the goal page and the piece's panel say so.
 
 ## Get the changes by hand

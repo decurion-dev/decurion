@@ -57,14 +57,14 @@ You can protect parts of your own apps the same way. Add a file named `protected
 
 ## Update Decurion
 
-After a change to Decurion is merged, the step bar on its goal says **Needs you · update Decurion**: "Merged. This Decurion still runs the old version. Update it to use the change." Decurion never updates or restarts itself, and it never changes your code folder. Updating is always yours:
+After a change to Decurion is merged, its step bar says **Merged · not on your PC yet**: "Merged on GitHub. Your PC still runs the older Decurion, so you won't see this change until Decurion is updated." The **Today** strip also has a line on the Decurion app, **Your PC runs an older Decurion**, listing every change merged on GitHub that your PC isn't running yet, including ones merged outside Decurion. **Settings**, **Decurion** shows which version your PC runs and the same list. Decurion never updates or restarts itself, and it never changes your code folder. Updating is always yours:
 
 - **If you installed Decurion,** install the new version when it comes out.
 - **If Decurion runs from your code folder,** get the new code there first. In GitHub Desktop, click **Fetch origin**, then **Pull origin**. Then rebuild Decurion and restart it from that folder.
 
 While Decurion restarts, open pages show **Decurion is restarting or updating.** They keep trying by themselves and come back once Decurion answers. You do not need to reload them.
 
-Once the Decurion you run has the merged change, the step says **Live** by itself, and the goal closes when every piece is live.
+Once the Decurion you run has the merged change, the last step says **On your PC** by itself, the Today line goes away, and the goal closes when every piece is on your PC.
 
 A cloud worker updates itself to match your PC, using the code on Decurion's GitHub page. A change that is only in your own folder does not reach it.
 
