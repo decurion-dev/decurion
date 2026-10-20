@@ -3216,6 +3216,13 @@ fn pinned(h: &Hub, main: &str) -> bool {
     .is_empty()
 }
 
+/// What the app's Today row says about a Bring up to date Decurion started
+/// by itself.
+async fn auto_line(h: &Hub) -> Value {
+    let today = ok(&h.r, OWNER, "GET", "/api/today", Value::Null).await;
+    today[0]["last_pr"]["auto_line"].clone()
+}
+
 /// How many requests to GitHub were not reads.
 fn writes(h: &Hub) -> usize {
     requests(h).iter().filter(|s| s.0 != "GET").count()
@@ -3264,9 +3271,11 @@ async fn a_conflict_with_main_starts_one_update_by_itself_when_the_rule_is_on() 
     // The screens say Decurion started it.
     let w = watched(&h).await;
     assert_eq!(w[0]["fixing"], true, "{w}");
-    assert_eq!(w[0]["auto_fixing"], true, "{w}");
+    assert_eq!(
+        auto_line(&h).await,
+        json!("Decurion is fixing the conflicts with main by itself")
+    );
     let today = ok(&h.r, OWNER, "GET", "/api/today", Value::Null).await;
-    assert_eq!(today[0]["last_pr"]["auto_fixing"], true, "{today}");
     assert_eq!(today[0]["last_pr"]["can_update"], false, "{today}");
     // The look only read from GitHub.
     assert_eq!(writes(&h), writes_before);
@@ -3318,11 +3327,13 @@ async fn the_same_conflict_on_the_same_commits_is_not_tried_by_itself_twice() {
     let runs = auto_runs(&h).await;
     assert_eq!(runs.len(), 1);
     // The owner stops it. The pull request still conflicts, on the same
-    // pushed head and the same main: it is not tried again by itself.
+    // pushed head and the same main: it is not tried again by itself, and
+    // the row says only the usual words.
     stop(&h, runs[0].0).await;
     for _ in 0..3 {
         decurion_hub::pr_watch::poll(&h.state).await;
     }
+    assert_eq!(auto_line(&h).await, Value::Null);
     assert_eq!(auto_runs(&h).await.len(), 1);
     assert_eq!(thread_count(&h).await, 2);
     // The owner's own tap still starts one.
@@ -3469,6 +3480,12 @@ async fn an_update_started_by_itself_stays_unsent_in_review_until_the_owner_acce
     assert_eq!(t["state"], "in_review", "{t}");
     assert_eq!(t["github"], Value::Null, "{t}");
     assert_eq!(t["auto_started"], true, "{t}");
+    let line = auto_line(&h).await;
+    assert!(
+        line.as_str()
+            .is_some_and(|l| l.contains("waits for your review")),
+        "{line}"
+    );
     assert_eq!(branch_at(&bare, &branch).as_deref(), Some(pr_head.as_str()));
     assert_eq!(updates(&bare, &branch), pushes_before);
     assert_eq!(auto_runs(&h).await.len(), 1);
@@ -3482,4 +3499,6 @@ async fn an_update_started_by_itself_stays_unsent_in_review_until_the_owner_acce
     assert_eq!(git(&bare, &["rev-parse", &format!("{done}^1")]), pr_head);
     assert_eq!(git(&bare, &["rev-parse", &format!("{done}^2")]), main);
     assert_eq!(branch_at(&bare, "main").as_deref(), Some(main.as_str()));
+    // Accepted: nothing extra on the row.
+    assert_eq!(auto_line(&h).await, Value::Null);
 }

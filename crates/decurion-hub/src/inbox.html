@@ -757,8 +757,10 @@ function inboxCard(t, anim) {
       el("span", { className: "chev" }, D.icon("right"))),
     el("h2", { className: "h" }, ttl));
   // Started by Decurion under the app's rule to fix conflicts by itself,
-  // not by the owner's tap. It still waits for Accept like any other work.
-  if (t.auto_started) card.append(el("p", { className: "means" }, "Decurion is fixing the conflicts with main by itself. Nothing goes to GitHub until you accept it."));
+  // not by the owner's tap: said while it works, and beside the usual review
+  // words. Once accepted or failed, the usual words alone.
+  const auto = t.auto_started && !t.research;
+  if (auto && (t.state === "queued" || t.state === "running")) card.append(el("p", { className: "means" }, "Decurion is fixing the conflicts by itself."));
   if (asks.length) card.append(D.askBox(t, asks, { onSent: leave, guessed: !fromBlock,
     onTalk: (prefill) => D.openWork(t, refresh, { talk: true, prefill }) }));
   // What Accept leads to comes from the app's rules (D.acceptWords).
@@ -767,7 +769,7 @@ function inboxCard(t, anim) {
   const road = t.state === "done" && t.road ? t.road : null;
   card.append(road ? el("div", { className: "means road-box" }, D.road(road, { github: t.github }))
     : el("p", { className: "means" }, t.state === "in_review" && !t.research
-      ? `Looks right? Accept keeps it. ${D.acceptWords(t.app_id)} Questions or changes? Tell the agent.`
+      ? `${auto ? "Started by Decurion. " : ""}Looks right? Accept keeps it. ${D.acceptWords(t.app_id)} Questions or changes? Tell the agent.`
       : MEANS[t.research && t.state === "in_review" ? "research" : t.state]));
   if (said) {
     const q = el("div", { className: "q" + (S.open.has(t.id) ? " open" : "") }, D.richText(said));

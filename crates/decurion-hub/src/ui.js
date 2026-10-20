@@ -1645,10 +1645,12 @@
           el("div", { className: "grow" }, D.road(t.road, { github: t.github }))));
     }
     // Started by Decurion under the app's rule to fix conflicts by itself.
-    if (!g && t.auto_started) {
+    // Said while it works or waits for review; once accepted or failed,
+    // the usual words alone.
+    if (!g && t.auto_started && ["queued", "running", "in_review"].includes(t.state)) {
       return el("div", { className: "notice" }, icon("branch"), el("span", { className: "grow" },
-        t.state === "done" || t.state === "failed" ? "Decurion started this by itself because the pull request conflicted with main."
-          : "Decurion is fixing the conflicts with main by itself. Nothing goes to GitHub until you tap Accept."));
+        t.state === "in_review" ? "Started by Decurion. Look it over, then tap Accept."
+          : "Decurion is fixing the conflicts by itself. Nothing goes to GitHub until you tap Accept."));
     }
     if (!g) return null;
     const how = g.by_plan ? " It went to GitHub by itself because you approved the plan."

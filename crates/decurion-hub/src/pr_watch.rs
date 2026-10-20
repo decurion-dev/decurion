@@ -467,9 +467,6 @@ pub struct Watched {
     pub line: Option<String>,
     /// A fix the owner started is still under way.
     pub fixing: bool,
-    /// The work under way is a Bring up to date Decurion started by itself
-    /// because the pull request conflicts with its base branch.
-    pub auto_fixing: bool,
     /// Still open, and the app's rules let the owner merge it from Decurion
     /// ([`crate::merge`]).
     pub can_merge: bool,
@@ -488,12 +485,30 @@ pub(crate) const FIX_UNDER_WAY: &str =
      AND (f.state NOT IN ('done', 'failed')
           OR (f.state = 'done' AND f.gh_state IN ('waiting', 'sending'))))";
 
-/// The work under way on a pull request ([`FIX_UNDER_WAY`]) is a Bring up
-/// to date Decurion started by itself ([`auto_update`]).
-pub(crate) const AUTO_UNDER_WAY: &str =
-    "EXISTS (SELECT 1 FROM threads f WHERE f.fix_of = w.thread_id AND f.auto_started = 1
-     AND (f.state NOT IN ('done', 'failed')
-          OR (f.state = 'done' AND f.gh_state IN ('waiting', 'sending'))))";
+/// The state of the Bring up to date Decurion started by itself
+/// ([`auto_update`]) on the commit it last pushed to this pull request, if
+/// any: what [`auto_words`] says about it.
+pub(crate) const AUTO_STATE: &str = "(SELECT f.state FROM threads f
+     WHERE f.fix_of = w.thread_id AND f.auto_started = 1 AND f.base_commit = w.head
+     ORDER BY f.id DESC LIMIT 1)";
+
+/// What the board's line for a pull request says about the Bring up to
+/// date Decurion started by itself, in that run's `state`: that it is
+/// fixing the conflicts while it is queued or running, that it waits for
+/// the owner's review while in review, and nothing once accepted, failed
+/// or waiting on the owner for another reason (the usual words say it).
+pub fn auto_words(state: Option<&str>, base_ref: Option<&str>) -> Option<String> {
+    let base = base_ref.unwrap_or("main");
+    match state? {
+        "queued" | "running" => Some(format!(
+            "Decurion is fixing the conflicts with {base} by itself"
+        )),
+        "in_review" => Some(format!(
+            "Decurion started a fix for the conflicts with {base}. It waits for your review."
+        )),
+        _ => None,
+    }
+}
 
 /// A Bring up to date was already tried on the commit Decurion last pushed
 /// to this pull request: an update run (`merge_from` set) that started from
@@ -699,7 +714,6 @@ impl Store {
         let rows = sqlx::query(&format!(
             "SELECT w.thread_id, w.app_id, a.name AS app, t.title, w.number, w.url, w.state,
                     a.reviewer, w.event, w.event_at, {FIX_UNDER_WAY} AS fixing,
-                    {AUTO_UNDER_WAY} AS auto_fixing,
                     (w.state = 'open' AND a.can_merge) AS can_merge,
                     (w.state = 'open' AND w.clash) AS clash,
                     CASE WHEN w.state = 'open' AND w.health_head = w.head THEN w.health END AS health,
@@ -736,7 +750,6 @@ impl Store {
                     },
                     line: (state == "open" && !authors.is_empty()).then(|| left_words(&authors)),
                     fixing: r.try_get("fixing")?,
-                    auto_fixing: r.try_get("auto_fixing")?,
                     can_merge: r.try_get("can_merge")?,
                     clash: r.try_get("clash")?,
                     health: health_words(
@@ -1500,6 +1513,25 @@ mod tests {
             .expect("said");
         let l = look(&store).await;
         assert!(l.conflicts && !l.tried, "{l:?}");
+    }
+
+    #[test]
+    fn the_board_says_decurion_is_fixing_only_while_its_run_works() {
+        assert_eq!(
+            auto_words(Some("running"), Some("trunk")).as_deref(),
+            Some("Decurion is fixing the conflicts with trunk by itself")
+        );
+        assert_eq!(
+            auto_words(Some("queued"), None).as_deref(),
+            Some("Decurion is fixing the conflicts with main by itself")
+        );
+        let review = auto_words(Some("in_review"), Some("trunk")).expect("review");
+        assert!(review.contains("Decurion started a fix"), "{review}");
+        assert!(review.contains("trunk"), "{review}");
+        for s in ["done", "failed", "needs_you"] {
+            assert_eq!(auto_words(Some(s), None), None, "{s}");
+        }
+        assert_eq!(auto_words(None, None), None);
     }
 
     #[test]

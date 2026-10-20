@@ -89,9 +89,10 @@ pub struct LastPr {
     /// start (`POST /api/threads/{id}/pr/update`).
     pub can_update: bool,
     /// Still open, and Decurion started a Bring up to date on it by itself
-    /// because it conflicts with its base branch (the app's rule), which is
-    /// still under way.
-    pub auto_fixing: bool,
+    /// because it conflicts with its base branch (the app's rule): the
+    /// words for that run while it works or waits for review
+    /// ([`crate::pr_watch::auto_words`]). Nothing otherwise.
+    pub auto_line: Option<String>,
 }
 
 /// One app's row.
@@ -555,12 +556,12 @@ impl Store {
                     w.base_ref,
                     (w.state = 'open' AND w.base_ref IS NOT NULL
                         AND NOT {under_way}) AS can_update,
-                    (w.state = 'open' AND {auto}) AS auto_fixing
+                    CASE WHEN w.state = 'open' THEN {auto} END AS auto_state
              FROM pr_watches w LEFT JOIN threads t ON t.id = w.thread_id
                   JOIN apps a ON a.id = w.app_id
              ORDER BY COALESCE(w.event_at, w.created_at) DESC, w.created_at DESC, w.thread_id DESC",
             under_way = crate::pr_watch::FIX_UNDER_WAY,
-            auto = crate::pr_watch::AUTO_UNDER_WAY
+            auto = crate::pr_watch::AUTO_STATE
         ))
         .fetch_all(self.pool())
         .await?
@@ -580,7 +581,10 @@ impl Store {
                         r.try_get::<Option<String>, _>("base_ref")?.as_deref(),
                     ),
                     can_update: r.try_get("can_update")?,
-                    auto_fixing: r.try_get("auto_fixing")?,
+                    auto_line: crate::pr_watch::auto_words(
+                        r.try_get::<Option<String>, _>("auto_state")?.as_deref(),
+                        r.try_get::<Option<String>, _>("base_ref")?.as_deref(),
+                    ),
                 },
                 dismissed: r.try_get("dismissed")?,
             });

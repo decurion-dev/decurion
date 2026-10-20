@@ -324,7 +324,7 @@ async fn review_comments_on_an_open_pull_request_ask_for_a_fix() {
             "thread_id": t, "number": 88, "url": "https://github.com/me/app/pull/88",
             "state": "open", "event": "It is open", "event_at": "2026-10-18T08:00:00Z",
             "can_merge": false, "health": null, "can_update": false,
-            "auto_fixing": false,
+            "auto_line": null,
         })
     );
     // Bring up to date waits until a look at GitHub has said which branch
