@@ -1966,6 +1966,38 @@ async fn merge_waits_until_github_says_the_pull_request_is_ready() {
     assert_eq!(watched(&h).await[0]["state"], "open");
 }
 
+#[tokio::test]
+async fn a_merge_tap_that_meets_a_conflict_turns_the_button_into_bring_up_to_date() {
+    let h = hub(Tok::Fixed).await;
+    let (thread, _) = mergeable_pr(&h, true).await;
+    let t = thread_json(&h, thread).await;
+    assert!(t["road"]["catch_up"].is_null(), "{t}");
+    // The watch has not looked yet; the Merge tap is the first to hear it.
+    h.fake
+        .lock()
+        .expect("fake")
+        .merge_state
+        .insert(1, "dirty".into());
+    let (s, v) = call(
+        &h.r,
+        OWNER,
+        "POST",
+        &format!("/api/threads/{thread}/pr/merge"),
+        json!({"receipt": "merge-dirty-first"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(
+        v.as_str().expect("text").contains("Bring up to date"),
+        "{v}"
+    );
+    assert!(merges(&h).is_empty(), "never asked GitHub to merge");
+    let t = thread_json(&h, thread).await;
+    let road = &t["road"];
+    assert_eq!(road["label"], "Needs you · bring it up to date", "{road}");
+    assert_eq!(road["catch_up"]["pull"], thread, "{road}");
+}
+
 // ---------- One story from request to live ----------
 
 async fn goal_view(h: &Hub, goal: i64) -> Value {

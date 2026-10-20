@@ -647,7 +647,9 @@
             if (typeof url === "string" && url.startsWith("https://github.com/")) window.open(url, "_blank", "noopener");
             else location.href = D.workHref(j.piece);
           }
-        } catch (e) { D.toast(e.message, "alert"); }
+          // A refusal can teach the hub that it conflicts with main: redraw,
+          // so the button becomes Bring up to date.
+        } catch (e) { D.toast(e.message, "alert"); onChanged(); }
         b.disabled = D.offline;
       },
     };
