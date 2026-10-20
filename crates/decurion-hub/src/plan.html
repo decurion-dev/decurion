@@ -3,19 +3,21 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Master plan · Decurion</title>
+<title>Apps · Decurion</title>
 <link rel="icon" href="/icon.svg">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="stylesheet" href="/ui.css">
 <link rel="stylesheet" href="/menu.css">
 <style>
-  /* The master plan: every goal of an app with its steps, pages and what it
-     found, the owner's own to-dos, and the library of pages agents drew.
+  /* Apps: a list of the owner's apps, then one page per app with a row of
+     tabs: its Roadmap (every goal with its steps, pages and what it found,
+     and the owner's own to-dos), its Board, the pages agents drew, and the
+     files agents read.
      Colours follow ui.css: blue for what you press and the chosen tab,
      amber only for what waits for you, green done, red failed. */
   body { min-height: 100dvh; }
   /* On a PC the shared rail down the left (D.pcNav, menu.css) is the menu, the same as on the
-     Board and Goals. On a phone the rail hides, the bottom tabs take over and this slim header
+     Home and Goals. On a phone the rail hides, the bottom tabs take over and this slim header
      shows the logo. */
   .top {
     position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 18px;
@@ -27,19 +29,53 @@
   @media (min-width: 641px) { .top { display: none; } }
   .brand { display: flex; align-items: center; gap: 10px; font: 650 16px/1 var(--font-display); letter-spacing: -0.01em; color: var(--ink); text-decoration: none; }
   .brand svg { flex: none; border-radius: 8px; }
+  .top .help-q { margin-left: auto; }
   .banner { position: sticky; top: 0; z-index: 9; }
 
   .wrap { max-width: 1000px; margin: 0 auto; padding: 28px 24px calc(64px + env(safe-area-inset-bottom)); }
   .head { display: flex; align-items: flex-end; gap: 16px 24px; flex-wrap: wrap; }
-  .head h1 { font-size: 30px; font-weight: 700; line-height: 1.15; }
+  .head h1 { font-size: 30px; font-weight: 700; line-height: 1.15; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 4px; overflow-wrap: anywhere; min-width: 0; }
   .head .sub { color: var(--muted); margin-top: 6px; max-width: 560px; }
   .head .grow { flex: 1 1 auto; min-width: 0; }
-  .app-pick { display: grid; gap: 4px; }
-  .app-pick label { font-size: 12px; font-weight: 600; color: var(--muted); }
-  .app-pick select { min-width: 220px; font-weight: 600; }
+  .head .crumbs { margin-bottom: 4px; }
+  .head-side { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; }
+  /* A goal's road (D.journey, small) beside its state word. */
+  .row-meta .jbars { margin-right: 8px; }
+  /* The PC's quick way to another app; the phone goes back to the list instead. */
+  .app-switch select { min-width: 200px; font-weight: 600; }
+  /* The app's rules stay in Settings: a plain link there, not a tab. */
+  .rules-link { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; color: var(--accent-ink); font-weight: 600; font-size: 14px; text-decoration: none; border-radius: 6px; }
+  .rules-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .rules-link svg.i { width: 16px; height: 16px; }
+  /* The phone's way back to the list of apps, as in Settings. */
+  .back-apps { display: none; align-items: center; gap: 4px; min-height: 44px; margin: -8px 0 4px -6px; padding: 0 6px; color: var(--accent-ink); font-weight: 600; text-decoration: none; border-radius: 8px; }
+  .back-apps svg.i { width: 18px; height: 18px; }
 
+  /* ---------- The list of apps ---------- */
+  .apps { list-style: none; margin: 22px 0 0; padding: 0; display: grid; gap: 10px; }
+  .app-row a {
+    display: flex; align-items: center; gap: 14px; min-height: 64px; padding: 14px 16px 14px 18px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l); color: var(--ink); text-decoration: none;
+    box-shadow: 0 1px 2px rgba(15, 18, 24, 0.04); transition: border-color .12s var(--ease), background-color .12s var(--ease);
+  }
+  .app-row a:hover { border-color: var(--field-line); background: var(--surface-2); }
+  .app-row.waits a { border-color: var(--amber-line); box-shadow: inset 4px 0 0 var(--amber-line), 0 1px 2px rgba(15, 18, 24, 0.04); }
+  .app-row .ic { flex: none; width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--surface-2); color: var(--muted); }
+  .app-row .who { flex: 1; min-width: 0; display: grid; gap: 4px; }
+  .app-row .nm { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 0; font: 650 17px/1.3 var(--font-display); overflow-wrap: anywhere; }
+  .app-row .nm .needs { margin-left: 10px; }
+  .app-row .meta { font-size: 13.5px; color: var(--muted); }
+  .app-row .go { flex: none; color: var(--faint); }
+  .apps-foot { margin-top: 16px; }
+
+
+  /* The app's row from Home, compact, above the tabs. */
+  .app-today { margin-top: 16px; }
+  .app-today:empty { display: none; }
   /* The tab row's look is shared (.ptabs in ui.css); only its spacing is here. */
   .ptabs { margin: 22px 0 22px; }
+  /* Each tab is a link of its own (#app=3&tab=board), drawn as a tab. */
+  a.ptab { text-decoration: none; }
 
   /* ---------- Summary ---------- */
   .summary {
@@ -154,6 +190,8 @@
   .fix-link .fs { font-weight: 600; }
   .fix-link .fs.done { color: var(--green); }
   .drop { color: var(--faint) !important; }
+  .drop svg, .del-row .mk svg, .empty-state .mark svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .empty-state .mark svg { width: 24px; height: 24px; }
   .drop:hover { color: var(--red) !important; background: var(--red-soft) !important; }
 
   /* The tick box: a big target around a small box. */
@@ -193,6 +231,16 @@
   .empty-state p { max-width: 460px; }
   .empty-state .mark { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 14px; background: var(--surface-2); color: var(--muted); }
   .loading { display: grid; gap: 12px; margin-top: 16px; }
+
+  /* ---------- Deleted tab ---------- */
+  .del-tools { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; margin-bottom: 12px; }
+  .del-tools .hint { margin-right: auto; }
+  .del-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+  .del-row { display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l); }
+  .del-main { flex: 1; min-width: 0; }
+  .del-title { font: 650 15px/1.35 var(--font-display); overflow-wrap: anywhere; }
+  .del-meta { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 3px; font-size: 13px; color: var(--faint); }
+  .del-meta .st { font-weight: 600; }
 
   /* ---------- Pages tab ---------- */
   .pg-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
@@ -241,7 +289,11 @@
   .tabbar .tab[aria-current="page"] { color: var(--accent-ink); }
   .tabbar .tab[aria-current="page"] .ind { background: var(--accent-soft); }
   .tabbar .tab:focus-visible { outline-offset: -4px; border-radius: var(--radius); }
-  .tabbar .badge { display: none; }
+  /* The one count of what needs you, on Inbox (D.showNeeds in ui.js), as on the inbox page. */
+  .tabbar .badge { position: absolute; top: -3px; left: calc(50% + 5px); display: block; min-width: 18px; height: 18px; margin: 0; padding: 0 5px; border-radius: 99px;
+    background: var(--amber); color: var(--surface); box-shadow: 0 0 0 2px var(--surface); font: 700 11px/18px var(--font); text-align: center; font-variant-numeric: tabular-nums; }
+  .tabbar .badge::before { content: none; }
+  .tabbar .badge[hidden] { display: none; }
 
   @media (max-width: 640px) {
     .tabbar { display: block; }
@@ -252,10 +304,16 @@
     .brand .nm { display: none; }
     .wrap { padding: 20px 16px calc(64px + 40px + env(safe-area-inset-bottom)); }
     .head h1 { font-size: 26px; }
-    .app-pick { width: 100%; }
-    .app-pick select { width: 100%; min-width: 0; }
+    .app-switch { display: none; }
+    .back-apps { display: inline-flex; }
+    .head-side { width: 100%; }
+    .rules-link { min-height: 44px; }
+    .app-row a { padding: 12px 12px 12px 14px; gap: 12px; }
+    .app-row .ic { width: 36px; height: 36px; }
     .ptabs { margin: 16px 0 16px; }
-    .ptab { flex: 1; justify-content: center; }
+    .ptab { flex: 1; justify-content: center; padding: 0 8px; }
+    /* ‹ Apps above says the same as the trail's first step. */
+    #app-view #trail { display: none; }
     .summary { grid-template-columns: 1fr; padding: 16px; }
     .tools { justify-content: flex-start; }
     .row { padding: 14px 8px 14px 14px; }
@@ -266,6 +324,7 @@
     .todo { grid-template-columns: auto minmax(0, 1fr); }
     .todo-acts { grid-column: 2; justify-content: flex-start; flex-wrap: wrap; margin-left: -6px; }
     .row.todo-row .todo { grid-template-columns: auto minmax(0, 1fr); }
+    .del-row { flex-wrap: wrap; }
     .tickwrap { width: 40px; height: 40px; margin: -10px -6px -10px -8px; }
     .add-box .line { flex-direction: column; }
     .pg-groups { grid-template-columns: 1fr; }
@@ -284,34 +343,60 @@
 <div class="banner" id="banner" role="alert" hidden></div>
 
 <main class="wrap">
-  <div class="head">
-    <div class="grow">
-      <h1>Master plan</h1>
-      <p class="sub">Every goal for this app, step by step, and everything left to do.</p>
+  <!-- The list of apps: one row each, a link to its page (#app=N). On a
+       phone it is the first screen, as Settings' list is. -->
+  <section id="list-view" aria-labelledby="h-apps" hidden>
+    <div class="head">
+      <div class="grow">
+        <h1 id="h-apps">Apps</h1>
+        <p class="sub">Everything you are building. Tap an app to see its Roadmap, its work, the pages agents drew and its files.</p>
+      </div>
     </div>
-    <div class="app-pick" id="app-pick" hidden>
-      <label for="app">App</label>
-      <select id="app"></select>
+    <ul class="apps" id="app-list" aria-label="Your apps"></ul>
+    <div id="apps-empty"></div>
+    <p class="apps-foot" id="apps-foot" hidden><a class="rules-link" id="add-app-link" href="/#settings/apps">Add an app in Settings</a></p>
+  </section>
+
+  <!-- One app's page: Apps › app, its name, then a row of tabs, each with
+       its own link (#app=N&tab=roadmap|board|pages|files). -->
+  <section id="app-view" hidden>
+    <a class="back-apps" id="back-apps" href="#apps"><span>Apps</span></a>
+    <div class="head">
+      <div class="grow">
+        <div id="trail"></div>
+        <h1 id="app-title"><span id="app-name"></span><span id="app-needs"></span></h1>
+      </div>
+      <div class="head-side">
+        <div class="app-switch" id="app-switch">
+          <select id="app" aria-label="Show another app"></select>
+        </div>
+        <a class="rules-link" id="rules-link" href="/#settings/apps"><span>Rules and settings</span></a>
+      </div>
     </div>
-  </div>
+    <!-- The app's row from Home (D.todayLine): its one line and its buttons
+         (Run it, Merge, Bring up to date, Deploy), above the tabs. -->
+    <div class="app-today live" id="app-today"></div>
 
-  <div class="ptabs" role="tablist" aria-label="Show">
-    <button class="ptab" type="button" role="tab" id="pt-plan" aria-controls="panel-plan" aria-selected="true">Plan</button>
-    <button class="ptab" type="button" role="tab" id="pt-pages" aria-controls="panel-pages" aria-selected="false" tabindex="-1">Pages<span class="ct" id="pages-ct"></span></button>
-  </div>
+    <div class="ptabs" role="tablist" aria-label="Parts of this app" id="app-tabs">
+      <a class="ptab" role="tab" id="pt-roadmap" aria-controls="panel-plan" aria-selected="true" href="#">Roadmap</a>
+      <a class="ptab" role="tab" id="pt-board" aria-controls="panel-board" aria-selected="false" tabindex="-1" href="#">Board</a>
+      <a class="ptab" role="tab" id="pt-pages" aria-controls="panel-pages" aria-selected="false" tabindex="-1" href="#">Pages<span class="ct" id="pages-ct"></span></a>
+      <a class="ptab" role="tab" id="pt-files" aria-controls="panel-files" aria-selected="false" tabindex="-1" href="#">Files</a>
+      <a class="ptab" role="tab" id="pt-deleted" aria-controls="panel-deleted" aria-selected="false" tabindex="-1" href="#">Deleted<span class="ct" id="deleted-ct"></span></a>
+    </div>
 
-  <section id="panel-plan" role="tabpanel" aria-labelledby="pt-plan">
+  <section id="panel-plan" role="tabpanel" aria-labelledby="pt-roadmap">
     <div id="plan-top"></div>
-    <ol class="plan-rows" id="rows" aria-label="The plan, in order"></ol>
+    <ol class="plan-rows" id="rows" aria-label="The Roadmap, in order"></ol>
     <div id="plan-empty"></div>
     <form class="add-box" id="add-box" novalidate hidden>
-      <label for="add-text">Add to the plan</label>
+      <label for="add-text">Add to the Roadmap</label>
       <div class="line">
         <input type="text" id="add-text" maxlength="200" autocomplete="off" placeholder="Something to do later, in your own words" aria-describedby="add-hint add-err">
         <button class="btn primary" type="submit" id="add-go">Add</button>
       </div>
       <p class="field-error" id="add-err" role="alert"></p>
-      <p class="hint" id="add-hint">It goes at the end of the plan. Nothing starts until you tap Make it a goal.</p>
+      <p class="hint" id="add-hint">It goes at the end of the Roadmap. Nothing starts until you tap Make it a goal.</p>
     </form>
   </section>
 
@@ -322,11 +407,25 @@
     </div>
     <div id="pages-body"></div>
   </section>
+
+  <section id="panel-board" role="tabpanel" aria-labelledby="pt-board" hidden>
+    <div id="board-body"></div>
+  </section>
+
+  <section id="panel-files" role="tabpanel" aria-labelledby="pt-files" hidden>
+    <div id="files-body"></div>
+  </section>
+
+  <section id="panel-deleted" role="tabpanel" aria-labelledby="pt-deleted" hidden>
+    <div id="deleted-body"></div>
+  </section>
+  </section><!-- app-view -->
 </main>
 
 <nav class="tabbar" id="tabbar" aria-label="Sections"></nav>
 
 <script src="/ui.js"></script>
+<script src="/files.js"></script>
 <script>
 "use strict";
 (() => {
@@ -348,6 +447,7 @@
     up: [["path", { d: "m18 15-6-6-6 6" }]],
     down: [["path", { d: "m6 9 6 6 6-6" }]],
     picture: [["rect", { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ["circle", { cx: 9, cy: 10, r: 1.6 }], ["path", { d: "m3 17 5-4 4 3 3-2 6 4" }]],
+    trash: [["path", { d: "M3 6h18" }], ["path", { d: "M8 6V4h8v2" }], ["path", { d: "M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" }]],
     layout: [["rect", { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ["path", { d: "M3 9h18" }], ["path", { d: "M9 9v11" }]],
   };
   function shape(name) {
@@ -388,7 +488,7 @@
 
   // ---------- State ----------
   const S = {
-    apps: [], app: null, tab: "plan",
+    apps: [], app: null, tab: "roadmap", view: null,
     plan: null, lib: null, planErr: "", libErr: "",
     hide: D.store.get(KEY_HIDE) === "1",
     onlyWaiting: false,
@@ -396,54 +496,143 @@
     drafts: new Map(),      // goal row id -> { open, text, err }
     busy: new Set(),        // item ids with a tap on the way
     cards: new Map(),       // page id -> { node, thumb, sig }
-    pagesShape: "",
+    pagesShape: "", deletedSig: null,
     topSig: "", emptySig: null,
     loading: false,
+    needs: null,            // GET /needs-you, the one count of what waits on the owner
+    goals: null,            // GET /goals, for each app's goals in progress
+    listSig: "",
+    fromList: false,        // this app's page was opened from the list, so ‹ Apps steps back
+    board: null, boardFor: null, filesFor: null,
+    today: null,            // GET /today, each app's row (the same as Home's)
+    previews: [],           // GET /previews, open Run it sessions
+    todaySig: "",
   };
 
   // ---------- Menus: the PC rail, the phone's header and bottom tabs ----------
+  // This page is the Apps place; both menus know it as "plan" (its address).
   $("pcnav").replaceWith(D.pcNav("plan", { rail: true }));
   $("brand").prepend(D.mark(28));
+  // The phone's small "?" for help, at the end of its top bar, as on Home and Goals.
+  if (D.helpButton) document.querySelector(".top").append(D.helpButton());
   $("tabbar").replaceWith(D.phoneTabs("plan"));
+  $("back-apps").prepend(icon("left"));
+  $("rules-link").prepend(icon("settings"));
 
-  // ---------- Routing: #app=3&tab=pages ----------
+  // ---------- The app you picked ----------
+  // One choice of app for every screen (D.app in ui.js): opening an app here
+  // picks it, and /plan with no app named opens the one picked last.
+  const choice = {
+    get() { const v = D.app ? D.app.get() : D.store.get(KEY_APP); return v ? Number(v) : null; },
+    set(id) { if (D.app) D.app.set(String(id)); else D.store.set(KEY_APP, String(id)); },
+  };
+
+  // ---------- Routing ----------
+  // #apps is the list; #app=3 opens an app on its Roadmap; #app=3&tab=board
+  // (or roadmap, pages, files, deleted) opens one tab. Older links (#app=3,
+  // #app=3&tab=pages) still work. /plan alone opens the app picked last, or
+  // the list when none is.
+  const TABS = ["roadmap", "board", "pages", "files", "deleted"];
+  const PANEL = { roadmap: "panel-plan", board: "panel-board", pages: "panel-pages", files: "panel-files", deleted: "panel-deleted" };
   function readHash() {
-    const h = new URLSearchParams(location.hash.slice(1));
+    const raw = location.hash.slice(1);
+    const h = new URLSearchParams(raw);
     const app = Number(h.get("app"));
-    return { app: Number.isInteger(app) && app > 0 ? app : null, tab: h.get("tab") === "pages" ? "pages" : "plan" };
+    const tab = h.get("tab");
+    return { list: raw === "apps", app: Number.isInteger(app) && app > 0 ? app : null, tab: TABS.includes(tab) ? tab : "roadmap" };
   }
-  function writeHash() {
-    const h = new URLSearchParams();
-    // Before the apps load, keep the app the address asked for.
-    const app = S.app ?? readHash().app;
-    if (app != null) h.set("app", app);
-    if (S.tab === "pages") h.set("tab", "pages");
-    const next = "#" + h.toString();
-    if (location.hash !== next) history.replaceState(null, "", next);
+  const hashFor = (app, tab = "roadmap") => `#app=${app}&tab=${tab}`;
+  const appNamed = (id) => S.apps.find((a) => a.id === id) ?? null;
+
+  function route() {
+    // A piece's panel (#work-N, D.openWork from the Board tab) opens over
+    // the page and leaves it as it is.
+    const work = !!D.workHash?.();
+    if (work && S.view) return;
+    const h = readHash();
+    if (h.app != null && appNamed(h.app)) return openApp(h.app, h.tab);
+    if (h.app == null && !h.list) {
+      const c = choice.get();
+      if (appNamed(c)) {
+        if (!work) history.replaceState(null, "", hashFor(c));
+        return openApp(c, "roadmap");
+      }
+    }
+    // An app that isn't here any more, #apps, or nothing picked yet: the list.
+    if (h.app != null) history.replaceState(null, "", "#apps");
+    showList();
   }
-  function setTab(tab, focus = false) {
+  window.addEventListener("hashchange", route);
+
+  function showList() {
+    const was = S.view;
+    S.view = "list";
+    S.fromList = false;
+    $("list-view").hidden = false;
+    $("app-view").hidden = true;
+    document.title = "Apps · Decurion";
+    if (was !== "list") window.scrollTo(0, 0);
+    renderList();
+    loadList();
+    // Back from an app, the cursor lands on that app's row.
+    if (was === "app" && S.app != null) document.querySelector(`[data-key="app-${S.app}"]`)?.focus({ preventScroll: true });
+  }
+
+  function openApp(id, tab) {
+    const was = S.view;
+    S.view = "app";
+    $("list-view").hidden = true;
+    $("app-view").hidden = false;
+    // Opening an app picks it, for every screen.
+    if (choice.get() !== id) choice.set(id);
+    if (id !== S.app) pickApp(id);
+    else if (was !== "app") { drawHead(); load(); }
+    setTab(tab);
+    if (was !== "app") window.scrollTo(0, 0);
+  }
+
+  // A tab is a link of its own. Tapping one swaps the view and the address
+  // in place, so the back button leaves the app rather than stepping back
+  // through its tabs; a tab opened from a link (a page's Back) opens there.
+  function setTab(tab) {
+    const changed = tab !== S.tab;
     S.tab = tab;
-    for (const [t, b] of [["plan", $("pt-plan")], ["pages", $("pt-pages")]]) {
+    for (const t of TABS) {
+      const b = $(`pt-${t}`);
       b.setAttribute("aria-selected", String(t === tab));
       b.tabIndex = t === tab ? 0 : -1;
-      $(`panel-${t}`).hidden = t !== tab;
+      $(PANEL[t]).hidden = t !== tab;
     }
-    if (focus) $(`pt-${tab}`).focus();
-    writeHash();
+    // A tab opens at its top.
+    if (changed) window.scrollTo(0, 0);
     if (tab === "pages") renderPages();
+    if (tab === "board") mountBoard();
+    if (tab === "files") mountFiles();
+    if (tab === "deleted") renderDeleted();
   }
-  $("pt-plan").onclick = () => setTab("plan");
-  $("pt-pages").onclick = () => setTab("pages");
-  document.querySelector(".ptabs").addEventListener("keydown", (e) => {
-    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+  function tabLinks() {
+    for (const t of TABS) $(`pt-${t}`).href = S.app != null ? hashFor(S.app, t) : "#apps";
+  }
+  for (const t of TABS) {
+    $(`pt-${t}`).addEventListener("click", (e) => {
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      history.replaceState(null, "", hashFor(S.app, t));
+      setTab(t);
+    });
+  }
+  $("app-tabs").addEventListener("keydown", (e) => {
+    const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+    if (!step) return;
     e.preventDefault();
-    setTab(S.tab === "plan" ? "pages" : "plan", true);
+    const t = TABS[(TABS.indexOf(S.tab) + step + TABS.length) % TABS.length];
+    history.replaceState(null, "", hashFor(S.app, t));
+    setTab(t);
+    $(`pt-${t}`).focus();
   });
-  window.addEventListener("hashchange", () => {
-    const h = readHash();
-    if (h.app != null && h.app !== S.app && S.apps.some((a) => a.id === h.app)) pickApp(h.app);
-    if (h.tab !== S.tab) setTab(h.tab);
-  });
+  // ‹ Apps: back to the list. Coming from the list, it steps back in
+  // history, so the back button and this link agree.
+  $("back-apps").addEventListener("click", (e) => { if (S.fromList) { e.preventDefault(); history.back(); } });
 
   // ---------- Talking to the hub ----------
   function showBanner(text) {
@@ -452,40 +641,135 @@
     if (text) b.replaceChildren(icon(D.offline ? "offline" : "alert"), el("span", {}, text));
   }
 
-  // `asked` is the app the address named when the page opened. It is read
-  // before anything rewrites the address, so a link to one app's plan opens
-  // that app, not the last one picked.
-  async function loadApps(asked) {
+  async function loadApps() {
     const apps = (await D.api("/apps")) ?? [];
     S.apps = apps;
-    const sel = $("app");
-    sel.replaceChildren(...apps.map((a) => el("option", { value: String(a.id) }, a.name)));
-    $("app-pick").hidden = apps.length < 1;
-    if (!apps.length) return;
-    const want = [asked, Number(D.store.get(KEY_APP))].find((id) => apps.some((a) => a.id === id));
-    S.app = want ?? apps[0].id;
-    sel.value = String(S.app);
+    D.setApps(apps);
+    $("app").replaceChildren(...apps.map((a) => el("option", { value: String(a.id) }, a.name)));
+    if (S.app != null) $("app").value = String(S.app);
   }
-  $("app").onchange = () => pickApp(Number($("app").value));
+  // Another app from the PC's switcher: a step in history, like a row in the list.
+  $("app").onchange = () => { location.hash = hashFor(Number($("app").value)); };
+
+  // ---------- The list of apps ----------
+  // How many things wait on the owner in one app: the hub's one count.
+  function needsOf(id) {
+    const n = S.needs;
+    if (!n) return 0;
+    if (n.by_app) return Number(n.by_app[id] ?? n.by_app[String(id)] ?? 0);
+    return [n.work, n.goals, n.prs].reduce((sum, xs) => sum + (Array.isArray(xs) ? xs.filter((x) => x.app_id === id).length : 0), 0);
+  }
+  const needsPill = (k) => (k ? el("span", { className: "needs" }, icon("needs_you"), `${k} ${k === 1 ? "needs" : "need"} you`) : null);
+
+  async function loadList() {
+    // The apps again too, so one added in Settings shows without a reload.
+    const [goals, needs] = await Promise.all([
+      D.api("/goals").catch((e) => { if (e.signedOut) showBanner(e.message); return null; }),
+      D.needsYou(),
+      loadApps().catch(() => null),
+    ]);
+    if (goals) S.goals = goals;
+    S.needs = needs;
+    renderList();
+  }
+
+  function renderList() {
+    const going = new Map();
+    for (const g of S.goals ?? []) if (!CLOSED.has(g.state)) going.set(g.app_id, (going.get(g.app_id) ?? 0) + 1);
+    const rows = S.apps.map((a) => [a, needsOf(a.id), going.get(a.id) ?? 0]);
+    const sig = JSON.stringify([rows.map(([a, k, n]) => [a.id, a.name, k, n]), S.goals != null]);
+    if (sig === S.listSig) return;
+    S.listSig = sig;
+    $("apps-foot").hidden = !S.apps.length;
+    if (!S.apps.length) {
+      $("app-list").replaceChildren();
+      $("apps-empty").replaceChildren(el("div", { className: "empty-state" },
+        el("div", { className: "mark" }, icon("app", "l")),
+        el("h3", {}, "Add your first app"),
+        el("p", {}, "Each app gets its own page here, with its Roadmap, its work, its pages and its files. Add an app in Settings, then start a goal for it."),
+        el("a", { className: "btn primary", href: "/#settings/apps" }, icon("plus"), "Add an app")));
+      return;
+    }
+    $("apps-empty").replaceChildren();
+    $("app-list").replaceChildren(...rows.map(([a, k, n]) => {
+      const go = el("a", { href: hashFor(a.id), dataset: { key: `app-${a.id}` },
+        "aria-label": `${a.name}${k ? `, ${k} ${k === 1 ? "needs" : "need"} you` : ""}` },
+        el("span", { className: "ic" }, icon("app")),
+        el("span", { className: "who" },
+          el("span", { className: "nm" }, el("span", {}, a.name), needsPill(k)),
+          el("span", { className: "meta" }, S.goals == null ? "" : n ? `${D.plural(n, "goal")} in progress` : "No goals in progress")),
+        el("span", { className: "go" }, icon("right")));
+      go.addEventListener("click", () => { S.fromList = true; });
+      return el("li", { className: `app-row${k ? " waits" : ""}` }, go);
+    }));
+  }
+
+  // ---------- One app's page ----------
+  function drawHead() {
+    const a = appNamed(S.app);
+    const name = a?.name ?? "";
+    $("trail").replaceChildren(D.trail([{ label: "Apps", href: "#apps" }, { label: name }]) ?? "");
+    $("app-name").textContent = name;
+    $("app-needs").replaceChildren(needsPill(needsOf(S.app)) ?? "");
+    document.title = `${name || "Apps"} · Decurion`;
+    $("rules-link").href = `${D.onPhone() ? "/inbox" : "/"}#settings/apps/${S.app}`;
+    $("rules-link").setAttribute("aria-label", `Rules and settings for ${name}`);
+  }
   function pickApp(id) {
     S.app = id;
     $("app").value = String(id);
-    D.store.set(KEY_APP, String(id));
+    tabLinks();
+    drawHead();
     S.plan = S.lib = null;
+    S.planErr = S.libErr = "";
     S.rows.clear(); S.cards.clear();
-    S.pagesShape = S.topSig = "";
+    S.pagesShape = S.topSig = S.todaySig = "";
+    S.deletedSig = null;
     S.emptySig = null;
+    $("app-today").replaceChildren();
+    renderToday();
     $("rows").replaceChildren();
     $("pages-body").replaceChildren();
-    writeHash();
+    $("pages-ct").textContent = "";
+    $("deleted-body").replaceChildren();
+    $("deleted-ct").textContent = "";
+    $("add-box").hidden = true;
     skeleton();
     load();
+  }
+
+  // The Board tab: this app's pieces, grouped by goal (D.laneBoard in
+  // ui.js). It is built the first time the tab opens and only told the app
+  // when another one opens, so it keeps its place while hidden.
+  function mountBoard() {
+    if (S.boardFor === S.app) return;
+    S.boardFor = S.app;
+    if (S.board) { S.board.setApp(String(S.app)); return; }
+    const box = $("board-body");
+    S.board = D.laneBoard(box, { appId: String(S.app) });
+  }
+
+  // The Files tab: the same panel as Settings › Apps › Files (files.js),
+  // one per app, so an upload on its way is never lost.
+  function mountFiles() {
+    if (S.filesFor === S.app) return;
+    S.filesFor = S.app;
+    $("files-body").replaceChildren(window.DFiles?.panel
+      ? window.DFiles.panel({ appId: S.app })
+      : el("p", { className: "hint" }, "Files can't be added from this screen. Open Settings on your PC."));
   }
 
   async function load() {
     if (S.loading || S.app == null) return;
     S.loading = true;
     const app = S.app;
+    // The one count of what needs you, on the menus (ui.js) and beside the
+    // app's name, every ten seconds.
+    if (!(Date.now() - (S.needsAt ?? 0) < 10000)) {
+      S.needsAt = Date.now();
+      D.needsYou().then((n) => { S.needs = n; if (S.view === "app") drawHead(); });
+    }
+    loadToday();
     try {
       const [plan, lib] = await Promise.all([
         D.api(`/apps/${app}/plan`).then((v) => { S.planErr = ""; return v; }, (e) => { S.planErr = e.message; if (e.signedOut) throw e; return null; }),
@@ -494,15 +778,39 @@
       if (app !== S.app) return;
       if (plan) S.plan = plan;
       if (lib) S.lib = lib;
-      showBanner(D.offline ? "Can't reach your PC right now. Showing the last plan it sent." : "");
+      showBanner(D.offline ? "Can't reach your PC right now. Showing the last Roadmap it sent." : "");
       renderPlan();
       renderPages();
+      renderDeleted();
     } catch (e) {
       showBanner(e.message);
     } finally {
       S.loading = false;
+      // Another app was opened while this one loaded: load that one now.
+      if (app !== S.app) load();
     }
   }
+
+  // ---------- The app's row from Home ----------
+  // Its one line and its buttons, the same row and taps as on Home (today.rs
+  // chooses the words). Asked with every refresh of the page.
+  async function loadToday() {
+    const [t, pv] = await Promise.all([D.api("/today").catch(() => null), D.api("/previews").catch(() => null)]);
+    if (Array.isArray(t)) S.today = t; // else keep the last rows
+    if (Array.isArray(pv)) S.previews = pv.filter((p) => p.state == null || p.state === "pending" || p.state === "live");
+    renderToday();
+  }
+  function renderToday() {
+    const row = (S.today ?? []).find((r) => r.app_id === S.app) ?? null;
+    const sig = JSON.stringify([S.app, row, S.previews.filter((p) => p.app_id === S.app).map((p) => [p.id, p.thread_id, p.state]), D.offline, Math.floor(Date.now() / 30000)]);
+    if (sig === S.todaySig) return;
+    S.todaySig = sig;
+    // A repaint keeps the button the owner was on focused.
+    const key = $("app-today").contains(document.activeElement) ? document.activeElement.dataset?.key : null;
+    $("app-today").replaceChildren(...[D.todayLine(row, { previews: S.previews, onChanged: () => { S.todaySig = ""; loadToday(); } })].filter(Boolean));
+    if (key) $("app-today").querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
+  }
+  D.onOffline(() => { S.todaySig = ""; renderToday(); });
 
   // ---------- The plan ----------
   function skeleton() {
@@ -512,10 +820,18 @@
 
   const openFix = (t) => t.goal && !CLOSED.has(t.goal.state);
   const finishedRow = (it) => it.state !== "open" && !(it.found ?? []).some((t) => t.state === "open");
-  const visibleRows = () => (S.plan?.items ?? []).filter((it) => !(S.hide && finishedRow(it)));
+  // A to-do handed to a goal that is not stopped is carried by that goal's row.
+  const handedOff = (t) => t.kind !== "goal" && t.goal && t.goal.state !== "stopped";
+  const visibleRows = () => (S.plan?.items ?? []).filter((it) => !handedOff(it) && !(S.hide && finishedRow(it)));
 
   function goalLook(it) {
     const st = it.goal?.state ?? (it.state === "done" ? "done" : it.state === "dropped" ? "stopped" : "working");
+    // With the hub's road, its words, the same as the goal page and the inbox.
+    const j = it.journey ?? it.goal?.journey;
+    if (j) {
+      const tone = j.you ? "you" : j.done ? "done" : CLOSED.has(st) ? "stopped" : "working";
+      return { word: j.label, tone, sym: { you: "bang", done: "check", stopped: "cross", working: "half" }[tone], journey: j };
+    }
     let [word, tone, sym] = GOAL[st] ?? GOAL.working;
     // A goal waiting on the owner always says so, whatever step it is on.
     if (tone !== "you" && !CLOSED.has(st) && (it.steps ?? []).some((s) => s.state === "you")) [word, tone, sym] = ["Needs you", "you", "bang"];
@@ -526,7 +842,7 @@
     const plan = S.plan;
     if (!plan) {
       if (S.planErr) {
-        $("plan-top").replaceChildren(el("div", { className: "notice bad" }, icon("alert"), el("span", { className: "grow" }, `Couldn't load the plan. ${S.planErr}`)));
+        $("plan-top").replaceChildren(el("div", { className: "notice bad" }, icon("alert"), el("span", { className: "grow" }, `Couldn't load the Roadmap. ${S.planErr}`)));
         $("plan-empty").replaceChildren();
       }
       return;
@@ -537,7 +853,7 @@
     const list = $("rows");
     const keep = new Set(shown.map((it) => it.id));
     for (const [id, r] of S.rows) if (!keep.has(id)) { r.node.remove(); S.rows.delete(id); }
-    const all = plan.items;
+    const all = plan.items.filter((it) => !handedOff(it));
     const nodes = shown.map((it) => {
       const i = all.indexOf(it);
       const pos = { first: i === 0, last: i === all.length - 1 };
@@ -582,7 +898,7 @@
     if (kind === "none") {
       $("plan-empty").replaceChildren(el("div", { className: "empty-state" },
         el("div", { className: "mark" }, icon("board", "l")),
-        el("h3", {}, "Nothing on the plan yet"),
+        el("h3", {}, "Nothing on the Roadmap yet"),
         el("p", {}, "Goals show up here as soon as they start, with each step and anything they find along the way. You can also add your own to-dos below."),
         el("a", { className: "btn primary", href: "/goals#new" }, icon("plus"), "New work")));
     } else if (kind === "hidden") {
@@ -607,26 +923,33 @@
     const when = it.done_at ? `Finished ${ago(it.done_at)}` : `Started ${ago(it.created_at)}`;
     const title = g ? el("a", { className: "row-title", href: `/goals#goal-${g.id}` }, it.title) : el("span", { className: "row-title" }, it.title);
     const extra = el("div", { className: "row-extra" });
-    if (it.steps?.length) extra.append(stepsList(it.steps));
+    // With the goal's road on the row, only its pieces stay as chips (they
+    // open the piece); "Talk it through" and the rest would be a second set
+    // of words for the same steps.
+    const steps = look.journey ? (it.steps ?? []).filter((s) => s.thread_id != null) : it.steps ?? [];
+    if (steps.length) extra.append(stepsList(steps));
     if (it.pages?.length) extra.append(pageChips(it.pages));
     extra.append(foundBlock(it, look.tone !== "stopped"));
     return el("li", { className: `row goal${finishedRow(it) ? " finished" : ""}`, dataset: { tone: look.tone } },
       el("div", { className: "row-head" },
         el("span", { className: `mk ${look.tone}` }, shape(look.sym)),
         el("div", { className: "row-main" }, title,
-          el("div", { className: "row-meta" }, el("span", { className: `st ${look.tone}` }, look.word), el("span", { className: "dot-sep" }, when))),
+          el("div", { className: "row-meta" }, look.journey ? D.journey(look.journey, { size: "small" }) : null,
+            el("span", { className: `st ${look.tone}` }, look.word), el("span", { className: "dot-sep" }, when))),
+        CLOSED.has(g?.state) ? deleteButton(it) : null,
         orderButtons(it, pos)),
       extra);
   }
 
   function stepsList(steps) {
-    return el("ol", { className: "steps", "aria-label": "Steps" }, ...steps.map((s) => {
+    return el("ol", { className: "steps", "aria-label": "Pieces" }, ...steps.map((s) => {
       const [sym, word, says] = STEP[s.state] ?? STEP.later;
       const kids = [shape(sym), el("span", { className: "nm" }, s.title)];
       if (word) kids.push(el("span", { className: "sw" }, `· ${word}`));
       else kids.push(el("span", { className: "sr-only" }, `(${says})`));
       const attrs = { className: "step", dataset: { s: s.state }, title: `${s.title}: ${says}` };
-      const chip = s.thread_id != null ? el("a", { ...attrs, href: `/#work-${s.thread_id}` }, ...kids) : el("span", attrs, ...kids);
+      // A piece opens its panel on the board that fits this screen (the phone's, or the PC's).
+      const chip = s.thread_id != null ? el("a", { ...attrs, href: D.workHref(s.thread_id) }, ...kids) : el("span", attrs, ...kids);
       return el("li", {}, chip);
     }));
   }
@@ -642,7 +965,7 @@
   }
 
   function foundBlock(it, canAdd) {
-    const all = it.found ?? [];
+    const all = (it.found ?? []).filter((t) => !handedOff(t));
     const live = all.filter((t) => t.state !== "dropped");
     const fixed = live.filter((t) => t.state === "done").length;
     const left = all.filter((t) => t.state === "open" && !openFix(t));
@@ -676,7 +999,7 @@
       meta.append(el("a", { className: "fix-link", href: `/goals#goal-${g.id}` },
         el("span", { className: `fs ${cls}` }, words), el("b", {}, g.title)));
     }
-    if (dropped) meta.append(el("span", { className: "hint" }, "Taken off the plan"));
+    if (dropped) meta.append(el("span", { className: "hint" }, "Taken off the Roadmap"));
     const acts = el("div", { className: "todo-acts" });
     if (t.state === "open" && !openFix(t)) {
       const label = top ? "Make it a goal" : "Fix this";
@@ -684,14 +1007,10 @@
       b.onclick = () => fix([t.id], b, label);
       acts.append(b);
     }
-    if (t.state === "open") {
-      const d = el("button", { type: "button", className: "btn icon sm quiet drop", "aria-label": `Take off the plan: ${t.title}`, title: "Take off the plan", disabled: busy, dataset: { key: `drop-${t.id}` } }, icon("close"));
-      d.onclick = () => edit(t, { state: "dropped" }, "Taken off the plan. Turn off Hide finished to put it back.");
-      acts.append(d);
-    }
+    acts.append(deleteButton(t));
     if (dropped) {
       const b = el("button", { type: "button", className: "btn sm quiet", disabled: busy, dataset: { key: `back-${t.id}` } }, "Put back");
-      b.onclick = () => edit(t, { state: "open" }, "Back on the plan.");
+      b.onclick = () => edit(t, { state: "open" }, "Back on the Roadmap.");
       acts.append(b);
     }
     return el(top ? "div" : "li", { className: `todo ${t.state}` },
@@ -708,6 +1027,13 @@
       el("div", { className: "row-head" },
         el("div", { className: "row-main" }, todoItem(it, true)),
         orderButtons(it, pos)));
+  }
+
+  // Delete hides a row in the Deleted tab; nothing is lost until Empty.
+  function deleteButton(it) {
+    const b = el("button", { type: "button", className: "btn icon sm quiet drop", "aria-label": `Delete: ${it.title}`, title: "Delete", disabled: S.busy.has(it.id), dataset: { key: `del-${it.id}` } }, shape("trash"));
+    b.onclick = () => del(it);
+    return b;
   }
 
   // "Add a to-do here", inside a goal's card. What you type survives refreshes.
@@ -741,7 +1067,7 @@
         await D.send(`/apps/${S.app}/plan/items`, { title, parent_id: it.id });
         d.text = ""; d.err = "";
         input.value = "";
-        D.toast("Added to the plan.");
+        D.toast("Added to the Roadmap.");
         await load();
       } catch (x) {
         d.err = `Not added. ${x.message}`;
@@ -772,6 +1098,99 @@
       renderPlan();
       load();
     }
+  }
+
+  // The hub answers a delete, a bring back and an empty with the new plan.
+  function takePlan(app, plan) {
+    if (app !== S.app || !plan) return;
+    S.plan = plan;
+    renderPlan();
+    renderDeleted();
+  }
+  const short = (s) => (s.length > 60 ? `${s.slice(0, 57)}…` : s);
+
+  async function del(it) {
+    if (S.busy.has(it.id)) return;
+    const yes = await D.confirm(["Are you sure?", `Delete "${it.title}"? You can bring it back from the Deleted tab.`, "Delete", "Cancel"]);
+    if (!yes) return;
+    const app = S.app;
+    S.busy.add(it.id);
+    renderPlan();
+    try {
+      takePlan(app, await D.api(`/plan/items/${it.id}/delete`, { method: "POST", body: "{}" }));
+      D.toast(`Deleted "${short(it.title)}".`, "archive", () => bringBack(it, true));
+    } catch (e) {
+      D.toast(`Not deleted. ${e.message}`, "alert");
+    } finally {
+      S.busy.delete(it.id);
+      renderPlan();
+      renderDeleted();
+    }
+  }
+
+  async function bringBack(it, undo = false) {
+    if (S.busy.has(it.id)) return;
+    const app = S.app;
+    S.busy.add(it.id);
+    renderDeleted();
+    try {
+      takePlan(app, await D.api(`/plan/items/${it.id}/restore`, { method: "POST", body: "{}" }));
+      D.toast(undo ? "Undone." : `Brought back "${short(it.title)}".`);
+    } catch (e) {
+      D.toast(`Not brought back. ${e.message}`, "alert");
+    } finally {
+      S.busy.delete(it.id);
+      renderPlan();
+      renderDeleted();
+    }
+  }
+
+  async function emptyDeleted() {
+    const yes = await D.confirm(["Are you sure?", "Remove these for good? This can't be undone. The work and its history stay.", "Remove for good", "Cancel"]);
+    if (!yes) return;
+    const app = S.app;
+    try {
+      takePlan(app, await D.api(`/apps/${app}/plan/empty`, { method: "POST", body: "{}" }));
+      D.toast("The Deleted list is empty.");
+    } catch (e) {
+      D.toast(`Not emptied. ${e.message}`, "alert");
+    }
+  }
+
+  function renderDeleted() {
+    const list = S.plan?.deleted ?? [];
+    const ct = $("deleted-ct");
+    ct.textContent = list.length ? String(list.length) : "";
+    $("pt-deleted").setAttribute("aria-label", list.length ? `Deleted, ${list.length}` : "Deleted");
+    if (S.tab !== "deleted" || !S.plan) return;
+    const sig = JSON.stringify([list, [...S.busy]]);
+    if (sig === S.deletedSig) return;
+    S.deletedSig = sig;
+    const body = $("deleted-body");
+    const a = document.activeElement;
+    const key = body.contains(a) ? a.dataset?.key : null;
+    if (!list.length) {
+      body.replaceChildren(el("div", { className: "empty-state" },
+        el("div", { className: "mark" }, shape("trash")),
+        el("h3", {}, "Nothing deleted.")));
+    } else {
+      const empty = el("button", { type: "button", className: "btn sm", dataset: { key: "empty-deleted" } }, "Empty the Deleted list");
+      empty.onclick = emptyDeleted;
+      body.replaceChildren(
+        el("div", { className: "del-tools" }, el("p", { className: "hint" }, "Deleted rows wait here until you bring them back or empty the list."), empty),
+        el("ul", { className: "del-list", "aria-label": "Deleted, newest first" }, ...list.map((it) => {
+          const goal = it.kind === "goal";
+          const back = el("button", { type: "button", className: "btn sm", disabled: S.busy.has(it.id), "aria-label": `Bring back: ${it.title}`, dataset: { key: `back-del-${it.id}` } }, "Bring back");
+          back.onclick = () => bringBack(it);
+          const meta = [el("span", {}, goal ? "Goal" : "To-do")];
+          if (goal) meta.push(el("span", { className: `st ${it.goal?.state === "done" ? "done" : "stopped"}` }, (GOAL[it.goal?.state] ?? GOAL.stopped)[0]));
+          meta.push(el("span", {}, `Deleted ${ago(it.deleted_at)}`));
+          return el("li", { className: "del-row" },
+            el("div", { className: "del-main" }, el("div", { className: "del-title" }, it.title), el("div", { className: "del-meta" }, ...meta)),
+            back);
+        })));
+    }
+    if (key) document.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
   }
 
   async function move(it, dir) {
@@ -816,7 +1235,7 @@
     try {
       await D.send(`/apps/${S.app}/plan/items`, { title });
       input.value = "";
-      D.toast("Added to the end of the plan.");
+      D.toast("Added to the end of the Roadmap.");
       await load();
     } catch (x) {
       err.textContent = `Not added. ${x.message}`;
@@ -935,31 +1354,21 @@
 
   // ---------- Start ----------
   (async () => {
+    // Before anything rewrites the address, so a link to one app opens that
+    // app, not the last one picked.
     const h = readHash();
-    setTab(h.tab);
-    skeleton();
+    if (h.app != null) skeleton();
     try {
-      await loadApps(h.app);
+      await loadApps();
     } catch (e) {
       showBanner(e.message);
-      $("plan-top").replaceChildren();
-      $("plan-empty").replaceChildren(el("div", { className: "empty-state" }, el("h3", {}, "Couldn't load your apps"), el("p", {}, e.message)));
+      $("list-view").hidden = false;
+      $("apps-empty").replaceChildren(el("div", { className: "empty-state" }, el("h3", {}, "Couldn't load your apps"), el("p", {}, e.message)));
       return;
     }
-    if (!S.apps.length) {
-      $("plan-top").replaceChildren();
-      $("plan-empty").replaceChildren(el("div", { className: "empty-state" },
-        el("div", { className: "mark" }, icon("app", "l")),
-        el("h3", {}, "Add your first app"),
-        el("p", {}, "The master plan follows the goals of one app. Add an app on the board, then start a goal for it."),
-        el("a", { className: "btn primary", href: "/#settings/apps" }, icon("plus"), "Add an app")));
-      return;
-    }
-    D.store.set(KEY_APP, String(S.app));
-    writeHash();
-    await load();
-    setInterval(() => { if (!document.hidden) load(); }, POLL_MS);
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+    route();
+    setInterval(() => { if (document.hidden) return; if (S.view === "app") load(); else loadList(); }, POLL_MS);
+    document.addEventListener("visibilitychange", () => { if (document.hidden) return; if (S.view === "app") load(); else loadList(); });
   })();
 })();
 </script>

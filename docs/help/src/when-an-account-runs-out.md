@@ -4,7 +4,7 @@ This page helps you keep work going when a Claude account or your pay-per-use mo
 
 ## When pay-per-use money runs out
 
-Decurion watches what pay-per-use work spends each month. On the board, **Pay-per-use this month** in the list on the left shows the total and your cap. **Settings**, **Accounts** shows each account on its own: Claude pay-per-use, ChatGPT and Grok.
+Decurion watches what pay-per-use work spends each month. On Home on your PC, **Pay-per-use this month** at the bottom of the menu on the left shows the total and your cap. **Settings**, **Accounts** shows each account on its own: Claude pay-per-use, ChatGPT and Grok.
 
 When the month's total reaches your cap:
 
@@ -15,7 +15,7 @@ When the month's total reaches your cap:
 
 To continue:
 
-1. On the board, open **Settings**, then **Accounts**.
+1. In Decurion on your PC, open **Settings**, then **Accounts**.
 2. Next to the account that ran out, type a higher **Monthly cap** and click **Save cap**.
 3. For Claude pay-per-use, in the [Anthropic Console](https://console.anthropic.com/), raise the workspace spend limit to the same amount.
 4. Open each waiting card and tap **Continue**.
@@ -33,7 +33,7 @@ Each Max plan (Claude A and Claude B) has its own weekly and five-hour allowance
 1. That piece of work stops and goes back in line. It picks up where it left off later.
 2. Decurion notes when the plan is back. It uses the reset time Claude gave, or one hour if Claude gave none.
 3. Other work on that plan waits in line too. So do planning and checking for goals on that plan.
-4. The board shows an amber note: "Claude Max plan A is out of usage until about 3:00 PM." Your phone inbox shows a **Needs you · account out of usage** card, and your phone gets one "Claude Max A is out of usage" alert.
+4. Home shows an amber note at the top of **Needs you**: "Claude Max plan A is out of usage until about 3:00 PM." Your phone shows it as a **Needs you · account out of usage** card, and your phone gets one "Claude Max A is out of usage" alert.
 5. Work on the other Max plan, on ChatGPT, on Grok, and on apps that use pay-per-use keeps going.
 
 You can wait. After the reset time, the waiting work starts again on its own. If the plan is still out, the agent says so again and Decurion waits a little longer.
@@ -41,7 +41,7 @@ You can wait. After the reset time, the waiting work starts again on its own. If
 Or you can keep going now:
 
 1. Make sure your pay-per-use key is set up. See [Connect your Claude accounts](connect-claude-accounts.md).
-2. On the board's note, or on the inbox card, tap **Continue on pay-per-use**.
+2. On that note, or on the phone's card, tap **Continue on pay-per-use**.
 3. All Claude work on that plan now runs on pay-per-use until the plan resets. This includes work that was waiting, new work you add, and planning and checking.
 4. The note now says its work is running on pay-per-use until the reset time. There is nothing more to tap.
 5. At the reset time, work goes back to the Max plan by itself.

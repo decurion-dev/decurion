@@ -1,4 +1,4 @@
-//! The master plan: each app's goals with their steps, what they found, and
+//! The Roadmap: each app's goals with their steps, what they found, and
 //! the owner's own to-do items, with the runner's side played by the test.
 
 use axum::body::Body;
@@ -670,6 +670,8 @@ async fn fixing_to_dos_starts_a_linked_goal_and_closing_it_ticks_them() {
     assert_eq!(row["found"][0]["goal"]["id"], fix);
     assert_eq!(row["found"][1]["goal"]["id"], fix);
     assert!(row["found"][2].get("goal").is_none());
+    // The job counts once: the audit and 3 findings left, plus the fix goal.
+    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(0), Some(5)));
     assert_eq!(
         titles(&p["items"]),
         [
@@ -756,8 +758,9 @@ async fn fixing_to_dos_starts_a_linked_goal_and_closing_it_ticks_them() {
     assert!(row["found"][0]["done_at"].is_string());
     assert_eq!(row["found"][1]["state"], "done");
     assert_eq!(row["found"][2]["state"], "open");
-    // Audit open + 3 findings left; fix goal and 2 findings done.
-    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(3), Some(4)));
+    // Audit open + 3 findings left; only the fix goal is done, the two ticked
+    // findings are carried by it and not counted again.
+    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(1), Some(4)));
 
     // A ticked item cannot be fixed again until it is reopened.
     let (s, _) = call(
@@ -788,8 +791,11 @@ async fn fixing_to_dos_starts_a_linked_goal_and_closing_it_ticks_them() {
         json!({}),
     )
     .await;
-    let row = goal_row(&plan(&r, app).await, audit);
+    let p = plan(&r, app).await;
+    let row = goal_row(&p, audit);
     assert_eq!(row["found"][2]["state"], "open");
+    // Stopped: the to-do is open and counted again; the stopped goal is not.
+    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(1), Some(4)));
     let again = ok(
         &r,
         "POST",
@@ -799,8 +805,11 @@ async fn fixing_to_dos_starts_a_linked_goal_and_closing_it_ticks_them() {
     )
     .await;
     assert_ne!(again["id"], g["id"]);
-    let row = goal_row(&plan(&r, app).await, audit);
+    let p = plan(&r, app).await;
+    let row = goal_row(&p, audit);
     assert_eq!(row["found"][2]["goal"]["id"], again["id"]);
+    // Handed off again: the new goal row stands in for the to-do.
+    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(1), Some(4)));
 }
 
 #[tokio::test]
@@ -841,4 +850,407 @@ async fn only_the_owner_reads_or_changes_the_plan() {
     assert_eq!(p["items"][0]["found"][0]["state"], "open");
     let goals = ok(&r, "GET", "/api/goals", OWNER, json!({})).await;
     assert_eq!(goals.as_array().map(Vec::len), Some(1));
+}
+
+// ---------- Deleting rows, bringing them back, emptying ----------
+
+async fn hub_with_store() -> (axum::Router, Store) {
+    let store = Store::open("sqlite::memory:").await.expect("open store");
+    let r = router(AppState::new(
+        store.clone(),
+        Keys {
+            owner: OWNER.into(),
+            runner: RUNNER.into(),
+        },
+        "abc123".into(),
+        None,
+    ));
+    (r, store)
+}
+
+async fn add_todo(r: &axum::Router, app: i64, title: &str, parent: Option<i64>) -> i64 {
+    let v = ok(
+        r,
+        "POST",
+        &format!("/api/apps/{app}/plan/items"),
+        OWNER,
+        json!({"title": title, "parent_id": parent}),
+    )
+    .await;
+    v["id"].as_i64().expect("to-do id")
+}
+
+async fn delete(r: &axum::Router, id: i64) -> (StatusCode, Value) {
+    call(
+        r,
+        "POST",
+        &format!("/api/plan/items/{id}/delete"),
+        OWNER,
+        json!({}),
+    )
+    .await
+}
+
+async fn restore(r: &axum::Router, id: i64) -> (StatusCode, Value) {
+    call(
+        r,
+        "POST",
+        &format!("/api/plan/items/{id}/restore"),
+        OWNER,
+        json!({}),
+    )
+    .await
+}
+
+async fn empty(r: &axum::Router, app: i64) -> (StatusCode, Value) {
+    call(
+        r,
+        "POST",
+        &format!("/api/apps/{app}/plan/empty"),
+        OWNER,
+        json!({}),
+    )
+    .await
+}
+
+/// A closed goal with one finished and one waiting to-do under it, as
+/// (goal, goal row id, to-do ids).
+async fn closed_goal_with_todos(r: &axum::Router, app: i64) -> (i64, i64, Vec<i64>) {
+    let g = goal(r, app, "Add a menu page").await;
+    let row = goal_row(&plan(r, app).await, g)["id"]
+        .as_i64()
+        .expect("row");
+    let a = add_todo(r, app, "Tidy the footer", Some(row)).await;
+    let b = add_todo(r, app, "Fix the menu colours", Some(row)).await;
+    ok(
+        r,
+        "POST",
+        &format!("/api/plan/items/{a}"),
+        OWNER,
+        json!({"state": "done"}),
+    )
+    .await;
+    ok(
+        r,
+        "POST",
+        &format!("/api/goals/{g}/close"),
+        OWNER,
+        json!({}),
+    )
+    .await;
+    (g, row, vec![a, b])
+}
+
+#[tokio::test]
+async fn a_deleted_to_do_leaves_the_plan_and_the_counts_and_comes_back() {
+    let r = hub().await;
+    let app = app(&r).await;
+    let keep = add_todo(&r, app, "Order the signs", None).await;
+    let t = add_todo(&r, app, "Tidy the footer", None).await;
+    let last = add_todo(&r, app, "Check the links", None).await;
+    let p = plan(&r, app).await;
+    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(0), Some(3)));
+
+    let (s, p) = delete(&r, t).await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    assert_eq!(titles(&p["items"]), ["Order the signs", "Check the links"]);
+    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(0), Some(2)));
+    assert_eq!(titles(&p["deleted"]), ["Tidy the footer"]);
+    assert_eq!(p["deleted"][0]["kind"], "todo");
+    assert!(p["deleted"][0]["deleted_at"].is_string());
+    // The same tap again answers the same.
+    let (s2, again) = delete(&r, t).await;
+    assert_eq!((s2, &again["deleted"]), (StatusCode::OK, &p["deleted"]));
+
+    // A deleted to-do can't be changed or moved until it is back.
+    for (path, body) in [
+        (format!("/api/plan/items/{t}"), json!({"state": "done"})),
+        (
+            format!("/api/plan/items/{t}/move"),
+            json!({"direction": "up"}),
+        ),
+    ] {
+        let (s, v) = call(&r, "POST", &path, OWNER, body).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    }
+
+    let (s, p) = restore(&r, t).await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    // Back in its old place.
+    assert_eq!(
+        titles(&p["items"]),
+        ["Order the signs", "Tidy the footer", "Check the links"]
+    );
+    assert_eq!(p["deleted"].as_array().map(Vec::len), Some(0));
+    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(0), Some(3)));
+    let (s, again) = restore(&r, t).await;
+    assert_eq!((s, &again["items"]), (StatusCode::OK, &p["items"]));
+    let _ = (keep, last);
+}
+
+#[tokio::test]
+async fn a_done_to_do_stops_counting_when_deleted() {
+    let r = hub().await;
+    let app = app(&r).await;
+    let t = add_todo(&r, app, "Tidy the footer", None).await;
+    ok(
+        &r,
+        "POST",
+        &format!("/api/plan/items/{t}"),
+        OWNER,
+        json!({"state": "done"}),
+    )
+    .await;
+    let p = plan(&r, app).await;
+    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(1), Some(0)));
+    let (_, p) = delete(&r, t).await;
+    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(0), Some(0)));
+    assert_eq!(p["deleted"][0]["state"], "done");
+}
+
+#[tokio::test]
+async fn deleting_a_closed_goal_takes_its_to_dos_and_bringing_it_back_returns_them() {
+    let r = hub().await;
+    let app = app(&r).await;
+    let (g, row, todos) = closed_goal_with_todos(&r, app).await;
+    let (a, b) = (todos[0], todos[1]);
+    // One to-do was deleted on its own before.
+    let (s, _) = delete(&r, b).await;
+    assert_eq!(s, StatusCode::OK);
+    let other = goal(&r, app, "Add a contact page").await;
+
+    let (s, p) = delete(&r, row).await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    assert_eq!(titles(&p["items"]), ["Add a contact page"]);
+    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(0), Some(1)));
+    // The goal is listed, with its state; its child is not listed apart.
+    let kinds: Vec<(&str, &str)> = p["deleted"]
+        .as_array()
+        .expect("deleted")
+        .iter()
+        .map(|d| {
+            (
+                d["kind"].as_str().expect("text"),
+                d["title"].as_str().expect("text"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("goal", "Add a menu page"),
+            ("todo", "Fix the menu colours")
+        ]
+    );
+    assert_eq!(p["deleted"][0]["state"], "done");
+    assert_eq!(p["deleted"][0]["goal"]["state"], "done");
+
+    // The one deleted on its own can't come back while its goal is gone.
+    let (s, v) = restore(&r, b).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v, "Bring the goal back first.");
+
+    let (s, p) = restore(&r, row).await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    assert_eq!(
+        titles(&p["items"]),
+        ["Add a menu page", "Add a contact page"]
+    );
+    let back = goal_row(&p, g);
+    assert_eq!(titles(&back["found"]), ["Tidy the footer"]);
+    assert_eq!(titles(&p["deleted"]), ["Fix the menu colours"]);
+    let _ = (a, other);
+}
+
+#[tokio::test]
+async fn a_goal_that_is_still_going_cannot_be_deleted() {
+    let (r, store) = hub_with_store().await;
+    let app = app(&r).await;
+    let g = goal(&r, app, "Add a menu page").await;
+    let row = goal_row(&plan(&r, app).await, g)["id"]
+        .as_i64()
+        .expect("row");
+    for state in ["talking", "plan_ready", "working", "for_review"] {
+        sqlx::query("UPDATE goals SET state = ? WHERE id = ?")
+            .bind(state)
+            .bind(g)
+            .execute(store.pool())
+            .await
+            .expect("set state");
+        let (s, v) = delete(&r, row).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{state}: {v}");
+        assert_eq!(v, "This goal is still going. Stop it or finish it first.");
+        let p = plan(&r, app).await;
+        assert_eq!(p["items"].as_array().map(Vec::len), Some(1), "{state}");
+    }
+    // Stopped is fine.
+    sqlx::query("UPDATE goals SET state = 'stopped' WHERE id = ?")
+        .bind(g)
+        .execute(store.pool())
+        .await
+        .expect("stop");
+    let (s, p) = delete(&r, row).await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    assert_eq!(p["deleted"][0]["state"], "dropped");
+    assert_eq!(p["deleted"][0]["goal"]["state"], "stopped");
+}
+
+#[tokio::test]
+async fn emptying_removes_deleted_rows_only_and_the_goal_stays_readable() {
+    let (r, store) = hub_with_store().await;
+    let app = app(&r).await;
+    let (g, row, todos) = closed_goal_with_todos(&r, app).await;
+    let live_goal = goal(&r, app, "Add a contact page").await;
+    let live = add_todo(&r, app, "Order the signs", None).await;
+    delete(&r, row).await;
+    delete(&r, live).await;
+    let other_app = app_two(&r).await;
+    let theirs = add_todo(&r, other_app, "Tidy the footer", None).await;
+    delete(&r, theirs).await;
+
+    let count = |sql: String| {
+        let pool = store.pool().clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(&sql)
+                .fetch_one(&pool)
+                .await
+                .expect("count")
+        }
+    };
+    let messages = count("SELECT COUNT(*) FROM goal_messages".to_owned()).await;
+    let goals = count("SELECT COUNT(*) FROM goals".to_owned()).await;
+
+    let (s, p) = empty(&r, app).await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    assert_eq!(p["deleted"].as_array().map(Vec::len), Some(0));
+    assert_eq!(titles(&p["items"]), ["Add a contact page"]);
+    assert_eq!(count("SELECT COUNT(*) FROM goals".to_owned()).await, goals);
+    assert_eq!(
+        count("SELECT COUNT(*) FROM goal_messages".to_owned()).await,
+        messages
+    );
+    // Both to-dos under the goal and the goal row are gone; the other app's
+    // deleted row is not touched.
+    assert_eq!(
+        count(format!(
+            "SELECT COUNT(*) FROM plan_items WHERE id IN ({row}, {}, {})",
+            todos[0], todos[1]
+        ))
+        .await,
+        0
+    );
+    let p2 = plan(&r, other_app).await;
+    assert_eq!(titles(&p2["deleted"]), ["Tidy the footer"]);
+
+    // The goal is still on the Goals screen.
+    let list = ok(&r, "GET", "/api/goals", OWNER, json!({})).await;
+    let ids: Vec<i64> = list
+        .as_array()
+        .expect("goals")
+        .iter()
+        .filter_map(|x| x["id"].as_i64())
+        .collect();
+    assert!(ids.contains(&g) && ids.contains(&live_goal), "{list}");
+    ok(&r, "GET", &format!("/api/goals/{g}"), OWNER, json!({})).await;
+
+    // A resend is harmless.
+    let (s, again) = empty(&r, app).await;
+    assert_eq!((s, &again["items"]), (StatusCode::OK, &p["items"]));
+    let (s, _) = empty(&r, 9999).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+async fn app_two(r: &axum::Router) -> i64 {
+    let v = ok(
+        r,
+        "POST",
+        "/api/apps",
+        OWNER,
+        json!({"name":"shop","repo_path":"C:\\repos\\shop","profile":"A"}),
+    )
+    .await;
+    v["id"].as_i64().expect("app id")
+}
+
+#[tokio::test]
+async fn deleted_rows_are_not_offered_to_a_fix_and_dropped_ones_still_work() {
+    let r = hub().await;
+    let app = app(&r).await;
+    let t = add_todo(&r, app, "Tidy the footer", None).await;
+    let dropped = add_todo(&r, app, "Order the signs", None).await;
+    ok(
+        &r,
+        "POST",
+        &format!("/api/plan/items/{dropped}"),
+        OWNER,
+        json!({"state": "dropped"}),
+    )
+    .await;
+    delete(&r, t).await;
+    let (s, v) = call(
+        &r,
+        "POST",
+        &format!("/api/apps/{app}/plan/fix"),
+        OWNER,
+        json!({"item_ids": [t]}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    // Old dropped items are shown as before, count nowhere, and can be put back.
+    let p = plan(&r, app).await;
+    assert_eq!(titles(&p["items"]), ["Order the signs"]);
+    assert_eq!(p["items"][0]["state"], "dropped");
+    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(0), Some(0)));
+    ok(
+        &r,
+        "POST",
+        &format!("/api/plan/items/{dropped}"),
+        OWNER,
+        json!({"state": "open"}),
+    )
+    .await;
+    assert_eq!(plan(&r, app).await["left"], 1);
+    // New to-dos can't go under a deleted row.
+    let (_, g) = (0, goal(&r, app, "Add a menu page").await);
+    let row = goal_row(&plan(&r, app).await, g)["id"]
+        .as_i64()
+        .expect("row");
+    ok(
+        &r,
+        "POST",
+        &format!("/api/goals/{g}/close"),
+        OWNER,
+        json!({}),
+    )
+    .await;
+    delete(&r, row).await;
+    let (s, v) = call(
+        &r,
+        "POST",
+        &format!("/api/apps/{app}/plan/items"),
+        OWNER,
+        json!({"title": "Late idea", "parent_id": row}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+}
+
+#[tokio::test]
+async fn only_the_owner_deletes_restores_or_empties() {
+    let r = hub().await;
+    let app = app(&r).await;
+    let t = add_todo(&r, app, "Tidy the footer", None).await;
+    let gone = add_todo(&r, app, "Order the signs", None).await;
+    delete(&r, gone).await;
+    for path in [
+        format!("/api/plan/items/{t}/delete"),
+        format!("/api/plan/items/{gone}/restore"),
+        format!("/api/apps/{app}/plan/empty"),
+    ] {
+        let (s, v) = call(&r, "POST", &path, RUNNER, json!({})).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{path}: {v}");
+    }
+    let p = plan(&r, app).await;
+    assert_eq!(titles(&p["items"]), ["Tidy the footer"]);
+    assert_eq!(titles(&p["deleted"]), ["Order the signs"]);
 }

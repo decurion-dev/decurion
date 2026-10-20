@@ -1174,8 +1174,8 @@ async fn the_inbox_replaces_a_subscription_made_with_another_key() {
 }
 
 /// Finished research changed no code, so its card and its goal point to the
-/// fixes on the app's master plan, never to Accept and GitHub. A link to one
-/// app's master plan opens that app, not the last one picked.
+/// fixes on the app's Roadmap, never to Accept and GitHub. A link to one
+/// app's page opens that app, not the last one picked.
 #[tokio::test]
 async fn finished_research_points_to_its_fixes() {
     let (r, _) = hub().await;
@@ -1202,8 +1202,9 @@ async fn finished_research_points_to_its_fixes() {
     let inbox = text("/inbox").await;
     assert!(inbox.contains("t.research && t.state === \"in_review\" ? \"research\""));
     let plan = text("/plan").await;
-    assert!(plan.contains("await loadApps(h.app)"));
-    assert!(plan.contains("S.app ?? readHash().app"));
+    assert!(plan.contains("if (h.app != null && appNamed(h.app)) return openApp(h.app, h.tab);"));
+    // /plan alone opens the app picked last, on every screen (D.app).
+    assert!(plan.contains("D.app ? D.app.get()"));
 }
 
 #[tokio::test]
@@ -1957,20 +1958,33 @@ async fn a_started_box_without_a_trusted_cost_is_charged_its_budget() {
 }
 
 #[tokio::test]
-async fn the_menus_carry_a_help_link_that_opens_a_new_tab() {
+async fn the_menus_and_settings_carry_a_help_link_that_opens_a_new_tab() {
     let (r, _) = hub().await;
     let resp = get(&r, "/ui.js", None).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = resp.into_body().collect().await.expect("body").to_bytes();
     let ui = String::from_utf8_lossy(&bytes).into_owned();
     assert!(ui.contains("D.HELP_URL = \"/help\""));
-    assert!(ui.contains("id: \"tab-help\""), "phone Help tab");
+    assert!(ui.contains("D.helpButton = "), "the phone's small ?");
     assert!(ui.contains("\"Help\""), "Help label");
+    let opens = "href: D.HELP_URL, target: \"_blank\", rel: \"noopener noreferrer\"";
     assert_eq!(
-        ui.matches("href: D.HELP_URL, target: \"_blank\", rel: \"noopener noreferrer\"")
-            .count(),
+        ui.matches(opens).count(),
         2,
-        "both menus open Help in a new tab"
+        "the PC menu and the phone's ? open Help in a new tab"
+    );
+    // The phone has no Help tab: Help is the last row of Settings, a link out.
+    let resp = get(&r, "/settings.js", None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+    let settings = String::from_utf8_lossy(&bytes).into_owned();
+    assert!(
+        settings.contains("key: \"tab-help\""),
+        "Settings has a Help row"
+    );
+    assert!(
+        settings.contains(opens),
+        "Settings' Help opens in a new tab"
     );
 }
 
@@ -2037,10 +2051,10 @@ async fn pages_load_their_shared_look_without_signing_in() {
     }
 }
 
-/// The Board, Goals and the Master plan show one menu and one logo on a PC,
-/// so moving between them never feels like changing apps.
+/// Home, Goals and Apps show one menu and one logo on a PC, so moving
+/// between them never feels like changing apps.
 #[tokio::test]
-async fn the_board_goals_and_master_plan_share_one_pc_menu() {
+async fn the_board_goals_and_roadmap_share_one_pc_menu() {
     let (r, _) = hub().await;
     for (path, call) in [
         ("/", "D.pcNav(\"board\")"),
@@ -4596,7 +4610,7 @@ async fn new_apps_start_at_pr_only_and_the_owner_raises_them() {
     assert_eq!(
         apps[0]["rules"],
         json!({"merge": false, "deploy": false, "deploy_steps": "", "deploy_site": null,
-               "send_checked": true, "patient_data": true})
+               "send_checked": true, "patient_data": true, "update_conflicts": false})
     );
     // Full control for this app, with its deploy steps and live site.
     let (s, app) = call(
@@ -4662,6 +4676,49 @@ async fn new_apps_start_at_pr_only_and_the_owner_raises_them() {
     assert_eq!(a.rules.level(), decurion_proto::RulesLevel::PrOnly);
     assert_eq!(a.rules.deploy_steps(), None, "no Deploy button");
     assert!(a.rules.deploy_steps.contains("deploy-prod"));
+}
+
+/// Fixing conflicts with main by itself is off for every app until the
+/// owner turns it on, and only the owner can.
+#[tokio::test]
+async fn fixing_conflicts_by_itself_starts_off_and_only_the_owner_turns_it_on() {
+    let (r, _) = hub().await;
+    seed(&r).await;
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(apps[0]["rules"]["update_conflicts"], false);
+    let (s, _) = call(
+        &r,
+        "POST",
+        "/api/apps/1/rules",
+        Some(RUNNER),
+        json!({"update_conflicts": true}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (_, apps) = call(&r, "GET", "/api/apps", Some(OWNER), Value::Null).await;
+    assert_eq!(apps[0]["rules"]["update_conflicts"], false);
+    let (s, app) = call(
+        &r,
+        "POST",
+        "/api/apps/1/rules",
+        Some(OWNER),
+        json!({"update_conflicts": true, "receipt": "conflicts-rule-1"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{app}");
+    assert_eq!(app["rules"]["update_conflicts"], true);
+    // The other rules stay as they were.
+    assert_eq!(app["rules"]["send_checked"], true);
+    assert_eq!(app["rules"]["merge"], false);
+    let (_, app) = call(
+        &r,
+        "POST",
+        "/api/apps/1/rules",
+        Some(OWNER),
+        json!({"merge": true, "receipt": "conflicts-rule-2"}),
+    )
+    .await;
+    assert_eq!(app["rules"]["update_conflicts"], true, "{app}");
 }
 
 #[tokio::test]

@@ -6,7 +6,7 @@ You add one by its link and approve it once. After that it never asks again, unl
 
 ## Add an add-on
 
-1. Open the board and click **Settings**.
+1. Open Decurion on your PC and click **Settings** in the menu.
 2. Open the **Add-ons** tab.
 3. Paste the add-on's link, such as `https://github.com/example/words`, into **Add an add-on**. If the add-on is in a folder of that repo, open **It is in a folder of that repo** and type the folder.
 4. Click **Check it**. Decurion fetches the add-on and shows one card. Nothing is added yet, and nothing from the add-on runs.

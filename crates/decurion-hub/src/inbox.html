@@ -10,9 +10,9 @@
 <link rel="icon" href="/icon.svg">
 <link rel="apple-touch-icon" href="/icon-192.png">
 <link rel="stylesheet" href="/ui.css">
-<title>Decurion inbox</title>
+<title>Decurion</title>
 <style>
-  /* The phone inbox: a calm control room. Open it, see what needs you, act, leave. */
+  /* The phone's Home: a calm control room. Open it, see what needs you, act, leave. */
   :root { --tabbar-h: 64px; --side: 16px; }
   html { scroll-padding-top: 120px; }
   body { min-height: 100dvh; overscroll-behavior-y: none; }
@@ -28,15 +28,10 @@
   .bar { height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 var(--side); max-width: 640px; margin: 0 auto; }
   .bar svg { flex: none; border-radius: 7px; }
   .bar h1 { font-size: 20px; font-weight: 700; line-height: 1; white-space: nowrap; }
-  .count {
-    min-width: 22px; height: 22px; padding: 0 7px; border-radius: 99px;
-    background: var(--surface-3); color: var(--ink);
-    font: 650 12px/22px var(--font); text-align: center; font-variant-numeric: tabular-nums;
-  }
   .updated { margin-left: auto; font-size: 12px; color: var(--faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
   .appbar .banner { border-top: 1px solid var(--amber-line); }
 
-  /* Board filter chips, part of the sticky top bar on the board tab. */
+  /* By status (Pro view) filter chips, part of the sticky top bar. */
   .chips {
     display: flex; gap: 8px; overflow-x: auto; padding: 2px var(--side) 12px;
     max-width: 640px; margin: 0 auto; scrollbar-width: none; scroll-padding: 0 var(--side);
@@ -125,27 +120,6 @@
   .notice.bad { align-items: flex-start; }
   .notice.bad svg.i { margin-top: 2px; }
 
-  /* ---------- Today: one row per app, what it waits on (GET /api/today) ---------- */
-  .today-card { display: grid; padding: 6px 4px 6px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l); }
-  .today-card .th { padding: 8px 0 4px; font-size: 13px; font-weight: 650; color: var(--muted); }
-  .today-card .tr { display: flex; align-items: center; gap: 10px; min-height: 52px; padding-right: 10px; }
-  .today-card .tr + .tr { border-top: 1px solid var(--line); }
-  .today-card .go { flex: 1; min-width: 0; display: grid; gap: 2px; padding: 6px 0; border: 0; background: none; text-align: left; cursor: pointer; color: var(--ink); font: inherit; }
-  .today-card .go .nm { font: 600 15px/1.3 var(--font); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .today-card .go .ln { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .today-card .go .use { font-size: 12px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .today-card .tr .btn { flex: none; min-height: 40px; }
-  .today-card .pill { flex: none; }
-  .today-card .pill svg.i.spin { animation: none; }
-  .today-card .pill.t-merge { color: var(--accent-ink); background: var(--accent-soft); }
-  .today-card .more-apps { justify-self: start; margin: 2px 0 6px -6px; }
-  .today-card .run-btn { padding: 0 12px; }
-  /* An app's deploy card, under its row. */
-  .today-card .deploy-box { padding: 2px 10px 12px 0; }
-  .today-card .deploy-box + .tr { border-top: 1px solid var(--line); }
-  /* A narrow phone keeps the app's name readable: Run it shows its icon only (its label stays for screen readers). */
-  @media (max-width: 399px) { .today-card .run-btn .lbl { display: none; } .today-card .run-btn { width: 40px; padding: 0; } }
-
   /* Notifications prompt */
   .ask { padding: 12px 12px 12px 14px; border-radius: var(--radius-l); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
   .ask .ic { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-2); color: var(--ink); flex: none; }
@@ -167,6 +141,14 @@
   .wcard .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--steel); animation: breathe 1.8s ease-in-out infinite; }
   .board-more { width: 100%; min-height: 48px; border-radius: var(--radius); }
   .board-clear { justify-self: end; min-height: 44px; }
+  /* Goals and pull requests that wait on you, at the top of By status's Needs you: the same
+     things Home's Needs you counts. A goal shows its road (D.journey) and one button. */
+  .need-line { display: grid; gap: 8px; padding: 12px 14px; border-radius: var(--radius-l); background: var(--amber-soft); box-shadow: inset 0 0 0 1px var(--amber-line); font-size: 14px; color: var(--ink); text-decoration: none; }
+  a.need-line { display: flex; align-items: center; gap: 10px; min-height: 48px; }
+  a.need-line .grow { flex: 1; min-width: 0; }
+  .need-line .gt { font-weight: 600; color: var(--ink); text-decoration: none; overflow-wrap: anywhere; min-height: 24px; }
+  .need-line .gl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; color: var(--amber); font-weight: 600; font-size: 13px; }
+  .need-line .btn { justify-self: start; }
   .board-cleared { color: var(--muted); font-size: 14px; text-align: center; padding: 18px 12px; border: 1px dashed var(--line); border-radius: var(--radius-l); }
   .dis-toggle { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 0 14px; border: 1px dashed var(--line); border-radius: var(--radius-l);
     background: none; color: var(--muted); font: 600 14px/1 var(--font); text-align: left; cursor: pointer; }
@@ -177,24 +159,7 @@
   .dis-toggle[aria-expanded="true"] svg.i:last-child { transform: rotate(90deg); }
   .wcard.dismissed { opacity: .72; }
   @keyframes breathe { 50% { opacity: .3; } }
-  /* Which app the board shows, like the app list on the PC's board. Scrolls with the cards. */
-  .app-chips { display: flex; gap: 8px; overflow-x: auto; margin: 0 calc(-1 * var(--side)); padding: 2px var(--side) 2px; scrollbar-width: none; }
-  .app-chips::-webkit-scrollbar { display: none; }
-  .app-chips .chip { height: 44px; }
-  .app-chips .chip svg.i { width: 15px; height: 15px; color: var(--muted); }
-  .app-chips .chip[aria-pressed="true"] { background: var(--accent-soft); border-color: transparent; color: var(--accent-ink); }
-  .app-chips .chip[aria-pressed="true"] svg.i { color: inherit; }
-  .app-chips .chip:last-child { margin-right: 0; }
-  #view-board { padding-bottom: 72px; }
-
-  /* ---------- New work: the button and the sheet with the shared form (compose.js) ---------- */
-  .fab {
-    position: fixed; z-index: 25; right: max(var(--side), env(safe-area-inset-right));
-    bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 16px);
-    min-height: 56px; padding: 0 20px 0 16px; border-radius: 18px; font-size: 16px; box-shadow: var(--shadow-pop);
-  }
-  .fab svg.i { width: 20px; height: 20px; }
-  body.signed-out .fab { display: none; }
+  /* ---------- New work: the start box and the sheet with the shared form (compose.js) ---------- */
   dialog.sheet {
     width: 100%; max-width: 100%; margin: auto 0 var(--kb, 0px);
     max-height: calc(100dvh - 24px - env(safe-area-inset-top) - var(--kb, 0px));
@@ -315,34 +280,82 @@
   .kids li + li { border-top: 1px solid var(--line); }
   .kids .nm, .tree-row .nm { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
   @media (max-width: 640px) { .talk .row .btn { flex: 1 1 100%; } }
+  /* ---------- Home: the start box, the app picker and the switch ---------- */
+  .start-box {
+    display: flex; align-items: center; gap: 12px; width: 100%; min-height: 64px; padding: 10px 14px;
+    border: 1px solid var(--field-line); border-radius: var(--radius-l); background: var(--surface);
+    color: var(--ink); font: inherit; text-align: left; cursor: pointer; box-shadow: 0 1px 2px rgba(15, 18, 24, .04);
+  }
+  .start-box:active { transform: scale(.99); }
+  .start-box .plus { flex: none; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--accent); color: var(--on-accent); font: 600 22px/1 var(--font); }
+  .start-box .grow { flex: 1; min-width: 0; display: grid; gap: 2px; }
+  .start-box b { font: 650 16px/1.3 var(--font); }
+  .start-box .grow span { font-size: 13px; line-height: 1.35; color: var(--muted); }
+  body.signed-out .start-box { display: none; }
+  #view-home > .gs { margin: 0; }
+  .home-head { margin-top: 4px; }
+  .home-head .app-pick { min-height: 44px; max-width: 100%; }
+  .home-head .home-switch { max-width: 100%; }
+  #hv-goals { display: grid; gap: 12px; min-width: 0; }
+  .hpanel { display: grid; gap: 12px; min-width: 0; }
+  /* All finished work (#board/status/done): its way back and its heading. */
+  .fin-head { display: grid; gap: 2px; margin-bottom: 12px; }
+  .fin-head h2 { font-size: 19px; }
+  .hpanel > .live:empty, .hpanel > .err-slot:empty { display: none; }
+  @media (max-width: 380px) { .home-head .hseg-b { padding: 0 10px; } .home-head .hseg-b svg.i { display: none; } }
 </style>
 </head>
 <body>
 <header class="appbar" id="appbar">
   <div class="bar">
     <span id="mark"></span>
-    <h1 id="title">Needs you</h1>
-    <span class="count" id="count" hidden></span>
+    <h1 id="title">Home</h1>
     <span class="updated" id="updated" aria-live="off"></span>
+    <span id="help-slot"></span>
   </div>
   <div class="banner" id="offline" role="status" hidden></div>
   <div class="chips" id="chips" role="group" aria-label="Show work by state" hidden></div>
 </header>
 
 <main class="page" id="page">
-  <section class="view" id="view-inbox" aria-labelledby="title">
-    <section class="today-card live" id="today" aria-label="Today: what each app waits on" hidden></section>
-    <div class="notice ask" id="notify" hidden></div>
-    <div class="err-slot" id="act-err" role="alert"></div>
-    <div class="read-all" id="read-all" hidden></div>
-    <div class="list live" id="inbox"></div>
+  <!-- Home: the start box, Getting started, then Needs you, Working and Done today (or the Board), the same as the PC's Home. -->
+  <section class="view" id="view-home" aria-labelledby="title">
+    <!-- Opens the new-work sheet with the shared form (compose.js). -->
+    <button type="button" class="start-box live" id="start-box">
+      <span class="plus" aria-hidden="true">+</span>
+      <span class="grow"><b>What do you want?</b><span>Say it in plain words. Your project lead plans it with you.</span></span>
+    </button>
+    <!-- Getting started (D.gettingStarted in ui.js), the same card as on the PC's Home. -->
+    <div id="gs-slot"></div>
+    <div class="home-head">
+      <span id="app-slot"></span>
+      <span class="grow"></span>
+      <span id="view-slot"></span>
+    </div>
+    <div id="hv-goals">
+      <div class="hpanel" id="hp-needs">
+        <div class="notice ask" id="notify" hidden></div>
+        <div class="err-slot" id="act-err" role="alert"></div>
+        <div class="read-all" id="read-all" hidden></div>
+        <div class="live" id="needs-apps"></div>
+        <div class="list live" id="inbox"></div>
+      </div>
+      <div class="hpanel" id="hp-working">
+        <div class="live" id="work-apps"></div>
+        <div class="hlist live" id="working"></div>
+      </div>
+      <div class="hpanel" id="hp-done">
+        <div class="hlist live" id="done"></div>
+      </div>
+    </div>
+    <div id="hv-board" hidden></div>
+    <div id="hv-state" hidden>
+      <div class="fin-head" id="fin-head" hidden></div>
+      <div class="list live" id="board"></div>
+    </div>
   </section>
-  <section class="view" id="view-board" aria-labelledby="title" hidden>
-    <div class="app-chips" id="app-chips" role="group" aria-label="Show work for one app" hidden></div>
-    <div class="list live" id="board"></div>
-    <button type="button" class="btn primary fab live" id="new-fab"></button>
-  </section>
-  <!-- Settings: the same settings as the board's, drawn by settings.js. -->
+  <!-- Settings: the same settings as on the PC, drawn by settings.js. -->
   <section class="view" id="view-settings" aria-labelledby="title" hidden>
     <div class="live" id="settings"></div>
   </section>
@@ -351,7 +364,7 @@
   </section>
 </main>
 
-<!-- The bottom tabs, shared with the goals page: D.phoneTabs in ui.js. -->
+<!-- The bottom tabs, shared with Goals and Apps: D.phoneTabs in ui.js. -->
 <nav class="tabbar" id="tabbar" aria-label="Sections"></nav>
 
 <script src="/ui.js"></script>
@@ -363,20 +376,32 @@
 <script>
 "use strict";
 const { el, $ } = D;
-$("tabbar").replaceWith(D.phoneTabs("inbox"));
+$("tabbar").replaceWith(D.phoneTabs("home"));
+$("help-slot").replaceWith(D.helpButton());
+// Getting started, under the start box, the same card as on the PC's Home.
+// It reads Settings' own lists, so it asks twice a minute.
+const startCard = D.gettingStarted({ phone: true });
+$("gs-slot").replaceWith(startCard);
+let startAt = 0;
+const startTick = () => { if (Date.now() - startAt >= 30000) { startAt = Date.now(); startCard.refresh(); } };
 
-// What each state in the inbox means, in one plain line.
+// What each state in Needs you means, in one plain line.
 const MEANS = {
   needs_you: "The agent stopped to ask for something only you can decide.",
   // Its words are built from the app's rules where the card is drawn.
   in_review: "",
   // A research piece in review: it changed no code.
-  research: "Research is done and changed no code. Fix what it found opens the app's master plan, where its findings wait to be built.",
+  research: "Research is done and changed no code. Fix what it found opens the app's Roadmap, where its findings wait to be built.",
   failed: "This piece of work could not finish. You can retry it.",
   // Only when it could not be sent to GitHub.
   done: "You accepted this, but it could not be sent to GitHub. It is still accepted.",
 };
+// Pro view's "By status": one state at a time, the board's old columns.
 const CHIPS = ["running", "in_review", "needs_you", "queued", "done", "failed"];
+// All finished work (#board/status/done, "See all finished work" under Done
+// today): only the Done and Failed lists, with or without Pro view.
+const FINISHED = ["done", "failed"];
+const chipsNow = () => (S.finished ? FINISHED : CHIPS);
 const BOARD_EMPTY = {
   running: "Nothing is running right now.",
   in_review: "Nothing is waiting for review.",
@@ -386,19 +411,39 @@ const BOARD_EMPTY = {
   failed: "Nothing has failed.",
 };
 const EMPTY_ICON = { running: "pc", in_review: "in_review", needs_you: "done", queued: "queued", done: "done", failed: "done" };
-// Cards drawn at a time on the board tab; "Show more" adds this many again.
+// Cards drawn at a time under By status; "Show more" adds this many again.
 const BOARD_LIMIT = 40;
 
 const S = {
-  tab: "inbox", threads: null, goals: [], apps: {}, appList: [], limits: [], signIns: [], prs: [], merges: [], updates: [], err: null, signedOut: false, updated: null,
+  // Home or Settings; Home shows its Goals lists (mode "goals", on the tab
+  // `htab`), the Board by goal ("board") or, in Pro view, By status ("state").
+  tab: "home", mode: "goals", htab: "needs", finished: false,
+  threads: null, goals: [], apps: {}, appList: [], limits: [], signIns: [], prs: [], merges: [], updates: [], err: null, signedOut: false, updated: null,
   // GET /api/needs-you: the hub's one list of what waits on you (today.rs),
-  // the same one the PC board and the app rows count. Null on an older hub.
+  // the same one the PC's Home and every badge count. Null on an older hub.
   needs: null,
+  // Helper agents at work (GET /api/helpers) and which goal each piece of
+  // work belongs to (D.homeMap), for the lists and the Board.
+  helpers: [], map: null,
   chip: null, actErr: null, open: new Set(), notifyOn: false, showDismissed: false,
-  // The board tab's app filter, remembered like the PC board's; how many cards it shows; whether a cloud worker exists.
-  app: D.store.get("decurion.board.app") || "all", limit: BOARD_LIMIT, hasCloud: false,
+  // Which app Home shows: "all", or one app's id. Home opens on All apps;
+  // picking one is shared with the Apps page (D.app).
+  app: "all", limit: BOARD_LIMIT, hasCloud: false,
 };
 const scrollMem = {};
+const sigs = {};
+function changed(name, value) {
+  const s = JSON.stringify(value);
+  if (sigs[name] === s) return false;
+  sigs[name] = s;
+  return true;
+}
+// A repaint keeps the button the owner was on focused.
+function keepFocus(fn) {
+  const key = document.activeElement?.dataset?.key;
+  fn();
+  if (key && document.activeElement?.dataset?.key !== key) document.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
+}
 
 // ---------- Recent agent activity, cached so a quiet card costs nothing ----------
 const tails = new Map();
@@ -409,6 +454,7 @@ async function loadTail(t, n, always = false) {
   if (c && c.u === t.updated_at && !always) return;
   try { tails.set(tailKey(t, n), { u: t.updated_at, ev: await D.tail(t.id, n) }); } catch (_) { /* keep what we had */ }
 }
+const lineOf = (t) => D.cardLine(t, tailNow(t, 5));
 
 // What you sent, or a step that got cut off, after the agent last spoke.
 function sinceLines(ev) {
@@ -419,204 +465,86 @@ function sinceLines(ev) {
 const byNewest = (a, b) => b.updated_at.localeCompare(a.updated_at);
 // What is waiting on a decision comes first, then failures, then reviews.
 const URGENCY = { needs_you: 0, failed: 1, done: 1, in_review: 2 };
-// Accepted work is done, unless it could not be sent to GitHub. With the
-// hub's list, exactly its work: a piece whose checker is still coming waits
-// on the checker, not on you.
-const needsYou = (t) => S.needs ? S.needs.work.some((w) => w.thread_id === t.id)
-  : t.state === "done" ? t.github?.state === "failed" : t.state in MEANS && !D.checking(t);
-// Dismissed work never waits in the inbox; it stays under Dismissed on the board tab.
-const inboxItems = () => (S.threads ?? []).filter((t) => needsYou(t) && !t.dismissed_at).sort((a, b) => URGENCY[a.state] - URGENCY[b.state] || byNewest(a, b));
+// The app Home shows, or "all". Only offered with two apps or more.
+const appFilter = () => (S.appList.length >= 2 && S.app !== "all" && S.apps[S.app] ? S.app : "all");
+const appId = () => (appFilter() === "all" ? null : appFilter());
+const inApp = (x) => appFilter() === "all" || String(x.app_id) === appFilter();
+// Home's three lists from the hub's one list of what needs you (ui.js).
+const split = () => D.homeSplit({ threads: S.threads ?? [], goals: S.goals, needs: S.needs, map: S.map, appId: appId() });
+// Work under Needs you, most urgent first.
+const needWork = () => split().needs.work.map((w) => w.t).sort((a, b) => (URGENCY[a.state] ?? 3) - (URGENCY[b.state] ?? 3) || byNewest(a, b));
 const counts = (list = S.threads ?? []) => {
   const c = Object.fromEntries(CHIPS.map((s) => [s, 0]));
   for (const t of list) if (t.state in c) c[t.state]++;
   return c;
 };
-// The app the board tab shows, or "all". Only offered with two apps or more.
-const appFilter = () => (S.appList.length >= 2 && S.app !== "all" && S.apps[S.app] ? S.app : "all");
-const inApp = (t) => appFilter() === "all" || String(t.app_id) === appFilter();
+// By status sorts work the way the PC's does: work on the hub's one list of
+// what needs you sits under Needs you whatever its state, and Needs you also
+// counts the goals and pull requests that wait on you.
+const needIds = () => new Set((S.needs?.work ?? []).map((w) => w.thread_id));
+// All finished work lists work by its own state, even work that also waits under Needs you.
+const colOf = (t, ids = needIds()) => (!S.finished && (t.state === "needs_you" || ids.has(t.id)) ? "needs_you" : t.state);
+const alsoNeeds = () => (S.needs ? [...(S.needs.goals ?? []), ...(S.needs.prs ?? [])] : []).filter(inApp);
+const boardCounts = () => {
+  const c = Object.fromEntries(CHIPS.map((s) => [s, 0])), ids = needIds();
+  for (const t of boardThreads()) { const k = colOf(t, ids); if (k in c) c[k]++; }
+  if (!S.finished) c.needs_you += alsoNeeds().length;
+  return c;
+};
 const boardThreads = () => (S.threads ?? []).filter((t) => inApp(t) && !t.dismissed_at);
 // Dismissed work of the chosen chip, newest dismissed first. Shown only when opened.
 const dismissedItems = () => (S.threads ?? []).filter((t) => inApp(t) && t.dismissed_at && t.state === chipNow())
   .sort((a, b) => b.dismissed_at.localeCompare(a.dismissed_at));
 const chipNow = () => {
-  if (S.chip) return S.chip;
-  const c = counts(boardThreads());
-  return D.ORDER.find((s) => c[s] > 0) ?? "running";
+  if (S.chip && chipsNow().includes(S.chip)) return S.chip;
+  const c = boardCounts();
+  return D.ORDER.filter((s) => chipsNow().includes(s)).find((s) => c[s] > 0) ?? chipsNow()[0];
 };
-const boardItems = () => boardThreads().filter((t) => t.state === chipNow()).sort(byNewest);
+const boardItems = () => { const ids = needIds(), sel = chipNow(); return boardThreads().filter((t) => colOf(t, ids) === sel).sort(byNewest); };
 const wantsTail = (s) => s === "running" || s === "needs_you" || s === "in_review" || s === "failed";
 const boardTails = () => boardItems().slice(0, S.limit).filter((t) => wantsTail(t.state))
   .map((t) => loadTail(t, 5, t.state === "running"));
 
-// ---------- Goals waiting on you ----------
-// A goal waits on you when its project lead is not thinking and the goal is
-// talking or has a plan ready. The inbox shows a card for a plan to approve
-// or questions to answer. What a goal waits on comes from its view, fetched
-// only for waiting goals and kept until the goal changes, so the five-second
-// refresh costs little.
-const waitsOnYou = (g) => !g.busy && (g.state === "talking" || g.state === "plan_ready");
-const goalViews = new Map();
-// A goal's updated_at only moves with its state, so a new question in a
-// talking goal does not move it. A view is dropped while the project lead is
-// thinking (the goal is not waiting then), and refetched now and then anyway.
-const VIEW_FRESH_MS = 60000;
-const viewKey = (g) => `${g.updated_at}|${g.state}|${g.stuck}`;
-async function loadGoalView(g) {
-  const c = goalViews.get(g.id);
-  if (c && c.key === viewKey(g) && Date.now() - c.at < VIEW_FRESH_MS) return;
-  try { goalViews.set(g.id, { key: viewKey(g), at: Date.now(), v: await D.api(`/goals/${g.id}`) }); } catch (_) { /* keep what we had */ }
-}
-// What a waiting goal needs from you: the latest plan to approve, or the
-// latest questions nobody has answered yet. Null when the view can't say.
-function goalWait(g) {
-  const v = goalViews.get(g.id)?.v;
-  if (!v?.messages) return null;
-  const answered = new Set();
-  let last = null, plan = null;
-  for (const m of v.messages) {
-    const b = m.body;
-    if (b.kind === "answers") answered.add(b.to);
-    if (b.kind !== "coordinator") continue;
-    last = m;
-    if (b.plan) plan = m;
-  }
-  if (g.state === "plan_ready" && plan) {
-    return { kind: "plan", planId: plan.id, pieces: plan.body.plan.pieces?.length ?? 0, at: plan.at };
-  }
-  if (g.state === "talking" && last?.body.questions?.length && !answered.has(last.id)) {
-    return { kind: "question", questions: last.body.questions, at: last.at };
-  }
-  return null;
-}
-// With the hub's list, every goal on it gets a card: a plan or questions in
-// full when its view says so, else a short card that opens the goal (work
-// to review, a stuck project lead, or something it said).
-const goalCards = () => {
-  if (!S.needs) return S.goals.filter(waitsOnYou).map((g) => ({ g, w: goalWait(g) })).filter((x) => x.w);
-  return S.needs.goals.map((n) => {
-    const g = S.goals.find((x) => x.id === n.goal_id);
-    return g && { g, w: goalWait(g) ?? { kind: "other", why: n.why, at: g.updated_at } };
-  }).filter(Boolean);
-};
-// Everything the inbox lists after limits and sign-ins: work as { t } and
-// goals as { g, w }. A goal waits on a decision, so it sorts with Needs you,
-// by when its project lead last spoke.
-function inboxEntries() {
-  const work = inboxItems().map((t) => ({ t, rank: URGENCY[t.state], at: t.updated_at }));
-  const goals = goalCards().map((x) => ({ ...x, rank: URGENCY.needs_you, at: x.w.at > x.g.updated_at ? x.w.at : x.g.updated_at }));
-  return [...work, ...goals].sort((a, b) => a.rank - b.rank || b.at.localeCompare(a.at));
-}
-// Goals whose Approve tap is on its way, so a rebuilt card can't send it twice.
-const approving = new Set();
-
 // ---------- Loading ----------
-// The Goals tab's badge: goals waiting on you, from the hub's one list (a
-// plan to approve, questions, work to review, a stuck project lead); on an
-// older hub, questions to answer or a plan to approve.
-function goalsBadge(list) {
-  const n = S.needs ? S.needs.goals.length : list.filter(waitsOnYou).length;
-  $("goals-badge").hidden = n === 0;
-  $("goals-badge").textContent = n > 99 ? "99+" : n;
-  $("tab-goals").setAttribute("aria-label", n ? `Goals, ${D.plural(n, "goal")} ${n === 1 ? "needs" : "need"} you` : "Goals");
-}
-// Goals, the badge and the views behind their cards. Never throws: if the hub
-// can't say, the badge and the cards stay as they were.
+// Goals, with the hub's road (journey) on each. Never throws: if the hub
+// can't say, the rows stay as they were.
 async function loadGoals() {
   let list;
   try { list = await D.api("/goals"); } catch (_) { return; }
-  if (!Array.isArray(list)) return;
-  goalsBadge(list);
-  S.goals = list;
-  const waiting = list.filter(waitsOnYou), ids = new Set(waiting.map((g) => g.id));
-  for (const id of goalViews.keys()) if (!ids.has(id)) goalViews.delete(id);
-  for (const id of approving) if (!ids.has(id)) approving.delete(id);
-  await Promise.all(waiting.map(loadGoalView));
+  if (Array.isArray(list)) S.goals = list;
 }
-// The Today card: one row per app, with the hub's own words (today.rs), the
-// same as the board's strip. A row opens the Board tab for that app. Kept
-// short on a phone: five rows, then "and N more".
-const TODAY_ROWS = 5;
-const TONES = { needs_you: ["needs_you", "needs_you"], working: ["running", "running"], reviewer: ["in_review", "in_review"],
-  merge: ["t-merge", "branch"], done: ["done", "done"], quiet: ["queued", "queued"] };
-let today = null, todayAll = false, todaySig = "";
-// Open Run it sessions of whole apps (GET /api/previews), read with the
-// Today rows on the inbox's own refresh. An app already running shows Open,
-// which shows that run instead of starting it again. A run of one piece of
-// work is opened from its panel, so it does not count here.
+// The apps' rows: one per app, with the hub's own words (today.rs), the same
+// as on the PC's Home. The ones that need you sit at the top of Needs you,
+// the rest at the top of Working.
+let today = null;
+// Open Run it sessions of whole apps (GET /api/previews). An app already
+// running shows Open, which shows that run instead of starting it again.
 let previews = [];
 async function loadToday() {
   // Older hubs have no /previews: then nothing shows as running.
   const [t, pv] = await Promise.all([D.api("/today").catch(() => null), D.api("/previews").catch(() => null)]);
-  if (t) today = t; // else keep the last rows
-  if (Array.isArray(pv)) previews = pv.filter((s) => s.thread_id == null && (s.state == null || s.state === "pending" || s.state === "live"));
-  renderToday();
-}
-function runButton(r) {
-  const s = previews.find((p) => p.app_id === r.app_id);
-  const b = el("button", { type: "button", className: "btn run-btn", disabled: D.offline,
-    "aria-label": s ? `Open ${r.name}, running on your PC` : `Run it: ${r.name}` },
-    D.icon("start"), el("span", { className: "lbl" }, s ? "Open" : "Run it"));
-  b.onclick = () => D.runApp({ id: r.app_id, name: r.name }, { sid: s?.id }).then(loadToday);
-  return b;
-}
-function renderToday() {
-  const box = $("today");
-  const rows = Array.isArray(today) ? today : [];
-  const sig = JSON.stringify([rows, todayAll, D.offline, D.pro, previews.map((s) => [s.id, s.app_id])]);
-  if (sig === todaySig) return;
-  todaySig = sig;
-  box.hidden = !rows.length;
-  const shown = todayAll ? rows : rows.slice(0, TODAY_ROWS);
-  const more = rows.length - shown.length;
-  box.replaceChildren(el("div", { className: "th" }, "Today"), ...shown.flatMap((r) => {
-    const go = el("button", { type: "button", className: "go" },
-      el("span", { className: "nm" }, r.name), el("span", { className: "ln" }, r.line),
-      r.used_today ? el("span", { className: "use" }, `${D.usageWords(r.used_today)} today`) : null);
-    go.onclick = () => { setAppFilter(String(r.app_id)); location.hash = "#board"; };
-    const fixOn = r.open_comments > 0 ? (r.fix_thread_id ?? r.last_pr?.thread_id) : null;
-    let act;
-    if (fixOn != null) {
-      act = el("button", { type: "button", className: "btn primary", disabled: D.offline }, D.icon("tool"), "Answer the comments");
-      act.onclick = async () => {
-        if (D.offline) return;
-        act.disabled = true;
-        try {
-          await D.send(`/threads/${fixOn}/pr/fix`, {});
-          D.toast("Started work that answers the comments.");
-        } catch (e) {
-          D.toast(e.message, "alert");
-        }
-        todaySig = "";
-        refresh();
-      };
-    } else {
-      const [cls, ic] = TONES[r.tone] ?? TONES.quiet;
-      act = el("span", { className: `pill ${cls}` }, D.icon(ic), r.status);
-    }
-    const row = el("div", { className: "tr", dataset: { tone: r.tone } }, go, act, runButton(r));
-    const again = () => { todaySig = ""; loadToday(); };
-    if (r.deploy) return [row, D.deployBox(r.deploy, { onChange: again })];
-    return r.can_deploy ? [row, D.deployCheck(r.app_id, r.name, { onChange: again })] : [row];
-  }), ...(more > 0 ? [Object.assign(el("button", { type: "button", className: "btn quiet sm more-apps" }, `and ${D.plural(more, "more app")}`),
-    { onclick: () => { todayAll = true; renderToday(); } })] : []));
+  if (Array.isArray(t)) today = t; // else keep the last rows
+  if (Array.isArray(pv)) previews = pv.filter((s) => s.state == null || s.state === "pending" || s.state === "live");
 }
 let busy = false, again = false;
 async function refresh() {
   if (busy) { again = true; return; }
   busy = true;
   const goalsJob = loadGoals();
-  loadToday();
+  const todayJob = loadToday();
+  startTick();
   try {
     // Hubs without the limits endpoint answer 404; that just means no limits.
     // Money and accounts only matter on the Settings tab. Computers also say
     // whether work can run in the cloud, which the new-work box needs.
     const forSettings = S.tab === "settings";
     const seq = D.settings.seq();
-    const [apps, list, limits, signIns, workers, more, prs, needs] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/limits").catch(() => []),
+    const [apps, list, limits, signIns, workers, more, prs, needs, helpers] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/limits").catch(() => []),
       D.api("/sign-ins").catch(() => []), D.api("/workers").catch(() => null),
       forSettings ? Promise.all([D.api("/spend"), D.api("/accounts").catch(() => null)]) : null,
-      D.api("/prs").catch(() => []), D.api("/needs-you").catch(() => null)]);
+      D.api("/prs").catch(() => []), D.api("/needs-you").catch(() => null), D.api("/helpers").catch(() => null)]);
     S.needs = needs && Array.isArray(needs.work) ? needs : null;
+    if (Array.isArray(helpers)) S.helpers = helpers;
     // Pull requests with review comments waiting for a fix, and ones the
     // owner may merge from here (their app's rules allow it) with none.
     const open = (Array.isArray(prs) ? prs : []).filter((p) => p.state === "open" && !p.fixing);
@@ -631,17 +559,21 @@ async function refresh() {
     else D.settings.update({ apps, seq });
     S.limits = Array.isArray(limits) ? limits : [];
     // Website sign-ins that stopped working or are about to.
-    S.signIns = (Array.isArray(signIns) ? signIns : []).filter((x) => x.status === "expired" || x.status === "expiring")
-      .sort((a, b) => (a.status === "expired" ? 0 : 1) - (b.status === "expired" ? 0 : 1) || a.id - b.id);
+    S.signIns = D.signInsDue(signIns);
     D.setApps(apps);
     S.apps = Object.fromEntries(apps.map((a) => [a.id, a]));
     S.appList = apps;
-    // An app that was removed is no longer a filter.
+    // An app that was removed is no longer picked.
     if (S.app !== "all" && !S.apps[S.app]) setAppFilter("all");
     S.threads = list; S.err = null; S.signedOut = false; S.updated = new Date();
     D.setThreads(list);
-    const jobs = inboxItems().map((t) => loadTail(t, 20));
-    if (S.tab === "board") jobs.push(...boardTails());
+    await goalsJob;
+    S.map = await D.homeMap({ threads: list, goals: S.goals });
+    // The agent's words on the cards that need you, and one line on work at it.
+    const jobs = needWork().map((t) => loadTail(t, 20));
+    jobs.push(...list.filter((t) => !t.dismissed_at && (t.state === "running" || t.state === "in_review" || t.state === "failed"))
+      .map((t) => loadTail(t, 5, t.state === "running")));
+    if (S.mode === "state") jobs.push(...boardTails());
     await Promise.all(jobs);
     const live = new Set(list.map((t) => String(t.id)));
     for (const k of tails.keys()) if (!live.has(k.split("|")[1])) tails.delete(k);
@@ -649,7 +581,7 @@ async function refresh() {
     S.err = e;
     if (e.signedOut) S.signedOut = true;
   }
-  await goalsJob;
+  await Promise.all([goalsJob, todayJob]);
   busy = false;
   render();
   if (again) { again = false; refresh(); }
@@ -664,7 +596,10 @@ function reconcile(box, items) {
   const old = box._cards, next = new Map(), els = [];
   for (const it of items) {
     let c = old.get(it.key);
-    if (!c || c.sig !== it.sig) c = { sig: it.sig, el: it.build(c ? "still" : first ? "first" : "new") };
+    if (!c || c.sig !== it.sig) {
+      c = { sig: it.sig, el: it.build(c ? "still" : first ? "first" : "new") };
+      c.el.dataset.key = c.el.dataset.key || String(it.key);
+    }
     next.set(it.key, c); els.push(c.el);
   }
   const cur = [...box.children];
@@ -702,25 +637,17 @@ function errorState(what) {
 }
 
 function renderShell() {
-  // The count is what needs you: work, goals and pull requests, the same
-  // list the PC board and the app rows count. Notices about Decurion's own
-  // accounts and sign-ins show above the list but are not counted.
-  const n = inboxEntries().length + S.prs.length + S.merges.length;
   document.body.classList.toggle("signed-out", S.signedOut);
   $("title").textContent = S.signedOut ? "Decurion" : TITLES[S.tab];
-  $("count").hidden = !(S.tab === "inbox" && n > 0 && !S.signedOut);
-  $("count").textContent = n;
-  $("count").setAttribute("aria-label", D.plural(n, "item"));
-  $("badge").hidden = n === 0;
-  $("badge").textContent = n > 99 ? "99+" : n;
-  $("tab-inbox").setAttribute("aria-label", n ? `Inbox, ${D.plural(n, "item")} need you` : "Inbox");
+  document.title = S.tab === "settings" ? "Settings · Decurion" : "Decurion";
+  // The badge on Home only ever shows the hub's own count; it hides when the hub can't say.
+  D.showNeeds(S.needs);
   for (const t of TABS) {
     const on = S.tab === t && !S.signedOut;
     if (on) $("tab-" + t).setAttribute("aria-current", "page"); else $("tab-" + t).removeAttribute("aria-current");
     $("view-" + t).hidden = !on;
   }
-  $("chips").hidden = S.tab !== "board" || S.signedOut || !S.threads;
-  $("new-fab").hidden = S.tab !== "board" || S.signedOut;
+  $("chips").hidden = S.tab !== "home" || S.mode !== "state" || S.signedOut || !S.threads;
   $("updated").textContent = S.updated && !S.signedOut ? `Updated ${D.clock(S.updated.toISOString())}` : "";
   $("signed-out").hidden = !S.signedOut;
   $("notify").hidden = !S.notifyOn || S.signedOut;
@@ -728,9 +655,10 @@ function renderShell() {
     $("signed-out").firstElementChild.replaceChildren(
       el("div", { className: "halo" }, D.icon("phone")),
       el("h2", {}, "This phone is signed out."),
-      el("p", {}, "Scan a new pairing code on the board."));
+      el("p", {}, "Scan a new pairing code on your PC."));
   }
 }
+
 
 // Questions the agent asks come first, with their answers on the card.
 const ASKS_IN = new Set(["needs_you", "in_review", "failed"]);
@@ -744,17 +672,26 @@ function inboxCard(t, anim) {
   const ttl = el("button", { type: "button", className: "ttl" }, t.title);
   ttl.onclick = open;
   card.append(
-    el("div", { className: "meta" }, D.pill(t.state),
+    el("div", { className: "meta" }, D.statePill(t),
       el("span", { className: "app" }, D.appName(t.app_id)),
       el("span", { className: "when", dataset: { at: t.updated_at } }, D.ago(t.updated_at)),
       el("span", { className: "chev" }, D.icon("right"))),
     el("h2", { className: "h" }, ttl));
+  // Started by Decurion under the app's rule to fix conflicts by itself,
+  // not by the owner's tap: said while it works, and beside the usual review
+  // words. Once accepted or failed, the usual words alone.
+  const auto = t.auto_started && !t.research;
+  if (auto && (t.state === "queued" || t.state === "running")) card.append(el("p", { className: "means" }, "Decurion is fixing the conflicts by itself."));
   if (asks.length) card.append(D.askBox(t, asks, { onSent: leave, guessed: !fromBlock,
     onTalk: (prefill) => D.openWork(t, refresh, { talk: true, prefill }) }));
   // What Accept leads to comes from the app's rules (D.acceptWords).
-  card.append(el("p", { className: "means" }, t.state === "in_review" && !t.research
-    ? `Looks right? Accept keeps it. ${D.acceptWords(t.app_id)} Questions or changes? Tell the agent.`
-    : MEANS[t.research && t.state === "in_review" ? "research" : t.state]));
+  // Finished work that waits on you shows its step bar instead: where it
+  // is, what happens next and why it is stuck, in the hub's words.
+  const road = t.state === "done" && t.road ? t.road : null;
+  card.append(road ? el("div", { className: "means road-box" }, D.road(road, { github: t.github }))
+    : el("p", { className: "means" }, t.state === "in_review" && !t.research
+      ? `${auto ? "Started by Decurion. " : ""}Looks right? Accept keeps it. ${D.acceptWords(t.app_id)} Questions or changes? Tell the agent.`
+      : MEANS[t.research && t.state === "in_review" ? "research" : t.state]));
   if (said) {
     const q = el("div", { className: "q" + (S.open.has(t.id) ? " open" : "") }, D.richText(said));
     const more = el("button", { type: "button", className: "more", hidden: true, "aria-expanded": S.open.has(t.id) ? "true" : "false" },
@@ -841,48 +778,6 @@ function limitCard(l, anim) {
       b.disabled = false;
     }
   };
-  card.append(el("div", { className: "iacts" }, b));
-  return card;
-}
-// A saved website sign-in that stopped working, or is about to. Its words
-// are fixed, with only the owner's own name for it and the app's name: never
-// anything a website or an agent said. One tap opens the sign-in window.
-function signInCard(s, anim) {
-  const key = `signin-${s.id}`;
-  const gone = s.status === "expired";
-  const card = el("article", { className: "icard limit" + (anim === "still" ? " still" : ""), dataset: { state: "needs_you", key, anim } },
-    el("div", { className: "meta" },
-      el("span", { className: "pill needs_you" }, D.icon("key"), gone ? "Needs you · signed out" : "Needs you · sign-in runs out soon"),
-      el("span", { className: "app" }, s.app_name)));
-  const label = "Sign in again";
-  const go = async (b) => {
-    if (D.offline) return;
-    b.disabled = true;
-    try {
-      const { session_id } = await D.api(`/sign-ins/${s.id}/sign-in`, { method: "POST" });
-      if (D.openBrowserViewer) {
-        const shown = D.openBrowserViewer(session_id, { saveButton: true });
-        if (shown && typeof shown.then === "function") shown.then(refresh, refresh);
-      } else {
-        S.actErr = { id: key, msg: "The sign-in window is not available on this hub yet. Sign in again from the board on your PC." };
-        placeErr();
-      }
-    } catch (e) {
-      S.actErr = { id: key, msg: `"${label}" did not go through. ${e.message}` };
-      placeErr();
-    } finally { b.disabled = D.offline; }
-  };
-  const ttl = el("button", { type: "button", className: "ttl" }, s.card || `Sign in to ${s.label} again`);
-  ttl.onclick = () => go(ttl);
-  const until = s.expires_at ? new Date(s.expires_at).toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" }) : "soon";
-  card.append(
-    el("h2", { className: "h" }, ttl),
-    el("p", { className: "means" }, gone
-      ? `${s.app_name}'s agents are no longer signed in to this website. Sign in once more and they will be from their next run.`
-      : `This sign-in runs out ${until}. Sign in again so ${s.app_name}'s agents stay signed in.`),
-    el("div", { className: "err-slot", role: "alert" }));
-  const b = el("button", { type: "button", className: "btn primary", disabled: D.offline }, D.icon("key"), label);
-  b.onclick = () => go(b);
   card.append(el("div", { className: "iacts" }, b));
   return card;
 }
@@ -1003,176 +898,239 @@ function mergeCard(p, anim) {
       "Merge puts it into your main branch, only once GitHub says the checks passed and nothing conflicts."));
   if (p.health) card.append(el("p", { className: "means" }, `${p.health}. Merge waits until that is fixed: Bring up to date fixes it.`));
   const open = el("a", { className: "btn", href: p.url, target: "_blank", rel: "noopener" }, "Open on GitHub");
-  card.append(el("div", { className: "iacts" }, mergeButton(p, card, "btn primary"), updateButton(p, card, "btn quiet"), open));
-  return card;
-}
-// A goal waiting on you: a plan to approve here in one tap, or the project
-// lead's questions, answered on the goal's page. The title and question are
-// the owner's and the project lead's words, so they go in as text.
-const cut = (s, n) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
-// What a goal waiting on you needs, when it is not a plan or questions.
-const GOAL_OTHER = {
-  plan: ["Needs you · approve the plan", "Your project lead's plan is ready. Open the goal to read it and approve it."],
-  answer: ["Needs you · your project lead wrote", "Your project lead is waiting for your reply."],
-  review: ["Needs you · review the work", "Everything is built and checked. Open the goal to see the report and what to do next."],
-  stuck: ["Needs you · try again", "Your project lead ran into a problem. Nothing was lost. Open the goal and tap Try again."],
-};
-function otherGoalCard(g, w, anim) {
-  const href = `/goals#goal-${g.id}`;
-  const [pillText, means] = GOAL_OTHER[w.why] ?? GOAL_OTHER.answer;
-  const card = el("article", { className: "icard" + (anim === "still" ? " still" : ""), dataset: { state: "needs_you", key: `goal-${g.id}`, anim } });
-  const ttl = el("button", { type: "button", className: "ttl" }, g.title);
-  ttl.onclick = () => { location.href = href; };
-  card.append(
-    el("div", { className: "meta" },
-      el("span", { className: "pill needs_you" }, D.icon(w.why === "stuck" ? "alert" : "plan"), pillText),
-      el("span", { className: "app" }, D.appName(g.app_id)),
-      el("span", { className: "when", dataset: { at: w.at } }, D.ago(w.at)),
-      el("span", { className: "chev" }, D.icon("right"))),
-    el("h2", { className: "h" }, ttl),
-    el("p", { className: "means" }, means),
-    el("div", { className: "iacts" }, el("a", { className: "btn primary", href }, "Open the goal")));
-  card.addEventListener("click", (e) => { if (!e.target.closest("button, a")) location.href = href; });
-  return card;
-}
-function goalCard({ g, w }, anim) {
-  if (w.kind === "other") return otherGoalCard(g, w, anim);
-  const key = `goal-${g.id}`, href = `/goals#goal-${g.id}`, plan = w.kind === "plan";
-  const go = () => { location.href = href; };
-  const card = el("article", { className: "icard" + (anim === "still" ? " still" : ""), dataset: { state: "needs_you", key, anim } });
-  const ttl = el("button", { type: "button", className: "ttl" }, g.title);
-  ttl.onclick = go;
-  card.append(
-    el("div", { className: "meta" },
-      el("span", { className: "pill needs_you" }, D.icon(plan ? "send" : "question"), plan ? "Needs you · approve the plan"
-        : `Needs you · answer ${w.questions.length === 1 ? "a question" : `${w.questions.length} questions`}`),
-      el("span", { className: "app" }, D.appName(g.app_id)),
-      el("span", { className: "when", dataset: { at: w.at } }, D.ago(w.at)),
-      el("span", { className: "chev" }, D.icon("right"))),
-    el("h2", { className: "h" }, ttl));
-  if (plan) {
-    const n = w.pieces;
-    card.append(el("p", { className: "means" },
-      `${D.plural(n, "piece")} of work. Approve starts ${n === 1 ? "it" : "them all"}, or open the plan to read it first.`));
-    const sending = approving.has(g.id);
-    const ok = el("button", { type: "button", className: "btn primary", disabled: D.offline || sending },
-      D.icon("done"), sending ? "Starting the work…" : "Approve");
-    ok.onclick = async () => {
-      if (D.offline || approving.has(g.id)) return;
-      approving.add(g.id);
-      ok.disabled = true;
-      ok.replaceChildren(D.icon("done"), "Starting the work…");
-      try {
-        await D.api(`/goals/${g.id}/approve`, { method: "POST", body: JSON.stringify({ plan_message_id: w.planId, receipt: D.receipt() }) });
-        D.toast(n === 1 ? "Approved. The work has started." : `Approved. ${n} pieces started.`);
-        card.classList.add("leaving");
-        setTimeout(refresh, 180);
-      } catch (e) {
-        approving.delete(g.id);
-        // The plan may have changed meanwhile; the next refresh fetches it again.
-        goalViews.delete(g.id);
-        D.toast(`The plan wasn't approved: ${e.message}`, "alert");
-        ok.disabled = D.offline;
-        ok.replaceChildren(D.icon("done"), "Approve");
-        refresh();
-      }
-    };
-    card.append(el("div", { className: "iacts" }, ok,
-      el("div", { className: "sub" }, el("a", { className: "btn", href }, "Open plan"))));
-  } else {
-    const more = w.questions.length - 1;
-    card.append(
-      el("p", { className: "means" }, "Your project lead needs your answer before it can make a plan."),
-      el("div", { className: "said" },
-        el("div", { className: "lbl" }, "Your project lead asks"),
-        el("p", { className: "gq" }, cut(w.questions[0].text, 240)),
-        more > 0 && el("p", { className: "gq-more" }, `And ${D.plural(more, "more question")}.`)),
-      el("div", { className: "iacts" }, el("a", { className: "btn primary", href }, D.icon("question"), "Answer")));
-  }
-  card.addEventListener("click", (e) => { if (!e.target.closest("button, a")) go(); });
+  // With a conflict, Merge can only be refused, so Bring up to date leads.
+  card.append(el("div", { className: "iacts" }, ...(p.health
+    ? [updateButton(p, card, "btn primary"), mergeButton(p, card, "btn quiet")]
+    : [mergeButton(p, card, "btn primary"), updateButton(p, card, "btn quiet")]), open));
   return card;
 }
 const errNotice = (msg) => el("div", { className: "notice bad" }, D.icon("alert"), el("span", { className: "grow" }, msg));
 
-function renderInbox() {
-  const box = $("inbox");
-  const entries = inboxEntries();
+// ---------- Home: the app picker, the switch and the three tabs ----------
+// Which app Home shows: All apps, or one. Offered with two apps or more.
+const appPick = el("select", { className: "app-pick", "aria-label": "Which app Home shows", dataset: { key: "app-pick" } });
+appPick.onchange = () => { setAppFilter(appPick.value); S.chip = null; render(); };
+$("app-slot").replaceWith(appPick);
+// Goals (the three lists) or Board (by goal); By status in Pro view.
+const homeSwitch = D.homeSwitch({ selected: S.mode, onPick: (v) => {
+  D.homeView.set(v);
+  const want = v === "board" ? "#board" : v === "state" ? "#board/status" : "#home";
+  if (location.hash !== want) location.hash = want; else go(routeOf(want));
+} });
+$("view-slot").replaceWith(homeSwitch.el);
+// Pro view off while By status shows: the Board takes its place. All
+// finished work stays: it opens with or without Pro view.
+D.onPro(() => { if (!D.pro && S.tab === "home" && S.mode === "state" && !S.finished) location.hash = "#board"; });
+$("fin-head").append(
+  el("a", { className: "back-link", href: "#home/done" }, D.icon("left"), "Home"),
+  el("h2", {}, "All finished work"),
+  el("p", { className: "hint" }, "Everything that finished or failed, not just today's. Dismissed work is kept at the bottom of each list."));
+
+// Needs you, Working and Done today, one at a time: Needs you opens first.
+const panels = { needs: $("hp-needs"), working: $("hp-working"), done: $("hp-done") };
+const cts = { needs: el("span", { className: "ct" }), working: el("span", { className: "ct" }), done: el("span", { className: "ct" }) };
+const needIcon = D.icon("alert", "need-i");
+needIcon.setAttribute("hidden", "");
+let tabsReady = false;
+const tabs = D.tabs([
+  { id: "needs", label: [needIcon, "Needs you", cts.needs], panel: panels.needs },
+  { id: "working", label: ["Working", cts.working], panel: panels.working },
+  { id: "done", label: ["Done today", cts.done], panel: panels.done },
+], { label: "Home", onPick: (id) => {
+  if (!tabsReady) return;
+  S.htab = id;
+  // Each tab has its own link, so a reload or the back button opens it.
+  const want = id === "needs" ? "#home" : `#home/${id}`;
+  if (location.hash !== want) history.replaceState(null, "", want);
+  // A tab opens at its top.
+  const top = $("hv-goals").getBoundingClientRect().top + window.scrollY - 64;
+  if (window.scrollY > top) window.scrollTo(0, Math.max(0, top));
+} });
+tabs.el.classList.add("home-tabs");
+$("hv-goals").prepend(tabs.el);
+tabsReady = true;
+
+// The board by goal, fed from this page's own refresh.
+const lanes = D.laneBoard($("hv-board"), { feed: true, onChanged: () => refresh() });
+
+function renderHead() {
+  appPick.hidden = S.appList.length < 2;
+  if (changed("pick", [S.appList.map((a) => [a.id, a.name]), appFilter()])) {
+    appPick.replaceChildren(el("option", { value: "all" }, "All apps"), ...S.appList.map((a) => el("option", { value: String(a.id) }, a.name)));
+    appPick.value = appFilter();
+  }
+  homeSwitch.pick(S.mode);
+  // All finished work has its own way back (‹ Home) instead of the switch.
+  homeSwitch.el.hidden = S.mode === "state" && S.finished;
+  $("fin-head").hidden = !(S.mode === "state" && S.finished);
+  $("hv-goals").hidden = S.mode !== "goals";
+  $("hv-board").hidden = S.mode !== "board";
+  $("hv-state").hidden = S.mode !== "state";
+}
+
+function renderHome() {
+  renderHead();
   if (!S.threads) {
-    if (S.err) setMode(box, "error", `${D.offline}|${S.err.message}`, () => errorState("inbox"));
-    else setMode(box, "loading", "", skeletons);
-  } else if (!entries.length && !S.limits.length && !S.signIns.length && !S.prs.length && !S.merges.length && !S.updates.length) {
-    const c = counts();
-    setMode(box, "empty", `${c.running}|${c.queued}|${S.notifyOn}`, () => {
+    // First load, or the hub can't be reached: the open view says so.
+    const box = S.mode === "state" ? $("board") : S.mode === "board" ? null : $("inbox");
+    if (box) {
+      if (S.err) setMode(box, "error", `${D.offline}|${S.err.message}`, () => errorState(S.mode === "goals" ? "list" : "board"));
+      else setMode(box, "loading", "", skeletons);
+    }
+    return;
+  }
+  const sp = split();
+  // The counts, the same number as every badge for Needs you.
+  for (const [k, n] of [["needs", sp.needs.total], ["working", sp.working.total], ["done", sp.done.total]]) {
+    cts[k].textContent = n ? String(n) : "";
+    cts[k].classList.toggle("wait", k === "needs" && n > 0);
+  }
+  if (sp.needs.total) needIcon.removeAttribute("hidden"); else needIcon.setAttribute("hidden", "");
+  tabs.el.querySelector('[data-tab="needs"]').setAttribute("aria-label", sp.needs.total ? `Needs you, ${sp.needs.total}` : "Needs you, nothing");
+  if (S.mode === "goals") {
+    const rows = (Array.isArray(today) ? today : []).filter(inApp);
+    renderNeeds(sp, rows.filter(D.todayNeeds));
+    renderWorking(sp, rows.filter((r) => !D.todayNeeds(r)));
+    renderDone(sp);
+  } else if (S.mode === "board") {
+    lanes.setApp(appId());
+    lanes.update({ threads: S.threads, goals: S.goals, needs: S.needs, helpers: S.helpers, ...(S.map ? { map: S.map } : {}) });
+  } else renderBoard();
+}
+
+const pickApp = (id) => { setAppFilter(id == null ? "all" : String(id)); S.chip = null; render(); };
+const appsBase = () => [D.offline, appFilter(), D.pro, Math.floor(Date.now() / 30000), S.appList.map((a) => [a.id, a.name, a.rules?.deploy_site]),
+  previews.map((s) => [s.id, s.app_id, s.thread_id])];
+const emptyLine = (iconName, head, text, ...btns) => el("div", { className: "empty-state calm" },
+  el("div", { className: "halo" }, D.icon(iconName)), el("h3", {}, head), text ? el("p", {}, text) : null, ...btns);
+
+// Needs you: notices about Decurion's own accounts and sign-ins (not
+// counted), the apps that need you, then the hub's one list: goals with
+// their road and button, work with the agent's words and its moves, and
+// pull requests with their one tap.
+function renderNeeds(sp, needRows) {
+  if (changed("needsApps", [appsBase(), needRows])) {
+    keepFocus(() => $("needs-apps").replaceChildren(...[D.todayList(needRows, { title: "Apps that need you", previews, onChanged: refresh, onPick: pickApp, picked: appId() })].filter(Boolean)));
+  }
+  const box = $("inbox");
+  const work = needWork();
+  const prs = S.prs.filter(inApp), updates = S.updates.filter(inApp), merges = S.merges.filter(inApp);
+  if (!sp.needs.goals.length && !work.length && !S.limits.length && !S.signIns.filter(inApp).length && !prs.length && !merges.length && !updates.length) {
+    const busyNow = sp.working.total;
+    setMode(box, "empty", JSON.stringify([busyNow, S.notifyOn, needRows.length, S.appList.length]), () => {
+      if (needRows.length) return [];
       const granted = "Notification" in window && Notification.permission === "granted";
-      const busyLine = [c.running && `${c.running} running`, c.queued && `${c.queued} queued`].filter(Boolean).join(", ");
-      return el("div", { className: "empty-state calm" },
-        el("div", { className: "halo" }, D.icon("done")),
-        el("h3", {}, "Nothing needs you right now."),
-        el("p", {}, granted ? "We'll notify you when an agent needs a decision." : "When an agent needs a decision, it shows up here."),
-        busyLine && el("a", { className: "glance", href: "#board" }, `${busyLine} on the board`, D.icon("right")),
-        newWorkButton("btn"));
+      return emptyLine("done", "Nothing needs you right now.",
+        !S.appList.length ? "Add an app in Settings, then say what you want above."
+          : granted ? "We'll notify you when an agent or your project lead needs you." : "When an agent or your project lead needs you, it shows up here.",
+        busyNow ? el("a", { className: "glance", href: "#home/working" }, `See what's working (${busyNow})`, D.icon("right")) : null);
     });
   } else {
     reconcile(box, [...S.limits.map((l) => ({
       key: `limit-${l.profile}`,
       sig: JSON.stringify([l.profile, l.until, l.waiting, l.pay_per_use_until, D.offline]),
       build: (anim) => limitCard(l, anim),
-    })), ...S.signIns.map((x) => ({
+    })), ...S.signIns.filter(inApp).map((x) => ({
       key: `signin-${x.id}`,
       sig: JSON.stringify([x.label, x.app_name, x.status, x.expires_at, D.offline]),
-      build: (anim) => signInCard(x, anim),
-    })), ...S.prs.map((p) => ({
+      build: () => D.signInRow(x, { onChanged: refresh }),
+    })), ...sp.needs.goals.map((g) => ({
+      // A goal shows its road, its words and its one button. Approve is
+      // only ever on the goal's page, where its plan is shown: here the
+      // button opens the goal.
+      key: `goal-${g.id}`,
+      sig: JSON.stringify([g.title, g.state, D.appName(g.app_id), g.journey, D.offline]),
+      build: () => D.goalRow(g, { onChanged: refresh }),
+    })), ...work.map((t) => ({
+      key: t.id,
+      sig: JSON.stringify([t.state, t.updated_at, t.title, t.github, t.road, D.appName(t.app_id), D.lastWords(tailNow(t, 20) ?? []), sinceLines(tailNow(t, 20) ?? []), D.offline]),
+      build: (anim) => inboxCard(t, anim),
+    })), ...prs.map((p) => ({
       key: `pr-${p.thread_id}`,
       sig: JSON.stringify([p.line, p.title, p.app, p.number, p.url, !!p.can_merge, D.offline]),
       build: (anim) => reviewCard(p, anim),
-    })), ...S.updates.map((p) => ({
+    })), ...updates.map((p) => ({
       key: `update-${p.thread_id}`,
       sig: JSON.stringify([p.health, p.title, p.app, p.number, p.url, D.offline]),
       build: (anim) => updateCard(p, anim),
-    })), ...S.merges.map((p) => ({
+    })), ...merges.map((p) => ({
       key: `merge-${p.thread_id}`,
       sig: JSON.stringify([p.title, p.app, p.number, p.url, p.reviewer, p.health, D.offline]),
       build: (anim) => mergeCard(p, anim),
-    })), ...entries.map(({ t, g, w }) => (t ? {
-      key: t.id,
-      sig: JSON.stringify([t.state, t.updated_at, t.title, t.github, D.appName(t.app_id), D.lastWords(tailNow(t, 20) ?? []), sinceLines(tailNow(t, 20) ?? []), D.offline]),
-      build: (anim) => inboxCard(t, anim),
-    } : {
-      key: `goal-${g.id}`,
-      sig: JSON.stringify([g.title, D.appName(g.app_id), w, approving.has(g.id), D.offline]),
-      build: (anim) => goalCard({ g, w }, anim),
     }))]);
   }
   placeErr();
-  readAllButton(entries);
+  readAllButton(sp.needs.goals.length + work.length);
   requestAnimationFrame(measureQuotes);
 }
 
-// "Read what needs me": the inbox read top to bottom, for when the owner's
-// hands are busy. Built from the same words the cards show.
-function readAllButton(entries) {
+// Working: the other apps' rows, then open goals that don't wait on you
+// and jobs of their own still going.
+function renderWorking(sp, workRows) {
+  if (changed("workApps", [appsBase(), workRows])) {
+    keepFocus(() => $("work-apps").replaceChildren(...[D.todayList(workRows, { title: "Your apps", previews, onChanged: refresh, onPick: pickApp, picked: appId() })].filter(Boolean)));
+  }
+  const goalSig = (g) => [g.id, g.title, g.journey, g.state, D.appName(g.app_id)];
+  const workSig = (t) => [t.id, t.state, t.title, t.updated_at, t.check, t.github, t.road, lineOf(t), D.appName(t.app_id)];
+  if (!changed("working", [appsBase(), sp.working.goals.map(goalSig), sp.working.work.map(workSig)])) return;
+  keepFocus(() => {
+    const list = [
+      ...sp.working.goals.map((g) => D.goalRow(g, { onChanged: refresh })),
+      ...sp.working.work.map((t) => D.workRow(t, { onChanged: refresh, line: lineOf(t) })),
+    ];
+    if (!list.length) list.push(emptyLine("pc", "Nothing is being worked on right now.", "Say what you want above. Your project lead plans it with you, or pick Just do it for a small change."));
+    $("working").replaceChildren(...list);
+  });
+}
+
+// Done today: goals and jobs finished since midnight, each with its pull
+// request, and the live app once it is live.
+function renderDone(sp) {
+  const view = (g) => S.map?.viewOf.get(g.id);
+  const goalLinks = (g) => D.doneLinks((view(g)?.pieces ?? []).map((p) => p.github), g.app_id, { live: view(g)?.live === true });
+  const workSig = (t) => [t.id, t.state, t.title, t.updated_at, t.github, t.road, D.appName(t.app_id)];
+  if (!changed("done", [appsBase(), sp.done.goals.map((g) => [g.id, g.title, g.journey, g.state, D.appName(g.app_id), (view(g)?.pieces ?? []).map((p) => p.github), view(g)?.live]),
+    sp.done.work.map(workSig)])) return;
+  keepFocus(() => {
+    const list = [
+      ...sp.done.goals.map((g) => D.goalRow(g, { onChanged: refresh, links: goalLinks(g) })),
+      ...sp.done.work.map((t) => D.workRow(t, { onChanged: refresh, links: D.doneLinks([t.github], t.app_id) })),
+    ];
+    if (!list.length) list.push(emptyLine("done", "Nothing finished yet today.", "Goals and work that finish today show here, with their pull request."));
+    // Older finished work and dismissed work, with or without Pro view.
+    list.push(D.allFinishedLink());
+    $("done").replaceChildren(...list);
+  });
+}
+
+// "Read what needs me": Needs you read top to bottom, for when the owner's
+// hands are busy. Built from the same words the rows and cards show.
+function readAllButton(n) {
   const slot = $("read-all");
   const V = window.Voice;
-  slot.hidden = !(V?.canSpeak() && S.threads && entries.length);
+  slot.hidden = !(V?.canSpeak() && S.threads && n);
   if (slot.hidden || slot.firstChild) return;
-  slot.append(V.speaker(() => readAllText(inboxEntries()), { label: "Read what needs me" }));
+  slot.append(V.speaker(() => readAllText(), { label: "Read what needs me" }));
 }
 const askText = (qs) => qs.map((q) => q.text + (q.choices?.length ? ` You can say: ${q.choices.join(", or ")}.` : "")).join(" ");
-function readAllText(entries) {
+function readAllText() {
+  const entries = [...split().needs.goals.map((g) => ({ g })), ...needWork().map((t) => ({ t }))];
   if (!entries.length) return "Nothing needs you right now.";
   const lines = [entries.length === 1 ? "One thing needs you." : `${entries.length} things need you.`];
-  entries.forEach(({ t, g, w }, i) => {
+  entries.forEach(({ t, g }, i) => {
     const num = entries.length > 1 ? `Number ${i + 1}. ` : "";
     if (g) {
-      lines.push(`${num}${g.title}, a goal in ${D.appName(g.app_id)}.`, w.kind === "plan"
-        ? `Your project lead's plan is ready to approve. It has ${D.plural(w.pieces, "piece")} of work.`
-        : `Your project lead asks: ${askText(w.questions)}`);
+      // A goal says its road's words, as everywhere.
+      const j = g.journey;
+      lines.push(`${num}${g.title}, a goal in ${D.appName(g.app_id)}.`, j ? `${j.label.replaceAll(" · ", ", ")}. ${j.next ?? ""}` : "It waits on you. Open it on Goals.");
       return;
     }
     const { questions, rest } = D.questions(D.rawWords(tailNow(t, 20) ?? []));
     const asks = ASKS_IN.has(t.state) ? questions : [];
-    const head = `${num}${t.title}, in ${D.appName(t.app_id)}. ${D.STATES[t.state]?.word ?? ""}.`;
-    const about = asks.length ? `The agent asks: ${askText(asks)}` : rest.trim().slice(0, 400);
+    // Finished work says the step it is on and what happens next, not Done.
+    const road = t.state === "done" && t.road ? t.road : null;
+    const head = `${num}${t.title}, in ${D.appName(t.app_id)}. ${road ? road.label.replaceAll(" · ", ", ") : D.STATES[t.state]?.word ?? ""}.`;
+    const about = road ? [road.next, road.why].filter(Boolean).join(" ") : asks.length ? `The agent asks: ${askText(asks)}` : rest.trim().slice(0, 400);
     lines.push(head, about);
   });
   return lines.filter(Boolean).join("\n");
@@ -1203,12 +1161,12 @@ $("inbox").addEventListener("click", (e) => {
 }, true);
 
 function renderChips() {
-  const c = counts(boardThreads()), sel = chipNow();
-  const sig = JSON.stringify([c, sel]);
+  const c = boardCounts(), sel = chipNow();
+  const sig = JSON.stringify([c, sel, S.finished]);
   const box = $("chips");
   if (box.dataset.sig === sig) return;
   box.dataset.sig = sig;
-  box.replaceChildren(...CHIPS.map((s) => {
+  box.replaceChildren(...chipsNow().map((s) => {
     const b = el("button", { type: "button", className: "chip" + (c[s] ? "" : " zero"), "aria-pressed": s === sel ? "true" : "false", dataset: { s } },
       s === "needs_you" && c[s] > 0 && s !== sel && el("span", { className: "dot", "aria-hidden": "true" }),
       D.STATES[s].word, el("span", { className: "n" }, c[s]));
@@ -1240,7 +1198,10 @@ function boardCard(t, anim) {
       app && el("span", { className: "tag dot-sep" }, D.aiLabel(app, t))),
     el("div", { className: "t" }, t.title),
     line && el("div", { className: "says" }, line),
-    t.state === "done" && t.github && el("div", { className: "says" }, D.githubText(t.github)),
+    // Where finished work is, from Built to Live or On your PC (the hub's
+    // road); on an older hub, one line on how its send went.
+    t.state === "done" && (t.road ? D.roadMarks(t.road, { small: true, github: t.github })
+      : t.github && el("div", { className: "says" }, D.githubText(t.github))),
     el("div", { className: "foot" },
       t.state === "running" && el("span", { className: "live-dot", "aria-hidden": "true" }),
       el("span", { dataset: { at: t.updated_at } }, D.ago(t.updated_at)),
@@ -1257,18 +1218,17 @@ function renderBoard() {
     return;
   }
   renderChips();
-  renderAppChips();
   const sel = chipNow(), all = boardItems(), items = all.slice(0, S.limit);
   const gone = sel === "done" || sel === "failed" ? dismissedItems() : [];
-  if (!items.length && !gone.length) {
+  const also = sel === "needs_you" && !S.finished ? alsoNeeds() : [];
+  if (!items.length && !gone.length && !also.length) {
     // No work at all (or none for this app): the way to start some, right here.
     const one = appFilter() !== "all" ? D.appName(+appFilter()) : "";
     const none = !boardThreads().length;
     setMode(box, "empty", `${sel}|${none}|${one}|${S.appList.length}`, () => el("div", { className: "empty-state calm" },
       el("div", { className: "halo" }, D.icon(none ? "board" : EMPTY_ICON[sel])),
       el("h3", {}, none ? (one ? `No work for ${one} yet.` : "No work yet.") : BOARD_EMPTY[sel]),
-      none && el("p", {}, S.appList.length ? "Say what you want. Your project lead plans it with you, or one agent just does a small change." : "Add an app in Settings first."),
-      none && newWorkButton("btn primary")));
+      none && el("p", {}, S.appList.length ? "Say what you want above. Your project lead plans it with you, or one agent just does a small change." : "Add an app in Settings first.")));
     return;
   }
   box.querySelector(".board-more")?.remove();
@@ -1276,12 +1236,13 @@ function renderBoard() {
     const app = S.apps[t.app_id];
     return {
       key: String(t.id),
-      sig: JSON.stringify([t.state, t.updated_at, t.title, t.github, t.dismissed_at, D.appName(t.app_id), D.aiLabel(app, t), D.cardLine(t, tailNow(t, 5))]),
+      sig: JSON.stringify([t.state, t.updated_at, t.title, t.github, t.road, t.dismissed_at, D.appName(t.app_id), D.aiLabel(app, t), D.cardLine(t, tailNow(t, 5))]),
       build: (anim) => boardCard(t, anim),
     };
   };
+  // Needs you: the goals and pull requests that wait on you, on top.
+  const head = alsoItems(also);
   // Done and Failed: Dismiss all on top, the dismissed ones folded below.
-  const head = [];
   if ((sel === "done" || sel === "failed") && all.length >= 2) {
     head.push({ key: "clear", sig: JSON.stringify([sel, all.length, D.offline]), build: () => {
       const b = el("button", { type: "button", className: "btn quiet board-clear", dataset: { key: "clear" }, disabled: D.offline },
@@ -1289,7 +1250,7 @@ function renderBoard() {
       b.onclick = async () => { b.disabled = true; if (!(await D.dismiss("threads", all, { onChanged: refresh }))) b.disabled = D.offline; };
       return b;
     } });
-  } else if (!all.length) {
+  } else if (!all.length && gone.length) {
     head.push({ key: "cleared", sig: sel, build: () => el("p", { className: "board-cleared", dataset: { key: "cleared" } },
       "All cleared. Dismissed work is kept below.") });
   }
@@ -1321,57 +1282,51 @@ function renderBoard() {
   }
 }
 
-// The app filter: All apps, then each app with its open work, a dot when one needs you.
-function setAppFilter(v) {
-  S.app = v;
-  S.limit = BOARD_LIMIT;
-  D.store.set("decurion.board.app", v);
-}
-function renderAppChips() {
-  const box = $("app-chips");
-  const show = S.appList.length >= 2;
-  box.hidden = !show;
-  if (!show) return;
-  const open = {}, needs = {};
-  for (const t of S.threads ?? []) {
-    if (t.state !== "done" && t.state !== "failed") open[t.app_id] = (open[t.app_id] ?? 0) + 1;
-    if (t.state === "needs_you") needs[t.app_id] = (needs[t.app_id] ?? 0) + 1;
+// What a goal waits on, when the hub has no road for it.
+const GOAL_WAIT = { plan: "approve the plan", answer: "answer your project lead", review: "review the finished work", stuck: "your project lead got stuck" };
+// By status's Needs you lines for goals and pull requests, the same ones
+// Home's Needs you shows. A goal with the hub's road gets its road, its
+// words and its one button; a pull request points to Home's Needs you,
+// where its button is.
+function alsoItems(also) {
+  const out = [];
+  for (const x of also.filter((a) => a.goal_id != null)) {
+    const g = S.goals.find((y) => y.id === x.goal_id);
+    if (!g) continue;
+    const j = g.journey;
+    out.push({ key: `need-goal-${g.id}`, sig: JSON.stringify([g.title, j, x.why, D.offline]), build: () => {
+      const href = `/goals#goal-${g.id}`;
+      if (!j) {
+        return el("a", { className: "need-line", href, dataset: { key: `need-goal-${g.id}` } }, D.icon("plan"),
+          el("span", { className: "grow" }, el("b", {}, g.title), el("br"), `Needs you · ${GOAL_WAIT[x.why] ?? "open it"}`), D.icon("right"));
+      }
+      return el("div", { className: "need-line", dataset: { key: `need-goal-${g.id}` } },
+        el("a", { className: "gt", href }, g.title),
+        el("div", { className: "gl" }, D.journey(j, { size: "small" }), el("span", {}, j.label)),
+        D.journeyButton(j, D.journeyActions(g, { onChanged: refresh }), { className: "btn primary", key: `need-act-${g.id}` }));
+    } });
   }
-  const sel = appFilter();
-  const sig = JSON.stringify([S.appList.map((a) => [a.id, a.name, a.first_today]), open, needs, sel]);
-  if (box.dataset.sig === sig) return;
-  box.dataset.sig = sig;
-  const total = Object.values(open).reduce((a, b) => a + b, 0);
-  const anyNeeds = Object.values(needs).reduce((a, b) => a + b, 0);
-  // A star instead of the app mark: that app goes first today (Settings).
-  const chip = (key, name, n, need, ic) => {
-    const first = ic === "star";
-    const b = el("button", { type: "button", className: "chip" + (n ? "" : " zero"), "aria-pressed": key === sel ? "true" : "false", title: first ? `${name} goes first today` : name },
-      D.icon(ic), name, need && key !== sel ? el("span", { className: "dot", "aria-hidden": "true" }) : null,
-      el("span", { className: "n", "aria-label": `${n} open` }, n),
-      first ? el("span", { className: "sr-only" }, ", goes first today") : null,
-      need ? el("span", { className: "sr-only" }, `, ${need} ${need === 1 ? "needs" : "need"} you`) : null);
-    b.onclick = async () => {
-      if (key === sel) return;
-      setAppFilter(key);
-      S.chip = null;
-      render();
-      window.scrollTo({ top: 0 });
-      await Promise.all(boardTails());
-      render();
-    };
-    return b;
-  };
-  box.replaceChildren(chip("all", "All apps", total, anyNeeds, "board"),
-    ...S.appList.map((a) => chip(String(a.id), a.name, open[a.id] ?? 0, needs[a.id] ?? 0, a.first_today ? "star" : "app")));
-  const on = box.querySelector('[aria-pressed="true"]');
-  if (on) box.scrollLeft = Math.max(0, on.offsetLeft - (box.clientWidth - on.offsetWidth) / 2);
+  const prs = also.filter((a) => a.goal_id == null).length;
+  if (prs) {
+    out.push({ key: "need-prs", sig: String(prs), build: () => el("a", { className: "need-line", href: "#home", dataset: { key: "need-prs" } }, D.icon("branch"),
+      el("span", { className: "grow" }, `${prs === 1 ? "A pull request waits" : `${prs} pull requests wait`} on you. Home's Needs you has its button.`), D.icon("right")) });
+  }
+  return out;
+}
+
+// Which app Home shows. Picking one app is shared with the Apps page and
+// the new-work box (D.app); All apps is Home's own and starts each visit.
+function setAppFilter(v) {
+  S.app = v == null || v === "" ? "all" : String(v);
+  S.limit = BOARD_LIMIT;
+  if (S.app !== "all") D.app.set(S.app);
 }
 
 // ---------- New work: the sheet with the shared form ----------
-// Opens over any tab. The back button closes it, like the work panel. Work
-// started with "Just do it" shows on the Board; a goal opens on Goals, where
-// the project lead asks its questions and shows the plan to approve.
+// Opens from Home's start box. The back button closes it, like the work
+// panel. Work started with "Just do it" shows under Working (or on the
+// Board, when Home shows it); a goal opens on Goals, where the project lead
+// asks its questions and shows the plan to approve.
 let sheet = null, composer = null;
 const vv = window.visualViewport;
 function fitKeyboard() {
@@ -1397,12 +1352,13 @@ function ensureSheet() {
     prefix: "nw-", labels: true, keyHint: false, draftKey: "decurion.inbox.draft",
     noApps: { text: "An app is a git folder on your PC. Add one in Settings, then say what you want here.", href: "#settings/apps" },
     onStarted: (t) => {
-      // Show the new card: its app (or all apps), its state, at the top of the Board.
+      // Show the new job: its app (or all apps), under Working, or on the
+      // Board when Home shows it.
       if (t && appFilter() !== "all" && String(t.app_id) !== appFilter()) setAppFilter("all");
       if (t && S.threads && !S.threads.some((x) => x.id === t.id)) S.threads = [t, ...S.threads];
       S.chip = t?.state ?? "queued";
       S.limit = BOARD_LIMIT;
-      if (S.tab === "board") { sheet.close(); render(); } else leaveSheetTo("#board");
+      if (S.tab === "home" && S.mode !== "goals") { sheet.close(); render(); } else leaveSheetTo("#home/working");
       window.scrollTo({ top: 0 });
       refresh();
     },
@@ -1448,16 +1404,9 @@ function openSheet(fill) {
 }
 // Other screens (such as "Fix what it found" on finished work) open the same box, filled in.
 D.setNewWork((fill) => openSheet(fill));
-const newWorkButton = (cls) => {
-  const b = el("button", { type: "button", className: cls }, D.icon("plus"), "New work");
-  b.onclick = () => openSheet();
-  return b;
-};
-$("new-fab").append(D.icon("plus"), "New work");
-$("new-fab").onclick = () => openSheet();
 
 // ---------- Settings tab ----------
-// The board's own settings (settings.js), with a usage summary and the Pro
+// The PC's own settings (settings.js), with a usage summary and the Pro
 // view switch on top, since the phone has no sidebar or top bar for them.
 function renderSettings() {
   const box = $("settings");
@@ -1487,31 +1436,74 @@ function render() {
   renderShell();
   if (sheet?.open) composer.update(composerState());
   if (!S.signedOut) {
-    if (S.tab === "inbox") renderInbox(); else if (S.tab === "board") renderBoard(); else renderSettings();
+    if (S.tab === "home") renderHome(); else renderSettings();
   }
   for (const e of document.querySelectorAll("[data-at]")) e.textContent = D.ago(e.dataset.at);
 }
 
-// ---------- Tabs: #inbox, #board and #settings, so the back button works ----------
-// Goals is its own page (/goals); its tab is a plain link.
-const TABS = ["inbox", "board", "settings"];
-const TITLES = { inbox: "Needs you", board: "Board", settings: "Settings" };
-const routeOf = (h) => (h === "#board" ? "board" : h.startsWith("#settings") ? "settings"
-  : h === "" || h === "#" || h === "#inbox" ? "inbox" : null);
-function setTab(tab) {
-  if (tab === S.tab) return;
-  scrollMem[S.tab] = window.scrollY;
-  S.tab = tab;
+// ---------- Routes: #home, #board and #settings, so the back button works ----------
+// #home is Home as the owner left it on this device (Goals or Board);
+// #home/working and #home/done open those tabs; #board opens the Board by
+// goal and #board/status Pro view's By status. Old links still land right:
+// a bare /inbox and #inbox open Home's Needs you, /inbox#board the Board.
+// Goals and Apps are their own pages; their tabs are plain links.
+const TABS = ["home", "settings"];
+const TITLES = { home: "Home", settings: "Settings" };
+function routeOf(h) {
+  if (h.startsWith("#settings")) return { tab: "settings" };
+  if (h === "#board") return { tab: "home", mode: "board" };
+  if (h === "#board/status") return { tab: "home", mode: D.pro ? "state" : "board" };
+  if (h === "#board/status/done") return { tab: "home", mode: "state", finished: true };
+  if (h === "#inbox") return { tab: "home", mode: "goals", htab: "needs" };
+  if (h.startsWith("#home/")) {
+    const s = h.slice(6);
+    return { tab: "home", mode: "goals", htab: s === "working" || s === "done" ? s : "needs" };
+  }
+  if (h === "" || h === "#" || h === "#home") {
+    const pref = D.homeView.get();
+    return { tab: "home", mode: pref === "board" ? "board" : pref === "state" && D.pro ? "state" : "goals", htab: "needs" };
+  }
+  return null;
+}
+function go(r) {
+  const was = S.tab;
+  if (r.tab !== was) scrollMem[was] = window.scrollY;
+  S.tab = r.tab;
+  if (r.mode) S.mode = r.mode;
+  if (r.htab) S.htab = r.htab;
+  if (r.tab === "home") {
+    // All finished work opens on Done; leaving it, By status starts over.
+    if (!!r.finished !== S.finished) {
+      S.chip = r.finished ? "done" : null; S.showDismissed = false; S.limit = BOARD_LIMIT;
+      // It opens at its top, below the top bar, with its way back in sight.
+      if (r.finished) requestAnimationFrame(() => window.scrollTo(0, Math.max(0, $("fin-head").getBoundingClientRect().top + window.scrollY - $("appbar").offsetHeight - 8)));
+    }
+    S.finished = !!r.finished;
+  }
+  if (S.mode === "goals") { tabsReady = false; tabs.select(S.htab); tabsReady = true; }
   render();
-  window.scrollTo(0, scrollMem[tab] ?? 0);
-  if (tab === "board" && S.threads) Promise.all(boardTails()).then(render);
-  if (tab === "settings") { if (!S.signedOut) showSettings(); refresh(); } else D.settings.hide();
+  if (r.tab !== was) window.scrollTo(0, scrollMem[r.tab] ?? 0);
+  if (S.tab === "home" && S.mode === "state" && S.threads) Promise.all(boardTails()).then(render);
+  if (S.tab === "settings") { if (!S.signedOut) showSettings(); if (was !== "settings") refresh(); } else D.settings.hide();
+}
+// The hash Home shows now, for a piece's panel to close back onto.
+const homeHash = () => (S.mode === "board" ? "#board" : S.mode === "state" ? (S.finished ? "#board/status/done" : "#board/status") : S.htab === "needs" ? "#home" : `#home/${S.htab}`);
+// A link to one piece of work (#work-N from a goal or the Apps page, on a
+// phone) opens Home with that piece's panel over it, the same as /#work-N
+// on the PC; #work-N/answer opens it on the message box. The panel's close
+// goes back to Home.
+async function openWorkFromHash() {
+  const w = D.workHash();
+  if (!w) return false;
+  history.replaceState(null, "", S.tab === "home" ? homeHash() : "#home");
+  if (S.tab !== "home") go(routeOf("#home"));
+  try { D.openWork(await D.api(`/threads/${w.id}`), refresh, { talk: w.answer }); } catch (_) { /* gone: Home shows */ }
+  return true;
 }
 window.addEventListener("hashchange", () => {
+  if (D.workHash() && !history.state?.work) { openWorkFromHash(); return; }
   const r = routeOf(location.hash);
-  if (!r) return;
-  if (r === "settings" && S.tab === "settings") { if (!S.signedOut) showSettings(); return; }
-  setTab(r);
+  if (r) go(r);
 });
 for (const t of TABS) {
   $("tab-" + t).addEventListener("click", (e) => {
@@ -1523,8 +1515,16 @@ for (const t of TABS) {
   });
 }
 $("mark").replaceWith(D.mark(26));
-if (location.hash.startsWith("#work-")) history.replaceState(null, "", location.pathname);
-S.tab = routeOf(location.hash) ?? "inbox";
+{
+  const r = (D.workHash() ? null : routeOf(location.hash)) ?? routeOf("");
+  S.tab = r.tab;
+  if (r.mode) S.mode = r.mode;
+  if (r.htab) S.htab = r.htab;
+  if (r.finished) { S.finished = true; S.chip = "done"; }
+  homeSwitch.pick(S.mode);
+  tabsReady = false; tabs.select(S.htab); tabsReady = true;
+}
+$("start-box").onclick = () => openSheet();
 
 const topBar = $("appbar");
 window.addEventListener("scroll", () => topBar.classList.toggle("scrolled", window.scrollY > 2), { passive: true });
@@ -1597,7 +1597,8 @@ setUpNotifications().catch(() => { /* notifications are optional; the inbox stil
 
 render();
 if (S.tab === "settings" && !S.signedOut) showSettings();
-refresh();
+// After the first load, so a #work-N panel knows the app's name.
+refresh().then(openWorkFromHash);
 setInterval(() => { if (!document.hidden) { refresh(); D.settings.tick(); } }, 5000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 </script>

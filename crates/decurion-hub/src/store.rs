@@ -80,6 +80,8 @@ pub struct RulesEdit {
     #[serde(default)]
     pub patient_data: Option<bool>,
     #[serde(default)]
+    pub update_conflicts: Option<bool>,
+    #[serde(default)]
     pub receipt: Option<String>,
 }
 
@@ -94,8 +96,12 @@ where
 
 pub(crate) const THREAD_COLS: &str =
     "id, app_id, title, prompt, state, ai, session_id, branch, place, updated_at, parent_id, background,
-     gh_state, gh_branch, gh_url, gh_pr, gh_error, fix_of, research, dismissed_at, hold,
-     (SELECT w.state = 'open' AND w.clash FROM pr_watches w WHERE w.thread_id = threads.id) AS gh_clash";
+     gh_state, gh_branch, gh_url, gh_pr, gh_error, fix_of, research, dismissed_at, hold, auto_started,
+     (SELECT w.state = 'open' AND w.clash FROM pr_watches w WHERE w.thread_id = threads.id) AS gh_clash,
+     (SELECT w.state FROM pr_watches w
+      WHERE w.thread_id = CASE WHEN threads.fix_of IS NULL THEN threads.id WHEN threads.gh_state = 'sent' THEN threads.fix_of END) AS gh_pr_state,
+     (SELECT w.live_at IS NOT NULL FROM pr_watches w
+      WHERE w.thread_id = CASE WHEN threads.fix_of IS NULL THEN threads.id WHEN threads.gh_state = 'sent' THEN threads.fix_of END) AS gh_live";
 
 /// The actor recorded for the owner's own moves.
 pub const OWNER: &str = "owner";
@@ -109,7 +115,7 @@ pub(crate) const RECEIPT_REUSED: &str = "this receipt was already used for somet
 pub(crate) const APP_COLS: &str =
     "id, name, repo_path, profile, pay_per_use, monthly_cap_micros, sites, reviewer,
      COALESCE(first_on = date('now', 'localtime'), 0) AS first_today,
-     can_merge, can_deploy, deploy_steps, deploy_site, send_checked, patient_data";
+     can_merge, can_deploy, deploy_steps, deploy_site, send_checked, patient_data, update_conflicts";
 
 pub(crate) fn thread_from(row: &SqliteRow) -> Result<Thread> {
     let state: String = row.try_get("state")?;
@@ -133,6 +139,9 @@ pub(crate) fn thread_from(row: &SqliteRow) -> Result<Thread> {
         research: row.try_get("research")?,
         dismissed_at: row.try_get("dismissed_at")?,
         hold: row.try_get("hold")?,
+        // Filled for the screens only ([`Store::with_roads`]).
+        road: None,
+        auto_started: row.try_get("auto_started")?,
     })
 }
 
@@ -158,6 +167,7 @@ pub(crate) fn app_from(row: &SqliteRow) -> Result<App> {
             deploy_site: row.try_get("deploy_site")?,
             send_checked: row.try_get("send_checked")?,
             patient_data: row.try_get("patient_data")?,
+            update_conflicts: row.try_get("update_conflicts")?,
         },
     })
 }
@@ -213,27 +223,33 @@ impl Store {
     }
 
     pub async fn apps(&self) -> Result<Vec<App>> {
-        let rows = sqlx::query(&format!("SELECT {APP_COLS} FROM apps ORDER BY name"))
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(&format!(
+            "SELECT {APP_COLS} FROM apps WHERE removed_at IS NULL ORDER BY name"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(app_from).collect()
     }
 
     pub async fn app(&self, id: i64) -> Result<App> {
-        let row = sqlx::query(&format!("SELECT {APP_COLS} FROM apps WHERE id = ?"))
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or(StoreError::NotFound)?;
+        let row = sqlx::query(&format!(
+            "SELECT {APP_COLS} FROM apps WHERE id = ? AND removed_at IS NULL"
+        ))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(StoreError::NotFound)?;
         app_from(&row)
     }
 
     async fn app_in(&self, tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, id: i64) -> Result<App> {
-        let row = sqlx::query(&format!("SELECT {APP_COLS} FROM apps WHERE id = ?"))
-            .bind(id)
-            .fetch_optional(&mut **tx)
-            .await?
-            .ok_or(StoreError::NotFound)?;
+        let row = sqlx::query(&format!(
+            "SELECT {APP_COLS} FROM apps WHERE id = ? AND removed_at IS NULL"
+        ))
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(StoreError::NotFound)?;
         app_from(&row)
     }
 
@@ -378,6 +394,7 @@ impl Store {
             deploy_site: site.unwrap_or(now.deploy_site),
             send_checked: e.send_checked.unwrap_or(now.send_checked),
             patient_data: e.patient_data.unwrap_or(now.patient_data),
+            update_conflicts: e.update_conflicts.unwrap_or(now.update_conflicts),
         };
         if rules.deploy && rules.deploy_steps().is_none() {
             return Err(StoreError::Invalid(
@@ -387,7 +404,7 @@ impl Store {
         }
         sqlx::query(
             "UPDATE apps SET can_merge = ?, can_deploy = ?, deploy_steps = ?, deploy_site = ?,
-                 send_checked = ?, patient_data = ?
+                 send_checked = ?, patient_data = ?, update_conflicts = ?
              WHERE id = ?",
         )
         .bind(rules.merge)
@@ -396,6 +413,7 @@ impl Store {
         .bind(&rules.deploy_site)
         .bind(rules.send_checked)
         .bind(rules.patient_data)
+        .bind(rules.update_conflicts)
         .bind(app_id)
         .execute(&mut *tx)
         .await?;
@@ -456,10 +474,11 @@ impl Store {
             tx.commit().await?;
             return Ok((self.thread(id).await?, false));
         }
-        let app: Option<i64> = sqlx::query_scalar("SELECT id FROM apps WHERE id = ?")
-            .bind(t.app_id)
-            .fetch_optional(&mut *tx)
-            .await?;
+        let app: Option<i64> =
+            sqlx::query_scalar("SELECT id FROM apps WHERE id = ? AND removed_at IS NULL")
+                .bind(t.app_id)
+                .fetch_optional(&mut *tx)
+                .await?;
         if app.is_none() {
             return Err(StoreError::NotFound);
         }
@@ -489,9 +508,12 @@ impl Store {
     }
 
     pub async fn threads(&self) -> Result<Vec<Thread>> {
-        let rows = sqlx::query(&format!("SELECT {THREAD_COLS} FROM threads ORDER BY id"))
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(&format!(
+            "SELECT {THREAD_COLS} FROM threads
+             WHERE app_id IN (SELECT id FROM apps WHERE removed_at IS NULL) ORDER BY id"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(thread_from).collect()
     }
 
@@ -645,6 +667,7 @@ impl Store {
                 "SELECT t.id, t.app_id, t.title, t.prompt, t.state, t.ai, t.session_id, t.branch,
                         t.place, t.updated_at, t.parent_id, t.background, t.pay_per_use AS thread_ppu,
                         t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, t.fix_of, t.research, t.dismissed_at, t.hold,
+                        t.auto_started,
                         t.merge_from,
                         EXISTS (SELECT 1 FROM profile_limits l WHERE l.profile = a.profile
                             AND {ppu}) AS plan_ppu

@@ -9,8 +9,8 @@ you talk to, turns it into finished, checked work.
 
 There is one box for asking for anything: **What do you want?**
 
-1. Open the board at <http://decurion.localhost:7420>. The box is at the top.
-   On your phone, open the inbox, tap **Board**, then **New work**. On the
+1. Open **Home** at <http://decurion.localhost:7420>. The box is at the top.
+   On your phone, tap **Home**, then **New work**. On the
    **Goals** page, press **New work** to open the same box above your goals.
 2. Choose the app.
 3. Type what you want, such as "Add a password reset page to the portal." Say
@@ -28,8 +28,8 @@ The box offers two ways to get it done:
 - **Just do it**. One agent does it right away. No plan and no checker. Best
   for small changes, such as "Make the footer text bigger." Only this choice
   shows the extra options: which AI does it, your PC or the cloud, a title,
-  and whether it is part of other work. The new card shows on the board, under
-  **Queued**, until an agent picks it up.
+  and whether it is part of other work. The new job shows on Home under
+  **Working**, marked **Queued**, until an agent picks it up.
 
 Nothing starts without you: a goal waits for your **Approve plan**, and
 **Just do it** starts only when you press **Start work**.
@@ -66,17 +66,19 @@ work, each with how you will know it is done.
 
 ## While the work runs
 
-Each piece of work runs on its own and shows on the board. When a piece is
-built, a checker agent tries it in a separate copy, takes "as built"
+Each piece of work runs on its own. Home's **Board** shows each goal in one
+row, with its pieces under **Waiting on you**, **Building**, **Checking** and
+**Done**. When a piece is built, a checker agent tries it in a separate copy, takes "as built"
 pictures, and either passes it or sends it back with notes. A piece gets at
 most two checks; if it still has problems, it is marked **Needs you · take a look**. The
 checker lists what it ran and marks each thing it says as **Checked** or
 **Guessed**.
 
-A check can take a while. While it runs, the checker counts under
-**Running** on the board, with its own card, and the piece says "Checker
-working" and when it started. A check lined up behind other work counts
-under **Queued** and says "Waiting for a free agent to check it". If
+A check can take a while. While it runs, the piece sits under **Checking** on
+Home's **Board** and says "Checking now"; open it and it says "Checker
+working" and when it started. A check lined up behind other work says
+"Waiting for a free agent to check it". In **Pro view**, Home's **By status**
+also counts the checker under **Running** or **Queued**, with its own card. If
 something else holds it up, such as the Max plan being out of usage for now,
 it says so and when it starts by itself. Until the check is done, the piece
 says "Nothing to do. The checker looks at it first." and offers no
@@ -90,30 +92,68 @@ done a certain way, see [Research, Ask why, and the checker's proof](research-an
 
 With the app's rule **Checked work goes to GitHub by itself** on (it is on
 for new apps), a piece that passes goes to GitHub as a pull request by itself.
-You approved the plan, so you are not asked again. Open the piece on the board
-and its **Overview** says so: "It went to GitHub by itself because you
+You approved the plan, so you are not asked again. Open the piece and its
+**Overview** says so: "It went to GitHub by itself because you
 approved the plan", with a link back to the goal. With that rule off, each
 piece waits for you to tap **Accept**. A piece that changes a protected part
 always waits for your **Accept**, and its step bar says **Needs you · tap
 Accept** and names the protected files.
 
+## See where a goal is
+
+Every goal has one road, and every screen shows the same one: the Goals
+page, the goal's own page, Home, the Board, your phone and its app's
+[Roadmap](follow-your-roadmap.md). Its stages are:
+
+**Ask**, **Plan**, **Build**, **Check**, **Merge**, **Live**
+
+- **Ask**: you and your project lead talk it through.
+- **Plan**: the plan waits for your one approval.
+- **Build**: agents build the pieces.
+- **Check**: a checker agent tries each piece.
+- **Merge**: each piece goes to GitHub as a pull request and is merged.
+- **Live**: only for an app that deploys from Decurion. For Decurion itself
+  this stage is called **On your PC**. Other apps end with **Merge**.
+
+The stage the goal is on has a dot, and one that waits for you is amber.
+Next to the stages, one status says where the goal is, such as **Talking it
+through**, **Working**, **Needs you · approve the plan**, **Needs you ·
+answer the agent** or **Needs you · merge on GitHub**, and one line says what
+happens next, who does it, and what Decurion does by itself. When a goal
+needs you, it has one button for that, such as **Approve the plan** or
+**Merge on GitHub**.
+
+A goal with many pieces sits where its slowest piece is. When any piece
+waits for you, the goal says so, and it counts once in **Needs you**, however
+many of its pieces wait.
+
 ## Follow each piece to live
 
-The goal's page, and the panel of each of its pieces, show the same step bar:
+The goal's page, each piece's card and its panel, on the PC and the phone,
+show the same step bar:
 
-**Built**, **Checked**, **On GitHub**, **Merged**, **Live**
+**Built**, **Checked**, **Pushed**, **Pull request**, **Merged**, **Live**
 
-A tick marks each step that is done and a dot marks the one it is on. Under the
-bar, one line says what happens next and who does it, such as "It is on GitHub
-as a pull request. You or your reviewer merge it there. Decurion sees the
-merge by itself." Steps that do not apply are left out: **Live** shows only
-for an app that deploys from Decurion (see
-[Deploy your app in one tap](deploy-your-app.md)), or for Decurion itself
-(see [Update Decurion](improve-decurion-itself.md#update-decurion)). Before
-you approve the plan, every step is still to come.
+- **Pushed**: the change is on GitHub as its own branch. Nothing in your app
+  has changed yet.
+- **Pull request**: GitHub has a page asking to add it to your app. This is
+  what gets merged.
+- **Merged**: it is part of your app's main code on GitHub.
+- **Live**: for an app that deploys from Decurion, it is live (see
+  [Deploy your app in one tap](deploy-your-app.md)). For Decurion itself this
+  step is called **On your PC**: your PC is running the change (see
+  [Update Decurion](improve-decurion-itself.md#update-decurion)).
+
+A tick marks each step that is done and a dot marks the one it is on. A step
+that waits for you is amber, and one that failed is red, with the reason
+under it. Under the bar, one line says what happens next and who does it,
+such as "It is on GitHub as a pull request. You or your reviewer merge it
+there. Decurion sees the merge by itself." Steps that do not apply are left
+out. Work you start with **Just do it** has no **Checked** step. Before you
+approve the plan, every step is still to come.
 
 A finished piece never just says Done. Its label says the step it is on, such
-as **On GitHub** or **Merged**.
+as **Needs you · open the pull request** or **Merged**.
 
 You can stop the goal at any time with **Stop goal**, under the **•••** button.
 
@@ -131,7 +171,7 @@ Merge them on GitHub (or with **Merge**, if the app's rules allow it).
 When every piece is merged, the goal closes by itself. For an app that deploys
 from Decurion, and for Decurion itself, it closes once every piece is also
 live. This works for pull requests you opened yourself from Decurion's
-**Open pull request on GitHub** link too.
+**Open on GitHub** link too.
 
 To end a goal sooner, press **Close this goal**. It moves the goal to your
 finished goals. Nothing changes on GitHub or in your live app.

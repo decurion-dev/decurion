@@ -1,6 +1,6 @@
 # Run your app and try it
 
-This page shows how to start your app on your PC and try it yourself, on the board or your phone, without opening a terminal.
+This page shows how to start your app on your PC and try it yourself, on your PC or your phone, without opening a terminal.
 
 **Run it** starts your app on your PC in a sealed box, opens it in a browser beside it, and shows you a live picture of that browser. You can click, scroll and type in it, as if the app were open in front of you. Nothing you do in it is saved into the code.
 
@@ -8,7 +8,7 @@ This page shows how to start your app on your PC and try it yourself, on the boa
 
 Use this to try what an agent made before you accept it.
 
-1. On the board, click the card for the work. On the phone, find it on the **Board** tab.
+1. Open the work. On **Home**, tap it under **Needs you** or **Working**, or switch Home to **Board** and tap its piece. A goal's pieces also open from the goal's page.
 2. Under **Try it**, tap **Run it**.
 
 This runs the work's last saved version: what the agent had made at the end of its last run. Above the picture, **Try it** says so: "This piece of work, as the agent last saved it." **Try it** shows for work that isn't running. While an agent is still working, the app keeps changing, so watch its test browser instead (see below).
@@ -19,8 +19,8 @@ Research has no **Try it**: it changes no code, so there is nothing new to run.
 
 Use this to try your app as it is now, before any new work.
 
-- On the board, each app in the **Today** strip has a **Run it** button. When the board shows only one app, the button is also next to the title.
-- On the phone, each app in the **Today** card at the top of the inbox has the same button. On a small phone it shows only a play sign.
+- On **Home**, each app's line has a **Run it** button. An app that needs you has its line at the top of **Needs you**; the others are at the top of **Working**. The same line sits at the top of the app's page under **Apps**. On a small phone the button shows only a play sign.
+- On your PC, when Home shows only one app, the button is also next to the title.
 
 This runs the app as it is in its folder on your PC: the main version, without work that hasn't been merged yet. Under the app's name, the panel says **Your PC's copy**, so you know which version you are looking at. Work you merged on GitHub is in it only once that folder has been brought up to date. To try a newer piece of work, open that work and tap **Run it** under **Try it**.
 
@@ -62,7 +62,7 @@ Only one app runs at a time. Starting another app, or another piece of work, sto
 
 ## Agents run it too
 
-Agents already start your app themselves to check their work. To see what an agent sees while it works, open its running card and tap **Watch the browser**. See [Watch and take over the test browser](take-over-the-browser.md).
+Agents already start your app themselves to check their work. To see what an agent sees while it works, open its running work and tap **Watch the browser**. See [Watch and take over the test browser](take-over-the-browser.md).
 
 ## If it doesn't start
 
@@ -76,6 +76,6 @@ When the app itself is the reason, tap **Ask an agent to fix it**. Decurion star
 {"install": "npm ci", "start": "npm run dev", "port": 5173}
 ```
 
-To try the recipe, tap **Open that work**. When the work is finished, tap **Run it** under **Try it**. The **Run it** button in **Today** runs your app's folder on this PC, so it uses the recipe once that folder has the merged change.
+To try the recipe, tap **Open that work**. When the work is finished, tap **Run it** under **Try it**. The **Run it** button on the app's line on Home runs your app's folder on this PC, so it uses the recipe once that folder has the merged change.
 
 If the reason is about Docker or your PC, make sure Docker Desktop is running, then tap **Run it again**.

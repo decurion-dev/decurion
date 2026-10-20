@@ -1,4 +1,4 @@
-//! The master plan and the page library: what each app's goals have done,
+//! The Roadmap and the page library: what each app's goals have done,
 //! what is left, and every page agents drew, beside the goal and piece it
 //! belongs to. Shapes and rules are in [`decurion_proto::plan`].
 //!
@@ -11,6 +11,13 @@
 //! one goal and links each item to it; closing that goal as done ticks them
 //! in the same transaction ([`tick_fixed`]). Stopping it leaves them open,
 //! so they can be fixed again.
+//!
+//! The owner may delete a to-do, or a goal row whose goal is done or stopped
+//! ([`Store::delete_item`]). Deleting only hides the row (`deleted_at`) and keeps
+//! its place, so [`Store::restore_item`] puts it back where it was; a goal row
+//! takes its to-dos with it and brings back only those. [`Store::empty_plan`]
+//! removes the deleted rows for good. It touches plan rows only: the goal, its
+//! work, pages and history are never deleted here.
 
 use crate::store::{check_receipt, receipt_result, save_receipt, Result, Store, StoreError};
 use crate::{created_or_resent, forbidden, ApiError, AppState, Caller};
@@ -89,7 +96,7 @@ impl Store {
     /// Pages agents drew, newest first, for one app, one goal, or all.
     pub async fn library(&self, app: Option<i64>, goal: Option<i64>) -> Result<Vec<LibraryPage>> {
         let rows = sqlx::query(&format!(
-            "{PAGE_SELECT} WHERE (?1 IS NULL OR g.app_id = ?1) AND (?2 IS NULL OR gp.goal_id = ?2)
+            "{PAGE_SELECT} WHERE a.removed_at IS NULL AND (?1 IS NULL OR g.app_id = ?1) AND (?2 IS NULL OR gp.goal_id = ?2)
              ORDER BY gp.id DESC"
         ))
         .bind(app)
@@ -298,10 +305,11 @@ struct ItemRow {
     fix_goal_id: Option<i64>,
     created_at: String,
     done_at: Option<String>,
+    deleted_at: Option<String>,
 }
 
 const ITEM_COLS: &str = "id, parent_id, kind, goal_id, title, detail, source, state, fix_goal_id,
-    created_at, done_at";
+    created_at, done_at, deleted_at";
 
 fn item_row(r: &SqliteRow) -> Result<ItemRow> {
     let kind = match r.try_get::<String, _>("kind")?.as_str() {
@@ -329,6 +337,7 @@ fn item_row(r: &SqliteRow) -> Result<ItemRow> {
         fix_goal_id: r.try_get("fix_goal_id")?,
         created_at: r.try_get("created_at")?,
         done_at: r.try_get("done_at")?,
+        deleted_at: r.try_get("deleted_at")?,
     })
 }
 
@@ -343,10 +352,12 @@ fn todo_item(row: ItemRow, fix_goal: Option<GoalRef>) -> PlanItem {
         state: row.state,
         goal: fix_goal,
         steps: Vec::new(),
+        journey: None,
         found: Vec::new(),
         pages: Vec::new(),
         created_at: row.created_at,
         done_at: row.done_at,
+        deleted_at: row.deleted_at,
     }
 }
 
@@ -373,10 +384,10 @@ fn live_goal(r: &SqliteRow) -> Result<LiveGoal> {
 /// A top-level row of the plan while it is put together.
 enum Top {
     Goal(ItemRow),
-    Todo(PlanItem),
+    Todo(Box<PlanItem>),
 }
 
-/// Puts a goal on its app's master plan, at the end of the top level.
+/// Puts a goal on its app's Roadmap, at the end of the top level.
 /// Called in the transaction that starts the goal. Returns the row's id.
 pub(crate) async fn add_goal_row(
     tx: &mut Transaction<'_, Sqlite>,
@@ -496,10 +507,11 @@ pub(crate) async fn tick_fixed(tx: &mut Transaction<'_, Sqlite>, goal_id: i64) -
 }
 
 async fn app_exists(tx: &mut Transaction<'_, Sqlite>, app_id: i64) -> Result<()> {
-    let found: Option<i64> = sqlx::query_scalar("SELECT id FROM apps WHERE id = ?")
-        .bind(app_id)
-        .fetch_optional(&mut **tx)
-        .await?;
+    let found: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM apps WHERE id = ? AND removed_at IS NULL")
+            .bind(app_id)
+            .fetch_optional(&mut **tx)
+            .await?;
     found.map(|_| ()).ok_or(StoreError::NotFound)
 }
 
@@ -512,7 +524,7 @@ fn fix_text(
 ) -> String {
     let mut s = match found_in {
         Some(g) => format!("Please fix these, found while working on \"{g}\":\n"),
-        None => "Please take care of these, from this app's master plan:\n".to_owned(),
+        None => "Please take care of these, from this app's Roadmap:\n".to_owned(),
     };
     for (title, detail) in items {
         match detail {
@@ -540,12 +552,21 @@ fn fix_title(items: &[(String, Option<String>)]) -> String {
 }
 
 impl Store {
-    /// An app's master plan: top-level rows in the owner's order, each goal
+    /// An app's Roadmap: top-level rows in the owner's order, each goal
     /// with its steps, what it found and its pages.
     pub async fn plan_view(&self, app_id: i64) -> Result<PlanView> {
         let app = self.app(app_id).await?;
         // Read before the transaction, which holds this task's one connection.
         let live = self.goals_live(Some(app_id)).await?;
+        // Each goal row's state words are its journey's, the same ones the
+        // goals list, the board and the phone show.
+        let app_goals: Vec<Goal> = self
+            .goals()
+            .await?
+            .into_iter()
+            .filter(|g| g.app_id == app_id)
+            .collect();
+        let mut journeys = self.journeys(&app_goals).await?;
         let mut tx = self.pool().begin().await?; // read-only: a reader never waits on writers
         let rows = sqlx::query(&format!(
             "SELECT {ITEM_COLS} FROM plan_items WHERE app_id = ? ORDER BY position, id"
@@ -554,6 +575,8 @@ impl Store {
         .fetch_all(&mut *tx)
         .await?;
         let rows: Vec<ItemRow> = rows.iter().map(item_row).collect::<Result<_>>()?;
+        let (mut gone, rows): (Vec<ItemRow>, Vec<ItemRow>) =
+            rows.into_iter().partition(|r| r.deleted_at.is_some());
         let mut goals: HashMap<i64, LiveGoal> = HashMap::new();
         for r in &sqlx::query(&format!(
             "SELECT {LIVE_GOAL_COLS} FROM goals WHERE app_id = ?"
@@ -620,16 +643,20 @@ impl Store {
         for row in rows {
             match row.kind {
                 ItemKind::Todo => {
-                    count(row.state);
                     let fix = row
                         .fix_goal_id
                         .and_then(|id| goals.get(&id))
                         .map(|g| g.goal.clone());
+                    // A to-do handed to a goal that is not stopped is carried by
+                    // that goal's own row, so it is counted once, there.
+                    if fix.as_ref().is_none_or(|g| g.state == GoalState::Stopped) {
+                        count(row.state);
+                    }
                     let parent = row.parent_id;
                     let item = todo_item(row, fix);
                     match parent {
                         Some(p) => children.entry(p).or_default().push(item),
-                        None => top.push(Top::Todo(item)),
+                        None => top.push(Top::Todo(Box::new(item))),
                     }
                 }
                 ItemKind::Goal => {
@@ -644,7 +671,7 @@ impl Store {
         for entry in top {
             let row = match entry {
                 Top::Todo(item) => {
-                    items.push(item);
+                    items.push(*item);
                     continue;
                 }
                 Top::Goal(row) => row,
@@ -671,11 +698,58 @@ impl Store {
                     can_deploy,
                     live.get(&id).copied(),
                 ),
+                journey: journeys.remove(&id),
                 found: children.remove(&row.id).unwrap_or_default(),
                 pages: pages.remove(&id).unwrap_or_default(),
                 created_at: row.created_at,
                 done_at: (g.goal.state == GoalState::Done).then(|| g.updated_at.clone()),
+                deleted_at: None,
             });
+        }
+        // Newest first. A to-do deleted with its goal comes back with it, so
+        // only the goal is listed.
+        gone.sort_by(|a, b| (&b.deleted_at, b.id).cmp(&(&a.deleted_at, a.id)));
+        let together: HashMap<i64, Option<String>> =
+            gone.iter().map(|r| (r.id, r.deleted_at.clone())).collect();
+        let mut deleted = Vec::new();
+        for row in gone {
+            if row
+                .parent_id
+                .is_some_and(|p| together.get(&p) == Some(&row.deleted_at))
+            {
+                continue;
+            }
+            match row.kind {
+                ItemKind::Todo => {
+                    let fix = row
+                        .fix_goal_id
+                        .and_then(|id| goals.get(&id))
+                        .map(|g| g.goal.clone());
+                    deleted.push(todo_item(row, fix));
+                }
+                ItemKind::Goal => {
+                    let Some(g) = row.goal_id.and_then(|id| goals.get(&id)) else {
+                        continue;
+                    };
+                    deleted.push(PlanItem {
+                        id: row.id,
+                        kind: ItemKind::Goal,
+                        title: g.goal.title.clone(),
+                        detail: None,
+                        source: row.source,
+                        state: goal_item_state(g.goal.state),
+                        goal: Some(g.goal.clone()),
+                        steps: Vec::new(),
+                        found: Vec::new(),
+                        pages: Vec::new(),
+                        created_at: row.created_at,
+                        done_at: (g.goal.state == GoalState::Done).then(|| g.updated_at.clone()),
+                        deleted_at: row.deleted_at,
+                        // The Deleted tab shows only Done or Stopped.
+                        journey: None,
+                    });
+                }
+            }
         }
         Ok(PlanView {
             app_id,
@@ -683,6 +757,7 @@ impl Store {
             items,
             done,
             left,
+            deleted,
         })
     }
 
@@ -723,11 +798,12 @@ impl Store {
         }
         app_exists(&mut tx, app_id).await?;
         if let Some(parent) = t.parent_id {
-            let row: Option<(i64, String)> =
-                sqlx::query_as("SELECT app_id, kind FROM plan_items WHERE id = ?")
-                    .bind(parent)
-                    .fetch_optional(&mut *tx)
-                    .await?;
+            let row: Option<(i64, String)> = sqlx::query_as(
+                "SELECT app_id, kind FROM plan_items WHERE id = ? AND deleted_at IS NULL",
+            )
+            .bind(parent)
+            .fetch_optional(&mut *tx)
+            .await?;
             if !matches!(row, Some((a, kind)) if a == app_id && kind == "goal") {
                 return Err(bad(
                     "A to-do can only go under one of this app's goals. Pick a goal, or add it at the end.",
@@ -758,11 +834,15 @@ impl Store {
             None => None,
         };
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
-        let kind: String = sqlx::query_scalar("SELECT kind FROM plan_items WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or(StoreError::NotFound)?;
+        let (kind, deleted): (String, Option<String>) =
+            sqlx::query_as("SELECT kind, deleted_at FROM plan_items WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or(StoreError::NotFound)?;
+        if deleted.is_some() {
+            return Err(bad("This was deleted. Bring it back first."));
+        }
         if kind == "goal" {
             return Err(bad(
                 "A goal is ticked off on its own when you close it. Open the goal to close or stop it.",
@@ -798,22 +878,27 @@ impl Store {
     /// Returns the plan.
     pub async fn move_item(&self, id: i64, direction: Direction) -> Result<PlanView> {
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
-        let (app_id, parent, position): (i64, Option<i64>, i64) =
-            sqlx::query_as("SELECT app_id, parent_id, position FROM plan_items WHERE id = ?")
-                .bind(id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .ok_or(StoreError::NotFound)?;
+        let (app_id, parent, position, deleted): (i64, Option<i64>, i64, Option<String>) =
+            sqlx::query_as(
+                "SELECT app_id, parent_id, position, deleted_at FROM plan_items WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        if deleted.is_some() {
+            return Err(bad("This was deleted. Bring it back first."));
+        }
         let neighbour = match direction {
             Direction::Up => {
                 "SELECT id, position FROM plan_items
-                 WHERE app_id = ?1 AND parent_id IS ?2
+                 WHERE app_id = ?1 AND parent_id IS ?2 AND deleted_at IS NULL
                    AND (position < ?3 OR (position = ?3 AND id < ?4))
                  ORDER BY position DESC, id DESC LIMIT 1"
             }
             Direction::Down => {
                 "SELECT id, position FROM plan_items
-                 WHERE app_id = ?1 AND parent_id IS ?2
+                 WHERE app_id = ?1 AND parent_id IS ?2 AND deleted_at IS NULL
                    AND (position > ?3 OR (position = ?3 AND id > ?4))
                  ORDER BY position, id LIMIT 1"
             }
@@ -909,6 +994,123 @@ impl Store {
     }
 }
 
+/// Whether a goal row may be deleted: only once its goal is closed. The
+/// screen hides the button on a goal that is still going, but the hub is the
+/// wall.
+fn check_goal_closed(state: GoalState) -> Result<()> {
+    match state {
+        GoalState::Done | GoalState::Stopped => Ok(()),
+        _ => Err(StoreError::Refused(
+            "This goal is still going. Stop it or finish it first.".to_owned(),
+        )),
+    }
+}
+
+impl Store {
+    /// The owner deletes a to-do, or a goal row whose goal is done or stopped.
+    /// The row is only hidden and keeps its place. A goal row takes its
+    /// to-dos with it, all marked with the same time so they can come back
+    /// together. Deleting a deleted row changes nothing. Returns the plan.
+    pub async fn delete_item(&self, id: i64) -> Result<PlanView> {
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        let (app_id, kind, goal_id, deleted): (i64, String, Option<i64>, Option<String>) =
+            sqlx::query_as("SELECT app_id, kind, goal_id, deleted_at FROM plan_items WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or(StoreError::NotFound)?;
+        if deleted.is_none() {
+            if kind == "goal" {
+                let state: String = sqlx::query_scalar("SELECT state FROM goals WHERE id = ?")
+                    .bind(goal_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .ok_or(StoreError::NotFound)?;
+                check_goal_closed(
+                    GoalState::from_str(&state).map_err(|e| StoreError::Invalid(e.to_string()))?,
+                )?;
+            }
+            let now: String = sqlx::query_scalar("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")
+                .fetch_one(&mut *tx)
+                .await?;
+            // A to-do deleted earlier on its own keeps its own time.
+            sqlx::query(
+                "UPDATE plan_items SET deleted_at = ?1,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE deleted_at IS NULL AND (id = ?2 OR parent_id = ?2)",
+            )
+            .bind(now)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        self.plan_view(app_id).await
+    }
+
+    /// The owner brings a deleted row back to its old place. A goal row
+    /// brings back the to-dos deleted with it, and no others. A to-do whose
+    /// goal row is still deleted is refused. Restoring a row that is not
+    /// deleted changes nothing. Returns the plan.
+    pub async fn restore_item(&self, id: i64) -> Result<PlanView> {
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        let (app_id, parent, deleted): (i64, Option<i64>, Option<String>) =
+            sqlx::query_as("SELECT app_id, parent_id, deleted_at FROM plan_items WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or(StoreError::NotFound)?;
+        if let Some(at) = deleted {
+            if let Some(parent) = parent {
+                let gone: Option<String> =
+                    sqlx::query_scalar("SELECT deleted_at FROM plan_items WHERE id = ?")
+                        .bind(parent)
+                        .fetch_one(&mut *tx)
+                        .await?;
+                if gone.is_some() {
+                    return Err(StoreError::Refused("Bring the goal back first.".to_owned()));
+                }
+            }
+            sqlx::query(
+                "UPDATE plan_items SET deleted_at = NULL,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE deleted_at = ?1 AND (id = ?2 OR parent_id = ?2)",
+            )
+            .bind(at)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        self.plan_view(app_id).await
+    }
+
+    /// Removes every deleted row of one app for good: to-dos first, then goal
+    /// rows. Only `plan_items` rows go. The goals, their pieces, pages,
+    /// messages, branches and history stay, and a goal left without a row
+    /// simply no longer shows on the plan. Safe to resend. Returns the plan.
+    pub async fn empty_plan(&self, app_id: i64) -> Result<PlanView> {
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        app_exists(&mut tx, app_id).await?;
+        // Also the to-dos left under a deleted goal row, which could not
+        // stay without it.
+        sqlx::query(
+            "DELETE FROM plan_items WHERE app_id = ?1 AND parent_id IS NOT NULL
+               AND (deleted_at IS NOT NULL
+                    OR parent_id IN (SELECT id FROM plan_items WHERE app_id = ?1 AND deleted_at IS NOT NULL))",
+        )
+        .bind(app_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM plan_items WHERE app_id = ? AND deleted_at IS NOT NULL")
+            .bind(app_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        self.plan_view(app_id).await
+    }
+}
+
 /// What checking a fix request found.
 enum FixChecked {
     /// A resent receipt: the goal the first one started.
@@ -956,13 +1158,16 @@ async fn fix_checks(
     for id in &ids {
         let row = sqlx::query(
             "SELECT p.app_id, p.kind, p.state, p.title, p.detail, p.parent_id,
-                    g.state AS fix_state
+                    g.state AS fix_state, p.deleted_at
              FROM plan_items p LEFT JOIN goals g ON g.id = p.fix_goal_id WHERE p.id = ?",
         )
         .bind(id)
         .fetch_optional(&mut **tx)
         .await?;
-        let Some(row) = row.filter(|r| r.try_get::<i64, _>("app_id").ok() == Some(app_id)) else {
+        let Some(row) = row
+            .filter(|r| r.try_get::<i64, _>("app_id").ok() == Some(app_id))
+            .filter(|r| r.try_get::<Option<String>, _>("deleted_at").ok() == Some(None))
+        else {
             return Err(bad(
                 "One of those to-dos is not on this app's plan. Reload the plan and try again.",
             ));
@@ -1007,7 +1212,7 @@ async fn fix_checks(
     })
 }
 
-/// `GET /api/apps/{id}/plan`: the app's master plan.
+/// `GET /api/apps/{id}/plan`: the app's Roadmap.
 pub(crate) async fn view(
     State(st): State<AppState>,
     Extension(c): Extension<Caller>,
@@ -1066,6 +1271,52 @@ pub(crate) async fn move_item(
         return forbidden("reordering the plan");
     }
     match st.store.move_item(id, m.direction).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// `POST /api/plan/items/{id}/delete`: the plan without that row. A goal that
+/// is still going is refused.
+pub(crate) async fn delete_item(
+    State(st): State<AppState>,
+    Extension(c): Extension<Caller>,
+    Path(id): Path<i64>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("deleting from the plan");
+    }
+    match st.store.delete_item(id).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// `POST /api/plan/items/{id}/restore`: the plan with that row back.
+pub(crate) async fn restore_item(
+    State(st): State<AppState>,
+    Extension(c): Extension<Caller>,
+    Path(id): Path<i64>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("bringing back a plan row");
+    }
+    match st.store.restore_item(id).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
+/// `POST /api/apps/{id}/plan/empty`: removes the app's deleted rows for good.
+pub(crate) async fn empty(
+    State(st): State<AppState>,
+    Extension(c): Extension<Caller>,
+    Path(app_id): Path<i64>,
+) -> Response {
+    if c != Caller::Owner {
+        return forbidden("emptying the deleted list");
+    }
+    match st.store.empty_plan(app_id).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => ApiError(e).into_response(),
     }
@@ -1246,6 +1497,25 @@ mod tests {
             "Check-in skips the insurance card (and 1 more)"
         );
         assert_eq!(fix_title(&items[1..]), "Visit notes save twice");
+    }
+
+    #[test]
+    fn only_a_closed_goal_may_be_deleted() {
+        for s in [GoalState::Done, GoalState::Stopped] {
+            assert!(check_goal_closed(s).is_ok());
+        }
+        for s in [
+            GoalState::Talking,
+            GoalState::PlanReady,
+            GoalState::Working,
+            GoalState::ForReview,
+        ] {
+            let e = check_goal_closed(s).expect_err("still going");
+            assert_eq!(
+                e.to_string(),
+                "This goal is still going. Stop it or finish it first."
+            );
+        }
     }
 
     #[test]

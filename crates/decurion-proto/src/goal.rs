@@ -151,7 +151,7 @@ pub struct CoordinatorReply {
     /// Facts about the app worth keeping for later goals.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remember: Vec<String>,
-    /// Items for the app's master plan, under this goal: what finished work
+    /// Items for the app's Roadmap, under this goal: what finished work
     /// found, or follow-ups worth doing. The owner decides what happens to
     /// them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -604,19 +604,29 @@ pub struct GoalView {
     /// built from its rules, for the plan and its approval.
     #[serde(default)]
     pub story: String,
+    /// The goal's one road from ask to live, the same one the goals list,
+    /// the board, the phone and the roadmap show.
+    #[serde(default)]
+    pub journey: Journey,
 }
 
 /// One step on a piece's way from built to live. Every screen names them
-/// the same way: Built, Checked, On GitHub, Merged, Live.
+/// the same way: Built, Checked, Pushed, Pull request, Merged, Live. The
+/// push and the pull request are two steps, so work that went up as a
+/// branch with no pull request never looks like work waiting to be merged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Step {
     Built,
+    /// A checker agent passed it. Only pieces of a goal have this step.
     Checked,
-    OnGithub,
+    /// On GitHub (or the app's own git server) as a branch.
+    Pushed,
+    /// A pull request is open for that branch, so it can be merged.
+    PullRequest,
     Merged,
     /// Live for an app Decurion deploys; for Decurion's own code, the
-    /// running Decurion has the change ("Update Decurion" until then).
+    /// Decurion running on the owner's PC has the change ("On your PC").
     Live,
 }
 
@@ -637,7 +647,7 @@ pub enum StepMark {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoadStep {
     pub step: Step,
-    /// The step's name, such as "On GitHub" or "Update Decurion".
+    /// The step's name, such as "Pull request" or "On your PC".
     pub label: String,
     pub mark: StepMark,
 }
@@ -661,6 +671,126 @@ pub struct Road {
     /// update this Decurion, one plain line per way it may be installed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub update: Vec<String>,
+    /// Why the step it is on is stuck, in the hub's plain words: why the
+    /// push failed, or why no pull request was opened. `None` when nothing
+    /// is stuck.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Its pull request can't be merged as it is, because it conflicts with
+    /// (or is behind) the branch it merges into, or Decurion is bringing it
+    /// up to date. `None` while it can be merged, and once it is merged or
+    /// closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catch_up: Option<CatchUp>,
+}
+
+/// A pull request that has to take in the newest of its base branch before
+/// it can be merged, and the Bring up to date work for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatchUp {
+    /// The work whose pull request it is: the owner's Bring up to date tap
+    /// is made on it (`POST /api/threads/{pull}/pr/update`).
+    pub pull: i64,
+    /// The Bring up to date work started from the commit Decurion last
+    /// pushed there, while it is under way or waits on the owner. `None`
+    /// when there is none, so the owner's tap starts one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<i64>,
+}
+
+/// One stage of a whole goal, from the owner's ask to live. Every screen
+/// (the goals list, a goal's page, the board, the phone and the roadmap)
+/// names a goal's stages the same way: Ask, Plan, Build, Check, Merge, and
+/// Live (or "On your PC" for Decurion's own code).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stage {
+    /// The owner and the project lead talk it through.
+    Ask,
+    /// A plan waits for the owner's one approval.
+    Plan,
+    /// Agents build the pieces.
+    Build,
+    /// A checker agent tries each piece.
+    Check,
+    /// Pushed, a pull request, and merged.
+    Merge,
+    /// Only for an app with a step after the merge: deployed, or for
+    /// Decurion's own code, running on the owner's PC.
+    Live,
+}
+
+/// How far a goal's stage is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JourneyMark {
+    Done,
+    /// The goal is on this stage, and an agent or Decurion is on it.
+    Now,
+    /// This stage waits on the owner.
+    You,
+    Todo,
+    /// Passed by without it, such as Merge for a goal that changed no code.
+    Skipped,
+}
+
+/// One stage as a screen shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JourneyStep {
+    pub stage: Stage,
+    /// "Ask", "Plan", "Build", "Check", "Merge", "Live" or "On your PC".
+    pub label: String,
+    pub mark: JourneyMark,
+}
+
+/// The owner's next move on a goal, when it is theirs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JourneyAction {
+    /// `reply` (answer the project lead), `approve` (approve the plan),
+    /// `answer` (a piece's agent asked something), `merge` (merge a pull
+    /// request, on GitHub or with Decurion's Merge tap where the app's rules
+    /// allow it), `open_pr` (pushed with no pull request yet), `review`
+    /// (look at the work: the finished goal, or with `piece` one piece to
+    /// look over or Accept), `retry` (the project lead got stuck, or with
+    /// `piece` a push to try again), `bring_up_to_date` (with `piece` the
+    /// work whose pull request conflicts with its base branch: start Bring
+    /// up to date on it), `update` (Decurion's own code: update the
+    /// Decurion on your PC) or `deploy` (tap Deploy).
+    pub kind: String,
+    /// The button's words, such as "Approve the plan".
+    pub label: String,
+}
+
+/// Where a whole goal is, worked out once by the hub so every screen shows
+/// the same stages and the same status words for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Journey {
+    /// Ask, Plan, Build, Check, Merge, then Live only for an app that goes
+    /// live after the merge.
+    pub steps: Vec<JourneyStep>,
+    /// The one status phrase every screen shows for this goal, such as
+    /// "Working" or "Needs you · approve the plan".
+    pub label: String,
+    /// The next move is the owner's.
+    pub you: bool,
+    /// The goal is closed as done.
+    pub done: bool,
+    /// What happens next, who does it, and what Decurion does by itself,
+    /// in one or two plain sentences.
+    pub next: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<JourneyAction>,
+    /// The piece (its thread id) the action is about, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub piece: Option<i64>,
+}
+
+/// A goal as the goals list shows it: the goal and its journey.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoalItem {
+    #[serde(flatten)]
+    pub goal: Goal,
+    pub journey: Journey,
 }
 
 /// A goal's tokens, in total and by who used them.

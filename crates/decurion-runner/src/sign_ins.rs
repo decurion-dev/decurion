@@ -435,6 +435,8 @@ mod tests {
             research: false,
             dismissed_at: None,
             hold: None,
+            road: None,
+            auto_started: false,
         };
         Claim {
             thread,

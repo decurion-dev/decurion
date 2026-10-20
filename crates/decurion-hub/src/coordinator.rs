@@ -384,7 +384,7 @@ fn transcript(messages: &[GoalMessage]) -> String {
 
 const REPLY_SHAPE: &str = r#"End every answer with one JSON object and nothing after it, in this shape:
 {"say": "...", "questions": [{"id": "q1", "text": "...", "choices": ["...", "..."], "recommended": 0}], "plan": {"summary": "...", "pieces": [{"title": "...", "brief": "...", "done_when": "...", "touches_protected": false, "research": true}]}, "remember": ["..."], "todo": [{"title": "...", "detail": "..."}]}
-Leave out "questions" or "plan" when you have none, and never send both in one answer. Put "research": true only on a research piece and leave it out for every piece that builds. "remember" is for lasting facts about this app that will help in later goals, such as how to run its tests; usually leave it out. "todo" adds items to this app's master plan, under this goal: things that were found and still need doing, or follow-ups worth doing later, one item each (at most 10), with a short title in plain words and a detail if it helps. Nothing happens to them until the owner decides. While you are still talking a goal through, usually leave it out."#;
+Leave out "questions" or "plan" when you have none, and never send both in one answer. Put "research": true only on a research piece and leave it out for every piece that builds. "remember" is for lasting facts about this app that will help in later goals, such as how to run its tests; usually leave it out. "todo" adds items to this app's Roadmap, under this goal: things that were found and still need doing, or follow-ups worth doing later, one item each (at most 10), with a short title in plain words and a detail if it helps. Nothing happens to them until the owner decides. While you are still talking a goal through, usually leave it out."#;
 
 fn coordinator_brief(app: &str, notes: &[String]) -> String {
     let mut s = format!(
@@ -1230,9 +1230,12 @@ async fn approve_in(
 
 impl Store {
     pub async fn goals(&self) -> Result<Vec<Goal>> {
-        let rows = sqlx::query(&format!("{GOAL_SELECT} ORDER BY g.id DESC"))
-            .fetch_all(self.pool())
-            .await?;
+        let rows = sqlx::query(&format!(
+            "{GOAL_SELECT} WHERE g.app_id IN (SELECT id FROM apps WHERE removed_at IS NULL)
+             ORDER BY g.id DESC"
+        ))
+        .fetch_all(self.pool())
+        .await?;
         rows.iter().map(goal_from).collect()
     }
 
@@ -1256,7 +1259,7 @@ impl Store {
             "SELECT p.thread_id, p.goal_id, p.title, p.done_when, p.review, p.rounds,
                     p.review_summary, p.review_issues, p.review_evidence, p.review_claims,
                     t.state, t.branch, t.research, p.merged_at, w.live_at,
-                    t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, {},
+                    t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, {}, {},
                     EXISTS (SELECT 1 FROM piece_reports r WHERE r.thread_id = p.thread_id) AS report,
                     (SELECT json_extract(e.body, '$.summary') FROM events e
                      WHERE e.thread_id = p.thread_id AND json_extract(e.body, '$.kind') = 'finished'
@@ -1265,7 +1268,8 @@ impl Store {
              FROM goal_pieces p JOIN threads t ON t.id = p.thread_id
              LEFT JOIN pr_watches w ON w.thread_id = p.thread_id
              WHERE p.goal_id = ? ORDER BY p.thread_id",
-            crate::github::gh_clash("t")
+            crate::github::gh_watch("t"),
+            crate::road::CATCH_COLS
         ))
         .bind(id)
         .fetch_all(&mut *tx)
@@ -1382,6 +1386,11 @@ impl Store {
             };
         tx.commit().await?;
         let live = self.goal_live(id).await?;
+        let journey = self
+            .journeys(std::slice::from_ref(&goal))
+            .await?
+            .remove(&id)
+            .unwrap_or_default();
         Ok(GoalView {
             goal,
             app_name,
@@ -1393,6 +1402,7 @@ impl Store {
             usage,
             road,
             story,
+            journey,
         })
     }
 
@@ -2301,7 +2311,7 @@ impl Store {
                             .bind(&purpose)
                             .execute(&mut *tx)
                             .await?;
-                        // Findings and follow-ups go on the master plan under this
+                        // Findings and follow-ups go on the Roadmap under this
                         // goal. They do nothing until the owner taps, so they are
                         // kept from report turns too.
                         crate::plan::add_lead_todos(&mut tx, app_id, goal_id, &title, &reply.todo)

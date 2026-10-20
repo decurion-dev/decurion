@@ -271,6 +271,67 @@ was started. Check this PC's internet connection, then tap Bring up to date agai
     })
 }
 
+/// What [`default_tip`] answers when the app's server is being asked for
+/// new work right now.
+pub(crate) const TIP_BUSY: &str = "the app's git server is being asked for new work right now";
+
+/// The tip of the app's default branch as its git server has it now, in the
+/// hub's copy, for telling whether the running Decurion is the newest
+/// ([`crate::version`]). The same network path as [`start_commit`] (the
+/// folder's `origin` by name, read-only, into the server copy first, each
+/// step within [`NET_SECS`]), but with no fallback: an old copy of the
+/// branch would say Decurion is up to date when it may not be. The error is
+/// a reason for the log, already scrubbed, never for the owner's screen.
+/// It never waits for the app's lock: new work starting on the app holds
+/// it, and a look at the version must not make that work wait. Busy, it
+/// answers [`TIP_BUSY`] and the caller keeps what it knew.
+pub(crate) async fn default_tip(
+    files: &Files,
+    app_id: i64,
+    repo_path: &str,
+) -> std::result::Result<String, String> {
+    let lock = files.upstream.for_app(app_id);
+    let Ok(_one) = lock.try_lock() else {
+        return Err(TIP_BUSY.to_owned());
+    };
+    let folder = Path::new(repo_path);
+    let Some(url) = git(folder, &["remote", "get-url", "origin"])
+        .await
+        .ok()
+        .filter(|u| !u.is_empty())
+    else {
+        return Err(NotAsked::NoOrigin.to_string());
+    };
+    let id = identity(repo_path, &credential_free(&url));
+    let cache = files.app_cache(app_id);
+    let asked = async {
+        {
+            let _held = files.git_lock.lock().await;
+            files
+                .fetch_app(&cache, repo_path)
+                .await
+                .map_err(|e| failed(&e))?;
+        }
+        let branch = ask_server(files, app_id, folder, &id).await?;
+        let _held = files.git_lock.lock().await;
+        let sha = take_default(files, app_id, &cache, &id, &branch)
+            .await
+            .map_err(|e| failed(&e))?;
+        if !is_commit(&sha) {
+            return Err(NotAsked::Failed(format!("not a commit id: {sha}")));
+        }
+        Ok(sha)
+    }
+    .await;
+    match asked {
+        Ok(sha) => {
+            files.upstream.answered(&id);
+            Ok(sha)
+        }
+        Err(why) => Err(scrub(&why.to_string())),
+    }
+}
+
 /// Asks the folder's `origin`, by name, where one branch is. Read-only.
 async fn ls_remote_branch_command(folder: &Path, branch: &str) -> tokio::process::Command {
     let mut cmd = netgit::command(folder).await;
@@ -562,8 +623,8 @@ async fn folder_objects(folder: &Path) -> Result<PathBuf> {
 /// written when that is everything, so asking again at the same commit
 /// adds nothing.
 async fn keep_what_it_needs(up: &Path, cache: &Path, own: &Path, sha: &str) -> Result<()> {
-    // Each tip is left out with a `^` in front, not a `--not` line: git
-    // before 2.42 refuses options on `rev-list --stdin`.
+    // `^tip` lines, not a `--not` line: git before 2.42 refuses any option
+    // on standard input.
     let mut revs = format!("{sha}\n");
     for repo in [cache, up] {
         for tip in git(repo, &["for-each-ref", "--format=%(objectname)"])
@@ -571,9 +632,7 @@ async fn keep_what_it_needs(up: &Path, cache: &Path, own: &Path, sha: &str) -> R
             .lines()
             .filter(|l| !l.is_empty())
         {
-            revs.push('^');
-            revs.push_str(tip);
-            revs.push('\n');
+            revs.push_str(&format!("^{tip}\n"));
         }
     }
     let missing = with_input(up, own, &["rev-list", "--stdin", "--count"], &revs).await?;

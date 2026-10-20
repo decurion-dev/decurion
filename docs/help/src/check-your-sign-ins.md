@@ -4,7 +4,7 @@ This page helps you see, in one place, whether everything Decurion signs in with
 
 ## Open the Sign-ins list
 
-1. On the board, click **Settings**. On your phone, tap the **Settings** tab.
+1. On your PC, click **Settings** in the menu. On your phone, tap the **Settings** tab.
 2. Open **Sign-ins**. It is the first tab. When a sign-in needs you, the tab says so, such as "1 needs you".
 
 Each row is one account, with a light:
@@ -43,10 +43,10 @@ A week before something with a known date runs out, your phone gets a notificati
 - **A Claude row is red: "Not signed in. Work on Claude A can't start until you sign in."** Click **Sign in on this PC** next to it. See [Connect your Claude accounts](connect-claude-accounts.md).
 - **GitHub is red: "GitHub no longer takes this token."** Make a new token on GitHub and save it in **Settings**, **GitHub**. See [Review and merge work](review-and-merge.md#let-decurion-open-the-pull-request-for-you).
 - **GitHub is amber: "Your GitHub token can send work but can't open pull requests on portal."** Your work reached GitHub, but GitHub would not let the token open the pull request on that app. The row lists the steps and has a button that opens GitHub's token page:
-  1. Open the token on GitHub and click **Edit**.
-  2. Under **Repository access**, add the app's repo.
-  3. Under **Permissions**, set **Pull requests** to **Read and write**, and save.
-  4. Back in Decurion, tap **Open a pull request** on the work that is waiting.
+  1. Click **Make a classic token**. GitHub opens a new token named Decurion with **repo** already ticked.
+  2. Pick how long it lasts, click **Generate token**, and copy it.
+  3. In Decurion, open **Settings**, **GitHub**, paste it in and click **Save token**. It replaces the old one and reaches every app, even one whose repo belongs to an organization.
+  4. Tap **Open the pull request** on the work that is waiting.
 
-  Until then, tap **Open a pull request** to open each one yourself. The light turns green again once Decurion opens a pull request on that app. If you save a new token, the light gives it a fresh chance.
+  Until then, tap **Open on GitHub** to open each one yourself. The light turns green again once Decurion opens a pull request on that app. If you save a new token, the light gives it a fresh chance.
 - **The cloud worker says "Offline."** Work placed there waits until it is back. See [Add the cloud worker](add-the-cloud-worker.md).
