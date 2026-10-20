@@ -341,6 +341,12 @@ pub struct AppRules {
     /// The app's live version holds patient or personal data, so agents are
     /// told to use made-up data only. Decurion itself never handles it.
     pub patient_data: bool,
+    /// When one of this app's pull requests conflicts with its base branch,
+    /// the pull request watcher starts a Bring up to date run by itself,
+    /// once per pushed head and base tip. Only the start is automatic: the
+    /// result waits in review for the owner's Accept like any other work.
+    /// Off for every app until the owner turns it on.
+    pub update_conflicts: bool,
 }
 
 impl Default for AppRules {
@@ -353,6 +359,7 @@ impl Default for AppRules {
             deploy_site: None,
             send_checked: true,
             patient_data: true,
+            update_conflicts: false,
         }
     }
 }
@@ -448,6 +455,11 @@ pub struct Thread {
     /// and only for screens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub road: Option<goal::Road>,
+    /// Decurion started this work by itself, under the app's rule to fix
+    /// conflicts with main ([`AppRules::update_conflicts`]), not on the
+    /// owner's tap. It still waits for the owner's Accept.
+    #[serde(default)]
+    pub auto_started: bool,
 }
 
 /// Where sending accepted work to GitHub has got to. Only the hub sends,

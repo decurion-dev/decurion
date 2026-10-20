@@ -636,7 +636,7 @@
   // nothing more. Full control adds a Merge button on its pull requests and
   // a Deploy button after a merge, each one tap at a time. The hub checks
   // every change again; Deploy needs saved steps it accepts.
-  const RULES_START = { merge: false, deploy: false, deploy_steps: "", deploy_site: null, send_checked: true, patient_data: true };
+  const RULES_START = { merge: false, deploy: false, deploy_steps: "", deploy_site: null, send_checked: true, patient_data: true, update_conflicts: false };
   const rulesOf = (a) => ({ ...RULES_START, ...(a.rules ?? {}) });
   const modeOf = (r) => (r.merge && r.deploy ? "full" : !r.merge && !r.deploy ? "pr" : "mix");
   const MODE = { pr: ["branch", "PR only"], full: ["done", "Full control"], mix: ["settings", "Your own mix"] };
@@ -801,6 +801,11 @@
       () => setRules(a, { send_checked: !r.send_checked }, () => (r.send_checked
         ? `Checked pieces of ${a.name}'s goals wait for your Accept now.`
         : `Checked pieces of ${a.name}'s goals go to GitHub by themselves now.`)));
+    const conflicts = ruleSwitch(a, "conflicts", "Fix conflicts with main by itself",
+      "When one of its pull requests conflicts with main, Decurion starts Bring up to date by itself, and the result still waits for your Accept.", r.update_conflicts, busy,
+      () => setRules(a, { update_conflicts: !r.update_conflicts }, () => (r.update_conflicts
+        ? `${a.name}'s conflicts with main wait for your Bring up to date tap now.`
+        : `Decurion fixes ${a.name}'s conflicts with main by itself now. You still accept each fix.`)));
     const data = ruleSwitch(a, "data", "Its live version holds patient data",
       "Agents are told to use made-up data only and never real records. Decurion never sees patient data either way.", r.patient_data, busy,
       () => setRules(a, { patient_data: !r.patient_data }, () => (r.patient_data
@@ -808,7 +813,7 @@
         : `${a.name}'s agents are told to use made-up data only.`)));
 
     return tabCard("What Decurion may do for this app. Agents can never change these.",
-      top, merge, deploy, steps, sent, data, reviewerField(a), alwaysOn());
+      top, merge, deploy, steps, sent, conflicts, data, reviewerField(a), alwaysOn());
   }
 
   // Who reviews the app's pull requests: asked to review each one.
