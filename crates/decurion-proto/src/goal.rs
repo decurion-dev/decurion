@@ -151,7 +151,7 @@ pub struct CoordinatorReply {
     /// Facts about the app worth keeping for later goals.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remember: Vec<String>,
-    /// Items for the app's master plan, under this goal: what finished work
+    /// Items for the app's Roadmap, under this goal: what finished work
     /// found, or follow-ups worth doing. The owner decides what happens to
     /// them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -604,6 +604,10 @@ pub struct GoalView {
     /// built from its rules, for the plan and its approval.
     #[serde(default)]
     pub story: String,
+    /// The goal's one road from ask to live, the same one the goals list,
+    /// the board, the phone and the roadmap show.
+    #[serde(default)]
+    pub journey: Journey,
 }
 
 /// One step on a piece's way from built to live. Every screen names them
@@ -672,6 +676,99 @@ pub struct Road {
     /// is stuck.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+}
+
+/// One stage of a whole goal, from the owner's ask to live. Every screen
+/// (the goals list, a goal's page, the board, the phone and the roadmap)
+/// names a goal's stages the same way: Ask, Plan, Build, Check, Merge, and
+/// Live (or "On your PC" for Decurion's own code).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stage {
+    /// The owner and the project lead talk it through.
+    Ask,
+    /// A plan waits for the owner's one approval.
+    Plan,
+    /// Agents build the pieces.
+    Build,
+    /// A checker agent tries each piece.
+    Check,
+    /// Pushed, a pull request, and merged.
+    Merge,
+    /// Only for an app with a step after the merge: deployed, or for
+    /// Decurion's own code, running on the owner's PC.
+    Live,
+}
+
+/// How far a goal's stage is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JourneyMark {
+    Done,
+    /// The goal is on this stage, and an agent or Decurion is on it.
+    Now,
+    /// This stage waits on the owner.
+    You,
+    Todo,
+    /// Passed by without it, such as Merge for a goal that changed no code.
+    Skipped,
+}
+
+/// One stage as a screen shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JourneyStep {
+    pub stage: Stage,
+    /// "Ask", "Plan", "Build", "Check", "Merge", "Live" or "On your PC".
+    pub label: String,
+    pub mark: JourneyMark,
+}
+
+/// The owner's next move on a goal, when it is theirs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JourneyAction {
+    /// `reply` (answer the project lead), `approve` (approve the plan),
+    /// `answer` (a piece's agent asked something), `merge` (merge a pull
+    /// request, on GitHub or with Decurion's Merge tap where the app's rules
+    /// allow it), `open_pr` (pushed with no pull request yet), `review`
+    /// (look at the work: the finished goal, or with `piece` one piece to
+    /// look over or Accept), `retry` (the project lead got stuck, or with
+    /// `piece` a push to try again), `update` (Decurion's own code: update
+    /// the Decurion on your PC) or `deploy` (tap Deploy).
+    pub kind: String,
+    /// The button's words, such as "Approve the plan".
+    pub label: String,
+}
+
+/// Where a whole goal is, worked out once by the hub so every screen shows
+/// the same stages and the same status words for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Journey {
+    /// Ask, Plan, Build, Check, Merge, then Live only for an app that goes
+    /// live after the merge.
+    pub steps: Vec<JourneyStep>,
+    /// The one status phrase every screen shows for this goal, such as
+    /// "Working" or "Needs you · approve the plan".
+    pub label: String,
+    /// The next move is the owner's.
+    pub you: bool,
+    /// The goal is closed as done.
+    pub done: bool,
+    /// What happens next, who does it, and what Decurion does by itself,
+    /// in one or two plain sentences.
+    pub next: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<JourneyAction>,
+    /// The piece (its thread id) the action is about, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub piece: Option<i64>,
+}
+
+/// A goal as the goals list shows it: the goal and its journey.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoalItem {
+    #[serde(flatten)]
+    pub goal: Goal,
+    pub journey: Journey,
 }
 
 /// A goal's tokens, in total and by who used them.

@@ -43,7 +43,7 @@ pub const PAGES: &[(&str, &str)] = &[
     page!("check-your-sign-ins.md"),
     page!("give-your-first-goal.md"),
     page!("research-and-ask-why.md"),
-    page!("follow-your-master-plan.md"),
+    page!("follow-your-roadmap.md"),
     page!("attach-files.md"),
     page!("answer-requests.md"),
     page!("talk-to-a-running-agent.md"),

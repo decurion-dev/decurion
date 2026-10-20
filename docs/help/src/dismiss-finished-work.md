@@ -27,4 +27,4 @@ Work that is **Done** or **Failed**, and goals that are finished or stopped, sta
 - Only finished things can be dismissed. Work that is running, waiting or needs you always stays on screen.
 - If you retry failed work you dismissed, it comes back on its own.
 - When you dismiss the work behind an app's last merged pull request, that app's line in **Today** stops repeating "merged" and goes quiet.
-- The master plan already has its own **Hide finished** switch. See [Follow your master plan](follow-your-master-plan.md).
+- The Roadmap already has its own **Hide finished** switch. See [Follow your Roadmap](follow-your-roadmap.md).

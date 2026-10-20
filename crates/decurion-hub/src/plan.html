@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Master plan · Decurion</title>
+<title>Roadmap · Decurion</title>
 <link rel="icon" href="/icon.svg">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="stylesheet" href="/ui.css">
 <link rel="stylesheet" href="/menu.css">
 <style>
-  /* The master plan: every goal of an app with its steps, pages and what it
+  /* The Roadmap: every goal of an app with its steps, pages and what it
      found, the owner's own to-dos, and the library of pages agents drew.
      Colours follow ui.css: blue for what you press and the chosen tab,
      amber only for what waits for you, green done, red failed. */
@@ -34,6 +34,9 @@
   .head h1 { font-size: 30px; font-weight: 700; line-height: 1.15; }
   .head .sub { color: var(--muted); margin-top: 6px; max-width: 560px; }
   .head .grow { flex: 1 1 auto; min-width: 0; }
+  .head .crumbs { margin-bottom: 4px; }
+  /* A goal's road (D.journey, small) beside its state word. */
+  .row-meta .jbars { margin-right: 8px; }
   .app-pick { display: grid; gap: 4px; }
   .app-pick label { font-size: 12px; font-weight: 600; color: var(--muted); }
   .app-pick select { min-width: 220px; font-weight: 600; }
@@ -241,7 +244,11 @@
   .tabbar .tab[aria-current="page"] { color: var(--accent-ink); }
   .tabbar .tab[aria-current="page"] .ind { background: var(--accent-soft); }
   .tabbar .tab:focus-visible { outline-offset: -4px; border-radius: var(--radius); }
-  .tabbar .badge { display: none; }
+  /* The one count of what needs you, on Inbox (D.showNeeds in ui.js), as on the inbox page. */
+  .tabbar .badge { position: absolute; top: -3px; left: calc(50% + 5px); display: block; min-width: 18px; height: 18px; margin: 0; padding: 0 5px; border-radius: 99px;
+    background: var(--amber); color: var(--surface); box-shadow: 0 0 0 2px var(--surface); font: 700 11px/18px var(--font); text-align: center; font-variant-numeric: tabular-nums; }
+  .tabbar .badge::before { content: none; }
+  .tabbar .badge[hidden] { display: none; }
 
   @media (max-width: 640px) {
     .tabbar { display: block; }
@@ -286,7 +293,9 @@
 <main class="wrap">
   <div class="head">
     <div class="grow">
-      <h1>Master plan</h1>
+      <!-- Where you are: the Roadmap, then the app it shows (D.trail in ui.js). -->
+      <div id="trail"></div>
+      <h1>Roadmap</h1>
       <p class="sub">Every goal for this app, step by step, and everything left to do.</p>
     </div>
     <div class="app-pick" id="app-pick" hidden>
@@ -296,22 +305,22 @@
   </div>
 
   <div class="ptabs" role="tablist" aria-label="Show">
-    <button class="ptab" type="button" role="tab" id="pt-plan" aria-controls="panel-plan" aria-selected="true">Plan</button>
+    <button class="ptab" type="button" role="tab" id="pt-plan" aria-controls="panel-plan" aria-selected="true">Roadmap</button>
     <button class="ptab" type="button" role="tab" id="pt-pages" aria-controls="panel-pages" aria-selected="false" tabindex="-1">Pages<span class="ct" id="pages-ct"></span></button>
   </div>
 
   <section id="panel-plan" role="tabpanel" aria-labelledby="pt-plan">
     <div id="plan-top"></div>
-    <ol class="plan-rows" id="rows" aria-label="The plan, in order"></ol>
+    <ol class="plan-rows" id="rows" aria-label="The Roadmap, in order"></ol>
     <div id="plan-empty"></div>
     <form class="add-box" id="add-box" novalidate hidden>
-      <label for="add-text">Add to the plan</label>
+      <label for="add-text">Add to the Roadmap</label>
       <div class="line">
         <input type="text" id="add-text" maxlength="200" autocomplete="off" placeholder="Something to do later, in your own words" aria-describedby="add-hint add-err">
         <button class="btn primary" type="submit" id="add-go">Add</button>
       </div>
       <p class="field-error" id="add-err" role="alert"></p>
-      <p class="hint" id="add-hint">It goes at the end of the plan. Nothing starts until you tap Make it a goal.</p>
+      <p class="hint" id="add-hint">It goes at the end of the Roadmap. Nothing starts until you tap Make it a goal.</p>
     </form>
   </section>
 
@@ -453,7 +462,7 @@
   }
 
   // `asked` is the app the address named when the page opened. It is read
-  // before anything rewrites the address, so a link to one app's plan opens
+  // before anything rewrites the address, so a link to one app's Roadmap opens
   // that app, not the last one picked.
   async function loadApps(asked) {
     const apps = (await D.api("/apps")) ?? [];
@@ -465,10 +474,17 @@
     const want = [asked, Number(D.store.get(KEY_APP))].find((id) => apps.some((a) => a.id === id));
     S.app = want ?? apps[0].id;
     sel.value = String(S.app);
+    drawTrail();
   }
   $("app").onchange = () => pickApp(Number($("app").value));
+  // The trail at the top: the Roadmap, then the app it shows.
+  function drawTrail() {
+    const name = S.apps.find((a) => a.id === S.app)?.name;
+    $("trail").replaceChildren(D.trail([{ label: "Roadmap", href: "/plan" }, { label: name }]) ?? "");
+  }
   function pickApp(id) {
     S.app = id;
+    drawTrail();
     $("app").value = String(id);
     D.store.set(KEY_APP, String(id));
     S.plan = S.lib = null;
@@ -486,6 +502,8 @@
     if (S.loading || S.app == null) return;
     S.loading = true;
     const app = S.app;
+    // The one count of what needs you, on the menus (ui.js), every ten seconds.
+    if (!(Date.now() - (S.needsAt ?? 0) < 10000)) { S.needsAt = Date.now(); D.needsYou(); }
     try {
       const [plan, lib] = await Promise.all([
         D.api(`/apps/${app}/plan`).then((v) => { S.planErr = ""; return v; }, (e) => { S.planErr = e.message; if (e.signedOut) throw e; return null; }),
@@ -494,7 +512,7 @@
       if (app !== S.app) return;
       if (plan) S.plan = plan;
       if (lib) S.lib = lib;
-      showBanner(D.offline ? "Can't reach your PC right now. Showing the last plan it sent." : "");
+      showBanner(D.offline ? "Can't reach your PC right now. Showing the last Roadmap it sent." : "");
       renderPlan();
       renderPages();
     } catch (e) {
@@ -518,6 +536,12 @@
 
   function goalLook(it) {
     const st = it.goal?.state ?? (it.state === "done" ? "done" : it.state === "dropped" ? "stopped" : "working");
+    // With the hub's road, its words, the same as the goal page and the inbox.
+    const j = it.journey ?? it.goal?.journey;
+    if (j) {
+      const tone = j.you ? "you" : j.done ? "done" : CLOSED.has(st) ? "stopped" : "working";
+      return { word: j.label, tone, sym: { you: "bang", done: "check", stopped: "cross", working: "half" }[tone], journey: j };
+    }
     let [word, tone, sym] = GOAL[st] ?? GOAL.working;
     // A goal waiting on the owner always says so, whatever step it is on.
     if (tone !== "you" && !CLOSED.has(st) && (it.steps ?? []).some((s) => s.state === "you")) [word, tone, sym] = ["Needs you", "you", "bang"];
@@ -528,7 +552,7 @@
     const plan = S.plan;
     if (!plan) {
       if (S.planErr) {
-        $("plan-top").replaceChildren(el("div", { className: "notice bad" }, icon("alert"), el("span", { className: "grow" }, `Couldn't load the plan. ${S.planErr}`)));
+        $("plan-top").replaceChildren(el("div", { className: "notice bad" }, icon("alert"), el("span", { className: "grow" }, `Couldn't load the Roadmap. ${S.planErr}`)));
         $("plan-empty").replaceChildren();
       }
       return;
@@ -584,7 +608,7 @@
     if (kind === "none") {
       $("plan-empty").replaceChildren(el("div", { className: "empty-state" },
         el("div", { className: "mark" }, icon("board", "l")),
-        el("h3", {}, "Nothing on the plan yet"),
+        el("h3", {}, "Nothing on the Roadmap yet"),
         el("p", {}, "Goals show up here as soon as they start, with each step and anything they find along the way. You can also add your own to-dos below."),
         el("a", { className: "btn primary", href: "/goals#new" }, icon("plus"), "New work")));
     } else if (kind === "hidden") {
@@ -609,26 +633,32 @@
     const when = it.done_at ? `Finished ${ago(it.done_at)}` : `Started ${ago(it.created_at)}`;
     const title = g ? el("a", { className: "row-title", href: `/goals#goal-${g.id}` }, it.title) : el("span", { className: "row-title" }, it.title);
     const extra = el("div", { className: "row-extra" });
-    if (it.steps?.length) extra.append(stepsList(it.steps));
+    // With the goal's road on the row, only its pieces stay as chips (they
+    // open the piece); "Talk it through" and the rest would be a second set
+    // of words for the same steps.
+    const steps = look.journey ? (it.steps ?? []).filter((s) => s.thread_id != null) : it.steps ?? [];
+    if (steps.length) extra.append(stepsList(steps));
     if (it.pages?.length) extra.append(pageChips(it.pages));
     extra.append(foundBlock(it, look.tone !== "stopped"));
     return el("li", { className: `row goal${finishedRow(it) ? " finished" : ""}`, dataset: { tone: look.tone } },
       el("div", { className: "row-head" },
         el("span", { className: `mk ${look.tone}` }, shape(look.sym)),
         el("div", { className: "row-main" }, title,
-          el("div", { className: "row-meta" }, el("span", { className: `st ${look.tone}` }, look.word), el("span", { className: "dot-sep" }, when))),
+          el("div", { className: "row-meta" }, look.journey ? D.journey(look.journey, { size: "small" }) : null,
+            el("span", { className: `st ${look.tone}` }, look.word), el("span", { className: "dot-sep" }, when))),
         orderButtons(it, pos)),
       extra);
   }
 
   function stepsList(steps) {
-    return el("ol", { className: "steps", "aria-label": "Steps" }, ...steps.map((s) => {
+    return el("ol", { className: "steps", "aria-label": "Pieces" }, ...steps.map((s) => {
       const [sym, word, says] = STEP[s.state] ?? STEP.later;
       const kids = [shape(sym), el("span", { className: "nm" }, s.title)];
       if (word) kids.push(el("span", { className: "sw" }, `· ${word}`));
       else kids.push(el("span", { className: "sr-only" }, `(${says})`));
       const attrs = { className: "step", dataset: { s: s.state }, title: `${s.title}: ${says}` };
-      const chip = s.thread_id != null ? el("a", { ...attrs, href: `/#work-${s.thread_id}` }, ...kids) : el("span", attrs, ...kids);
+      // A piece opens its panel on the board that fits this screen (the phone's, or the PC's).
+      const chip = s.thread_id != null ? el("a", { ...attrs, href: D.workHref(s.thread_id) }, ...kids) : el("span", attrs, ...kids);
       return el("li", {}, chip);
     }));
   }
@@ -678,7 +708,7 @@
       meta.append(el("a", { className: "fix-link", href: `/goals#goal-${g.id}` },
         el("span", { className: `fs ${cls}` }, words), el("b", {}, g.title)));
     }
-    if (dropped) meta.append(el("span", { className: "hint" }, "Taken off the plan"));
+    if (dropped) meta.append(el("span", { className: "hint" }, "Taken off the Roadmap"));
     const acts = el("div", { className: "todo-acts" });
     if (t.state === "open" && !openFix(t)) {
       const label = top ? "Make it a goal" : "Fix this";
@@ -687,13 +717,13 @@
       acts.append(b);
     }
     if (t.state === "open") {
-      const d = el("button", { type: "button", className: "btn icon sm quiet drop", "aria-label": `Take off the plan: ${t.title}`, title: "Take off the plan", disabled: busy, dataset: { key: `drop-${t.id}` } }, icon("close"));
-      d.onclick = () => edit(t, { state: "dropped" }, "Taken off the plan. Turn off Hide finished to put it back.");
+      const d = el("button", { type: "button", className: "btn icon sm quiet drop", "aria-label": `Take off the Roadmap: ${t.title}`, title: "Take off the Roadmap", disabled: busy, dataset: { key: `drop-${t.id}` } }, icon("close"));
+      d.onclick = () => edit(t, { state: "dropped" }, "Taken off the Roadmap. Turn off Hide finished to put it back.");
       acts.append(d);
     }
     if (dropped) {
       const b = el("button", { type: "button", className: "btn sm quiet", disabled: busy, dataset: { key: `back-${t.id}` } }, "Put back");
-      b.onclick = () => edit(t, { state: "open" }, "Back on the plan.");
+      b.onclick = () => edit(t, { state: "open" }, "Back on the Roadmap.");
       acts.append(b);
     }
     return el(top ? "div" : "li", { className: `todo ${t.state}` },
@@ -743,7 +773,7 @@
         await D.send(`/apps/${S.app}/plan/items`, { title, parent_id: it.id });
         d.text = ""; d.err = "";
         input.value = "";
-        D.toast("Added to the plan.");
+        D.toast("Added to the Roadmap.");
         await load();
       } catch (x) {
         d.err = `Not added. ${x.message}`;
@@ -818,7 +848,7 @@
     try {
       await D.send(`/apps/${S.app}/plan/items`, { title });
       input.value = "";
-      D.toast("Added to the end of the plan.");
+      D.toast("Added to the end of the Roadmap.");
       await load();
     } catch (x) {
       err.textContent = `Not added. ${x.message}`;
@@ -953,7 +983,7 @@
       $("plan-empty").replaceChildren(el("div", { className: "empty-state" },
         el("div", { className: "mark" }, icon("app", "l")),
         el("h3", {}, "Add your first app"),
-        el("p", {}, "The master plan follows the goals of one app. Add an app on the board, then start a goal for it."),
+        el("p", {}, "The Roadmap follows the goals of one app. Add an app on the board, then start a goal for it."),
         el("a", { className: "btn primary", href: "/#settings/apps" }, icon("plus"), "Add an app")));
       return;
     }

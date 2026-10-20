@@ -1,33 +1,42 @@
-# Follow your master plan
+# Follow your Roadmap
 
 This page helps you see, in one place, what each app has done and what is
 left.
 
-Each app has one **master plan**: a list of its goals, in your order, with
-everything they found along the way. On your PC, click **Master plan** in the
+Each app has one **Roadmap**: a list of its goals, in your order, with
+everything they found along the way. On your PC, click **Roadmap** in the
 menu on the left: it is the same menu on the board, the Goals page and the
-master plan. Or go to <http://decurion.localhost:7420/plan>. On your phone, tap
-**Plan** at the bottom. Choose the app at the top right, or at the top on a
+Roadmap. Or go to <http://decurion.localhost:7420/plan>. On your phone, tap
+**Roadmap** at the bottom. Choose the app at the top right, or at the top on a
 phone.
 
-## What the plan shows
+The word **plan** on its own always means one goal's plan: the pieces of
+work your project lead proposes and you approve. The Roadmap is the list of
+all of an app's goals.
+
+## What the Roadmap shows
 
 At the top you see how many things are done and how many are left, with a bar
 that fills as work finishes. Turn on **Hide finished** to see only what is
 left.
 
-Each goal is a card. Its mark and words tell you where it is:
+Each goal is a card. Its words tell you where it is, and they are the same
+words the Goals page, the board and your phone show for that goal:
 
-- **✓ Done** in green: you closed the goal.
-- **◐ Working**: agents are building or checking it. Nothing for you to do.
-- **! Needs you** in amber: the goal waits for you. The words after it say
-  what, such as **Needs you · approve the plan**. Tap its name to open it.
-- **✕ Stopped** in grey: you stopped the goal.
+- **Done**, **Live** or **On your PC** in green: the goal is finished.
+- **Talking it through** or **Working**: your project lead or the agents are
+  on it. Nothing for you to do.
+- **Needs you** in amber: the goal waits for you. The words after it say
+  what, such as **Needs you · approve the plan** or **Needs you · merge on
+  GitHub**. Tap its name to open it.
+- **Stopped** in grey: you stopped the goal.
 
-Under the name, the goal's steps show in order, each with a mark: ✓ done,
-◐ an agent is on it now, ! **Needs you** (in amber), ○ not started yet. A
-step marked **Failed** in red went wrong; tap it to open that piece of work
-on the board.
+Under the name, the goal's road shows its stages in order: **Ask**, **Plan**,
+**Build**, **Check**, **Merge**, and **Live** (or **On your PC** for
+Decurion itself) when the app has a step after the merge. See [See where a
+goal is](give-your-first-goal.md#see-where-a-goal-is). Each piece of work
+also has its own small button; tap it to open that piece on the board. A
+piece marked **Failed** in red went wrong.
 
 The pages agents drew for the goal show as small buttons, such as
 **Visual plan** or **As built: Order form**. One marked **Needs you · a
@@ -47,15 +56,15 @@ small bug, a missing detail, a good next step. These show under the goal as
 - **Fix this** starts a new goal to fix just that one. You go straight to it,
   and your project lead talks it through with you as usual.
 - **Fix all that are left** starts one goal for every open one under that goal.
-- **✕** takes it off the plan. Turn off **Hide finished** and tap **Put back**
-  to bring it back.
+- **✕** (**Take off the Roadmap**) takes it off. Turn off **Hide finished**
+  and tap **Put back** to bring it back.
 
 When a goal started this way is done, the things it fixed are ticked for you.
 Each one links to the goal fixing it: **Being fixed in** while it runs,
 **Fixed in** once it is done.
 
 You can add your own: tap **Add a to-do here** inside a goal, or use **Add to
-the plan** at the bottom for something on its own. A to-do of your own has a
+the Roadmap** at the bottom for something on its own. A to-do of your own has a
 **Make it a goal** button when you are ready to have it built.
 
 ## The Pages tab

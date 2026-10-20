@@ -13,7 +13,7 @@ only the open tab shows.
 | What the screen holds | Use | Example |
 | --- | --- | --- |
 | Areas of a page that have little to do with each other | A **side list of tabs** on the PC beside the open one; on the phone a **list to tap into**, with "‹ Back" to the list | Settings (`settings.js`: `TABS`, `select`) |
-| Views of one thing | A **row of tabs** with a blue line under the open one (`D.tabs` in `ui.js`, look `.ptabs` in `ui.css`) | A piece of work: Overview, Activity, Details (`D.openWork`). Master plan: Plan, Pages. A goal: Conversation, Pieces of work, Files |
+| Views of one thing | A **row of tabs** with a blue line under the open one (`D.tabs` in `ui.js`, look `.ptabs` in `ui.css`) | A piece of work: Overview, Activity, Details (`D.openWork`). Roadmap: Roadmap, Pages. A goal: Conversation, Pieces of work, Files |
 | Steps done in order | A **row of step tabs** ("1 Key", "2 Server", "3 Connect") with a **Next** button at the end of each step | Add a cloud worker (`cloud.html`) |
 
 Rules for every tab:
@@ -38,6 +38,15 @@ Rules for every tab:
 
 Short sentences for someone who does not code: say what happened and what to
 do next. Tab names are one or two plain words ("Sign-ins", "Activity").
+
+- **A goal's status is its journey's.** Every screen that shows a goal shows
+  `journey.label`, its stages (`journey.steps`) and its `next` line, from the
+  hub ([`journey.rs`](../../crates/decurion-hub/src/journey.rs)). Never build
+  a goal's status words on a page, so the Goals list, the goal page, the
+  board, the phone and the Roadmap always agree. A count of what needs the
+  owner comes from `GET /api/needs-you`, never from a page's own rule.
+- **Roadmap** is each app's list of goals and to-dos. **Plan** on its own
+  only ever means one goal's plan (the pieces the owner approves).
 
 ## Check before you finish
 
