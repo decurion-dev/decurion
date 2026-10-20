@@ -92,6 +92,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Merge that meets a conflict leads to Bring up to date.** When GitHub tells the Merge tap that a pull request conflicts with main or is behind it, the goal page, the board and the phone switch to **Needs you · bring it up to date** straight away, and the message says to tap **Bring up to date**, instead of "fix the conflict first" with Merge still the button.
 - **New work starts from the right commit on older git.** With git older than 2.42, Decurion could not take in the app's newest default branch and quietly started work from the folder's current branch instead. It now starts from the default branch on every git version.
 - **One GitHub token for every app.** When the GitHub token can send work but can't open pull requests, Settings, Sign-ins now offers **Make a classic token**: GitHub opens a new token already named Decurion with **repo** ticked, you copy it and save it once. The old steps said to edit the token, which can't work when an app's repo belongs to an organization and the token was made for your own account. The help pages say the same.
 - **A to-do no longer shows twice on the Master plan.** When you tap **Make it a goal** or **Fix this**, the to-do leaves its old spot and only the new work item shows. If that work is stopped, the to-do comes back. The done and left numbers at the top count the job once.

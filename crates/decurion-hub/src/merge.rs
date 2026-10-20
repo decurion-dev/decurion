@@ -76,8 +76,8 @@ pub fn ready(pr: &serde_json::Value, head: &str) -> Ready {
         }
         Some("unstable") => "Some of its checks on GitHub failed or are still running. Wait for them to pass, or merge it on GitHub if you're sure.",
         Some("blocked") => "GitHub says it isn't ready yet: a review or a required check is still missing.",
-        Some("dirty") => "It conflicts with newer changes on the main branch. Fix the conflict first, then tap Merge again.",
-        Some("behind") => "It needs the newest main branch first. Update the branch on GitHub, then tap Merge again.",
+        Some("dirty") => "It conflicts with newer changes on the main branch. Tap Bring up to date and Decurion fixes the conflict, then tap Merge.",
+        Some("behind") => "It needs the newest main branch first. Tap Bring up to date, then tap Merge.",
         Some("draft") => "It is still a draft on GitHub. Mark it ready for review there first.",
         _ => "GitHub is still checking it. Try again in a minute.",
     };
@@ -191,6 +191,32 @@ impl Store {
         Ok(done.rows_affected() == 1)
     }
 
+    /// Saves a conflict or a fall behind GitHub reported at the Merge tap,
+    /// the same way the watch's poll does, for the commit Decurion pushed
+    /// only. Anything else is left for the poll.
+    async fn record_health(
+        &self,
+        thread_id: i64,
+        head: &str,
+        h: &crate::pr_watch::Health,
+    ) -> Result<()> {
+        if !matches!(h.health, Some("dirty" | "behind")) || h.head.as_deref() != Some(head) {
+            return Ok(());
+        }
+        sqlx::query(
+            "UPDATE pr_watches SET health = ?, health_head = ?, base_ref = COALESCE(?, base_ref)
+             WHERE thread_id = ? AND state = 'open' AND head = ?",
+        )
+        .bind(h.health)
+        .bind(head)
+        .bind(&h.base_ref)
+        .bind(thread_id)
+        .bind(head)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
     async fn record_closed(&self, thread_id: i64) -> Result<()> {
         sqlx::query(
             "UPDATE pr_watches SET state = 'closed', event = 'Closed on GitHub without merging',
@@ -264,7 +290,15 @@ pub async fn merge(s: &Sender, thread_id: i64, receipt: Option<&str>) -> Result<
             ));
         }
         Ready::Moved => return Err(merge_refused(reqwest::StatusCode::CONFLICT)),
-        Ready::No(words) => return Err(refused(words)),
+        Ready::No(words) => {
+            // GitHub just said it conflicts or is behind: say so on every
+            // screen now, so the next button is Bring up to date rather
+            // than this Merge again, without waiting for the next poll.
+            s.store
+                .record_health(thread_id, &m.head, &crate::pr_watch::health_of(&pr))
+                .await?;
+            return Err(refused(words));
+        }
     }
     let repo = get(s, &t, &base).await?;
     let resp =
