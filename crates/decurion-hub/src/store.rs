@@ -223,27 +223,33 @@ impl Store {
     }
 
     pub async fn apps(&self) -> Result<Vec<App>> {
-        let rows = sqlx::query(&format!("SELECT {APP_COLS} FROM apps ORDER BY name"))
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(&format!(
+            "SELECT {APP_COLS} FROM apps WHERE removed_at IS NULL ORDER BY name"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(app_from).collect()
     }
 
     pub async fn app(&self, id: i64) -> Result<App> {
-        let row = sqlx::query(&format!("SELECT {APP_COLS} FROM apps WHERE id = ?"))
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or(StoreError::NotFound)?;
+        let row = sqlx::query(&format!(
+            "SELECT {APP_COLS} FROM apps WHERE id = ? AND removed_at IS NULL"
+        ))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(StoreError::NotFound)?;
         app_from(&row)
     }
 
     async fn app_in(&self, tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, id: i64) -> Result<App> {
-        let row = sqlx::query(&format!("SELECT {APP_COLS} FROM apps WHERE id = ?"))
-            .bind(id)
-            .fetch_optional(&mut **tx)
-            .await?
-            .ok_or(StoreError::NotFound)?;
+        let row = sqlx::query(&format!(
+            "SELECT {APP_COLS} FROM apps WHERE id = ? AND removed_at IS NULL"
+        ))
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(StoreError::NotFound)?;
         app_from(&row)
     }
 
@@ -468,10 +474,11 @@ impl Store {
             tx.commit().await?;
             return Ok((self.thread(id).await?, false));
         }
-        let app: Option<i64> = sqlx::query_scalar("SELECT id FROM apps WHERE id = ?")
-            .bind(t.app_id)
-            .fetch_optional(&mut *tx)
-            .await?;
+        let app: Option<i64> =
+            sqlx::query_scalar("SELECT id FROM apps WHERE id = ? AND removed_at IS NULL")
+                .bind(t.app_id)
+                .fetch_optional(&mut *tx)
+                .await?;
         if app.is_none() {
             return Err(StoreError::NotFound);
         }
@@ -501,9 +508,12 @@ impl Store {
     }
 
     pub async fn threads(&self) -> Result<Vec<Thread>> {
-        let rows = sqlx::query(&format!("SELECT {THREAD_COLS} FROM threads ORDER BY id"))
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(&format!(
+            "SELECT {THREAD_COLS} FROM threads
+             WHERE app_id IN (SELECT id FROM apps WHERE removed_at IS NULL) ORDER BY id"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(thread_from).collect()
     }
 

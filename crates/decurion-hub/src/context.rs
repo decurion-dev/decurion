@@ -214,10 +214,12 @@ async fn check_in(
     raw_name: &str,
     size: Option<u64>,
 ) -> Result<(String, String)> {
-    let app: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM apps WHERE id = ?)")
-        .bind(app_id)
-        .fetch_one(&mut **tx)
-        .await?;
+    let app: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM apps WHERE id = ? AND removed_at IS NULL)",
+    )
+    .bind(app_id)
+    .fetch_one(&mut **tx)
+    .await?;
     if !app {
         return Err(StoreError::NotFound);
     }

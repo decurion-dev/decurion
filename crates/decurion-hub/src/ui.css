@@ -150,6 +150,8 @@ svg.i.l { width: 20px; height: 20px; }
 .btn.quiet:hover { background: var(--accent-soft); }
 .btn.quiet.danger-text { color: var(--red); }
 .btn.quiet.danger-text:hover { background: var(--red-soft); }
+.remove-app { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line, #ddd); }
+.remove-app h3 { margin: 0 0 8px; }
 .btn.icon { width: var(--control-h); padding: 0; }
 .btn.sm { min-height: 28px; padding: 0 10px; font-size: 13px; }
 .btn.icon.sm { width: 28px; padding: 0; }

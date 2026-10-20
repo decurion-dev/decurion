@@ -590,6 +590,33 @@
     return form;
   }
 
+  // "Remove app": hides the app and keeps its history. The hub refuses while
+  // work is still going, and its words are shown as they come.
+  function removeBlock(a) {
+    const b = el("button", { type: "button", className: "btn quiet danger-text", dataset: { key: `app-remove-${a.id}` } }, icon("trash"), "Remove app");
+    b.onclick = async () => {
+      if (D.offline) { D.toast("Your PC isn't answering. Try again when it's back.", "alert"); return; }
+      const ok = await D.confirm([`Remove ${a.name} from Decurion?`,
+        "Your folder on this PC and your GitHub copy stay exactly as they are. Its past work stays saved.", "Remove app", "Keep it"]);
+      if (!ok) return;
+      b.disabled = true;
+      try {
+        await D.send(`/apps/${a.id}/remove`, {});
+        D.toast(`Removed ${a.name}. You can add it again any time.`);
+        location.hash = "#settings/apps";
+        await opts.refresh();
+      } catch (e) {
+        if (e.signedOut) { signedOut(); return; }
+        D.toast(`Couldn't remove ${a.name}. ${e.message}`, "alert");
+        b.disabled = false;
+      }
+    };
+    return el("div", { className: "remove-app" },
+      el("h3", {}, "Remove app"),
+      el("p", { className: "hint" }, "Hides this app from Decurion. Your folder on this PC and your GitHub copy are not touched, and its past work stays saved. You can add the same name and folder again later. It can't be removed while it has work going."),
+      b);
+  }
+
   // The hub answers a change with the whole app: show it straight away,
   // before the next load.
   function keepSaved(a, saved) {
@@ -1037,7 +1064,7 @@
       saving.has(`profile-${id}`)], () => moneyCard(a, sp));
     draw("websites", [a.name, a.sites, siteErr[id], siteBusy[id]], () => websitesCard(a));
     draw("files", [!!window.DFiles], () => filesCard(a));
-    draw("name", [a.name, a.repo_path, !!editing[id], editErr[id], editBusy[id]], () => tabCard(null, editForm(a)));
+    draw("name", [a.name, a.repo_path, !!editing[id], editErr[id], editBusy[id]], () => tabCard(null, editForm(a), removeBlock(a)));
   }
 
   // ---------- Drawing from the page's data ----------
