@@ -562,13 +562,16 @@ async fn folder_objects(folder: &Path) -> Result<PathBuf> {
 /// written when that is everything, so asking again at the same commit
 /// adds nothing.
 async fn keep_what_it_needs(up: &Path, cache: &Path, own: &Path, sha: &str) -> Result<()> {
-    let mut revs = format!("{sha}\n--not\n");
+    // Each tip is left out with a `^` in front, not a `--not` line: git
+    // before 2.42 refuses options on `rev-list --stdin`.
+    let mut revs = format!("{sha}\n");
     for repo in [cache, up] {
         for tip in git(repo, &["for-each-ref", "--format=%(objectname)"])
             .await?
             .lines()
             .filter(|l| !l.is_empty())
         {
+            revs.push('^');
             revs.push_str(tip);
             revs.push('\n');
         }
