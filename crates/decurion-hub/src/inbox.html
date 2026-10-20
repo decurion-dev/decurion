@@ -756,6 +756,9 @@ function inboxCard(t, anim) {
       el("span", { className: "when", dataset: { at: t.updated_at } }, D.ago(t.updated_at)),
       el("span", { className: "chev" }, D.icon("right"))),
     el("h2", { className: "h" }, ttl));
+  // Started by Decurion under the app's rule to fix conflicts by itself,
+  // not by the owner's tap. It still waits for Accept like any other work.
+  if (t.auto_started) card.append(el("p", { className: "means" }, "Decurion is fixing the conflicts with main by itself. Nothing goes to GitHub until you accept it."));
   if (asks.length) card.append(D.askBox(t, asks, { onSent: leave, guessed: !fromBlock,
     onTalk: (prefill) => D.openWork(t, refresh, { talk: true, prefill }) }));
   // What Accept leads to comes from the app's rules (D.acceptWords).
