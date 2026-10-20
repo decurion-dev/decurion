@@ -670,3 +670,132 @@ async fn a_goals_piece_that_waits_on_you_counts_once_as_its_goal() {
     let rows = today(&r).await;
     assert_eq!(rows[0]["needs_you"], 2);
 }
+
+/// Work sent to GitHub as a pull request, as the hub records a send.
+async fn sent_as_pr(store: &Store, thread: i64, number: i64) {
+    sqlx::query(
+        "UPDATE threads SET state = 'done', gh_state = 'sent', gh_pr = 1, gh_branch = ?, gh_url = ?
+         WHERE id = ?",
+    )
+    .bind(format!("decurion/app-{thread}"))
+    .bind(format!("https://github.com/me/app/pull/{number}"))
+    .bind(thread)
+    .execute(store.pool())
+    .await
+    .expect("sent");
+}
+
+#[tokio::test]
+async fn a_conflicting_pull_request_says_bring_up_to_date_not_github() {
+    let (r, store) = hub().await;
+    let app = add_app(&r, "pv-medispa").await;
+    let t = add_work(&r, app, "New intake form").await;
+    sent_as_pr(&store, t, 61).await;
+    watch(&store, t, app, 61, "open", "2026-10-20T16:16:00Z").await;
+    let road = |v: &Value| v["road"].clone();
+
+    // Nothing said about conflicts yet: the usual merge words.
+    let (_, v) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{t}"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(road(&v)["label"], "Needs you · merge on GitHub", "{v}");
+    assert_eq!(road(&v)["catch_up"], Value::Null);
+
+    // GitHub said an older commit conflicted: not this one, so still nothing.
+    sqlx::query(
+        "UPDATE pr_watches SET health = 'dirty', health_head = 'old111', base_ref = 'main'",
+    )
+    .execute(store.pool())
+    .await
+    .expect("old look");
+    let (_, v) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{t}"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(road(&v)["catch_up"], Value::Null, "{v}");
+
+    // The commit Decurion pushed conflicts: the way out is Bring up to date.
+    sqlx::query("UPDATE pr_watches SET health_head = head")
+        .execute(store.pool())
+        .await
+        .expect("look");
+    let (_, v) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{t}"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(road(&v)["label"], "Needs you · bring it up to date", "{v}");
+    assert_eq!(road(&v)["you"], true);
+    assert_eq!(road(&v)["catch_up"], json!({ "pull": t }));
+    let next = road(&v)["next"].as_str().expect("next").to_owned();
+    assert!(
+        next.contains("conflicts with main") && next.contains("Tap Bring up to date"),
+        "{next}"
+    );
+    // The Today row leads with the same tap.
+    let rows = today(&r).await;
+    assert_eq!(rows[0]["last_pr"]["health"], "Conflicts with main");
+    assert_eq!(rows[0]["last_pr"]["can_update"], true);
+
+    // Once a Bring up to date runs from that commit, the road follows it.
+    let up: i64 = sqlx::query_scalar(
+        "INSERT INTO threads (app_id, title, prompt, place, ai, fix_of, base_commit, merge_from, merge_ref, state)
+         VALUES (?, 'Bring up to date: New intake form', 'merge', 'pc', 'claude', ?, 'abc123', 'def456', 'main', 'running')
+         RETURNING id",
+    )
+    .bind(app)
+    .bind(t)
+    .fetch_one(store.pool())
+    .await
+    .expect("update run");
+    let (_, v) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{t}"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(road(&v)["label"], "Bringing it up to date", "{v}");
+    assert_eq!(road(&v)["you"], false);
+    assert_eq!(road(&v)["catch_up"], json!({ "pull": t, "work": up }));
+    set_state(&store, up, "in_review").await;
+    let (_, v) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{t}"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(road(&v)["label"], "Needs you · look over the update", "{v}");
+    assert_eq!(road(&v)["catch_up"]["work"], up);
+
+    // Merged: the story ends as before, with no catch-up.
+    sqlx::query("UPDATE pr_watches SET state = 'merged'")
+        .execute(store.pool())
+        .await
+        .expect("merged");
+    let (_, v) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{t}"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(road(&v)["catch_up"], Value::Null, "{v}");
+    assert_ne!(road(&v)["label"], "Needs you · bring it up to date");
+}

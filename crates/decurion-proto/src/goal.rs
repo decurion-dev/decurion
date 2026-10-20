@@ -676,6 +676,26 @@ pub struct Road {
     /// is stuck.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// Its pull request can't be merged as it is, because it conflicts with
+    /// (or is behind) the branch it merges into, or Decurion is bringing it
+    /// up to date. `None` while it can be merged, and once it is merged or
+    /// closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catch_up: Option<CatchUp>,
+}
+
+/// A pull request that has to take in the newest of its base branch before
+/// it can be merged, and the Bring up to date work for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatchUp {
+    /// The work whose pull request it is: the owner's Bring up to date tap
+    /// is made on it (`POST /api/threads/{pull}/pr/update`).
+    pub pull: i64,
+    /// The Bring up to date work started from the commit Decurion last
+    /// pushed there, while it is under way or waits on the owner. `None`
+    /// when there is none, so the owner's tap starts one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<i64>,
 }
 
 /// One stage of a whole goal, from the owner's ask to live. Every screen
@@ -732,8 +752,10 @@ pub struct JourneyAction {
     /// allow it), `open_pr` (pushed with no pull request yet), `review`
     /// (look at the work: the finished goal, or with `piece` one piece to
     /// look over or Accept), `retry` (the project lead got stuck, or with
-    /// `piece` a push to try again), `update` (Decurion's own code: update
-    /// the Decurion on your PC) or `deploy` (tap Deploy).
+    /// `piece` a push to try again), `bring_up_to_date` (with `piece` the
+    /// work whose pull request conflicts with its base branch: start Bring
+    /// up to date on it), `update` (Decurion's own code: update the
+    /// Decurion on your PC) or `deploy` (tap Deploy).
     pub kind: String,
     /// The button's words, such as "Approve the plan".
     pub label: String,

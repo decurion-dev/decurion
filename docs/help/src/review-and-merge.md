@@ -47,9 +47,10 @@ Only one fix per pull request runs at a time. New comments that arrive while it 
 
 ## Bring a pull request up to date with main
 
-While you wait for a review, other work may be merged into main. Then the pull request can fall behind main, or conflict with it, and GitHub will not merge it until that is fixed. Decurion reads this from GitHub when it looks at the pull request, and the app's line on the board and your phone says **Conflicts with main** or **Behind main**.
+While you wait for a review, other work may be merged into main. Then the pull request can fall behind main, or conflict with it, and GitHub will not merge it until that is fixed. Decurion reads this from GitHub when it looks at the pull request. The app's line on the board and your phone says **Conflicts with main** or **Behind main**, and the goal page and the work's own panel say **Needs you · bring it up to date**, with **Bring up to date** as their button. You never need GitHub to fix it.
 
 - **Tap Bring up to date** to start new work on that pull request. Decurion gets the newest main from GitHub, and the agent merges it into the pull request's work, fixes any conflicts (keeping what main does now and adding this work on top), and runs the app's own checks and fixes what fails. If Decurion cannot reach GitHub for the newest main, nothing starts and it says so.
+- **Follow it from the goal.** While the agent works, the goal says **Bringing it up to date**. When it is ready, it says **Needs you · look over the update**, and its button opens that work.
 - **Review it like any other work.** When you accept it, Decurion adds it to the same pull request, on the same branch. It only ever adds on top of what is there: it never rewrites the branch, never changes main and never merges.
 - **Protected parts.** If the result changes a part of the app you protect, compared with main, the work says **Held for you** and names the files. Look it over before you tap Accept.
 
@@ -97,7 +98,7 @@ Your work is still accepted, and nothing is lost. The card says **Not sent to Gi
 - **Could not reach GitHub.** Check this PC's internet connection, then tap **Try again**.
 - **This app's folder is not linked to GitHub.** It has no remote named `origin`. Get the work by hand instead, as shown below.
 - **The pull request was not opened, but the work was sent.** The card moves to **Needs you**, its step bar stops at **Pull request**, and it says why under it. Fix what it says, then tap **Open the pull request**, or tap **Open on GitHub** to make it yourself. If it says the token was not accepted, save a new one in **Settings**, **GitHub**. If it says your token can't open pull requests on this app, **Settings**, **Sign-ins** shows GitHub amber with the steps to fix it. See [Check your sign-ins](check-your-sign-ins.md).
-- **"Can't automatically merge."** GitHub shows this when the work changes the same lines as something merged into the main branch since the work started. You can still open the pull request; it just can't be merged with one click yet. Once it is open, GitHub's **Resolve conflicts** button lets you pick which lines to keep, or ask someone who knows the code. When a pull request Decurion opened clashes like this, the goal page and the piece's panel say so.
+- **"Can't automatically merge."** GitHub shows this when the work changes the same lines as something merged into the main branch since the work started. You can still open the pull request; it just can't be merged with one click yet. Once it is open, tap **Bring up to date** in Decurion: an agent merges the newest main in and fixes the clash on the same pull request. See [Bring a pull request up to date with main](#bring-a-pull-request-up-to-date-with-main).
 
 ## Get the changes by hand
 
