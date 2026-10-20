@@ -2504,7 +2504,7 @@ async fn a_token_that_cannot_open_pull_requests_turns_github_amber_until_one_ope
     );
     assert_eq!(
         row["link"]["url"],
-        "https://github.com/settings/personal-access-tokens"
+        "https://github.com/settings/tokens/new?scopes=repo&description=Decurion"
     );
     assert_eq!(v["amber"], 1, "{v}");
     // The token is never in what the page gets, nor in what was kept.

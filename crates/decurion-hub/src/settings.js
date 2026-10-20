@@ -1667,7 +1667,7 @@
     const form = el("form", { className: "form-grid", noValidate: true, autocomplete: "off" },
       el("div", { className: "field" }, el("label", { htmlFor: "gh-token" }, s.token ? "Replace the token" : "GitHub token"),
         el("div", { className: "secret-row" }, value, showButton(value))),
-      el("p", { className: "hint", id: "gh-token-hint", style: "align-self:center" }, "Make a fine-grained token on GitHub with Pull requests: Read and write for your apps' repos. To merge from Decurion, it also needs Contents: Read and write. See Help, Review and merge work."),
+      el("p", { className: "hint", id: "gh-token-hint", style: "align-self:center" }, "Make a classic token on GitHub with repo ticked: one token reaches every app, even ones that belong to an organization. See Help, Review and merge work."),
       el("div", { className: "full actions" }, el("button", { className: "btn primary", type: "submit" }, "Save token"), err));
     form.onsubmit = async (e) => {
       e.preventDefault();
