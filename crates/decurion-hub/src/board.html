@@ -669,6 +669,10 @@
       hit.onclick = () => { setFilter(filter === id ? "all" : id); renderToday(); };
       const when = r.tone === "done" && r.last_pr?.event_at ? ` · ${D.ago(r.last_pr.event_at)}` : "";
       const fixOn = r.open_comments > 0 ? (r.fix_thread_id ?? r.last_pr?.thread_id) : null;
+      // GitHub says the pull request conflicts with (or is behind) main: it
+      // can't be merged until it is brought up to date, so that is the main
+      // button and Merge waits.
+      const blocked = r.last_pr?.state === "open" && !!r.last_pr.health && r.last_pr.can_update;
       let act;
       if (fixOn != null) {
         act = el("button", { type: "button", className: "btn primary sm", dataset: { key: `today-fix-${id}` } }, icon("tool"), "Answer the comments");
@@ -684,7 +688,7 @@
           await refresh();
           act.disabled = D.offline;
         };
-      } else if (r.last_pr?.can_merge && r.last_pr.state === "open") {
+      } else if (r.last_pr?.can_merge && r.last_pr.state === "open" && !blocked) {
         // The app's rules let the owner merge from here. The hub merges only
         // once GitHub says the checks passed, and says why when it won't.
         const prId = r.last_pr.thread_id;
@@ -709,7 +713,7 @@
       let update = null;
       if (r.last_pr?.state === "open" && r.last_pr.can_update) {
         const prId = r.last_pr.thread_id;
-        update = el("button", { type: "button", className: "btn quiet sm", dataset: { key: `today-update-${id}` },
+        update = el("button", { type: "button", className: blocked && fixOn == null ? "btn primary sm" : "btn quiet sm", dataset: { key: `today-update-${id}` },
           title: `Merge the newest main into pull request #${r.last_pr.number}` }, icon("branch"), "Bring up to date");
         update.disabled = D.offline;
         update.onclick = async () => {

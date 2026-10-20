@@ -29,7 +29,7 @@
 use crate::checkpoints::git;
 use crate::push::Notice;
 use crate::store::{Result, Store, StoreError};
-use decurion_proto::goal::{GoalState, ReviewState, Road, RoadStep, Step, StepMark};
+use decurion_proto::goal::{CatchUp, GoalState, ReviewState, Road, RoadStep, Step, StepMark};
 use decurion_proto::{SendState, ThreadState};
 use sqlx::Row;
 use std::collections::HashMap;
@@ -108,6 +108,42 @@ pub struct Facts {
     /// The hub's saved plain reason (`gh_error`): why the push failed, or
     /// why no pull request was opened.
     pub error: Option<String>,
+    /// Its pull request while it is open, as the watcher last read it
+    /// ([`crate::pr_watch`]). `None` once merged or closed, or before the
+    /// watcher has it.
+    pub pr: Option<OpenPr>,
+}
+
+/// An open pull request, for its road: whether it can be merged as it is,
+/// and the Bring up to date work for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenPr {
+    /// The work whose pull request it is (the watch's own thread).
+    pub pull: i64,
+    /// The branch it merges into, once GitHub said.
+    pub base: Option<String>,
+    /// What GitHub said about the commit Decurion last pushed there:
+    /// `dirty` (conflicts) or `behind`. `None` for nothing in the way, or
+    /// nothing said about that commit yet.
+    pub health: Option<String>,
+    /// The newest Bring up to date work started from that commit.
+    pub update: Option<UpdateNow>,
+}
+
+/// Where a Bring up to date run is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateNow {
+    pub id: i64,
+    pub thread: ThreadState,
+    pub send: Option<SendState>,
+}
+
+impl OpenPr {
+    /// GitHub says it can't be merged until it has the newest of its base
+    /// branch: it conflicts, or (where the repo requires it) is behind.
+    fn blocked(&self) -> bool {
+        matches!(self.health.as_deref(), Some("dirty" | "behind"))
+    }
 }
 
 const STEPS: [Step; 6] = [
@@ -174,6 +210,7 @@ fn road(steps: Vec<RoadStep>, label: &str, next: String, you: bool, done: bool) 
         done,
         update: Vec::new(),
         why: None,
+        catch_up: None,
     }
 }
 
@@ -384,6 +421,9 @@ pub fn piece_road(f: &Facts, r: &Rules) -> Road {
             false,
             false,
         ),
+        Some(Step::Merged) if f.pr.as_ref().is_some_and(|p| p.blocked() || p.update.is_some()) => {
+            catching_up(steps, f.pr.as_ref().expect("checked just above"))
+        }
         Some(Step::Merged) if r.merge => road(
             steps,
             "Needs you · merge it",
@@ -515,6 +555,7 @@ pub fn goal_road(
         done: behind.done,
         update: lead.update.clone(),
         why: lead.why.clone(),
+        catch_up: lead.catch_up,
     })
 }
 
@@ -622,6 +663,76 @@ fn sha(s: &str) -> bool {
     (40..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// The road of work whose open pull request can't be merged until it has
+/// the newest of its base branch, or is being brought up to date. The way
+/// out is always in Decurion: the owner's Bring up to date tap, then a look
+/// at the result and Accept. Never "fix it on GitHub".
+fn catching_up(steps: Vec<RoadStep>, pr: &OpenPr) -> Road {
+    let base = pr.base.as_deref().unwrap_or("main");
+    let work = pr.update.filter(|u| {
+        !matches!(
+            (u.thread, u.send),
+            (ThreadState::Failed, _) | (ThreadState::Done, None)
+        )
+    });
+    let (label, next, you) = match work {
+        Some(UpdateNow {
+            thread: ThreadState::NeedsYou,
+            ..
+        }) => (
+            "Needs you · answer the agent".to_owned(),
+            format!("Decurion is bringing its pull request up to date with {base}, and the agent stopped to ask you something. Answer it, and it carries on."),
+            true,
+        ),
+        Some(UpdateNow {
+            thread: ThreadState::InReview,
+            ..
+        }) => (
+            "Needs you · look over the update".to_owned(),
+            format!("Decurion merged the newest {base} into its pull request. Look it over and tap Accept, and it goes to the same pull request."),
+            true,
+        ),
+        Some(UpdateNow {
+            send: Some(SendState::Failed),
+            ..
+        }) => (
+            "Needs you · update not pushed".to_owned(),
+            "The update you accepted did not reach GitHub. Open it to see why, then tap Try again. The work is kept.".to_owned(),
+            true,
+        ),
+        Some(UpdateNow {
+            thread: ThreadState::Done,
+            ..
+        }) => (
+            "Sending the update".to_owned(),
+            "You accepted the update, and Decurion is sending it to the same pull request. You don't need to do anything yet.".to_owned(),
+            false,
+        ),
+        Some(_) => (
+            "Bringing it up to date".to_owned(),
+            format!("Decurion is merging the newest {base} into its pull request and fixing any conflicts. Then you look it over. You don't need to go to GitHub."),
+            false,
+        ),
+        None if pr.health.as_deref() == Some("behind") => (
+            "Needs you · bring it up to date".to_owned(),
+            format!("Its pull request is behind {base}, so it can't be merged yet. Tap Bring up to date: Decurion merges the newest {base} into it, on the same pull request, and you look it over before anything changes on GitHub."),
+            true,
+        ),
+        None => (
+            "Needs you · bring it up to date".to_owned(),
+            format!("Its pull request conflicts with {base}, so it can't be merged yet, here or on GitHub. Tap Bring up to date: Decurion merges the newest {base} into it and fixes the conflicts, on the same pull request, and you look it over before anything changes on GitHub."),
+            true,
+        ),
+    };
+    Road {
+        catch_up: Some(CatchUp {
+            pull: pr.pull,
+            work: work.map(|u| u.id),
+        }),
+        ..road(steps, &label, next, you, false)
+    }
+}
+
 /// Reads one piece of work's facts from a row holding the thread's
 /// `state`, the piece's `review` and `review_summary` (null for work that
 /// is no piece of a goal), the thread's `gh_*` columns, the piece's
@@ -661,7 +772,57 @@ pub(crate) fn facts_from(row: &sqlx::sqlite::SqliteRow) -> Result<Facts> {
         closed: pr_state.as_deref() == Some("closed"),
         live: row.try_get::<Option<String>, _>("live_at")?.is_some(),
         error: row.try_get("gh_error")?,
+        pr: open_pr(row)?,
     })
+}
+
+/// The open pull request in a row holding [`CATCH_COLS`].
+fn open_pr(row: &sqlx::sqlite::SqliteRow) -> Result<Option<OpenPr>> {
+    let Some(pull) = row.try_get::<Option<i64>, _>("pr_thread")? else {
+        return Ok(None);
+    };
+    let update = match row.try_get::<Option<String>, _>("pr_update")? {
+        None => None,
+        Some(json) => {
+            #[derive(serde::Deserialize)]
+            struct Raw {
+                id: i64,
+                state: String,
+                send: Option<String>,
+            }
+            let raw: Raw = serde_json::from_str(&json)
+                .map_err(|e| StoreError::Invalid(format!("a Bring up to date row: {e}")))?;
+            Some(UpdateNow {
+                id: raw.id,
+                thread: ThreadState::from_str(&raw.state)
+                    .map_err(|e| StoreError::Invalid(e.to_string()))?,
+                send: raw
+                    .send
+                    .map(|s| SendState::from_str(&s).map_err(StoreError::Invalid))
+                    .transpose()?,
+            })
+        }
+    };
+    Ok(Some(OpenPr {
+        pull,
+        base: row.try_get("pr_base")?,
+        health: row.try_get("pr_health")?,
+        update,
+    }))
+}
+
+/// The columns [`open_pr`] reads from the pull request's watch `w`: only
+/// while it is open, what GitHub said about the commit Decurion last pushed
+/// there (never an older one), and the newest Bring up to date run started
+/// from that commit (`merge_from` marks one; a fix of comments has none).
+macro_rules! catch_cols {
+    () => {
+        "CASE WHEN w.state = 'open' THEN w.thread_id END AS pr_thread, w.base_ref AS pr_base,
+    CASE WHEN w.state = 'open' AND w.health_head = w.head THEN w.health END AS pr_health,
+    CASE WHEN w.state = 'open' THEN (SELECT json_object('id', u.id, 'state', u.state, 'send', u.gh_state)
+        FROM threads u WHERE u.fix_of = w.thread_id AND u.merge_from IS NOT NULL
+          AND u.base_commit = w.head ORDER BY u.id DESC LIMIT 1) END AS pr_update"
+    };
 }
 
 /// The columns [`facts_from`] reads, for a query over `threads t` joined
@@ -669,8 +830,15 @@ pub(crate) fn facts_from(row: &sqlx::sqlite::SqliteRow) -> Result<Facts> {
 /// left joined, its pull request's watch `pr_watches w` (on
 /// the work's own id, or for a fix once it was pushed, the pull request it
 /// answers: a fix not pushed yet never takes that pull request's merge).
-pub(crate) const FACT_COLS: &str = "t.state, p.review, p.review_summary, t.gh_state, t.gh_url,
-    t.gh_pr, t.gh_branch, t.gh_error, p.merged_at, w.live_at, w.state AS gh_pr_state";
+pub(crate) const FACT_COLS: &str = concat!(
+    "t.state, p.review, p.review_summary, t.gh_state, t.gh_url,
+    t.gh_pr, t.gh_branch, t.gh_error, p.merged_at, w.live_at, w.state AS gh_pr_state, ",
+    catch_cols!()
+);
+
+/// [`catch_cols`] on its own, for a query that names the rest of
+/// [`FACT_COLS`] itself.
+pub(crate) const CATCH_COLS: &str = catch_cols!();
 
 impl Store {
     /// The rules that decide app `app_id`'s story.
@@ -854,6 +1022,7 @@ mod tests {
             closed: false,
             live: false,
             error: None,
+            pr: None,
         }
     }
 
@@ -1072,6 +1241,90 @@ mod tests {
         );
         assert_eq!(r.label, "Needs you · merge it");
         assert!(r.next.contains("Tap Merge"), "{}", r.next);
+    }
+
+    /// Sent as a pull request that GitHub says `health` about, with the
+    /// newest Bring up to date run on it, if any.
+    fn clashing(health: Option<&str>, update: Option<(ThreadState, Option<SendState>)>) -> Facts {
+        Facts {
+            pr: Some(OpenPr {
+                pull: 7,
+                base: Some("trunk".into()),
+                health: health.map(str::to_owned),
+                update: update.map(|(thread, send)| UpdateNow {
+                    id: 9,
+                    thread,
+                    send,
+                }),
+            }),
+            ..sent(true)
+        }
+    }
+
+    #[test]
+    fn a_conflicting_pull_request_is_brought_up_to_date_in_decurion() {
+        let full = Rules {
+            merge: true,
+            ..Rules::default()
+        };
+        for r in [Rules::default(), full] {
+            let road = piece_road(&clashing(Some("dirty"), None), &r);
+            assert_eq!(now(&road), Some("Merged"));
+            assert_eq!(road.label, "Needs you · bring it up to date");
+            assert!(road.you && !road.done);
+            assert!(road.next.contains("conflicts with trunk"), "{}", road.next);
+            assert!(road.next.contains("Tap Bring up to date"), "{}", road.next);
+            assert!(!road.next.contains("merge it there"), "{}", road.next);
+            assert_eq!(
+                road.catch_up,
+                Some(CatchUp {
+                    pull: 7,
+                    work: None
+                })
+            );
+        }
+        let behind = piece_road(&clashing(Some("behind"), None), &Rules::default());
+        assert_eq!(behind.label, "Needs you · bring it up to date");
+        assert!(behind.next.contains("behind trunk"), "{}", behind.next);
+        // Nothing in the way, or GitHub still checking: the usual merge.
+        for h in [None, Some("checking")] {
+            let road = piece_road(&clashing(h, None), &Rules::default());
+            assert_eq!(road.label, "Needs you · merge on GitHub");
+            assert_eq!(road.catch_up, None);
+        }
+    }
+
+    #[test]
+    fn a_bring_up_to_date_under_way_is_followed_to_the_owners_accept() {
+        let r = Rules::default();
+        let at =
+            |u: (ThreadState, Option<SendState>)| piece_road(&clashing(Some("dirty"), Some(u)), &r);
+        let running = at((ThreadState::Running, None));
+        assert_eq!(running.label, "Bringing it up to date");
+        assert!(!running.you);
+        assert_eq!(running.catch_up.and_then(|c| c.work), Some(9));
+        let asks = at((ThreadState::NeedsYou, None));
+        assert_eq!(asks.label, "Needs you · answer the agent");
+        assert!(asks.you);
+        let review = at((ThreadState::InReview, None));
+        assert_eq!(review.label, "Needs you · look over the update");
+        assert!(review.next.contains("tap Accept"), "{}", review.next);
+        assert_eq!(review.catch_up.and_then(|c| c.work), Some(9));
+        let sending = at((ThreadState::Done, Some(SendState::Sending)));
+        assert_eq!(sending.label, "Sending the update");
+        assert!(!sending.you);
+        let lost = at((ThreadState::Done, Some(SendState::Failed)));
+        assert_eq!(lost.label, "Needs you · update not pushed");
+        assert_eq!(lost.catch_up.and_then(|c| c.work), Some(9));
+        // A run that was stopped or rejected is over: the owner's tap
+        // starts a new one.
+        let over = at((ThreadState::Failed, None));
+        assert_eq!(over.label, "Needs you · bring it up to date");
+        assert_eq!(over.catch_up.and_then(|c| c.work), None);
+        // Under way while GitHub's word on the new commit is not in yet:
+        // still followed, not shown as a plain merge.
+        let quiet = piece_road(&clashing(None, Some((ThreadState::Queued, None))), &r);
+        assert_eq!(quiet.label, "Bringing it up to date");
     }
 
     #[test]

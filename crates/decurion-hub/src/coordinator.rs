@@ -1256,7 +1256,7 @@ impl Store {
             "SELECT p.thread_id, p.goal_id, p.title, p.done_when, p.review, p.rounds,
                     p.review_summary, p.review_issues, p.review_evidence, p.review_claims,
                     t.state, t.branch, t.research, p.merged_at, w.live_at,
-                    t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, {},
+                    t.gh_state, t.gh_branch, t.gh_url, t.gh_pr, t.gh_error, {}, {},
                     EXISTS (SELECT 1 FROM piece_reports r WHERE r.thread_id = p.thread_id) AS report,
                     (SELECT json_extract(e.body, '$.summary') FROM events e
                      WHERE e.thread_id = p.thread_id AND json_extract(e.body, '$.kind') = 'finished'
@@ -1265,7 +1265,8 @@ impl Store {
              FROM goal_pieces p JOIN threads t ON t.id = p.thread_id
              LEFT JOIN pr_watches w ON w.thread_id = p.thread_id
              WHERE p.goal_id = ? ORDER BY p.thread_id",
-            crate::github::gh_watch("t")
+            crate::github::gh_watch("t"),
+            crate::road::CATCH_COLS
         ))
         .bind(id)
         .fetch_all(&mut *tx)
