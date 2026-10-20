@@ -2310,8 +2310,9 @@ async fn edit_app(
 
 /// The owner changes an app's rules: whether Decurion may merge or deploy
 /// it (each still one tap), its deploy steps, whether checked work goes to
-/// GitHub by itself, and whether it holds patient data. Owner only, and not
-/// in `cloud_reach`.
+/// GitHub by itself, whether it holds patient data, and whether conflicts
+/// with main start Bring up to date by itself. Owner only, and not in
+/// `cloud_reach`.
 async fn set_rules(
     State(st): State<AppState>,
     axum::Extension(c): axum::Extension<Caller>,
@@ -2331,6 +2332,7 @@ async fn set_rules(
                     deploy = r.deploy,
                     send_checked = r.send_checked,
                     patient_data = r.patient_data,
+                    update_conflicts = r.update_conflicts,
                     "the owner changed an app's rules"
                 );
             }
