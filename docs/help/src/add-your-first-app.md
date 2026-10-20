@@ -8,7 +8,7 @@ If your code is on GitHub and not yet on your PC, download it first. You can use
 
 ## Add the app
 
-1. Open the board at <http://decurion.localhost:7420>.
+1. Open Decurion at <http://decurion.localhost:7420>.
 2. Click the **+** (**Add an app**) next to **Apps** in the list on the left. Or click **Settings**, then **Apps**. The **Add an app** form is under the list of apps.
 3. In **Name**, type a short name, such as `portal`. Use only letters, numbers, `-` or `_`. Spaces are not allowed.
 4. In **Repo path**, type the full path to the app's folder, such as `C:\Users\you\code\portal`. On a Mac or Linux, the path starts with `/`.

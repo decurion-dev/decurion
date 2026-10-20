@@ -2,8 +2,8 @@
 // with a light for every account (and "Sign in on this PC" for Claude), apps
 // (a short list, then one page per app with its rules, plan and money,
 // websites, files, name and folder), computers, accounts and caps, test keys,
-// the GitHub token, website sign-ins and paired phones, plus the usage
-// summary the board shows in its sidebar.
+// the GitHub token, website sign-ins and paired phones, a Help link out to
+// the help pages, plus the usage summary the board shows in its sidebar.
 //
 // What must stay true:
 // - Everything is built with D.el, so names, paths and hub text go in as
@@ -310,8 +310,15 @@
       parts.links[t.id] = a;
       return el("li", {}, a);
     });
+    // Help is the last row: a link out to the help pages in a new browser
+    // tab, never a settings page of its own, and never the open tab. It is
+    // here because the phone has no Help tab of its own.
+    const help = el("li", {}, el("a", { className: "set-tab set-help", href: D.HELP_URL, target: "_blank", rel: "noopener noreferrer", dataset: { key: "tab-help" } },
+      el("span", { className: "ic" }, icon("help")),
+      el("span", { className: "nm" }, el("b", {}, "Help"), el("span", { className: "note" }, "How Decurion works, in a new tab")),
+      icon("open")));
     parts.index = el("div", { className: "set-index" }, phone() ? opts.top : null,
-      el("nav", { "aria-label": "Settings" }, el("ul", { className: "set-tabs" }, ...links)));
+      el("nav", { "aria-label": "Settings" }, el("ul", { className: "set-tabs" }, ...links, help)));
     // The phone's way back to the list. Coming from the list, it steps back
     // in history, so the back button and this link agree.
     // Inside an app's page it leads back to the list of apps instead.

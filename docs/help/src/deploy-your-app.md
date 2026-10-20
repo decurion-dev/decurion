@@ -1,6 +1,6 @@
 # Deploy your app in one tap
 
-This page shows how to put your app live after you merge, with one tap on the board or your phone.
+This page shows how to put your app live after you merge, with one tap on your PC or your phone.
 
 After you merge a pull request on GitHub, the new version is not live yet. With deploys turned on for an app, Decurion notices the merge and shows **Merged · ready to deploy** on that app's line. Tap **Deploy** once, and Decurion runs the app's own release on your PC and tells you when it is live. That one tap is the only ask: there is no "are you sure".
 
@@ -8,7 +8,7 @@ After you merge a pull request on GitHub, the new version is not live yet. With 
 
 You do this once per app.
 
-1. Open **Settings**, then **Apps**, then the app. Its **Rules** tab opens first.
+1. Open **Settings**, then **Apps**, then the app. Its **Rules** tab opens first. (From **Apps**, open the app and tap **Rules and settings**.)
 2. Tap **Deploy from Decurion**. (**Full control** turns it on together with **Merge from Decurion**; **PR only** turns both off.)
 3. In **Deploy steps**, write the commands that release the app, one per line, the same ones you'd type in the app's folder. For example:
 
@@ -28,7 +28,7 @@ New apps start with deploys off. Turning **Deploy from Decurion** off again remo
 ## Deploy after a merge
 
 1. Merge the pull request on GitHub, as usual.
-2. Within a couple of minutes, the app's line on the board's **Today** strip and the phone's **Today** card says **Merged · ready to deploy**, and your phone gets a notice. **What's in it** lists the changes since the last release. To look right away, tap **Check for changes**.
+2. Within a couple of minutes, the app's line on **Home** says **Merged · ready to deploy**, and your phone gets a notice. The line moves to the top of **Needs you**, under **Apps that need you**. **What's in it** lists the changes since the last release. To look right away, tap **Check for changes**.
 3. Tap **Deploy**.
 
 The card shows how far it has got, such as "Step 3 of 3: node scripts/deploy-prod.mjs · 2/5 Snapshot". When it finishes, it says **Live** with an **Open site** button, and your phone gets a notice.
@@ -41,7 +41,8 @@ If you merge again before you tap, the same card moves to the newest version. Yo
 
 For an app that deploys, a goal is not finished at the merge. Its last step is **Live**:
 
-- On the goal's page, the Roadmap and the **Today** row, a merged goal says **Merged · ready to deploy** until a deploy carries that merge.
+- On the goal's page, the Roadmap and Home, a merged goal says **Merged · ready to deploy** until a deploy carries that merge.
+- The goal's **Deploy** button takes you to the app's line on Home, where you tap **Deploy**.
 - Once the deploy finishes, the same goal says **Live**.
 
 Apps that don't deploy from Decurion show **Done** at the merge, as before.

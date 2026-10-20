@@ -26,7 +26,7 @@
   .vbar .back:hover { background: var(--surface-2); }
   .vt { flex: 1; min-width: 0; display: grid; gap: 1px; }
   .vt h1 { font: 650 16.5px/1.3 var(--font-display); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* The trail (D.trail in ui.js): the app's Roadmap, the goal, this page. It wraps rather than cut. */
+  /* The trail (D.trail in ui.js): Apps, the app, the goal, this page. It wraps rather than cut. */
   .vt .sub { min-width: 0; }
   .vbar .raw { flex: none; }
   .vbar .raw svg.i { width: 14px; height: 14px; }
@@ -159,7 +159,7 @@
 </head>
 <body>
 <header class="vbar">
-  <a class="mk" href="/plan" id="mark" aria-label="Roadmap"></a>
+  <a class="mk" href="/plan" id="mark" aria-label="Apps"></a>
   <a class="btn quiet back" id="back" href="/plan"><span class="sr-only">Back</span></a>
   <div class="vt">
     <h1 id="title">Loading the page…</h1>
@@ -226,7 +226,7 @@
   $("raw").append(icon("expand"));
   $("sheet-close").append(icon("close", "l"));
   const pageSrc = (id) => `/api/goals/${G}/pages/${id}`;
-  // Back goes where you came from, or to the Roadmap this page belongs to.
+  // Back goes where you came from, or to the Pages tab of the app this page belongs to.
   $("back").onclick = (e) => {
     if (history.length > 1) { e.preventDefault(); history.back(); }
   };
@@ -475,7 +475,7 @@
     if (S.missing) {
       panel.replaceChildren(el("div", { className: "notice bad" }, icon("alert"),
         el("span", { className: "grow" }, "This page isn't here. It may have been removed.")),
-        el("a", { className: "btn", href: "/plan" }, "Open the Roadmap"));
+        el("a", { className: "btn", href: "/plan" }, "Open Apps"));
       bar(0, false, false);
       return;
     }
@@ -532,13 +532,14 @@
     const goalTitle = c?.g.title ?? page?.goal_title;
     const kind = KIND[c?.kind ?? page?.kind] ?? "";
     const app = c?.g.app_id ?? page?.app_id;
-    // Where this page sits: its app's Roadmap, its goal, then this page.
+    // Where this page sits: Apps, its app's page, its goal, then this page.
     sub.replaceChildren(D.trail([
+      { label: "Apps", href: "/plan#apps" },
       app != null ? { label: D.appName(app) || S.view?.app_name, href: D.planHref(app) } : null,
       goalTitle ? { label: goalTitle, href: `/goals#goal-${G}` } : null,
       { label: page?.piece_title && !title.includes(page.piece_title) ? `${kind}: ${page.piece_title}` : kind || title },
     ]) ?? "");
-    // Opened from a goal (?from=goal), Back with no history returns to it; otherwise to the Roadmap's pages.
+    // Opened from a goal (?from=goal), Back with no history returns to it; otherwise to its app's Pages tab.
     const back = fromGoal ? `/goals#goal-${G}` : app != null ? `/plan#app=${app}&tab=pages` : "/plan";
     $("back").href = back;
     $("mark").href = app != null ? `/plan#app=${app}` : "/plan";
@@ -621,7 +622,7 @@
       el("span", {}, el("b", {}, words), p.title ? ` · ${p.title}` : "")));
     if (p.review_summary) sec.append(el("p", { className: "summary-text" }, p.review_summary));
     if (p.review_issues?.length) sec.append(el("ul", { className: "issues" }, ...p.review_issues.map((i) => el("li", {}, i))));
-    sec.append(el("p", { className: "links" }, el("a", { className: "btn sm", href: `/#work-${p.thread_id}` }, icon("board"), "Open it on the board")));
+    sec.append(el("p", { className: "links" }, el("a", { className: "btn sm", href: D.workHref(p.thread_id) }, icon("board"), "Open this piece")));
     return sec;
   }
 

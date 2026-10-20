@@ -1,4 +1,4 @@
-// The new-work form, shared by the board, the phone inbox and the Goals page:
+// The new-work form, shared by Home (the PC's and the phone's) and the Goals page:
 // the one place the owner asks for something. One box says what they want; by default it
 // goes to the project lead as a goal, which asks, plans and waits for the
 // owner's approval before anything starts. "Just do it" is the owner's own
@@ -46,7 +46,7 @@
 
   // opts:
   //   root       element to fill (else a new <section>)
-  //   prefix     for element ids, so two forms never share one ("" on the board)
+  //   prefix     for element ids, so two forms never share one ("" on the PC's Home)
   //   labels     true shows a visible label over each choice (the phone)
   //   keyHint    false hides the "Ctrl Enter to start" hint
   //   draftKey   D.store key that keeps the typed text if the page is closed
@@ -92,7 +92,7 @@
       setMode(mode === "lead" ? "direct" : "lead", true);
     });
 
-    // A choice with a visible label on the phone, or bare as on the board.
+    // A choice with a visible label on the phone, or bare as on the PC's Home.
     const field = (label, control, extra = "") => (opts.labels
       ? el("div", { className: `c-field ${extra}`.trim() }, el("label", { className: "label", htmlFor: control.id }, label), control)
       : control);
@@ -278,12 +278,12 @@
       form.hidden = st.loaded && !has;
       noApps.hidden = !st.loaded || has;
       if (changed("apps", st.apps.map((a) => [a.id, a.name]))) {
-        const keep = app.value || (st.filter && st.filter !== "all" ? st.filter : D.store.get(LAST_APP));
+        const keep = app.value || (st.filter && st.filter !== "all" ? st.filter : D.app?.get() ?? D.store.get(LAST_APP));
         app.replaceChildren(...st.apps.map((a) => el("option", { value: String(a.id) }, a.name)));
         if (keep && st.apps.some((a) => String(a.id) === keep)) app.value = keep;
       }
-      // The box starts on the app the owner picked on the board or with the
-      // phone's app filter, and follows when they pick another one.
+      // The box starts on the app the owner picked on Home or the Apps page
+      // (D.app), and follows when they pick another one.
       if (st.filter !== lastFilter) {
         lastFilter = st.filter;
         if (st.filter && st.filter !== "all" && !wantApp) setApp(st.filter);
@@ -340,6 +340,6 @@
     // The work panel steps back in history as it closes; wait for that first.
     if (wasWork) await new Promise((ok) => { window.addEventListener("popstate", ok, { once: true }); setTimeout(ok, 600); });
     if (opener) opener({ mode: "lead", ...fill });
-    else location.href = "/#board";
+    else location.href = "/";
   };
 })();

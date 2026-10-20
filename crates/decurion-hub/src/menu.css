@@ -1,5 +1,5 @@
-/* The PC menu (D.pcNav in ui.js): the logo and the four places, the same on
-   the Board, Goals and the Roadmap. It is its own file because goals.html
+/* The PC menu (D.pcNav in ui.js): the logo and the four places (Home,
+   Goals, Apps, Settings) and Help, the same on Home, Goals and Apps. It is its own file because goals.html
    has its own look and does not load ui.css, so it uses only the colour names
    both looks define (--bg, --ink, --muted, --line, --accent-soft,
    --accent-ink) and falls back for the rest. Blue marks the page you are on,

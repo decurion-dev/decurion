@@ -1,7 +1,7 @@
 {
   "name": "Decurion",
   "short_name": "Decurion",
-  "description": "Your AI dev team's inbox and board.",
+  "description": "Your AI dev team: what needs you, what is being built, and what is done.",
   "start_url": "/inbox",
   "scope": "/",
   "display": "standalone",

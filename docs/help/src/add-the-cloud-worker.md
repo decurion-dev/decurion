@@ -10,7 +10,7 @@ A cloud worker is a small server you rent from a hosting company. It runs the sa
 
 ## Set it up
 
-On the board, open **Settings**. Under **Computers**, click **Add cloud worker**. The page walks you through three steps, one at a time: **1 Key**, **2 Server** and **3 Connect**. Each step ends with a **Next** button, and you can tap a step's name to go back to it.
+On your PC, open **Settings**. Under **Computers**, click **Add cloud worker**. The page walks you through three steps, one at a time: **1 Key**, **2 Server** and **3 Connect**. Each step ends with a **Next** button, and you can tap a step's name to go back to it.
 
 1. **Make a Tailscale key.** Open your Tailscale keys page and click **Generate auth key**. Keep the settings as they are, click **Generate key**, and paste the key into the page. The key stays on that page: Decurion never sends it anywhere.
 2. **Create a server.** At a hosting company such as Hetzner or DigitalOcean, create a server with **Ubuntu 24.04, 2 CPUs and 4 GB memory**. On the Decurion page, click **Make setup text**, then **Copy**. Paste it into the hosting company's **User data** (or **Cloud config**) box before you create the server. The setup text works once, within 24 hours. Don't share it.
@@ -18,9 +18,9 @@ On the board, open **Settings**. Under **Computers**, click **Add cloud worker**
 
 ## Choose where work runs
 
-Once a cloud worker is set up, the box where you describe new work has a choice: **On your PC** or **In the cloud**. Each card on the board shows where its work runs.
+Once a cloud worker is set up, the box where you describe new work has a choice: **On your PC** or **In the cloud**. When you open a piece of work, it shows where it runs.
 
-To move work, open its card and click **Move to cloud** or **Move to PC**. The agent stops, its work so far is saved, and it carries on from the same point on the other computer. It does not ask you anything new.
+To move work, open it and click **Move to cloud** or **Move to PC**. The agent stops, its work so far is saved, and it carries on from the same point on the other computer. It does not ask you anything new.
 
 ## What is kept safe
 
@@ -38,4 +38,4 @@ To move work, open its card and click **Move to cloud** or **Move to PC**. The a
 
 ## Remove it
 
-On the board, open **Settings**. Under **Computers**, click **Remove** next to the cloud worker, then **Remove worker** to confirm. Work running there comes back to your PC and carries on. Then delete the server at the hosting company so you stop paying for it.
+On your PC, open **Settings**. Under **Computers**, click **Remove** next to the cloud worker, then **Remove worker** to confirm. Work running there comes back to your PC and carries on. Then delete the server at the hosting company so you stop paying for it.

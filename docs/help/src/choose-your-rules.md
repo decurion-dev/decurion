@@ -17,7 +17,7 @@ When you tap **Full control** and no deploy steps are saved yet, Merge turns on 
 
 Below the two buttons, each rule has its own switch. If you mix them, the app shows **Your own mix**.
 
-- **Merge from Decurion.** Finished pull requests get a **Merge** button on the board and on your phone. One tap merges, and only once GitHub says the checks passed and nothing conflicts. Nothing merges by itself. See [Merge from Decurion](review-and-merge.md#merge-from-decurion).
+- **Merge from Decurion.** Finished pull requests get a **Merge** button on Home, on your PC and your phone. One tap merges, and only once GitHub says the checks passed and nothing conflicts. Nothing merges by itself. See [Merge from Decurion](review-and-merge.md#merge-from-decurion).
 - **Deploy from Decurion.** After a merge you get a **Ready to deploy** card. One tap runs the app's deploy steps on your PC. Decurion can't turn this on until you save the steps:
   1. In **Deploy steps**, type the commands that deploy the app, one per line, the same ones you'd type in the app's folder. Up to 8. Each line runs as one program, without a shell (the program that reads typed commands), so marks like `|`, `&&` or `>` are refused. Put each command on its own line instead.
   2. In **Live site**, type the address of the live app, such as `https://app.example.com`. This is optional. **Open site** goes there when a deploy finishes.
