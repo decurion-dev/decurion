@@ -576,7 +576,8 @@
   // The one plain line under a goal's road: what happens next, and the one
   // button for it. Amber when it waits on you, soft blue when Decurion is
   // on it. `handlers` maps the action's kind (reply, approve, answer, merge,
-  // open_pr, review, retry, update) to what that tap does on this screen;
+  // open_pr, bring_up_to_date, review, retry, update, deploy) to what that
+  // tap does on this screen;
   // a kind the screen has no handler for gets no button. The button is the
   // owner's own tap: nothing here runs by itself.
   D.journeyButton = (j, handlers = {}, { className = "btn primary", key = "next" } = {}) => {
@@ -621,7 +622,12 @@
       // bound to the merged commit shown there (deploy.rs): this only opens it.
       deploy: () => { location.href = D.onPhone() ? "/inbox#home" : "/#home"; },
       open_pr: (b, j) => (j.piece == null ? goal()() : D.openPullRequest({ id: j.piece, title: g.title }, b, onChanged)),
-      update: send("/pr/update", "Started work that brings the pull request up to date."),
+      // The piece's pull request conflicts with main (road.rs catch_up):
+      // the same owner tap as the board's and the inbox's Bring up to date.
+      bring_up_to_date: send("/pr/update", "Started work that brings the pull request up to date."),
+      // Decurion's own code, merged but not running here yet: updating is
+      // the owner's to do, so this only opens the help page that says how.
+      update: () => { window.open(D.UPDATE_HELP(), "_blank", "noopener"); },
       // Merge where the app's rules let Decurion merge it (the hub merges
       // only once GitHub says it can); else open the pull request on GitHub,
       // where the owner merges it. Nothing merges without this tap.
@@ -1570,7 +1576,7 @@
   D.githubClash = (g) => {
     if (!g || g.state !== "sent" || !ghLink(g.url) || g.merged || g.closed) return null;
     if (g.pull_request && g.clash) {
-      return "This clashes with newer changes on main, so GitHub can't merge it as it is. Ask for the same change again: new work always starts from the latest code. Or have someone fix the clash on GitHub.";
+      return "This clashes with newer changes on main, so it can't be merged as it is. Tap Bring up to date: Decurion merges the newest main into it and fixes the clash, on the same pull request.";
     }
     if (!g.pull_request) {
       return "If GitHub says “Can't automatically merge”, newer changes on main clash with this work. You can still open the pull request. To have it redone on the latest code, ask for the same change again.";
@@ -1607,15 +1613,41 @@
       b.disabled = D.offline;
     }
   };
+  // Start Bring up to date on the work whose pull request it is (road.rs
+  // catch_up.pull), with a receipt like every owner tap. An agent merges the
+  // newest main into it; nothing changes on GitHub until the owner accepts.
+  const bringUpToDate = async (pull, b, onChanged) => {
+    if (D.offline) return;
+    b.disabled = true;
+    try {
+      await D.send(`/threads/${pull}/pr/update`, {});
+      D.toast("Started work that brings the pull request up to date.", "branch");
+      if (onChanged) onChanged();
+    } catch (e) {
+      D.toast(`"Bring up to date" did not go through. ${e.message}`, "alert");
+    }
+    b.disabled = D.offline;
+  };
   // The one thing the owner can do about a send from a card, or null:
-  // Open the pull request for a branch with none, Try again for a failed
-  // push. `small` is for board cards, whose buttons are quiet.
+  // Bring up to date for a pull request that conflicts with main (or open
+  // the update that is doing it, when it waits on the owner), Open the pull
+  // request for a branch with none, Try again for a failed push. `small` is
+  // for board cards, whose buttons are quiet.
   D.githubButton = (t, onChanged, { small = false } = {}) => {
     const g = t.github;
     if (t.state !== "done" || !g) return null;
     const cls = small ? "btn quiet sm" : "btn primary sm";
+    const cu = t.road?.catch_up;
     let b = null;
-    if (noPr(g)) {
+    if (cu && t.road.you && cu.work != null) {
+      b = el("a", { className: cls, href: D.workHref(cu.work) }, icon("branch"), "Open the update");
+      b.onclick = (ev) => ev.stopPropagation();
+      return b;
+    }
+    if (cu && t.road.you) {
+      b = el("button", { type: "button", className: cls }, icon("branch"), "Bring up to date");
+      b.onclick = (ev) => { ev.stopPropagation(); bringUpToDate(cu.pull, b, onChanged); };
+    } else if (noPr(g)) {
       b = el("button", { type: "button", className: cls }, icon("branch"), "Open the pull request");
       b.onclick = (ev) => { ev.stopPropagation(); D.openPullRequest(t, b, onChanged); };
     } else if (g.state === "failed") {
@@ -1648,10 +1680,12 @@
         : want ? (t.road ? "On GitHub as a branch, with no pull request yet."
           : "On GitHub as a branch, with no pull request yet, so it can't be merged. Tap Open the pull request. Decurion then watches it and sees the merge by itself.")
         : `Pushed to the app's git server as the branch ${g.branch}.`;
-      const clash = D.githubClash(g);
+      // A road that knows about the clash (catch_up) already says it, with
+      // its button; say it once.
+      const clash = t.road?.catch_up ? null : D.githubClash(g);
       // The step bar already shows the hub's reason; say it once.
       const why = g.error && g.error !== t.road?.why ? g.error : null;
-      const warn = want || (g.pull_request && g.clash && !g.merged && !g.closed);
+      const warn = want || !!(t.road?.catch_up && t.road.you) || (g.pull_request && g.clash && !g.merged && !g.closed);
       const btns = [D.githubButton(t, onChanged), link].filter(Boolean);
       return el("div", { className: `gh notice${warn ? " warn" : ""}` }, icon(warn ? "alert" : g.closed ? "close" : "done"),
         el("div", { className: "grow" }, words, why ? el("div", { className: "hint" }, why) : null,
@@ -3557,10 +3591,16 @@ Add or fix .decurion/run.json so the app starts in a fresh box: one install comm
     const comments = p.open_comments > 0 && !p.fixing;
     const btns = [];
     if (comments) btns.push(tap("Answer the comments", "tool", "/pr/fix", "Started work that answers the comments. You'll review it like any other work.", "btn primary sm"));
-    if (p.can_merge) btns.push(tap("Merge", "merge", "/pr/merge", "Merged on GitHub.", comments ? "btn sm" : "btn primary sm"));
-    if (p.can_update ?? !!p.health) btns.push(tap("Bring up to date", "branch", "/pr/update", "Started work that brings the pull request up to date. You'll review it like any other work.", "btn quiet sm"));
+    // With a conflict, Merge can only be refused, so Bring up to date leads.
+    const clash = !comments && !!p.health && (p.can_update ?? true);
+    const update = (p.can_update ?? !!p.health)
+      ? tap("Bring up to date", "branch", "/pr/update", "Started work that brings the pull request up to date. You'll review it like any other work.", clash ? "btn primary sm" : "btn quiet sm")
+      : null;
+    if (clash) btns.push(update);
+    if (p.can_merge) btns.push(tap("Merge", "merge", "/pr/merge", "Merged on GitHub.", comments ? "btn sm" : clash ? "btn quiet sm" : "btn primary sm"));
+    if (update && !clash) btns.push(update);
     if (ghLink(p.url)) btns.push(el("a", { className: "btn quiet sm", href: p.url, target: "_blank", rel: "noopener noreferrer" }, icon("open"), "Open on GitHub"));
-    const word = comments ? "Needs you · review comments" : p.can_merge ? "Needs you · ready to merge" : "Needs you";
+    const word = comments ? "Needs you · review comments" : clash ? "Needs you · bring it up to date" : p.can_merge ? "Needs you · ready to merge" : "Needs you";
     const line = [p.line, p.health].filter(Boolean).join(". ")
       || (p.can_merge ? "Merge puts it into your main branch, only once GitHub says the checks passed and nothing conflicts." : "");
     return el("article", { className: "hrow pr", dataset: { tone: "you", key: `pr-${p.thread_id}` } },
@@ -3663,10 +3703,14 @@ Add or fix .decurion/run.json so the app starts in a fresh box: one install comm
     } else name = el("span", { className: "happ-name" }, r.name);
     const when = r.tone === "done" && r.last_pr?.event_at ? ` · ${D.ago(r.last_pr.event_at)}` : "";
     const fixOn = r.open_comments > 0 ? (r.fix_thread_id ?? r.last_pr?.thread_id) : null;
+    // GitHub says the pull request conflicts with (or is behind) main: it
+    // can't be merged until it is brought up to date, so that is the main
+    // button and Merge waits.
+    const blocked = r.last_pr?.state === "open" && !!r.last_pr.health && r.last_pr.can_update;
     let act;
     if (fixOn != null) {
       act = tap("Answer the comments", "tool", "btn primary sm", `today-fix-${id}`, null, `/threads/${fixOn}/pr/fix`, "Started work that answers the comments.", onChanged);
-    } else if (r.last_pr?.can_merge && r.last_pr.state === "open") {
+    } else if (r.last_pr?.can_merge && r.last_pr.state === "open" && !blocked) {
       // The app's rules let the owner merge from here. The hub merges only
       // once GitHub says the checks passed, and says why when it won't.
       act = tap("Merge", "merge", "btn primary sm", `today-merge-${id}`, `Merge pull request #${r.last_pr.number} on GitHub`,
@@ -3676,7 +3720,7 @@ Add or fix .decurion/run.json so the app starts in a fresh box: one install comm
     // nothing under way on it. An agent merges main into it on the same
     // pull request; nothing changes on GitHub until the owner accepts.
     const update = r.last_pr?.state === "open" && r.last_pr.can_update
-      ? tap("Bring up to date", "branch", "btn quiet sm", `today-update-${id}`, `Merge the newest main into pull request #${r.last_pr.number}`,
+      ? tap("Bring up to date", "branch", blocked && fixOn == null ? "btn primary sm" : "btn quiet sm", `today-update-${id}`, `Merge the newest main into pull request #${r.last_pr.number}`,
         `/threads/${r.last_pr.thread_id}/pr/update`, "Started work that brings the pull request up to date.", onChanged)
       : null;
     // Under the app's rule to fix conflicts by itself, Decurion may have

@@ -269,6 +269,26 @@ fn piece_wait(pieces: &[PieceNow], r: &Rules) -> Option<Wait> {
     for p in pieces {
         match &p.road {
             Some(road) if road.you && !road.done => {
+                // A pull request that has to take in the newest of its base
+                // branch first: the tap is on the Bring up to date work, or
+                // starts one, never "Merge on GitHub".
+                if let Some(c) = road.catch_up {
+                    let (kind, button, piece) = match c.work {
+                        Some(w) if road.label == "Needs you · answer the agent" => {
+                            ("answer", "Answer the agent", w)
+                        }
+                        Some(w) => ("review", "Look it over", w),
+                        None => ("bring_up_to_date", "Bring up to date", c.pull),
+                    };
+                    return Some(Wait {
+                        stage: Some(Stage::Merge),
+                        label: road.label.clone(),
+                        next: says(p, &road.next),
+                        kind,
+                        button: button.into(),
+                        piece: Some(piece),
+                    });
+                }
                 let at = road
                     .steps
                     .iter()
@@ -839,6 +859,7 @@ mod tests {
             closed: false,
             live: false,
             error: None,
+            pr: None,
         }
     }
 
@@ -998,6 +1019,73 @@ mod tests {
                 ("Merge", Todo)
             ]
         );
+    }
+
+    #[test]
+    fn a_conflicting_pull_request_asks_for_bring_up_to_date_not_github() {
+        let r = Rules::default();
+        let clash = |update: Option<crate::road::UpdateNow>| Facts {
+            pr: Some(crate::road::OpenPr {
+                pull: 3,
+                base: Some("main".into()),
+                health: Some("dirty".into()),
+                update,
+            }),
+            ..sent(true)
+        };
+        let j = journey(
+            &GoalFacts {
+                pieces: vec![piece(3, "Logo", &clash(None), &r)],
+                ..facts(GoalState::Working)
+            },
+            &r,
+        );
+        assert_eq!(j.label, "Needs you · bring it up to date");
+        assert_eq!(kind(&j), Some("bring_up_to_date"));
+        assert_eq!(
+            j.action.as_ref().map(|a| a.label.as_str()),
+            Some("Bring up to date")
+        );
+        assert_eq!(j.piece, Some(3));
+        assert_eq!(j.steps[4].mark, You);
+        // The update waits for the owner's look: the tap opens that work.
+        let review = journey(
+            &GoalFacts {
+                pieces: vec![piece(
+                    3,
+                    "Logo",
+                    &clash(Some(crate::road::UpdateNow {
+                        id: 12,
+                        thread: ThreadState::InReview,
+                        send: None,
+                    })),
+                    &r,
+                )],
+                ..facts(GoalState::Working)
+            },
+            &r,
+        );
+        assert_eq!(kind(&review), Some("review"));
+        assert_eq!(review.piece, Some(12));
+        // While it runs, nothing waits on the owner.
+        let running = journey(
+            &GoalFacts {
+                pieces: vec![piece(
+                    3,
+                    "Logo",
+                    &clash(Some(crate::road::UpdateNow {
+                        id: 12,
+                        thread: ThreadState::Running,
+                        send: None,
+                    })),
+                    &r,
+                )],
+                ..facts(GoalState::Working)
+            },
+            &r,
+        );
+        assert!(!running.you, "{running:?}");
+        assert_eq!(kind(&running), None);
     }
 
     #[test]

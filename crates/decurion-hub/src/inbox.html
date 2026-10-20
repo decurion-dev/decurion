@@ -898,7 +898,10 @@ function mergeCard(p, anim) {
       "Merge puts it into your main branch, only once GitHub says the checks passed and nothing conflicts."));
   if (p.health) card.append(el("p", { className: "means" }, `${p.health}. Merge waits until that is fixed: Bring up to date fixes it.`));
   const open = el("a", { className: "btn", href: p.url, target: "_blank", rel: "noopener" }, "Open on GitHub");
-  card.append(el("div", { className: "iacts" }, mergeButton(p, card, "btn primary"), updateButton(p, card, "btn quiet"), open));
+  // With a conflict, Merge can only be refused, so Bring up to date leads.
+  card.append(el("div", { className: "iacts" }, ...(p.health
+    ? [updateButton(p, card, "btn primary"), mergeButton(p, card, "btn quiet")]
+    : [mergeButton(p, card, "btn primary"), updateButton(p, card, "btn quiet")]), open));
   return card;
 }
 const errNotice = (msg) => el("div", { className: "notice bad" }, D.icon("alert"), el("span", { className: "grow" }, msg));
