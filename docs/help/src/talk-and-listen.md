@@ -1,6 +1,6 @@
 # Talk to Decurion and hear it read aloud
 
-This page shows how to speak instead of typing, answer an agent's questions out loud, and have replies and reports read to you. It works on your phone and on the board, using the speech your phone and PC already have. There is nothing to install and nothing to pay for.
+This page shows how to speak instead of typing, answer an agent's questions out loud, and have replies and reports read to you. It works on your phone and on your PC, using the speech your phone and PC already have. There is nothing to install and nothing to pay for.
 
 ## Speak instead of typing
 
@@ -21,7 +21,7 @@ In Goals, each of the project lead's questions has its own mic beside **Somethin
 ## Hear replies and reports
 
 - Tap **Read aloud** on a project lead's reply, a question, or a finished piece of work's report. Tap **Stop** to stop.
-- On your phone's inbox, tap **Read what needs me** to hear everything that needs you, top to bottom.
+- On your phone, under **Needs you** on **Home**, tap **Read what needs me** to hear everything that needs you, top to bottom.
 - To hear new replies from your project lead as they arrive, turn on **Read new replies aloud** in **Settings**, under **Voice**.
 
 ## Talk mode

@@ -9,8 +9,8 @@ you talk to, turns it into finished, checked work.
 
 There is one box for asking for anything: **What do you want?**
 
-1. Open the board at <http://decurion.localhost:7420>. The box is at the top.
-   On your phone, open the inbox, tap **Board**, then **New work**. On the
+1. Open **Home** at <http://decurion.localhost:7420>. The box is at the top.
+   On your phone, tap **Home**, then **New work**. On the
    **Goals** page, press **New work** to open the same box above your goals.
 2. Choose the app.
 3. Type what you want, such as "Add a password reset page to the portal." Say
@@ -28,8 +28,8 @@ The box offers two ways to get it done:
 - **Just do it**. One agent does it right away. No plan and no checker. Best
   for small changes, such as "Make the footer text bigger." Only this choice
   shows the extra options: which AI does it, your PC or the cloud, a title,
-  and whether it is part of other work. The new card shows on the board, under
-  **Queued**, until an agent picks it up.
+  and whether it is part of other work. The new job shows on Home under
+  **Working**, marked **Queued**, until an agent picks it up.
 
 Nothing starts without you: a goal waits for your **Approve plan**, and
 **Just do it** starts only when you press **Start work**.
@@ -66,17 +66,19 @@ work, each with how you will know it is done.
 
 ## While the work runs
 
-Each piece of work runs on its own and shows on the board. When a piece is
-built, a checker agent tries it in a separate copy, takes "as built"
+Each piece of work runs on its own. Home's **Board** shows each goal in one
+row, with its pieces under **Waiting on you**, **Building**, **Checking** and
+**Done**. When a piece is built, a checker agent tries it in a separate copy, takes "as built"
 pictures, and either passes it or sends it back with notes. A piece gets at
 most two checks; if it still has problems, it is marked **Needs you · take a look**. The
 checker lists what it ran and marks each thing it says as **Checked** or
 **Guessed**.
 
-A check can take a while. While it runs, the checker counts under
-**Running** on the board, with its own card, and the piece says "Checker
-working" and when it started. A check lined up behind other work counts
-under **Queued** and says "Waiting for a free agent to check it". If
+A check can take a while. While it runs, the piece sits under **Checking** on
+Home's **Board** and says "Checking now"; open it and it says "Checker
+working" and when it started. A check lined up behind other work says
+"Waiting for a free agent to check it". In **Pro view**, Home's **By status**
+also counts the checker under **Running** or **Queued**, with its own card. If
 something else holds it up, such as the Max plan being out of usage for now,
 it says so and when it starts by itself. Until the check is done, the piece
 says "Nothing to do. The checker looks at it first." and offers no
@@ -90,8 +92,8 @@ done a certain way, see [Research, Ask why, and the checker's proof](research-an
 
 With the app's rule **Checked work goes to GitHub by itself** on (it is on
 for new apps), a piece that passes goes to GitHub as a pull request by itself.
-You approved the plan, so you are not asked again. Open the piece on the board
-and its **Overview** says so: "It went to GitHub by itself because you
+You approved the plan, so you are not asked again. Open the piece and its
+**Overview** says so: "It went to GitHub by itself because you
 approved the plan", with a link back to the goal. With that rule off, each
 piece waits for you to tap **Accept**. A piece that changes a protected part
 always waits for your **Accept**, and its step bar says **Needs you · tap
@@ -100,7 +102,7 @@ Accept** and names the protected files.
 ## See where a goal is
 
 Every goal has one road, and every screen shows the same one: the Goals
-page, the goal's own page, the board, your phone and the
+page, the goal's own page, Home, the Board, your phone and its app's
 [Roadmap](follow-your-roadmap.md). Its stages are:
 
 **Ask**, **Plan**, **Build**, **Check**, **Merge**, **Live**

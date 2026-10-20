@@ -1,6 +1,7 @@
 // Decurion's shared screen code: talking to the hub, icons, status labels,
-// the confirm and toast pieces, and the work panel. Used by the board and
-// the phone inbox so both look and behave the same.
+// the confirm and toast pieces, the work panel, and Home's shared parts
+// (its lists, the app rows and the board by goal). Used by Home on the PC
+// and on the phone, Goals and Apps, so they look and behave the same.
 "use strict";
 (() => {
   const D = {};
@@ -69,6 +70,8 @@
     deploy: ["M12 13v8", "m8 17 4-4 4 4", "M20 16.6A5 5 0 0 0 18 7h-1.3A8 8 0 1 0 4 15.3"],
     open: ["M15 3h6v6", "M10 14 21 3", "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"],
     help: ["c12,12,10", "M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.5", "M12 17.5h.01"],
+    home: ["M3 10.5 12 3l9 7.5", "M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"],
+    lanes: ["M3 5h18", "M3 12h18", "M3 19h18", "M9 3v4", "M15 10v4", "M7 17v4"],
     log: ["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6", "M16 13H8", "M16 17H8", "M10 9H8"],
   };
   const SVG = "http://www.w3.org/2000/svg";
@@ -127,46 +130,53 @@
   // one place if the help moves.
   D.helpPage = (name) => `${D.HELP_URL}#${name}.md`;
 
-  // The phone's bottom tabs, the same on the inbox and the goals page so the
-  // phone feels like one app. Inbox, Board and Settings are hash routes of
-  // /inbox (a link to another hash of the page you are on does not reload
-  // it); Goals and the Roadmap (/plan) are pages of their own. Each page
-  // styles .tabbar in its own look.
-  // The one badge is on Inbox: the hub's one count of what needs you
-  // (D.showNeeds), the same number as the PC menu's and the board's. It
-  // starts hidden; it shows only once the hub has said.
+  // The four places, the same on the PC and the phone: Home, Goals, Apps
+  // and Settings (PLAN's "One map"). Home is what needs you and what is
+  // going on (/ on the PC, /inbox on the phone, where it is the hash route
+  // #home); Goals is /goals; Apps is /plan, which shows the app list or the
+  // last app; Settings is a hash route of Home's page. The page keys stay
+  // "board" for Home and "plan" for Apps, so pages that mark the one they
+  // show (aria-current, data-route) keep working.
+  //
+  // The phone's bottom tabs, the same on Home, Goals and Apps so the phone
+  // feels like one app. Each page styles .tabbar in its own look. Help is
+  // not a tab on the phone: it is a row in Settings, and the small "?" in
+  // the top bar of Home, Goals and Apps (D.helpButton).
+  // The one badge is on Home: the hub's one count of what needs you
+  // (D.showNeeds), the same number as the PC menu's and Home's Needs you
+  // tab. It starts hidden; it shows only once the hub has said.
   D.phoneTabs = (current) => D.el("nav", { className: "tabbar", "aria-label": "Sections" },
     D.el("div", { className: "tabs" }, [
-      ["inbox", "/inbox#inbox", "Inbox", "inbox", "badge"],
-      ["board", "/inbox#board", "Board", "board"],
+      ["home", "/inbox#home", "Home", "home", "badge"],
       ["goals", "/goals", "Goals", "send"],
-      ["plan", "/plan", "Roadmap", "plan"],
+      ["plan", "/plan", "Apps", "app"],
       ["settings", "/inbox#settings", "Settings", "settings"],
     ].map(([tab, href, label, icon, badge]) => D.el("a", { className: "tab", id: `tab-${tab}`, href, "aria-current": tab === current ? "page" : null },
-      D.el("span", { className: "ind" }, D.icon(icon), badge && D.el("span", { className: "badge", id: badge, hidden: true, dataset: { needsBadge: "inbox" } })),
-      D.el("span", {}, label))).concat(
-      // Help leaves Decurion: no badge, never the current page.
-      D.el("a", { className: "tab", id: "tab-help", href: D.HELP_URL, target: "_blank", rel: "noopener noreferrer" },
-        D.el("span", { className: "ind" }, D.icon("help")),
-        D.el("span", {}, "Help")))));
+      D.el("span", { className: "ind" }, D.icon(icon), badge && D.el("span", { className: "badge", id: badge, hidden: true, dataset: { needsBadge: "home" } })),
+      D.el("span", {}, label)))));
+  // The small "?" for the phone's top bar: Decurion's help in a new browser
+  // tab, leaving Decurion open where you were. 44px to tap; a page puts it
+  // at the end of its own top bar.
+  D.helpButton = () => (D.ensureStyle(), D.el("a", { className: "help-q", href: D.HELP_URL, target: "_blank", rel: "noopener noreferrer", "aria-label": "Help, opens in a new tab", title: "Help" },
+    D.el("span", { "aria-hidden": "true" }, "?")));
 
-  // The PC menu: the logo and the same four places in the same order on the
-  // Board, Goals and the Roadmap, so moving between them feels like one
-  // app. Its look lives once, in menu.css (goals.html has no ui.css). The
-  // board shows it at the top of its sidebar; `rail` is the narrow one for
-  // pages that need the width, each label under its icon. `foot` sits at the
-  // bottom of a rail. Board and Settings are hash routes of the board page,
-  // so on the board they switch without a reload; data-route lets the board
+  // The PC menu: the logo and the same four places in the same order on
+  // Home, Goals and Apps, then Help, so moving between them feels like one
+  // app. Its look lives once, in menu.css (goals.html has no ui.css). Home
+  // shows it at the top of its sidebar; `rail` is the narrow one for pages
+  // that need the width, each label under its icon. `foot` sits at the
+  // bottom of a rail. Home and Settings are hash routes of the PC's Home
+  // page, so there they switch without a reload; data-route lets that page
   // mark the one it shows. Phones use D.phoneTabs instead: each page hides
-  // this menu at its own phone width. Board carries the one count of what
+  // this menu at its own phone width. Home carries the one count of what
   // needs you (D.showNeeds), hidden until the hub has said.
   D.pcNav = (current, { rail = false, foot = null } = {}) => D.el("div", { className: rail ? "pcnav rail" : "pcnav" },
-    D.el("a", { className: "pcnav-brand", href: "/#board", title: rail ? "Decurion" : null },
+    D.el("a", { className: "pcnav-brand", href: "/#home", title: rail ? "Decurion" : null },
       D.mark(rail ? 32 : 28), D.el("span", { className: "nm" }, "Decurion")),
     D.el("nav", { className: "pcnav-items", "aria-label": "Pages" }, [
-      ["board", "/#board", "Board", "board", true],
+      ["board", "/#home", "Home", "home", true],
       ["goals", "/goals", "Goals", "send"],
-      ["plan", "/plan", "Roadmap", "plan"],
+      ["plan", "/plan", "Apps", "app"],
       ["settings", "/#settings", "Settings", "settings"],
     ].map(([page, href, label, icon, needs]) => D.el("a", { className: "pcnav-item", href, dataset: { route: page }, "aria-current": page === current ? "page" : null },
       D.icon(icon), D.el("span", { className: "nm" }, label),
@@ -318,6 +328,9 @@
 .hub-lost-h { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
 .hub-lost p { margin: 0 0 8px; }
 .hub-lost-hint { color: var(--muted, #545d6b); font-size: 14px; }
+.help-q { display: inline-grid; place-items: center; flex: none; width: 44px; height: 44px; margin-right: -8px; border-radius: 50%; color: var(--muted, #545d6b); text-decoration: none; }
+.help-q span { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; border: 1.5px solid currentColor; font: 700 14px/1 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.help-q:hover { color: var(--ink, #14171c); }
 .road { display: grid; gap: 6px; min-width: 0; }
 .road-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
 .road-steps li { display: inline-flex; align-items: center; gap: 5px; color: var(--muted, #545d6b); }
@@ -509,8 +522,7 @@
       b.textContent = total ? (total > 99 ? "99+" : String(total)) : "";
       const link = b.closest("a");
       if (!link) continue;
-      const name = b.dataset.needsBadge === "inbox" ? "Inbox" : "Board";
-      if (total) link.setAttribute("aria-label", `${name}, ${total} ${total === 1 ? "needs" : "need"} you`);
+      if (total) link.setAttribute("aria-label", `Home, ${total} ${total === 1 ? "needs" : "need"} you`);
       else link.removeAttribute("aria-label");
     }
   };
@@ -608,7 +620,7 @@
       answer: piece(true), retry: piece(),
       // Deploy is only ever the owner's Deploy tap on the app's Today row,
       // bound to the merged commit shown there (deploy.rs): this only opens it.
-      deploy: () => { location.href = D.onPhone() ? "/inbox#inbox" : "/#board"; },
+      deploy: () => { location.href = D.onPhone() ? "/inbox#home" : "/#home"; },
       open_pr: (b, j) => (j.piece == null ? goal()() : D.openPullRequest({ id: j.piece, title: g.title }, b, onChanged)),
       // The piece's pull request conflicts with main (road.rs catch_up):
       // the same owner tap as the board's and the inbox's Bring up to date.
@@ -642,8 +654,8 @@
   };
 
   // ---------- Getting started ----------
-  // A card for the first weeks, the same on the PC board and the phone's
-  // inbox: the five things that make Decurion work, ticked off from what the
+  // A card for the first weeks, the same on Home on the PC and on the phone:
+  // the five things that make Decurion work, ticked off from what the
   // hub already knows (no new questions, no new stops: only words and
   // links). The next one left gets one plain sentence and one button. The
   // owner can hide it for good with ✕ (on this device only); it also hides
@@ -1954,10 +1966,10 @@
       row("Want it done differently?", "Tell the agent what to change. The work goes back to it with your message.", talk("Tell the agent"));
     } else if (s === "done") {
       // An app whose rules allow merging from Decurion gets a Merge button
-      // on the pull request's card (board's Today, phone's inbox) instead.
+      // on its app's row in Home's Needs you (PC and phone) instead.
       // A goal's piece has its step bar above, which says the same.
       if (t.github?.state === "sent" && t.github.pull_request && !t.github.merged && !t.github.closed && !c.goal?.road) {
-        if (apps[t.app_id]?.rules?.merge) row("Merge it", ["Tap ", b("Merge"), " on its pull request on the board's Today strip or in your phone's inbox. Decurion merges once GitHub says the checks passed. You can also merge it on GitHub."]);
+        if (apps[t.app_id]?.rules?.merge) row("Merge it", ["Tap ", b("Merge"), " on its app's row in Home's Needs you, on your PC or your phone. Decurion merges once GitHub says the checks passed. You can also merge it on GitHub."]);
         else row("Merge it on GitHub", "Open the pull request above, look it over, and merge it there. This app's rules leave merging to you or your reviewer.");
       }
       if (fix) row("Want what it found fixed?", "Start new work from this summary.", fix);
@@ -3275,5 +3287,746 @@ Add or fix .decurion/run.json so the app starts in a fresh box: one install comm
       el("p", { className: "dl-line", title: c.line }, c.line),
       what,
       el("div", { className: "dl-acts" }, ...acts));
+  };
+})();
+
+// ---------- Home: what needs you, what is working, what finished today ----------
+// Home is the first screen on the PC (/) and on the phone (/inbox). Its
+// parts live here, so both draw the same rows from the same rules and say
+// the same numbers:
+//
+// - D.app: the one choice of app that Home's filter and the Apps page share.
+// - D.homeMap and D.homeSplit: which goal each piece of work belongs to, and
+//   Home's three lists (Needs you, Working, Done today). Needs you is the
+//   hub's one list (GET /api/needs-you), so its count is every badge's.
+// - D.goalRow, D.workRow, D.prRow, D.todayList: the rows on those lists.
+// - D.laneBoard: the board, one row (lane) per open goal plus Quick jobs,
+//   on Home's Board view and on an app's page.
+//
+// Nothing here asks the owner anything new or acts by itself: every button
+// is an owner tap that existed before (the goal road's one button, a piece's
+// moves, Merge, Bring up to date, Deploy), and an Approve only ever opens
+// the goal, where the plan it is bound to is shown.
+(() => {
+  const { el, icon } = D;
+
+  // ---------- One choice of app ----------
+  // D.app.get() gives the app the owner last picked, as a string id, or null
+  // for none (All apps). D.app.set(id) picks one; D.app.set(null) clears it.
+  // D.app.onChange(fn) runs fn(id or null) after a change on this page.
+  // Home starts on All apps each time it opens and sets this when the owner
+  // picks one app there; the Apps page (/plan) opens on it. Kept in this
+  // browser only (localStorage "decurion.app"); a private window that keeps
+  // nothing just starts on All apps. The first read moves the old
+  // per-screen choices over once (the Roadmap's "decurion.plan.app", else
+  // the board's "decurion.board.app") and removes them.
+  const APP_KEY = "decurion.app";
+  const OLD_APP_KEYS = ["decurion.plan.app", "decurion.board.app"];
+  const isId = (v) => typeof v === "string" && /^\d+$/.test(v);
+  const appHooks = [];
+  function readApp() {
+    let v = D.store.get(APP_KEY);
+    if (v == null) {
+      v = OLD_APP_KEYS.map((k) => D.store.get(k)).find(isId) ?? "";
+      D.store.set(APP_KEY, v);
+      for (const k of OLD_APP_KEYS) { try { localStorage.removeItem(k); } catch (_) { /* nothing kept */ } }
+    }
+    return isId(v) ? v : null;
+  }
+  D.app = {
+    get: readApp,
+    set(v) {
+      const s = v == null || v === "" || v === "all" ? "" : String(v);
+      if (s && !isId(s)) return;
+      const was = readApp() ?? "";
+      D.store.set(APP_KEY, s);
+      if (was !== s) for (const fn of appHooks) fn(s || null);
+    },
+    onChange(fn) { appHooks.push(fn); },
+  };
+
+  // The apps as the hub last said, for their rules (the live address).
+  let apps = {};
+  const setApps = D.setApps;
+  D.setApps = (list) => { apps = Object.fromEntries((list ?? []).map((a) => [a.id, a])); setApps(list ?? []); };
+
+  // ---------- Which goal each piece of work belongs to ----------
+  const OPEN = new Set(["talking", "plan_ready", "working", "for_review"]);
+  const ACTIVE = new Set(["queued", "running", "needs_you", "in_review"]);
+  D.goalOpen = (g) => OPEN.has(g.state) && !g.dismissed_at;
+  // Since local midnight: what "today" means on Home.
+  D.sinceMidnight = (iso) => {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const t = new Date(iso);
+    return !isNaN(t) && t >= start;
+  };
+  D.goalDoneToday = (g) => g.state === "done" && !g.dismissed_at && D.sinceMidnight(g.updated_at);
+  // A goal's page (GET /api/goals/{id}) lists its pieces. Open goals are
+  // asked again every little while (a goal's updated_at only moves with its
+  // state); a closed one never changes, so it is asked once.
+  const views = new Map();
+  const VIEW_MS = 20000;
+  async function goalView(g) {
+    const key = `${g.updated_at}|${g.state}|${g.busy}`;
+    const c = views.get(g.id);
+    if (c && c.key === key && (!OPEN.has(g.state) || Date.now() - c.at < VIEW_MS)) return c.v;
+    try {
+      const v = await D.api(`/goals/${g.id}`);
+      views.set(g.id, { key, at: Date.now(), v });
+      return v;
+    } catch (_) { return c?.v ?? null; }
+  }
+  // Work Home might show as a job of its own is asked once whether it is a
+  // piece of a goal (GET /api/threads/{id}/goal): that never changes.
+  const pieceOf = new Map();
+  // D.homeMap({ threads, goals }) → { goalOf, pieces, viewOf }: goalOf maps a
+  // thread id to its goal's id, or null for work of its own (a Just do it
+  // job); pieces and viewOf hold each open (or closed today) goal's pieces
+  // and page. Work it could not ask about counts as work of its own, so
+  // nothing is ever hidden.
+  D.homeMap = async ({ threads = [], goals = [] } = {}) => {
+    const shown = goals.filter((g) => D.goalOpen(g) || D.goalDoneToday(g));
+    const vs = await Promise.all(shown.map(goalView));
+    const goalOf = new Map(), pieces = new Map(), viewOf = new Map();
+    shown.forEach((g, i) => {
+      const v = vs[i];
+      if (!v) return;
+      viewOf.set(g.id, v);
+      pieces.set(g.id, v.pieces ?? []);
+      for (const p of v.pieces ?? []) goalOf.set(p.thread_id, g.id);
+    });
+    const ask = threads.filter((t) => !goalOf.has(t.id) && !pieceOf.has(t.id) && !t.dismissed_at
+      && (ACTIVE.has(t.state) || (t.state === "done" && D.sinceMidnight(t.updated_at))));
+    await Promise.all(ask.slice(0, 40).map(async (t) => {
+      try { const p = await D.api(`/threads/${t.id}/goal`); pieceOf.set(t.id, p?.goal_id ?? null); } catch (_) { /* asked again next time */ }
+    }));
+    for (const t of threads) if (!goalOf.has(t.id) && pieceOf.has(t.id)) goalOf.set(t.id, pieceOf.get(t.id));
+    return { goalOf, pieces, viewOf };
+  };
+
+  // ---------- Home's three lists ----------
+  // D.homeSplit({ threads, goals, needs, map, appId }) →
+  //   needs:   { goals, work: [{ t, why }], prs, total }  the hub's one list
+  //   working: { goals, work, total }  open goals not waiting on you, and
+  //            jobs of their own still going
+  //   done:    { goals, work, total }  finished since local midnight
+  // `appId` (a string id, or null for All apps) keeps one app's. `total`
+  // under needs is the hub's count, the number on every badge.
+  D.homeSplit = ({ threads = [], goals = [], needs = null, map = null, appId = null } = {}) => {
+    const inApp = (x) => appId == null || String(x.app_id) === String(appId);
+    const own = (t) => !map || map.goalOf.get(t.id) == null;
+    const byId = new Map(threads.map((t) => [t.id, t]));
+    const goalById = new Map(goals.map((g) => [g.id, g]));
+    const needGoal = new Set(), needWork = new Set();
+    const n = { goals: [], work: [], prs: [] };
+    if (needs) {
+      for (const w of needs.goals ?? []) {
+        needGoal.add(w.goal_id);
+        if (!inApp(w)) continue;
+        const g = goalById.get(w.goal_id);
+        n.goals.push(g ? { ...g, journey: g.journey ?? w.journey } : { id: w.goal_id, app_id: w.app_id, title: "", state: "working", journey: w.journey });
+      }
+      for (const w of needs.work ?? []) {
+        needWork.add(w.thread_id);
+        const t = byId.get(w.thread_id);
+        if (t && inApp(t)) n.work.push({ t, why: w.why });
+      }
+      n.prs = (needs.prs ?? []).filter(inApp);
+    } else {
+      // An older hub with no list: goals whose road waits on you, and work that asks.
+      for (const g of goals) if (D.goalOpen(g) && g.journey?.you && inApp(g)) { needGoal.add(g.id); n.goals.push(g); }
+      for (const t of threads) {
+        if (t.state === "needs_you" && !t.dismissed_at && own(t) && inApp(t)) { needWork.add(t.id); n.work.push({ t, why: "answer" }); }
+      }
+    }
+    const total = needs ? (appId == null ? needs.total : needs.by_app?.[appId] ?? 0) : n.goals.length + n.work.length;
+    const newest = (a, b) => String(b.updated_at).localeCompare(String(a.updated_at));
+    const working = {
+      goals: goals.filter((g) => D.goalOpen(g) && !needGoal.has(g.id) && inApp(g)).sort(newest),
+      work: threads.filter((t) => ACTIVE.has(t.state) && !t.dismissed_at && !needWork.has(t.id) && own(t) && inApp(t)).sort(newest),
+    };
+    const done = {
+      goals: goals.filter((g) => D.goalDoneToday(g) && inApp(g)).sort(newest),
+      work: threads.filter((t) => t.state === "done" && !t.dismissed_at && D.sinceMidnight(t.updated_at) && !needWork.has(t.id) && own(t) && inApp(t)).sort(newest),
+    };
+    working.total = working.goals.length + working.work.length;
+    done.total = done.goals.length + done.work.length;
+    return { needs: { ...n, total }, working, done };
+  };
+
+  // ---------- Rows ----------
+  const ghLink = (u) => typeof u === "string" && u.startsWith("https://github.com/");
+  const webLink = (u) => typeof u === "string" && /^https?:\/\/[^\s]+$/i.test(u);
+  // A tap on the row itself (not on one of its buttons or links) opens it.
+  const rowTap = (row, go) => row.addEventListener("click", (e) => {
+    if (!e.target.closest("a, button, summary, input, select, textarea, label")) go();
+  });
+  // The links a finished row carries: each pull request on GitHub, and the
+  // live app once its change is live and the app's rules say where it is.
+  D.doneLinks = (sends, appId, { live = false } = {}) => {
+    const out = [];
+    for (const g of sends ?? []) {
+      if (!g || !ghLink(g.url)) continue;
+      const num = /\/pull\/(\d+)/.exec(g.url)?.[1];
+      out.push(el("a", { className: "btn quiet sm", href: g.url, target: "_blank", rel: "noopener noreferrer" },
+        icon("branch"), g.pull_request ? (num ? `Pull request #${num}` : "Pull request") : "On GitHub"));
+    }
+    const site = apps[appId]?.rules?.deploy_site;
+    if ((live || (sends ?? []).some((g) => g?.live)) && webLink(site)) {
+      out.push(el("a", { className: "btn quiet sm", href: site, target: "_blank", rel: "noopener noreferrer" }, icon("open"), "Open the live app"));
+    }
+    return out.length ? el("div", { className: "hrow-links" }, ...out) : null;
+  };
+
+  // The way from Done today to all finished work: By status's Done and
+  // Failed lists, with Dismissed, Bring back and Dismiss all, which open
+  // whether Pro view is on or not (#board/status/done, on the PC and the
+  // phone alike).
+  D.allFinishedLink = () => el("a", { className: "hall", href: "#board/status/done", dataset: { key: "all-finished" } },
+    icon("archive"), "See all finished work", icon("right"));
+
+  // One goal: its title (a link to the goal), its app, its small road and
+  // the road's words, the road's next line, and the road's one button. The
+  // road's words are the hub's (journey.rs), the same on every screen.
+  D.goalRow = (g, { onChanged = () => {}, links = null } = {}) => {
+    const j = g.journey ?? null;
+    const href = `/goals#goal-${g.id}`;
+    const done = !!j?.done || g.state === "done";
+    const tone = j?.you ? "you" : done ? "done" : "";
+    const act = j && !done ? D.journeyButton(j, D.journeyActions(g, { onChanged }),
+      { className: j.you ? "btn primary sm" : "btn sm", key: `hgoal-${g.id}` }) : null;
+    const row = el("article", { className: "hrow goal", dataset: { tone, key: `goal-${g.id}` } },
+      el("div", { className: "hrow-main" },
+        el("div", { className: "hrow-meta" },
+          el("span", { className: "hrow-kind" }, icon("send"), "Goal"),
+          D.appName(g.app_id) ? el("span", { className: "dot-sep" }, D.appName(g.app_id)) : null),
+        el("h3", { className: "hrow-h" }, el("a", { className: "hrow-title", href }, g.title || "A goal")),
+        j ? el("div", { className: "hrow-road" }, D.journey(j, { size: "small" }), el("span", { className: "hrow-label" }, j.label)) : null,
+        j?.next && !done ? el("p", { className: "hrow-next", title: j.next }, j.next) : null,
+        links),
+      act ? el("div", { className: "hrow-act" }, act) : null);
+    rowTap(row, () => { location.href = href; });
+    return row;
+  };
+
+  // Why a job of its own waits on you (the hub's list says which).
+  const WORK_WHY = {
+    answer: "The agent asked you something.",
+    check: "Finished. Look it over, then Accept, Send back or Reject.",
+    failed: "It could not finish. You can retry it.",
+    not_sent: "Accepted, but it did not reach GitHub. Try again.",
+    no_pull_request: "On GitHub with no pull request yet. Open the pull request.",
+  };
+  // One piece of work of its own (a Just do it job): its state, title (it
+  // opens the work's panel), app, its newest line, where finished work is
+  // on its way, and the moves its panel offers (Answer, Accept, Send back,
+  // Reject, Retry), the same taps as before. While the checker looks first
+  // there are none. `line` is the page's own newest line for it (D.cardLine).
+  D.workRow = (t, { onChanged = () => {}, line = "", why = null, links = null } = {}) => {
+    const you = !!why || t.state === "needs_you";
+    const tone = you ? "you" : t.state === "failed" ? "failed" : t.state === "done" ? "done" : "";
+    const open = () => D.openWork(t, onChanged);
+    const hit = el("button", { type: "button", className: "hrow-title", dataset: { key: `hwork-${t.id}` } }, t.title);
+    hit.onclick = open;
+    let acts = [];
+    if (!D.checking(t) && (t.state === "needs_you" || t.state === "in_review" || t.state === "failed")) {
+      acts = D.moveButtons(t, { quiet: t.state === "needs_you", size: "sm", onMoved: onChanged });
+    }
+    if (t.state === "needs_you") {
+      const a = el("button", { type: "button", className: "btn primary sm" }, icon("question"), "Answer");
+      a.onclick = (e) => { e.stopPropagation(); D.openWork(t, onChanged, { talk: true }); };
+      acts.unshift(a);
+    }
+    const gh = D.githubButton(t, onChanged, { small: !why });
+    if (gh) acts.unshift(gh);
+    // Failed work you won't retry, or accepted work you'll send yourself,
+    // can be put away from Needs you: the same Dismiss as the phone's card
+    // and the work panel (D.dismiss: kept under Dismissed, with Undo).
+    if (D.finished(t) && (why || t.state === "failed")) {
+      const put = el("button", { type: "button", className: "btn quiet sm", title: "Hide it from Home. It's kept under Dismissed." }, icon("archive"), "Dismiss");
+      put.onclick = async (e) => {
+        e.stopPropagation();
+        put.disabled = true;
+        if (!(await D.dismiss("threads", [t], { onChanged }))) put.disabled = D.offline;
+      };
+      acts.push(put);
+    }
+    acts.forEach((b, i) => { b.dataset.key = `hwork-${t.id}-${i}`; b.disabled = D.offline; });
+    const said = line || (why ? WORK_WHY[why] : "") || "";
+    const row = el("article", { className: "hrow work", dataset: { tone, state: t.state, key: `work-${t.id}` } },
+      el("div", { className: "hrow-main" },
+        el("div", { className: "hrow-meta" },
+          D.statePill(t),
+          el("span", { className: "hrow-kind" }, icon("tool"), "Quick job"),
+          D.appName(t.app_id) ? el("span", { className: "dot-sep" }, D.appName(t.app_id)) : null,
+          el("span", { className: "dot-sep hrow-when", title: `Last activity ${new Date(D.lastActivity(t)).toLocaleString()}` }, D.ago(D.lastActivity(t)))),
+        el("h3", { className: "hrow-h" }, hit),
+        said ? el("p", { className: "hrow-next", title: said }, said) : null,
+        t.state === "done" && t.road ? D.roadMarks(t.road, { small: true, github: t.github }) : null,
+        D.checking(t) ? D.checkNote(t, { small: true }) : null,
+        links),
+      acts.length ? el("div", { className: "hrow-act" }, ...acts) : null);
+    rowTap(row, open);
+    return row;
+  };
+
+  // A pull request Decurion opened that waits on you (GET /api/prs): its
+  // review comments to answer, or the owner's Merge where the app's rules
+  // allow it. The same owner taps as the app's row: nothing merges without
+  // this tap, and the hub merges only once GitHub says it can.
+  D.prRow = (p, { onChanged = () => {} } = {}) => {
+    const tap = (label, ic, path, ok, cls) => {
+      const b = el("button", { type: "button", className: cls, dataset: { key: `hpr-${p.thread_id}-${path}` } }, icon(ic), label);
+      b.disabled = D.offline;
+      b.onclick = async (e) => {
+        e.stopPropagation();
+        if (D.offline) return;
+        b.disabled = true;
+        try { await D.send(`/threads/${p.thread_id}${path}`, {}); D.toast(ok); onChanged(); } catch (x) { D.toast(x.message, "alert"); }
+        b.disabled = D.offline;
+      };
+      return b;
+    };
+    const comments = p.open_comments > 0 && !p.fixing;
+    const btns = [];
+    if (comments) btns.push(tap("Answer the comments", "tool", "/pr/fix", "Started work that answers the comments. You'll review it like any other work.", "btn primary sm"));
+    // With a conflict, Merge can only be refused, so Bring up to date leads.
+    const clash = !comments && !!p.health && (p.can_update ?? true);
+    const update = (p.can_update ?? !!p.health)
+      ? tap("Bring up to date", "branch", "/pr/update", "Started work that brings the pull request up to date. You'll review it like any other work.", clash ? "btn primary sm" : "btn quiet sm")
+      : null;
+    if (clash) btns.push(update);
+    if (p.can_merge) btns.push(tap("Merge", "merge", "/pr/merge", "Merged on GitHub.", comments ? "btn sm" : clash ? "btn quiet sm" : "btn primary sm"));
+    if (update && !clash) btns.push(update);
+    if (ghLink(p.url)) btns.push(el("a", { className: "btn quiet sm", href: p.url, target: "_blank", rel: "noopener noreferrer" }, icon("open"), "Open on GitHub"));
+    const word = comments ? "Needs you · review comments" : clash ? "Needs you · bring it up to date" : p.can_merge ? "Needs you · ready to merge" : "Needs you";
+    const line = [p.line, p.health].filter(Boolean).join(". ")
+      || (p.can_merge ? "Merge puts it into your main branch, only once GitHub says the checks passed and nothing conflicts." : "");
+    return el("article", { className: "hrow pr", dataset: { tone: "you", key: `pr-${p.thread_id}` } },
+      el("div", { className: "hrow-main" },
+        el("div", { className: "hrow-meta" }, el("span", { className: "pill needs_you" }, icon(comments ? "question" : "merge"), word),
+          el("span", { className: "hrow-kind" }, icon("branch"), "Pull request"),
+          (p.app ?? D.appName(p.app_id)) ? el("span", { className: "dot-sep" }, p.app ?? D.appName(p.app_id)) : null),
+        el("h3", { className: "hrow-h" }, p.title || "A pull request"),
+        line ? el("p", { className: "hrow-next" }, line) : null),
+      btns.length ? el("div", { className: "hrow-act" }, ...btns) : null);
+  };
+
+  // A saved website sign-in that stopped working, or is about to (GET
+  // /api/sign-ins, status "expired" or "expiring"). Its words are fixed,
+  // with only the owner's own name for it and the app's name: never anything
+  // a website or an agent said. One tap opens the sign-in window. A notice
+  // about Decurion's own sign-ins: not counted in Needs you.
+  D.signInRow = (s, { onChanged = () => {} } = {}) => {
+    const gone = s.status === "expired";
+    const label = "Sign in again";
+    const go = async (b) => {
+      if (D.offline) return;
+      b.disabled = true;
+      try {
+        const { session_id } = await D.api(`/sign-ins/${s.id}/sign-in`, { method: "POST" });
+        if (D.openBrowserViewer) {
+          const shown = D.openBrowserViewer(session_id, { saveButton: true });
+          if (shown && typeof shown.then === "function") shown.then(onChanged, onChanged);
+        } else D.toast("The sign-in window is not available on this hub yet. Sign in again in Settings on your PC.", "alert");
+      } catch (e) {
+        D.toast(`"${label}" did not go through. ${e.message}`, "alert");
+      } finally { b.disabled = D.offline; }
+    };
+    const ttl = el("button", { type: "button", className: "hrow-title", dataset: { key: `hsign-${s.id}` } }, s.card || `Sign in to ${s.label} again`);
+    ttl.onclick = () => go(ttl);
+    const until = s.expires_at ? new Date(s.expires_at).toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" }) : "soon";
+    const b = el("button", { type: "button", className: "btn primary sm", dataset: { key: `hsign-${s.id}-go` } }, icon("key"), label);
+    b.disabled = D.offline;
+    b.onclick = (e) => { e.stopPropagation(); go(b); };
+    return el("article", { className: "hrow signin", dataset: { tone: "you", key: `signin-${s.id}` } },
+      el("div", { className: "hrow-main" },
+        el("div", { className: "hrow-meta" },
+          el("span", { className: "pill needs_you" }, icon("key"), gone ? "Needs you · signed out" : "Needs you · sign-in runs out soon"),
+          s.app_name ? el("span", {}, s.app_name) : null),
+        el("h3", { className: "hrow-h" }, ttl),
+        el("p", { className: "hrow-next" }, gone
+          ? `${s.app_name}'s agents are no longer signed in to this website. Sign in once more and they will be from their next run.`
+          : `This sign-in runs out ${until}. Sign in again so ${s.app_name}'s agents stay signed in.`)),
+      el("div", { className: "hrow-act" }, b));
+  };
+  // The website sign-ins that need the owner, signed-out ones first.
+  D.signInsDue = (list) => (Array.isArray(list) ? list : []).filter((x) => x.status === "expired" || x.status === "expiring")
+    .sort((a, b) => (a.status === "expired" ? 0 : 1) - (b.status === "expired" ? 0 : 1) || a.id - b.id);
+
+  // ---------- Each app's row: what it waits on (GET /api/today) ----------
+  // The hub chooses every word (today.rs), so the PC and the phone say the
+  // same thing; this only draws them. An app needs you when its row does
+  // (its pull request waits on the owner, review comments wait, it is ready
+  // to deploy or its deploy failed, or it clashes with or fell behind main):
+  // those rows sit at the top of Needs you, the others at the top of Working.
+  const TONES = { needs_you: ["needs_you", "needs_you"], working: ["running", "running"], reviewer: ["in_review", "in_review"],
+    merge: ["t-merge", "branch"], done: ["done", "done"], quiet: ["queued", "queued"] };
+  D.todayNeeds = (r) => r.tone === "needs_you" || r.tone === "merge" || r.open_comments > 0
+    || r.deploy?.state === "waiting" || r.deploy?.state === "failed" || (r.last_pr?.state === "open" && !!(r.last_pr.auto_line ?? r.last_pr.health));
+  // Run it: an app as it is in its folder, on the PC. An app already
+  // running (one of `previews`, GET /api/previews) shows Open, which shows
+  // that run instead of starting it again.
+  D.runButton = (appId, name, previews = [], { onChanged = () => {}, key = `run-${appId}` } = {}) => {
+    const s = (previews ?? []).find((p) => p.app_id === appId && p.thread_id == null && (p.state == null || p.state === "pending" || p.state === "live"));
+    const b = el("button", { type: "button", className: "btn sm run-btn", dataset: { key },
+      "aria-label": s ? `Open ${name}, running on your PC` : `Run it: ${name}`,
+      title: s ? `${name} is running on your PC. Open it to try it.` : `Start ${name} on your PC and try it here` },
+      icon("start"), el("span", { className: "lbl" }, s ? "Open" : "Run it"));
+    b.disabled = D.offline;
+    b.onclick = () => D.runApp({ id: appId, name }, { sid: s?.id }).then(onChanged);
+    return b;
+  };
+  const tap = (label, ic, cls, key, title, path, ok, onChanged) => {
+    const b = el("button", { type: "button", className: cls, dataset: { key }, title }, icon(ic), label);
+    b.disabled = D.offline;
+    b.onclick = async () => {
+      if (D.offline) return;
+      b.disabled = true;
+      try { await D.send(path, {}); D.toast(ok); } catch (e) { D.toast(e.message, "alert"); }
+      onChanged();
+      b.disabled = D.offline;
+    };
+    return b;
+  };
+  function todayRow(r, { previews, onChanged, onPick, picked, bare = false }) {
+    const id = String(r.app_id);
+    const [cls, ic] = TONES[r.tone] ?? TONES.quiet;
+    let name;
+    // On the app's own page its name is already the page's title.
+    if (bare) name = null;
+    else if (onPick) {
+      name = el("button", { type: "button", className: "happ-name", "aria-pressed": picked === id ? "true" : "false", dataset: { key: `today-${id}` },
+        title: picked === id ? "Show all apps" : `Show only ${r.name}` }, r.name);
+      name.onclick = () => onPick(picked === id ? null : id);
+    } else name = el("span", { className: "happ-name" }, r.name);
+    const when = r.tone === "done" && r.last_pr?.event_at ? ` · ${D.ago(r.last_pr.event_at)}` : "";
+    const fixOn = r.open_comments > 0 ? (r.fix_thread_id ?? r.last_pr?.thread_id) : null;
+    // GitHub says the pull request conflicts with (or is behind) main: it
+    // can't be merged until it is brought up to date, so that is the main
+    // button and Merge waits.
+    const blocked = r.last_pr?.state === "open" && !!r.last_pr.health && r.last_pr.can_update;
+    let act;
+    if (fixOn != null) {
+      act = tap("Answer the comments", "tool", "btn primary sm", `today-fix-${id}`, null, `/threads/${fixOn}/pr/fix`, "Started work that answers the comments.", onChanged);
+    } else if (r.last_pr?.can_merge && r.last_pr.state === "open" && !blocked) {
+      // The app's rules let the owner merge from here. The hub merges only
+      // once GitHub says the checks passed, and says why when it won't.
+      act = tap("Merge", "merge", "btn primary sm", `today-merge-${id}`, `Merge pull request #${r.last_pr.number} on GitHub`,
+        `/threads/${r.last_pr.thread_id}/pr/merge`, "Merged on GitHub.", onChanged);
+    } else act = el("span", { className: `pill ${cls}` }, icon(ic), r.status);
+    // Bring up to date: on any open pull request Decurion opened with
+    // nothing under way on it. An agent merges main into it on the same
+    // pull request; nothing changes on GitHub until the owner accepts.
+    const update = r.last_pr?.state === "open" && r.last_pr.can_update
+      ? tap("Bring up to date", "branch", blocked && fixOn == null ? "btn primary sm" : "btn quiet sm", `today-update-${id}`, `Merge the newest main into pull request #${r.last_pr.number}`,
+        `/threads/${r.last_pr.thread_id}/pr/update`, "Started work that brings the pull request up to date.", onChanged)
+      : null;
+    // Under the app's rule to fix conflicts by itself, Decurion may have
+    // started the Bring up to date run itself (pr_watch.rs auto_words):
+    // its words while it works or waits for review, else the health line.
+    const said = r.last_pr?.state === "open" ? (r.last_pr.auto_line ?? r.last_pr.health) : null;
+    const health = said ? el("p", { className: "happ-health" }, said) : null;
+    return el("div", { className: "happ", dataset: { tone: r.tone } },
+      el("div", { className: "happ-top" },
+        el("div", { className: "happ-words" }, name,
+          el("p", { className: "happ-line", title: r.line + when }, r.line + when), health,
+          // How much of the plan the app's agents used today (tokens.rs).
+          r.used_today ? el("p", { className: "happ-use" }, `${D.usageWords(r.used_today)} today`) : null),
+        el("div", { className: "happ-acts" }, act, update, r.first_today ? el("span", { className: "happ-first" }, "First today") : null,
+          D.runButton(r.app_id, r.name, previews, { onChanged, key: `today-run-${id}` }))),
+      // The Decurion app's row, while this PC runs an older Decurion than
+      // GitHub has (version.rs): what's waiting and how to update.
+      D.versionNote(r.decurion),
+      r.deploy ? D.deployBox(r.deploy, { onChange: onChanged })
+        : r.can_deploy ? D.deployCheck(r.app_id, r.name, { onChange: onChanged }) : null);
+  }
+  // D.todayList(rows, { title, previews, onChanged, onPick, picked }) → the
+  // app rows under one small heading, or null with none. onPick(id or null)
+  // makes each app's name pick that app (or All apps again).
+  D.todayList = (rows, { title = "Your apps", previews = [], onChanged = () => {}, onPick = null, picked = null } = {}) => {
+    if (!rows?.length) return null;
+    return el("section", { className: "happs", "aria-label": title },
+      el("h3", { className: "happs-h" }, title), ...rows.map((r) => todayRow(r, { previews, onChanged, onPick, picked })));
+  };
+  // D.todayLine(row, { previews, onChanged }) → one app's row alone, for the
+  // top of its own page (Apps › app): its one line and its buttons (Run it,
+  // Merge, Answer the comments, Bring up to date, Deploy), with no heading
+  // and no name. The same row and taps as Home's, or null with no row.
+  D.todayLine = (r, { previews = [], onChanged = () => {} } = {}) => (r
+    ? el("section", { className: "happs one", "aria-label": `${r.name} today` }, todayRow(r, { previews, onChanged, bare: true }))
+    : null);
+
+  // ---------- A small switch between views of one thing ----------
+  // D.segmented(items, { label, selected, onPick }) → { el, pick(id),
+  // show(id, on), current }. items: [{ id, label }]. The one picked looks
+  // pressed; arrow keys move between them like any radio group.
+  D.segmented = (items, { label = "Show", selected = items[0]?.id, onPick } = {}) => {
+    let current = null;
+    const btns = items.map((it) => {
+      const b = el("button", { type: "button", className: "hseg-b", role: "radio", dataset: { seg: it.id, key: `seg-${it.id}` } }, ...[].concat(it.label));
+      b.onclick = () => { const was = current; pick(it.id); if (was !== it.id) onPick?.(it.id); };
+      return b;
+    });
+    const box = el("div", { className: "hseg", role: "radiogroup", "aria-label": label }, ...btns);
+    box.addEventListener("keydown", (e) => {
+      const shown = items.filter((_, i) => !btns[i].hidden);
+      const at = shown.findIndex((it) => it.id === current);
+      const to = { ArrowRight: at + 1, ArrowDown: at + 1, ArrowLeft: at - 1, ArrowUp: at - 1 }[e.key];
+      if (to == null || !shown.length) return;
+      e.preventDefault();
+      const it = shown[(to + shown.length) % shown.length];
+      btns[items.indexOf(it)].click();
+      btns[items.indexOf(it)].focus();
+    });
+    function pick(id) {
+      current = id;
+      items.forEach((it, i) => {
+        const on = it.id === id;
+        btns[i].setAttribute("aria-checked", on ? "true" : "false");
+        btns[i].tabIndex = on ? 0 : -1;
+      });
+    }
+    pick(selected);
+    return {
+      el: box, pick,
+      show(id, on) { const i = items.findIndex((it) => it.id === id); if (i >= 0) btns[i].hidden = !on; },
+      get current() { return current; },
+    };
+  };
+  // Home's own switch: Goals (its three lists) or Board (by goal). With Pro
+  // view on, a third: By status, the board's old columns. Remembered per
+  // device; a link to #board opens the Board whatever was remembered.
+  const VIEW_KEY = "decurion.home.view";
+  D.homeView = {
+    get() { const v = D.store.get(VIEW_KEY); return v === "board" || v === "state" ? v : "goals"; },
+    set(v) { D.store.set(VIEW_KEY, v); },
+  };
+  D.homeSwitch = ({ selected = "goals", onPick } = {}) => {
+    const s = D.segmented([
+      { id: "goals", label: [icon("send"), el("span", {}, "Goals")] },
+      { id: "board", label: [icon("lanes"), el("span", {}, "Board")] },
+      { id: "state", label: [icon("board"), el("span", {}, "By status")] },
+    ], { label: "Show Home as", selected, onPick });
+    s.el.classList.add("home-switch");
+    const pro = () => s.show("state", D.pro);
+    pro();
+    D.onPro(pro);
+    return s;
+  };
+
+  // ---------- The board, by goal ----------
+  // D.laneBoard(container, { appId, feed, onChanged }) draws one row (lane)
+  // per open goal, plus "Quick jobs" for work of its own, across four
+  // columns: Waiting on you, Building, Checking, Done. Each piece is a small
+  // card in its column, amber with the word for what it needs when it waits
+  // on you, red with "Failed" when it could not finish; a checker at work is a "Checking now" on its piece, never a
+  // card of its own, and a project lead or designer at work is a line on
+  // its goal's lane. A lane's head links to its goal; a piece opens its
+  // work panel (D.openWork, with its trail). On a narrow screen the lanes
+  // stand one under another, each a list under the column words, and
+  // nothing scrolls sideways.
+  //
+  // It returns { el, update(data), setApp(id or null), refresh(), destroy() }.
+  // `appId` (string id or null for every app) keeps one app's lanes.
+  // Without `feed` it asks the hub itself every 5 seconds while it is on
+  // screen; with `feed: true` the page passes what it already asked:
+  // update({ threads, goals, needs, helpers, map? }), and onChanged() runs
+  // after a tap changed something.
+  const LCOLS = [["waiting", "Waiting on you"], ["building", "Building"], ["checking", "Checking"], ["done", "Done"]];
+  const CELL_MAX = 6;
+  const QUICK_WORD = { answer: "Answer the agent", check: "Look it over", failed: "Retry or stop", not_sent: "Try again", no_pull_request: "Open the pull request" };
+  D.laneBoard = (container, { appId = null, feed = false, onChanged = null } = {}) => {
+    let data = { threads: [], goals: [], needs: null, helpers: [] };
+    let map = null, app = appId == null || appId === "all" ? null : String(appId), loaded = false, err = null, sig = "", timer = 0, busy = false;
+    const root = el("div", { className: "lanes live" });
+    container.replaceChildren(root);
+    const changedNow = () => (onChanged ? onChanged() : load());
+
+    async function load() {
+      if (busy) return;
+      busy = true;
+      try {
+        const [list, threads, goals, needs, helpers] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/goals"),
+          D.api("/needs-you").catch(() => null), D.api("/helpers").catch(() => [])]);
+        D.setApps(list);
+        data = { threads, goals: Array.isArray(goals) ? goals : [], needs: needs && Array.isArray(needs.work) ? needs : null, helpers: Array.isArray(helpers) ? helpers : [] };
+        map = await D.homeMap(data);
+        loaded = true;
+        err = null;
+      } catch (e) { err = e; }
+      busy = false;
+      draw();
+    }
+
+    function model() {
+      const inApp = (x) => app == null || String(x.app_id) === app;
+      const byId = new Map(data.threads.map((t) => [t.id, t]));
+      const needWork = new Map((data.needs?.work ?? []).map((w) => [w.thread_id, w.why]));
+      const empty = () => ({ waiting: [], building: [], checking: [], done: [] });
+      const order = (cells) => {
+        for (const k of Object.keys(cells)) {
+          cells[k].sort((a, b) => (b.you ? 1 : 0) - (a.you ? 1 : 0) || String(b.t?.updated_at ?? "").localeCompare(String(a.t?.updated_at ?? "")));
+        }
+        return cells;
+      };
+      const lanes = data.goals.filter((g) => D.goalOpen(g) && inApp(g))
+        .sort((a, b) => (b.journey?.you ? 1 : 0) - (a.journey?.you ? 1 : 0) || String(b.updated_at).localeCompare(String(a.updated_at)))
+        .map((g) => {
+          const cells = empty(), j = g.journey ?? {};
+          for (const p of map?.pieces.get(g.id) ?? []) {
+            const t = byId.get(p.thread_id) ?? { id: p.thread_id, app_id: g.app_id, title: p.title, state: p.thread_state, github: p.github ?? null, research: !!p.research, updated_at: g.updated_at };
+            const mine = j.you && j.piece === t.id;
+            const word = mine ? (j.action?.label ?? "Needs you") : t.state === "needs_you" ? "Answer the agent" : null;
+            // The piece the goal's journey waits on sits under Waiting on
+            // you, whatever its own state, so the owner's next move is in
+            // one column.
+            let col = null;
+            if (mine && t.state !== "queued" && t.state !== "running" && !D.checking(t)) col = "waiting";
+            else if (t.state === "queued" || t.state === "running") col = "building";
+            else if (t.state === "needs_you") col = "waiting";
+            else if (t.state === "in_review") col = !D.checking(t) && mine ? "waiting" : "checking";
+            else if (t.state === "done") col = "done";
+            // Failed work waits on you too (Retry or Dismiss in its panel),
+            // shown red, unless it already reached GitHub (then it is on
+            // the road) or the owner dismissed it.
+            else if (t.state === "failed") col = mine || (!t.github && !t.dismissed_at) ? "waiting" : t.github ? "done" : null;
+            if (col) cells[col].push({ t, word, you: !!word });
+          }
+          // The goal's own next move when no piece holds it: reply to the
+          // project lead, approve the plan (on the goal, where it is
+          // shown), try again, or look at the finished work.
+          if (j.you && j.piece == null) {
+            cells.waiting.unshift({ goal: g, word: j.action?.label ?? j.label, you: true });
+          }
+          const helps = data.helpers.filter((h) => h.goal_id === g.id && h.kind !== "checker");
+          return { g, cells: order(cells), helps };
+        });
+      const quick = empty();
+      for (const t of data.threads) {
+        if (t.dismissed_at || !inApp(t) || (map && map.goalOf.get(t.id) != null)) continue;
+        const why = needWork.get(t.id);
+        let col = null;
+        if (why === "answer" || why === "check" || why === "failed") col = "waiting";
+        else if (why) col = "done";
+        else if (t.state === "queued" || t.state === "running") col = "building";
+        else if (t.state === "needs_you" || t.state === "in_review") col = "waiting";
+        else if (t.state === "done" && D.sinceMidnight(t.updated_at)) col = "done";
+        if (!col) continue;
+        const word = why ? QUICK_WORD[why] : t.state === "needs_you" ? "Answer the agent" : t.state === "in_review" ? "Look it over" : null;
+        quick[col].push({ t, word, you: !!word });
+      }
+      order(quick);
+      const anyQuick = Object.values(quick).some((l) => l.length);
+      return { lanes, quick: anyQuick ? quick : null, byId };
+    }
+
+    const cardSig = (x) => (x.goal ? ["g", x.goal.id, x.word] : [x.t.id, x.t.title, x.t.state, x.t.check, x.t.road?.label, x.t.road?.you, x.word]);
+    function draw() {
+      if (!loaded) {
+        if (sig === "loading") return;
+        sig = "loading";
+        root.replaceChildren(...[0, 1].map(() => el("div", { className: "skeleton lane-sk" })));
+        return;
+      }
+      const m = model();
+      const s = JSON.stringify([app, D.offline, err?.message ?? "",
+        m.lanes.map((l) => [l.g.id, l.g.title, l.g.journey?.label, l.g.journey?.steps, D.appName(l.g.app_id),
+          Object.values(l.cells).map((c) => c.map(cardSig)), l.helps.map((h) => [h.job_id, h.kind, h.state, h.started_at, h.waiting, h.until])]),
+        m.quick && Object.values(m.quick).map((c) => c.map(cardSig))]);
+      if (s === sig) return;
+      sig = s;
+      const focusKey = root.contains(document.activeElement) ? document.activeElement.dataset?.key : null;
+      const kids = [];
+      if (err && !data.threads.length) {
+        kids.push(el("div", { className: "notice bad", role: "alert" }, icon("alert"), el("span", { className: "grow" }, `Couldn't load your work. Nothing was lost. ${err.message}`)));
+      }
+      if (!m.lanes.length && !m.quick) {
+        kids.push(el("div", { className: "empty-state lanes-empty" },
+          el("div", { className: "mark" }, icon("lanes", "l")),
+          el("h3", {}, app == null ? "Nothing is open right now" : `Nothing open for ${D.appName(+app) || "this app"} right now`),
+          el("p", {}, "Say what you want. Your project lead plans it with you, or pick Just do it for a small change.")));
+        root.replaceChildren(...kids);
+        return;
+      }
+      kids.push(el("div", { className: "lanes-head", "aria-hidden": "true" }, el("span", {}, "Goal"), ...LCOLS.map(([, w]) => el("span", {}, w))));
+      for (const l of m.lanes) kids.push(lane(l, m.byId));
+      if (m.quick) kids.push(lane({ quick: true, cells: m.quick, helps: [] }, m.byId));
+      root.replaceChildren(...kids);
+      if (focusKey) root.querySelector(`[data-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
+    }
+
+    function lane(l, byId) {
+      const g = l.g;
+      const head = l.quick
+        ? el("div", { className: "lane-goal" }, el("h3", { className: "lane-title" }, "Quick jobs"), el("p", { className: "lane-sub" }, "Just do it work: one agent, no plan"))
+        : el("div", { className: "lane-goal" },
+          el("h3", { className: "lane-title" }, el("a", { href: `/goals#goal-${g.id}`, dataset: { key: `lane-${g.id}` } }, g.title || "A goal")),
+          app == null && D.appName(g.app_id) ? el("p", { className: "lane-sub" }, D.appName(g.app_id)) : null,
+          g.journey ? el("div", { className: `lane-road${g.journey.you ? " you" : ""}` }, D.journey(g.journey, { size: "small" }), el("span", {}, g.journey.label)) : null,
+          ...l.helps.map((h) => el("p", { className: "lane-help" }, icon(h.state === "running" ? "running" : "queued"), D.jobLine(h, h.kind))));
+      const cells = LCOLS.map(([k, w]) => {
+        const list = l.cells[k];
+        const shown = list.slice(0, CELL_MAX);
+        return el("div", { className: `lane-cell${list.length ? "" : " empty"}`, dataset: { col: k } },
+          el("h4", { className: "lane-col" }, w, el("span", { className: "ct" }, String(list.length))),
+          ...shown.map((x) => piece(x, byId)),
+          list.length > shown.length ? el("p", { className: "lane-more" }, `and ${list.length - shown.length} more`) : null);
+      });
+      return el("section", { className: `lane${l.quick ? " quick" : ""}`, "aria-label": l.quick ? "Quick jobs" : `Goal: ${g.title}` }, head, ...cells);
+    }
+
+    function piece(x, byId) {
+      if (x.goal) {
+        return el("a", { className: "lpc you", href: `/goals#goal-${x.goal.id}`, dataset: { key: `lgoal-${x.goal.id}` } },
+          el("span", { className: "lpc-t" }, x.word),
+          el("span", { className: "lpc-w" }, icon("alert"), "Needs you"));
+      }
+      const t = x.t;
+      const chk = D.checking(t);
+      let status = null;
+      if (x.you) status = el("span", { className: "lpc-w" }, icon("alert"), x.word);
+      else if (chk) status = el("span", { className: "lpc-s" }, icon(t.check?.state === "running" ? "running" : "queued"), t.check?.state === "running" ? "Checking now" : "Waiting for the checker");
+      else if (t.state === "running") status = el("span", { className: "lpc-s" }, icon("running"), "Building now");
+      else if (t.state === "queued") status = el("span", { className: "lpc-s" }, icon("queued"), "Waiting to start");
+      else if (t.state === "in_review") status = el("span", { className: "lpc-s" }, icon("in_review"), "In review");
+      // A pull request that waits for a merge on GitHub is the road's own
+      // step, not a count of Needs you (that comes from /api/needs-you), so
+      // it shows as plain text with the branch mark, never green or amber.
+      else if (t.state === "done" && t.road?.you) status = el("span", { className: "lpc-s" }, icon("branch"), "Pull request open");
+      else if (t.state === "done") status = el("span", { className: "lpc-s fin" }, icon("done"), t.road?.label ?? "Done");
+      else if (t.state === "failed") status = el("span", { className: "lpc-s bad" }, icon("failed"), "Failed");
+      const b = el("button", { type: "button", className: `lpc${x.you ? " you" : t.state === "failed" ? " failed" : ""}`, dataset: { key: `lpc-${t.id}`, state: t.state } },
+        el("span", { className: "lpc-t" }, t.title), status);
+      b.onclick = async () => {
+        let full = byId.get(t.id);
+        if (!full) { try { full = await D.api(`/threads/${t.id}`); } catch (_) { full = t; } }
+        D.openWork(full, changedNow);
+      };
+      return b;
+    }
+
+    function update(next = {}) {
+      data = { ...data, ...next };
+      if (next.map) { map = next.map; loaded = true; err = null; draw(); return; }
+      D.homeMap(data).then((m2) => { map = m2; loaded = true; err = null; draw(); });
+    }
+    D.onOffline(() => { sig = ""; draw(); });
+    draw();
+    if (!feed) {
+      load();
+      timer = setInterval(() => {
+        if (!root.isConnected) { clearInterval(timer); return; }
+        if (document.hidden || !root.offsetParent) return;
+        load();
+      }, 5000);
+    }
+    return {
+      el: root, update,
+      setApp(v) { app = v == null || v === "all" ? null : String(v); draw(); },
+      refresh() { if (feed) { sig = ""; draw(); } else load(); },
+      destroy() { clearInterval(timer); root.remove(); },
+    };
   };
 })();

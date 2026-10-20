@@ -4,7 +4,7 @@ This page helps you see, in one place, whether everything Decurion signs in with
 
 ## Open the Sign-ins list
 
-1. On the board, click **Settings**. On your phone, tap the **Settings** tab.
+1. On your PC, click **Settings** in the menu. On your phone, tap the **Settings** tab.
 2. Open **Sign-ins**. It is the first tab. When a sign-in needs you, the tab says so, such as "1 needs you".
 
 Each row is one account, with a light:

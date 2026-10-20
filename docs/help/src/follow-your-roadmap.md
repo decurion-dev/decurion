@@ -1,14 +1,43 @@
-# Follow your Roadmap
+# Your apps and their Roadmaps
 
 This page helps you see, in one place, what each app has done and what is
 left.
 
-Each app has one **Roadmap**: a list of its goals, in your order, with
-everything they found along the way. On your PC, click **Roadmap** in the
-menu on the left: it is the same menu on the board, the Goals page and the
-Roadmap. Or go to <http://decurion.localhost:7420/plan>. On your phone, tap
-**Roadmap** at the bottom. Choose the app at the top right, or at the top on a
-phone.
+## Open an app
+
+**Apps** is one of the four places in Decurion's menu: **Home**, **Goals**,
+**Apps** and **Settings**. On your PC it is in the menu on the left; on your
+phone it is a tab at the bottom. Or go to
+<http://decurion.localhost:7420/plan>.
+
+Apps opens on the list of your apps. Each row shows the app's name, how many
+of its goals are in progress, and an amber **Needs you** count when something
+in that app waits for you. Tap an app to open its page.
+
+Once you pick an app, Decurion remembers it on that PC or phone: the next
+time you tap **Apps** it opens that app straight away. Picking one app on
+Home does the same. To go back to the list, tap **Apps** in the line at the
+top (**Apps › pv-medispa**) on your PC, or **‹ Apps** on your phone. On a PC
+you can also pick another app from the box beside its name.
+
+Under the app's name is its line from Home: where its last pull request is,
+with its **Run it**, **Merge**, **Bring up to date** or **Deploy** button when
+it has one.
+
+Each app's page has four tabs:
+
+- **Roadmap**: every goal for the app, in your order, with everything they
+  found along the way. It opens first.
+- **Board**: only this app's work, one row per goal, with its pieces under
+  **Waiting on you**, **Building**, **Checking** and **Done**. Tap a piece to
+  open it.
+- **Pages**: every page agents drew for the app. See [The Pages
+  tab](#the-pages-tab).
+- **Files**: briefs, specs and pictures agents read while they work on this
+  app. See [Attach files for agents](attach-files.md).
+
+**Rules and settings**, beside the app's name, opens the app's rules, its
+plan and money, its websites and its name and folder in **Settings**.
 
 The word **plan** on its own always means one goal's plan: the pieces of
 work your project lead proposes and you approve. The Roadmap is the list of
@@ -21,7 +50,7 @@ that fills as work finishes. Turn on **Hide finished** to see only what is
 left.
 
 Each goal is a card. Its words tell you where it is, and they are the same
-words the Goals page, the board and your phone show for that goal:
+words Home, the Goals page, the Board and your phone show for that goal:
 
 - **Done**, **Live** or **On your PC** in green: the goal is finished.
 - **Talking it through** or **Working**: your project lead or the agents are
@@ -35,7 +64,7 @@ Under the name, the goal's road shows its stages in order: **Ask**, **Plan**,
 **Build**, **Check**, **Merge**, and **Live** (or **On your PC** for
 Decurion itself) when the app has a step after the merge. See [See where a
 goal is](give-your-first-goal.md#see-where-a-goal-is). Each piece of work
-also has its own small button; tap it to open that piece on the board. A
+also has its own small button; tap it to open that piece. A
 piece marked **Failed** in red went wrong.
 
 The pages agents drew for the goal show as small buttons, such as
@@ -100,5 +129,6 @@ older plan on purpose, it stays put and offers **Show the latest plan**.
 
 On a PC the answers sit on the right. On a phone, a bar at the bottom says how
 many questions wait for you. Tap **Answer** to open them over the lower part of
-the page, and **✕** to close them. **Back** takes you to where you came from;
+the page, and **✕** to close them. **Back** takes you to where you came from (the app's **Pages** tab when you
+opened the page from there);
 **Open on its own** opens just the page in a new tab.

@@ -46,7 +46,7 @@
   code { font:13px/1.4 ui-monospace, Consolas, monospace; background:var(--neutral-soft); padding:1px 5px; border-radius:5px; }
 
   /* Menu. On a PC: the shared rail down the left (D.pcNav, menu.css), the same menu and logo as the
-     Board and the Roadmap, with the connection light at its foot. On a phone the rail hides
+     Home and Apps, with the connection light at its foot. On a phone the rail hides
      (the bottom tabs take over) and this slim header shows the logo and the light instead. */
   .top { flex:none; display:flex; align-items:center; gap:14px; padding:8px 16px; padding-top:max(8px, env(safe-area-inset-top)); border-bottom:1px solid var(--line); }
   .brand { display:flex; align-items:center; gap:9px; font-weight:700; font-size:17px; color:var(--ink); text-decoration:none; letter-spacing:-.01em; }
@@ -512,7 +512,7 @@
       <div class="goal-head">
         <a class="back btn ghost" href="#goals" aria-label="Back to all goals">‹ Goals</a>
         <div class="gh-main">
-          <!-- Where this goal sits: Roadmap › its app › this goal (D.trail in ui.js). -->
+          <!-- Where this goal sits: Apps › its app › this goal (D.trail in ui.js). -->
           <div id="g-trail"></div>
           <h2 id="g-title"></h2>
           <div class="gh-meta"><span id="g-app"></span><span id="g-state" class="pill"></span></div>
@@ -557,7 +557,7 @@
           </form>
         </section>
         <section class="pieces-panel" id="pieces" aria-labelledby="pieces-h">
-          <div class="pp-head"><h3 id="pieces-h">Pieces of work</h3><a class="btn ghost" href="/" data-board>Open the board</a></div>
+          <div class="pp-head"><h3 id="pieces-h">Pieces of work</h3><a class="btn ghost" href="/" data-board>Open the app's Board</a></div>
           <div id="pieces-body"></div>
         </section>
         <section class="files-panel" id="files" aria-labelledby="files-h">
@@ -609,7 +609,8 @@ const phone = matchMedia("(max-width: 759px)");
 const installed = matchMedia("(display-mode: standalone)");
 const inApp = () => phone.matches || installed.matches;
 // The phone's board is the inbox's Board tab.
-const boardHref = () => (inApp() ? "/inbox#board" : "/");
+// A goal's work on a board: its app's Board tab (Apps), or Home with no app.
+const boardHref = (appId) => (appId != null ? `/plan#app=${appId}&tab=board` : inApp() ? "/inbox#home" : "/");
 
 // ---------- helpers ----------
 const $ = id => document.getElementById(id);
@@ -892,7 +893,7 @@ const newWork = D.composer({
     S.forceStick = true;
     tick();
   },
-  onStarted: () => { closeNewGoal(); location.href = boardHref(); },
+  onStarted: (thread) => { closeNewGoal(); location.href = thread?.id != null ? D.workHref(thread.id) : boardHref(); },
 });
 /** Tells the box the apps and computers; only once they have loaded, so it never shows "Add your first app" too soon. */
 function drawNewWork() {
@@ -1082,8 +1083,10 @@ function renderHead(v) {
   S.headSig = sig;
   $("g-title").textContent = g.title;
   $("g-app").textContent = app;
-  // Where this goal sits: the Roadmap, its app's Roadmap, then this goal.
-  $("g-trail").replaceChildren(D.trail([{ label: "Roadmap", href: "/plan" }, { label: app, href: D.planHref(g.app_id) }, { label: g.title }]) ?? "");
+  // Where this goal sits: Apps, its app's page, then this goal.
+  $("g-trail").replaceChildren(D.trail([{ label: "Apps", href: "/plan#apps" }, { label: app, href: D.planHref(g.app_id) }, { label: g.title }]) ?? "");
+  // "Open the board" beside its pieces opens its app's Board tab.
+  document.querySelectorAll("a[data-board]").forEach(a => { a.href = boardHref(g.app_id); });
   // The trail names the app, so the line under the title doesn't again.
   $("g-app").hidden = !!app;
   let [label, tone] = GOAL_STATES[g.state] ?? [g.state, "neutral"];
@@ -1489,7 +1492,7 @@ async function approve(msgId, btn, err) {
 function renderTail(v) {
   const g = v.goal;
   const prs = (v.pieces ?? []).map(p => [p.thread_id, p.github?.state, p.github?.url, p.github?.error, p.github?.clash, p.github?.pull_request, p.github?.closed, p.merged, p.review, p.thread_state, p.road?.label, p.road?.why]);
-  const sig = JSON.stringify([g.busy, g.stuck, g.state, g.dismissed_at, boardHref(), prs, v.live, v.road]);
+  const sig = JSON.stringify([g.busy, g.stuck, g.state, g.dismissed_at, boardHref(g.app_id), prs, v.live, v.road]);
   if (sig === S.tailSig) return false;
   S.tailSig = sig;
   const parts = [];
@@ -1507,7 +1510,7 @@ function renderTail(v) {
     // Research changed no code: nothing to try on the board or merge. What it
     // found is on the app's Roadmap, ready to be built.
     parts.push(el("div", { class: "callout attn" },
-      el("p", null, "The research is done and nothing in the app was changed. Read what it found below. To turn it into real changes, open the Roadmap, tap the × next to anything you don't want (Take off the Roadmap), and tap Fix all that are left (or Fix this when only one is left). Or tap Turn into a goal on the report."),
+      el("p", null, "The research is done and nothing in the app was changed. Read what it found below. To turn it into real changes, open the app's Roadmap, tap the × next to anything you don't want (Take off the Roadmap), and tap Fix all that are left (or Fix this when only one is left). Or tap Turn into a goal on the report."),
       el("a", { class: "btn primary", href: D.planHref(g.app_id) }, "Fix what it found"),
       closeButton("btn"),
       el("p", { class: "hint" }, CLOSE_WORDS)));
@@ -1521,9 +1524,9 @@ function renderTail(v) {
     parts.push(el("div", { class: "callout attn" },
       el("p", null, sent
         ? `Everything is built and checked. Here is where each piece is, in the order to merge them. The goal closes by itself once every piece is ${ends}.`
-        : "Everything is built and checked. Try it out from the board, then close the goal."),
+        : `Everything is built and checked. ${onePiece(v) != null ? "Open the piece to try it out" : "Try it out from the app's Board"}, then close the goal.`),
       finishList(v),
-      el("a", { class: "btn", href: onePiece(v) != null ? D.workHref(onePiece(v)) : boardHref() }, "Open the board"),
+      el("a", { class: "btn", href: onePiece(v) != null ? D.workHref(onePiece(v)) : boardHref(g.app_id) }, onePiece(v) != null ? "Open this piece" : "Open the app's Board"),
       closeButton(sent ? "btn" : "btn primary"),
       el("p", { class: "hint" }, CLOSE_WORDS)));
   } else if (CLOSED.has(g.state)) {
@@ -1577,9 +1580,9 @@ function finishList(v) {
     else if (gh?.state === "sent" && !gh.pull_request && /^https:\/\/github\.com\//.test(gh.url ?? "")) what = prButton(p);
     else if (gh?.state === "sent" && gh.url) what = el("a", { class: "btn", href: gh.url, target: "_blank", rel: "noopener" }, gh.pull_request ? "Open the pull request" : "Open on GitHub");
     else if (gh?.state === "sent") what = pill("Sent", "neutral");
-    else if (gh?.state === "failed") what = el("a", { class: "btn", href: D.workHref(p.thread_id) }, "Didn't reach GitHub: open it on the board");
+    else if (gh?.state === "failed") what = el("a", { class: "btn", href: D.workHref(p.thread_id) }, "Didn't reach GitHub: open this piece");
     else if (gh) what = el("span", { class: "hint" }, "Sending to GitHub…");
-    else if (p.review === "needs_a_look") what = el("a", { class: "btn", href: D.workHref(p.thread_id) }, "Needs your look on the board");
+    else if (p.review === "needs_a_look") what = el("a", { class: "btn", href: D.workHref(p.thread_id) }, "Needs your look: open this piece");
     else what = el("span", { class: "hint" }, p.review === "failed" ? "Couldn't be finished" : "Not sent");
     // Why Decurion didn't open it, and what GitHub's warnings there mean,
     // in the same plain words as the piece's own panel.
@@ -1730,7 +1733,7 @@ function renderPieces(v) {
         check ? el("a", { class: "btn built", ...pageLink(v.goal.id, check.id) }, inApp() ? "See it as built" : "See it as built ↗", newTabNote()) : null,
         turn,
         built(p) && !CLOSED.has(v.goal.state) && !S.why.has(`${v.goal.id}:${p.thread_id}`) ? whyBox(v, p) : null,
-        el("a", { class: "btn ghost", href: D.workHref(p.thread_id) }, "On the board")),
+        el("a", { class: "btn ghost", href: D.workHref(p.thread_id) }, "Open this piece")),
       built(p) && !CLOSED.has(v.goal.state) && S.why.has(`${v.goal.id}:${p.thread_id}`) ? whyBox(v, p) : null,
       err);
   }));
@@ -1831,12 +1834,14 @@ function setConn(text, off) {
   document.querySelectorAll(".conn").forEach(c => { c.textContent = text; c.classList.toggle("off", off); });
 }
 document.querySelector(".shell").after(D.phoneTabs("goals"));
+// The phone's small "?" for help, at the end of its top bar (Help is no phone tab).
+if (D.helpButton) document.querySelector(".top").append(D.helpButton());
 $("tab-goals").addEventListener("click", e => {
   e.preventDefault();
   document.querySelector(".side").scrollTo({ top: 0, behavior: reducedMotion.matches ? "auto" : "smooth" });
 });
 function placeLinks() {
-  document.querySelectorAll("a[data-board]").forEach(a => { a.href = boardHref(); });
+  document.querySelectorAll("a[data-board]").forEach(a => { a.href = boardHref(S.view?.goal?.app_id); });
   // On a phone, apps are added in Settings.
   // The new-work box's "Add an app" goes to Settings on the board, or in the phone's inbox.
   $("ng-no-apps").querySelector("p").textContent = `An app is a git folder on ${inApp() ? "your" : "this"} PC. Add one in Settings, then say what you want here.`;

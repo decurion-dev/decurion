@@ -23,7 +23,7 @@ A research piece:
   **Checked** (the agent saw it for itself, and says how) or **Guessed** (the
   agent worked it out without seeing it).
 - Skips the checker, because there is no code to check.
-- Never goes to GitHub. Accepting it on the board just marks it done.
+- Never goes to GitHub. Accepting it just marks it done.
 
 When it finishes, open the goal's **Pieces of work** and press **Read the
 report**. Under **What it found** you see the agent's short summary.
@@ -64,6 +64,6 @@ hint to look for yourself.
   a summary. See [When something fails](when-something-fails.md), then send it
   back to try again.
 - **The research finished without a report.** The piece says **Needs you · take a look**.
-  Read its activity on the board, or send it back.
+  Open it and read its **Activity**, or send it back.
 - **Ask why says the piece has not been built yet.** Wait until its agent has
   finished at least once.

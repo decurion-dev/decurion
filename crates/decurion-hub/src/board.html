@@ -15,33 +15,9 @@
     display: flex; flex-direction: column; gap: 22px;
     padding: 16px 12px 14px; border-right: 1px solid var(--line);
   }
-  /* The logo and the page links are the shared PC menu (D.pcNav, menu.css); the apps list below is the board's own. */
-  .nav { display: grid; gap: 2px; }
-  .nav-h { display: flex; align-items: center; justify-content: space-between; padding: 0 4px 6px 10px; font-size: 12px; font-weight: 600; color: var(--faint); }
-  .nav-item {
-    position: relative; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 32px; padding: 0 10px;
-    border: 0; border-radius: var(--radius-s); background: none; color: var(--muted);
-    font: 500 14px/1.2 var(--font); text-decoration: none; text-align: left; cursor: pointer;
-    transition: background-color .12s var(--ease), color .12s var(--ease);
-  }
-  .nav-item:hover { background: var(--surface-2); color: var(--ink); }
-  .nav-item[aria-current="page"], .nav-item[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-ink); }
-  .nav-item .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .nav-item .ct { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--faint); }
-  .nav-item[aria-pressed="true"] .ct { color: inherit; }
-  .needs-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber-line); flex: none; }
+  /* The logo and the page links are the shared PC menu (D.pcNav, menu.css). */
   .ghost { display: inline-grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 6px; background: none; color: var(--faint); cursor: pointer; }
   .ghost:hover { background: var(--surface-2); color: var(--ink); }
-  /* An app in the list with its go-first-today star. Unstarred, the star shows on hover. */
-  .nav-row { display: flex; align-items: center; gap: 2px; }
-  .nav-row .nav-item { flex: 1; min-width: 0; }
-  .star-btn { opacity: 0; transition: opacity .12s var(--ease); }
-  .star-btn svg.i { width: 14px; height: 14px; }
-  .nav-row:hover .star-btn, .star-btn:focus-visible, .star-btn[aria-pressed="true"] { opacity: 1; }
-  .star-btn[aria-pressed="true"] { color: var(--accent-ink); }
-  .star-btn[aria-pressed="true"] svg.i { fill: currentColor; }
-  .star-btn[disabled] { cursor: not-allowed; }
-  @media (hover: none) { .star-btn { opacity: 1; } }
 
   .side .usage { margin-top: auto; }
 
@@ -58,17 +34,12 @@
   #run-slot:empty { display: none; }
   .topbar .grow { flex: 1; }
   .topbar .right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-  .needs-btn {
-    display: inline-flex; align-items: center; gap: 7px; min-height: 30px; padding: 0 12px 0 10px;
-    border: 0; border-radius: 99px; cursor: pointer;
-    font: 600 13px/1 var(--font); color: var(--amber); background: var(--amber-soft); box-shadow: inset 0 0 0 1px var(--amber-line);
-    transition: filter .12s var(--ease);
-  }
-  .needs-btn:hover { filter: brightness(0.97) saturate(1.1); }
-  .needs-btn svg.i { width: 15px; height: 15px; }
+  .topbar .ttl { display: flex; align-items: center; gap: 10px 12px; flex-wrap: wrap; min-width: 0; }
   .content { padding: 4px 28px 40px; display: grid; gap: 22px; align-content: start; }
 
-  /* The new-work form's look is shared with the phone: see ui.css (D.composer). */
+  /* The new-work form's look is shared with the phone: see ui.css (D.composer). Home's lists,
+     its switch and the board by goal are shared too: see ui.css (Home). */
+  #hv-goals { min-width: 0; }
 
   /* ---------- Board ---------- */
   .board-wrap { margin: 0 -28px; padding: 0 28px 8px; overflow-x: auto; scrollbar-width: thin; }
@@ -164,39 +135,10 @@
   .limits .notice .grow { min-width: 220px; }
   .limits .notice .field-error { margin-top: 2px; }
   .board-empty { border: 1px dashed var(--line); border-radius: var(--radius-l); }
+  /* All finished work (#board/status/done): its way back and its heading. */
+  .fin-head { display: grid; gap: 4px; margin-bottom: 14px; }
+  .fin-head h2 { font-size: 17px; }
   .board:has(.board-empty)::after { display: none; }
-
-  /* ---------- Today: one row per app, saying what it waits on (GET /api/today) ---------- */
-  .today { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: thin; margin: 0 -28px; padding: 2px 28px 6px; }
-  .today::after { content: ""; flex: 0 0 12px; }
-  .today-row {
-    position: relative; flex: 0 0 auto; width: 232px; display: grid; gap: 4px; align-content: start;
-    padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface);
-  }
-  .today-row[data-tone="quiet"] { background: none; }
-  .today-row:has(.hit[aria-pressed="true"]) { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
-  .today-row .hit { display: block; padding: 0; margin: 0; border: 0; background: none; font: 600 14px/1.3 var(--font); color: var(--ink); text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .today-row .hit::after { content: ""; position: absolute; inset: -1px; border-radius: var(--radius); }
-  .today-row .hit:focus-visible { outline: none; }
-  .today-row .hit:focus-visible::after { outline: 2px solid var(--focus); outline-offset: 2px; }
-  .today-row:hover { background: var(--surface-2); }
-  .today-row .ln { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .today-row .ln.health { color: var(--ink); }
-  .today-row .ft { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-top: 4px; min-height: 28px; }
-  .today-row .ft .btn { position: relative; z-index: 1; }
-  .today-row .ft .run-btn { margin-left: auto; }
-  .today-row .first { font-size: 12px; color: var(--faint); }
-  .today-row .use { font-size: 12px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .today .pill svg.i.spin { animation: none; }
-  /* An app with a deploy card: a little wider, with the deploy part under a line. */
-  .today-row:has(.deploy-box) { width: 336px; max-width: calc(100vw - 32px); }
-  /* The Decurion app's row while this PC runs an older Decurion (D.versionNote). */
-  .today-row:has(.ver-note) { width: 272px; max-width: calc(100vw - 32px); }
-  .today-row .ver-note { margin-top: 2px; }
-  .today-row .deploy-box { margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
-  .pill.t-merge { color: var(--accent-ink); background: var(--accent-soft); }
-  @media (min-width: 900px) and (max-width: 1199px) { .today { margin: 0 -22px; padding: 2px 22px 6px; } }
-  @media (max-width: 899px) { .today { margin: 0 -16px; padding: 2px 16px 6px; } }
 
   dialog:focus-visible { outline: none; }
 
@@ -227,14 +169,6 @@
     .side .pcnav { grid-column: 1 / -1; flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
     .side .pcnav-brand { padding: 4px 0; }
     .side .pcnav-items { display: flex; gap: 4px; }
-    .nav.apps { grid-column: 1 / -1; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px 2px; }
-    .nav.apps::-webkit-scrollbar { display: none; }
-    .nav.apps .nav-h { display: none; }
-    .nav.apps .nav-item { width: auto; flex: none; border: 1px solid var(--line); border-radius: 99px; min-height: 32px; }
-    .nav.apps .nav-item[aria-pressed="true"] { border-color: transparent; }
-    /* Pills: only a starred app shows its star, to tap it off. */
-    .nav.apps .nav-row { flex: none; }
-    .nav.apps .star-btn[aria-pressed="false"] { display: none; }
     .usage { display: none; }
     .topbar { position: static; padding: 14px 16px 8px; background: none; backdrop-filter: none; }
     .content { padding: 4px 16px 32px; }
@@ -276,33 +210,37 @@
 <div class="shell" id="shell">
   <aside class="side" aria-label="Decurion">
     <div id="pcnav"></div>
-    <nav class="nav apps" aria-label="Filter by app" id="app-nav"></nav>
     <a class="usage" href="#settings/accounts" id="usage" hidden></a>
   </aside>
 
   <main class="main" id="main">
     <div class="banner" id="offline-banner" role="status" hidden></div>
     <header class="topbar" id="topbar">
-      <div><h1 id="page-title">Board</h1></div>
-      <span class="sub" id="sub"></span>
+      <div class="ttl"><h1 id="page-title">Home</h1><span id="app-slot"></span></div>
       <span id="run-slot"></span>
       <span class="grow"></span>
       <div class="right">
-        <button type="button" class="needs-btn" id="needs" hidden></button>
+        <span id="view-slot"></span>
         <span id="pro-slot"></span>
         <button type="button" class="btn primary" id="new-work" title="New work (N)"></button>
       </div>
     </header>
 
-    <div class="content" id="view-board">
-      <div class="limits live" id="limits" hidden></div>
-      <section class="today live" id="today" aria-label="Today: what each app waits on" hidden></section>
-      <!-- Getting started (D.gettingStarted in ui.js), the same card as on the phone's inbox, until all five are done or it is hidden. -->
-      <div id="start"></div>
-      <!-- The new-work form, drawn by compose.js (D.composer), the same as on the phone. -->
+    <!-- Home: the start box, Getting started, then Needs you, Working and Done today (or the board by goal). -->
+    <div class="content" id="view-home">
+      <!-- The new-work form, drawn by compose.js (D.composer), the same box everywhere. -->
       <section class="composer live" id="composer" aria-label="New work"></section>
-      <div id="board-note" class="board-note" hidden></div>
-      <div class="board-wrap live" id="board-wrap"><div class="board" id="board" aria-label="Work by status"></div></div>
+      <!-- Getting started (D.gettingStarted in ui.js), the same card as on the phone, until all five are done or it is hidden. -->
+      <div id="gs-slot"></div>
+      <div id="hv-goals"></div>
+      <div id="hv-board" hidden></div>
+      <!-- Pro view's By status: the board's columns by state, with dismissed work and helper agents.
+           #board/status/done shows only its Done and Failed lists, with or without Pro view. -->
+      <div id="hv-state" hidden>
+        <div class="fin-head" id="fin-head" hidden></div>
+        <div id="board-note" class="board-note" hidden></div>
+        <div class="board-wrap live" id="board-wrap"><div class="board" id="board" aria-label="Work by status"></div></div>
+      </div>
     </div>
 
     <!-- Settings: drawn by settings.js, shared with the phone. -->
@@ -319,10 +257,12 @@
 <script src="/voice.js"></script>
 <script>
 "use strict";
+// Home on the PC: what needs you, what is working and what finished today,
+// or the board by goal (Home's switch), and Settings. The phone's Home
+// (inbox.html) draws the same rows from the same rules in ui.js.
 (() => {
   const { el, $, icon } = D;
   const COLS = D.ORDER; // needs you first: what you came to see
-  const ACTIVE = new Set(["queued", "running", "needs_you", "in_review"]);
   const TAILED = new Set(["running", "needs_you", "in_review", "failed"]);
   const EMPTY_COL = {
     needs_you: "All clear. Nothing needs you.", running: "No agents working right now.", in_review: "Nothing waiting for a checker.",
@@ -334,28 +274,31 @@
   let helpers = [];             // checkers and project leads at work or lined up (GET /api/helpers)
   let hasCloud = false;
   let previews = [];            // open Run it sessions (GET /api/previews)
+  let today = null;             // each app's row (GET /api/today)
+  let prs = [];                 // pull requests Decurion opened (GET /api/prs)
+  let signIns = [];             // website sign-ins that stopped working or soon will (GET /api/sign-ins)
+  let map = null;               // which goal each piece belongs to (D.homeMap)
   const limitErr = {};          // profile -> message from a failed "Continue on pay-per-use"
   let loaded = false, loadErr = null, busy = false, timer = 0;
   const tails = new Map();      // thread id -> { key, ev }
   const seen = new Set();       // cards already shown, so they don't animate again
   const sigs = {};
-  let filter = D.store.get("decurion.board.app") || "all";
+  // Which app Home shows: All apps each time Home opens. Picking one also
+  // makes it the app the Apps page opens on (D.app).
+  let filter = "all";
   let folds = {};
   try { folds = JSON.parse(D.store.get("decurion.board.folds") || "{}") || {}; } catch (_) { folds = {}; }
 
   const appById = (id) => apps.find((a) => a.id === id);
   const inFilter = (t) => filter === "all" || String(t.app_id) === filter;
   // What needs you: the hub's one list (GET /api/needs-you, today.rs), the
-  // same one the app rows and the phone's inbox count. Work on it sits in
-  // the Needs you column whatever its state (ready to check, failed, not
-  // sent), so the column, the top bar and the app rows agree. Null on an
-  // older hub: then only work that asks you counts.
+  // same one the phone counts. Home's Needs you tab is that list; on By
+  // status, work on it sits in the Needs you column whatever its state.
+  // Null on an older hub: then only work that asks you counts.
   let needs = null;
-  let goals = [];               // the goals waiting on you, with their road (GET /api/goals, only while some wait)
+  let goals = [];               // every goal, with its road (GET /api/goals)
   const needWork = () => new Set((needs?.work ?? []).map((w) => w.thread_id));
   const colOf = (t, ids) => (t.state === "needs_you" || ids.has(t.id) ? "needs_you" : t.state);
-  const needsIn = (key) => (needs ? (key === "all" ? needs.total : needs.by_app?.[key] ?? 0)
-    : threads.filter((t) => t.state === "needs_you" && (key === "all" || String(t.app_id) === key)).length);
   // Dismissed work is kept, but only shows when its column's Dismissed list is open.
   const shownThreads = () => threads.filter((t) => inFilter(t) && !t.dismissed_at);
   const dismissedThreads = () => threads.filter((t) => inFilter(t) && t.dismissed_at)
@@ -398,42 +341,122 @@
     pro.title = D.PRO_LINE;
     $("pro-slot").append(pro);
   }
-  $("offline-banner").append(icon("offline"), el("span", {}, "Your PC's hub isn't answering. Showing the last known board."));
+  $("offline-banner").append(icon("offline"), el("span", {}, "Your PC's hub isn't answering. Showing the last known work."));
   // The one place to ask for work: the project lead plans it, or "Just do it" starts one piece.
   const composer = D.composer({
     root: $("composer"), prefix: "",
     noApps: { text: "An app is a git folder on this PC. Once it's added, say what you want: your project lead plans it with you, or one agent just does a small change.", href: "#settings/apps" },
-    onStarted: () => refresh(),
+    // A job of its own shows under Working, where it now is.
+    onStarted: () => { if (mode === "goals") tabs.select("working"); refresh(); },
   });
   window.addEventListener("scroll", () => $("topbar").classList.toggle("scrolled", window.scrollY > 4), { passive: true });
-  // Getting started, above "What do you want?". It reads Settings' own
-  // lists, so it asks twice a minute, not on every refresh.
+  // Getting started, under the start box. It reads Settings' own lists, so
+  // it asks twice a minute, not on every refresh.
   const startCard = D.gettingStarted();
-  $("start").replaceWith(startCard);
+  $("gs-slot").replaceWith(startCard);
   startCard.tick = () => {
     if (Date.now() - (startCard.at ?? 0) < 30000) return;
     startCard.at = Date.now();
     startCard.refresh();
   };
 
-  // ---------- Routes: #board and #settings ----------
-  let view = "board";
+  // Which app Home shows: All apps, or one (the top bar's picker).
+  const appPick = el("select", { className: "app-pick", "aria-label": "Which app Home shows", dataset: { key: "app-pick" } });
+  appPick.onchange = () => setFilter(appPick.value);
+  $("app-slot").replaceWith(appPick);
+
+  // Home's switch: Goals (the three lists) or Board (by goal); By status in Pro view.
+  const homeSwitch = D.homeSwitch({ selected: D.homeView.get(), onPick: (v) => {
+    D.homeView.set(v);
+    const want = v === "board" ? "#board" : v === "state" ? "#board/status" : "#home";
+    if (location.hash !== want) location.hash = want; else route();
+  } });
+  $("view-slot").replaceWith(homeSwitch.el);
+
+  // The three lists, one at a time: Needs you opens first.
+  const panels = {
+    needs: el("div", { className: "hpanel" }), working: el("div", { className: "hpanel" }), done: el("div", { className: "hpanel" }),
+  };
+  const boxes = {
+    limits: el("div", { className: "limits live", hidden: true }),
+    needsApps: el("div", { className: "live" }), needs: el("div", { className: "hlist live" }),
+    workApps: el("div", { className: "live" }), working: el("div", { className: "hlist live" }),
+    done: el("div", { className: "hlist live" }),
+  };
+  panels.needs.append(boxes.limits, boxes.needsApps, boxes.needs);
+  panels.working.append(boxes.workApps, boxes.working);
+  panels.done.append(boxes.done);
+  const cts = { needs: el("span", { className: "ct" }), working: el("span", { className: "ct" }), done: el("span", { className: "ct" }) };
+  const needIcon = icon("alert", "need-i");
+  needIcon.setAttribute("hidden", "");
+  let tabsReady = false;
+  const tabs = D.tabs([
+    { id: "needs", label: [needIcon, "Needs you", cts.needs], panel: panels.needs },
+    { id: "working", label: ["Working", cts.working], panel: panels.working },
+    { id: "done", label: ["Done today", cts.done], panel: panels.done },
+  ], { label: "Home", onPick: (id) => {
+    if (!tabsReady) return;
+    htab = id;
+    // Each tab has its own link, so a reload or the back button opens it.
+    const want = id === "needs" ? "#home" : `#home/${id}`;
+    if (location.hash !== want) history.replaceState(null, "", want);
+    window.scrollTo(0, Math.min(window.scrollY, $("hv-goals").offsetTop - 80));
+  } });
+  tabs.el.classList.add("home-tabs");
+  $("hv-goals").append(tabs.el, ...Object.values(panels));
+  tabsReady = true;
+
+  // The board by goal, fed from this page's own refresh.
+  const lanes = D.laneBoard($("hv-board"), { feed: true, onChanged: () => refresh() });
+
+  // ---------- Routes: #home, #board and #settings ----------
+  // #home is Home as the owner left it on this device (Goals or Board);
+  // #home/working and #home/done open those tabs; #board opens the board by
+  // goal and #board/status Pro view's columns. #board/status/done ("See all
+  // finished work" under Done today) opens only By status's Done and Failed
+  // lists, with their Dismissed work, Pro view or not. Old links (/#board,
+  // a bare /) land on Home. #work-N opens a piece's panel over Home.
+  let view = "home", mode = "goals", htab = "needs", routed = false, finishedOnly = false;
   function route() {
-    const h = location.hash;
-    view = h.startsWith("#settings") ? "settings" : "board";
-    $("view-board").hidden = view !== "board";
+    let h = location.hash;
+    // A piece's panel opens over the view already shown; on a first load
+    // (a link to /#work-N) that is Home.
+    if (D.workHash(h)) { if (routed) return; h = ""; }
+    routed = true;
+    if (h.startsWith("#settings")) view = "settings";
+    else {
+      view = "home";
+      const pref = D.homeView.get();
+      const was = finishedOnly;
+      finishedOnly = h === "#board/status/done";
+      // It opens at its top, below the top bar, with its way back in sight.
+      if (finishedOnly && !was) requestAnimationFrame(() => window.scrollTo(0, Math.max(0, $("hv-state").getBoundingClientRect().top + window.scrollY - $("topbar").offsetHeight - 8)));
+      if (finishedOnly) mode = "state";
+      else if (h === "#board") mode = "board";
+      else if (h === "#board/status") mode = D.pro ? "state" : "board";
+      else if (h.startsWith("#home/")) { mode = "goals"; htab = h.slice(6) === "done" ? "done" : h.slice(6) === "working" ? "working" : "needs"; }
+      else { mode = pref === "board" ? "board" : pref === "state" && D.pro ? "state" : "goals"; htab = "needs"; }
+    }
+    $("view-home").hidden = view !== "home";
     $("view-settings").hidden = view !== "settings";
     for (const a of document.querySelectorAll("[data-route]")) {
-      if (a.dataset.route === view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+      if (a.dataset.route === (view === "home" ? "board" : view)) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
     }
-    $("page-title").textContent = view === "settings" ? "Settings" : "Board";
+    $("page-title").textContent = view === "settings" ? "Settings" : "Home";
     document.title = view === "settings" ? "Settings · Decurion" : "Decurion";
+    homeSwitch.pick(mode);
+    $("fin-head").hidden = !finishedOnly;
+    $("hv-goals").hidden = mode !== "goals";
+    $("hv-board").hidden = mode !== "board";
+    $("hv-state").hidden = mode !== "state";
+    if (mode === "goals") { tabsReady = false; tabs.select(htab); tabsReady = true; }
     if (view === "settings") {
       // Each settings tab opens at its top.
       D.settings.show(h.split("/").slice(1).join("/"));
       window.scrollTo(0, 0);
     } else D.settings.hide();
     renderTop();
+    if (loaded) renderHome();
   }
   window.addEventListener("hashchange", route);
 
@@ -441,7 +464,7 @@
   async function loadTails(list) {
     const live = new Set(list.map((t) => t.id));
     for (const id of tails.keys()) if (!live.has(id)) tails.delete(id);
-    await Promise.all(list.filter((t) => TAILED.has(t.state)).map(async (t) => {
+    await Promise.all(list.filter((t) => TAILED.has(t.state) && !t.dismissed_at).map(async (t) => {
       const key = t.state + t.updated_at;
       const c = tails.get(t.id);
       if (c && c.key === key && t.state !== "running") return;
@@ -454,16 +477,24 @@
     busy = true;
     try {
       const seq = D.settings.seq();
-      const [a, th, sp, lim, wk, ac, nd] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/spend"),
+      const [a, th, sp, lim, wk, ac, nd, gl, td, pv, pr, si] = await Promise.all([D.api("/apps"), D.api("/threads"), D.api("/spend"),
         D.api("/limits").catch(() => []), // older hubs have no /limits
         D.api("/workers").catch(() => []),
         D.api("/accounts").catch(() => null),
-        D.api("/needs-you").catch(() => null)]);
+        D.api("/needs-you").catch(() => null),
+        D.api("/goals").catch(() => null),
+        D.api("/today").catch(() => null),
+        D.api("/previews").catch(() => null), // older hubs have no /previews: then nothing shows as running
+        D.api("/prs").catch(() => null),
+        D.api("/sign-ins").catch(() => null)]);
       needs = nd && Array.isArray(nd.work) ? nd : null;
-      // The one count of what needs you, on the menu's Board too (ui.js).
+      // The one count of what needs you, on the menu's Home too (ui.js).
       D.showNeeds(needs);
-      // Goals that wait on you show here with their road: asked only then.
-      if (needs?.goals?.length) goals = await D.api("/goals").then((l) => (Array.isArray(l) ? l : goals), () => goals);
+      if (Array.isArray(gl)) goals = gl;
+      if (Array.isArray(td)) today = td; // else keep the last rows
+      if (Array.isArray(pv)) previews = pv.filter((s) => s.state == null || s.state === "pending" || s.state === "live");
+      if (Array.isArray(pr)) prs = pr;
+      if (Array.isArray(si)) signIns = D.signInsDue(si);
       startCard.tick();
       // Older hubs have no /helpers: then only building agents count.
       helpers = await D.api("/helpers").catch(() => helpers);
@@ -474,8 +505,7 @@
       D.setApps(a);
       D.setCloud(hasCloud);
       D.setThreads(th);
-      await loadTails(th);
-      loadToday();
+      [map] = await Promise.all([D.homeMap({ threads: th, goals }), loadTails(th)]);
       loaded = true; loadErr = null;
     } catch (e) {
       if (e.signedOut) { busy = false; signedOut(); return; }
@@ -495,87 +525,43 @@
 
   function render() {
     if (filter !== "all" && loaded && !apps.some((a) => String(a.id) === filter)) setFilter("all", false);
-    renderSide();
-    renderTop();
-    renderLimits();
-    renderComposer();
-    renderBoard();
-  }
-
-  // ---------- Sidebar ----------
-  function setFilter(v, rerender = true) {
-    filter = v;
-    D.store.set("decurion.board.app", v);
-    composer.setApp(v);
-    if (rerender) render();
-  }
-
-  function renderSide() {
-    const counts = {};
-    for (const t of threads) {
-      if (ACTIVE.has(t.state)) counts[t.app_id] = (counts[t.app_id] ?? 0) + 1;
-    }
-    const needs = Object.fromEntries(apps.map((a) => [a.id, needsIn(String(a.id))]));
-    const total = Object.values(counts).reduce((a, b) => a + b, 0);
-    const totalNeeds = needsIn("all");
-    if (changed("side", [apps.map((a) => [a.id, a.name, a.first_today]), counts, needs, totalNeeds, filter, view, D.offline])) {
-      keepFocus(() => {
-        const item = (key, name, count, need, iconName) => {
-          const b = el("button", { type: "button", className: "nav-item", "aria-pressed": filter === key ? "true" : "false", dataset: { key: `app-${key}` }, title: name },
-            icon(iconName), el("span", { className: "nm" }, name),
-            need ? el("span", { className: "needs-dot" }, el("span", { className: "sr-only" }, `${need} ${need === 1 ? "needs" : "need"} you`)) : null,
-            el("span", { className: "ct", "aria-label": `${count} active` }, String(count)));
-          b.onclick = () => { setFilter(key); if (view !== "board") location.hash = "#board"; };
-          return b;
-        };
-        // The go-first-today star beside each app (settings.js saves it).
-        const star = (a) => {
-          const on = !!a.first_today;
-          const s = el("button", { type: "button", className: "ghost star-btn", "aria-pressed": on ? "true" : "false",
-            "aria-label": `${a.name} goes first today`, dataset: { key: `star-${a.id}` },
-            title: on ? `${a.name} goes first today. Click to let it take turns again.` : `Let ${a.name} go first today` }, icon("star"));
-          s.disabled = D.offline;
-          s.onclick = () => D.settings.setFirst(a, !on);
-          return s;
-        };
-        const add = el("a", { className: "ghost", href: "#settings/apps", "aria-label": "Add an app", title: "Add an app" }, icon("plus"));
-        $("app-nav").replaceChildren(
-          el("div", { className: "nav-h" }, el("span", {}, "Apps"), add),
-          item("all", "All apps", total, totalNeeds, "board"),
-          ...apps.map((a) => el("div", { className: "nav-row" },
-            item(String(a.id), a.name, counts[a.id] ?? 0, needs[a.id] ?? 0, "app"), star(a))));
-      });
-    }
     D.settings.usage($("usage"));
+    renderTop();
+    renderComposer();
+    renderHome();
+  }
+  function renderHome() {
+    if (mode === "goals") renderLists();
+    else if (mode === "board") renderLanes();
+    else renderBoard();
+  }
+
+  // ---------- Which app ----------
+  function setFilter(v, rerender = true) {
+    filter = v == null || v === "" ? "all" : String(v);
+    if (filter !== "all") D.app.set(filter);
+    composer.setApp(filter);
+    if (rerender) render();
   }
 
   // ---------- Top bar ----------
   function renderTop() {
-    const needs = needsIn("all");
-    const n = $("needs");
-    n.hidden = !needs;
-    if (changed("needs", needs)) n.replaceChildren(icon("needs_you"), `${needs} ${needs === 1 ? "needs" : "need"} you`);
-    const shown = shownThreads();
-    const where = filter === "all" ? "All apps" : D.appName(+filter);
-    $("sub").textContent = view === "board" && loaded ? `${where} · ${D.plural(shown.length, "piece")} of work` : "";
-    // Run it beside the title, when the board shows one app.
-    const one = view === "board" && loaded && filter !== "all" ? appById(+filter) : null;
-    if (changed("run-top", [one?.id, one?.name, runningFor(one?.id)?.id, D.offline])) {
-      keepFocus(() => $("run-slot").replaceChildren(...(one ? [runButton(one.id, one.name, "top-run")] : [])));
+    const home = view === "home";
+    appPick.hidden = !home || apps.length < 2;
+    // All finished work has its own way back (‹ Home) instead of the switch.
+    homeSwitch.el.hidden = !home || (mode === "state" && finishedOnly);
+    if (changed("pick", [apps.map((a) => [a.id, a.name]), filter])) {
+      appPick.replaceChildren(el("option", { value: "all" }, "All apps"), ...apps.map((a) => el("option", { value: String(a.id) }, a.name)));
+      appPick.value = filter;
+    }
+    // Run it beside the title, when Home shows one app.
+    const one = home && loaded && filter !== "all" ? appById(+filter) : null;
+    if (changed("run-top", [one?.id, one?.name, previews.map((s) => [s.id, s.app_id, s.thread_id]), D.offline])) {
+      keepFocus(() => $("run-slot").replaceChildren(...(one ? [D.runButton(one.id, one.name, previews, { onChanged: refresh, key: "top-run" })] : [])));
     }
   }
-  $("needs").onclick = () => {
-    if (filter !== "all" && !needsIn(filter)) setFilter("all");
-    if (view !== "board") { location.hash = "#board"; }
-    if (folds.needs_you === true) { folds.needs_you = false; saveFolds(); renderBoard(); }
-    requestAnimationFrame(() => {
-      const col = document.querySelector('.col[data-state="needs_you"]');
-      col?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
-      col?.querySelector(".hit")?.focus({ preventScroll: true });
-    });
-  };
   function focusComposer() {
-    if (view !== "board") location.hash = "#board";
+    if (view !== "home") location.hash = "#home";
     requestAnimationFrame(() => {
       $("composer").scrollIntoView({ block: "nearest", behavior: "smooth" });
       composer.focus();
@@ -593,6 +579,8 @@
   });
 
   // ---------- Accounts out of usage ----------
+  // At the top of Needs you: the owner can move the plan's waiting work to
+  // pay-per-use until it resets. Not counted: nothing else waits on it.
   function untilText(iso) {
     const d = new Date(iso);
     if (isNaN(d)) return "later";
@@ -602,7 +590,7 @@
   }
   function renderLimits() {
     if (!changed("limits", [limits, limitErr, D.offline])) return;
-    const box = $("limits");
+    const box = boxes.limits;
     box.hidden = !limits.length;
     keepFocus(() => box.replaceChildren(...limits.map((l) => {
       // After the owner's tap, the plan's work runs on pay-per-use until the
@@ -637,138 +625,124 @@
   }
 
   // ---------- Composer ----------
-  // The form itself lives in compose.js; the board only tells it what changed.
+  // The form itself lives in compose.js; Home only tells it what changed.
   function renderComposer() {
     composer.update({ apps, threads, hasCloud, filter, loaded });
   }
 
-  // ---------- Today: one row per app ----------
-  // The hub chooses every word (today.rs), so the board and the phone say the
-  // same thing; this only draws them. A row filters the board to its app.
-  const TONES = { needs_you: ["needs_you", "needs_you"], working: ["running", "running"], reviewer: ["in_review", "in_review"],
-    merge: ["t-merge", "branch"], done: ["done", "done"], quiet: ["queued", "queued"] };
-  let today = null;
-  async function loadToday() {
-    // Older hubs have no /previews: then nothing shows as running.
-    const [t, pv] = await Promise.all([D.api("/today").catch(() => null), D.api("/previews").catch(() => null)]);
-    if (t) today = t; // else keep the last rows
-    if (Array.isArray(pv)) previews = pv.filter((s) => s.state == null || s.state === "pending" || s.state === "live");
-    renderToday();
-    renderTop();
-  }
-  function renderToday() {
-    const box = $("today");
-    const rows = Array.isArray(today) ? today : [];
-    if (!changed("today", [rows, filter, D.offline, D.pro, previews.map((s) => [s.id, s.app_id, s.thread_id]), Math.floor(Date.now() / 30000)])) return;
-    box.hidden = !rows.length;
-    keepFocus(() => box.replaceChildren(...rows.map((r) => {
-      const id = String(r.app_id);
-      const [cls, ic] = TONES[r.tone] ?? TONES.quiet;
-      const hit = el("button", { type: "button", className: "hit", "aria-pressed": filter === id ? "true" : "false", dataset: { key: `today-${id}` },
-        title: filter === id ? "Show all apps" : `Show only ${r.name}` }, r.name);
-      hit.onclick = () => { setFilter(filter === id ? "all" : id); renderToday(); };
-      const when = r.tone === "done" && r.last_pr?.event_at ? ` · ${D.ago(r.last_pr.event_at)}` : "";
-      const fixOn = r.open_comments > 0 ? (r.fix_thread_id ?? r.last_pr?.thread_id) : null;
-      // GitHub says the pull request conflicts with (or is behind) main: it
-      // can't be merged until it is brought up to date, so that is the main
-      // button and Merge waits.
-      const blocked = r.last_pr?.state === "open" && !!r.last_pr.health && r.last_pr.can_update;
-      let act;
-      if (fixOn != null) {
-        act = el("button", { type: "button", className: "btn primary sm", dataset: { key: `today-fix-${id}` } }, icon("tool"), "Answer the comments");
-        act.disabled = D.offline;
-        act.onclick = async () => {
-          act.disabled = true;
-          try {
-            await D.send(`/threads/${fixOn}/pr/fix`, {});
-            D.toast("Started work that answers the comments.");
-          } catch (e) {
-            D.toast(e.message, "alert");
-          }
-          await refresh();
-          act.disabled = D.offline;
-        };
-      } else if (r.last_pr?.can_merge && r.last_pr.state === "open" && !blocked) {
-        // The app's rules let the owner merge from here. The hub merges only
-        // once GitHub says the checks passed, and says why when it won't.
-        const prId = r.last_pr.thread_id;
-        act = el("button", { type: "button", className: "btn primary sm", dataset: { key: `today-merge-${id}` },
-          title: `Merge pull request #${r.last_pr.number} on GitHub` }, icon("merge"), "Merge");
-        act.disabled = D.offline;
-        act.onclick = async () => {
-          act.disabled = true;
-          try {
-            await D.send(`/threads/${prId}/pr/merge`, {});
-            D.toast("Merged on GitHub.");
-          } catch (e) {
-            D.toast(e.message, "alert");
-          }
-          await refresh();
-          act.disabled = D.offline;
-        };
-      } else act = el("span", { className: `pill ${cls}` }, icon(ic), r.status);
-      // Bring up to date: on any open pull request Decurion opened with
-      // nothing under way on it. An agent merges main into it on the same
-      // pull request; nothing changes on GitHub until the owner accepts.
-      let update = null;
-      if (r.last_pr?.state === "open" && r.last_pr.can_update) {
-        const prId = r.last_pr.thread_id;
-        update = el("button", { type: "button", className: blocked && fixOn == null ? "btn primary sm" : "btn quiet sm", dataset: { key: `today-update-${id}` },
-          title: `Merge the newest main into pull request #${r.last_pr.number}` }, icon("branch"), "Bring up to date");
-        update.disabled = D.offline;
-        update.onclick = async () => {
-          update.disabled = true;
-          try {
-            await D.send(`/threads/${prId}/pr/update`, {});
-            D.toast("Started work that brings the pull request up to date.");
-          } catch (e) {
-            D.toast(e.message, "alert");
-          }
-          await refresh();
-          update.disabled = D.offline;
-        };
+  // ---------- Home's three lists ----------
+  // Needs you (the hub's one list), Working and Done today, each a list of
+  // goals with their road and button, and jobs of their own with their
+  // moves (ui.js draws the rows). The apps' rows sit at the top: the ones
+  // that need you under Needs you, the rest under Working.
+  const pickApp = (id) => setFilter(id ?? "all");
+  const emptyLine = (iconName, head, text, btn) => el("div", { className: "empty-state hempty" },
+    el("div", { className: "mark" }, icon(iconName, "l")), el("h3", {}, head), text ? el("p", {}, text) : null, btn);
+  function renderLists() {
+    renderLimits();
+    const showErr = loadErr && !D.offline;
+    if (!loaded) {
+      if (changed("lists", ["loading", showErr ? loadErr.message : ""])) {
+        boxes.needs.replaceChildren(...(showErr ? [loadNote()] : [0, 1, 2].map(() => el("div", { className: "skeleton sk-card" }))));
       }
-      // Under the app's rule to fix conflicts by itself, Decurion may have
-      // started the Bring up to date run itself (pr_watch.rs auto_words):
-      // its words while it works or waits for review, else the health line.
-      const said = r.last_pr?.state === "open" ? (r.last_pr.auto_line ?? r.last_pr.health) : null;
-      const health = said ? el("div", { className: "ln health" }, said) : null;
-      return el("article", { className: "today-row", dataset: { tone: r.tone } },
-        hit, el("div", { className: "ln", title: r.line + when }, r.line + when), health,
-        // The Decurion app's row, while this PC runs an older Decurion than
-        // GitHub has (version.rs): what's waiting and how to update.
-        D.versionNote(r.decurion),
-        // How much of the plan the app's agents used today (tokens.rs), once
-        // any did: one plain word, the exact figures in Pro view.
-        r.used_today ? el("div", { className: "use" }, `${D.usageWords(r.used_today)} today`) : null,
-        el("div", { className: "ft" }, act, update, r.first_today ? el("span", { className: "first" }, "First today") : null,
-          runButton(r.app_id, r.name, `today-run-${id}`)),
-        r.deploy ? D.deployBox(r.deploy, { onChange: loadToday })
-          : r.can_deploy ? D.deployCheck(r.app_id, r.name, { onChange: loadToday }) : null);
-    })));
+      return;
+    }
+    const appId = filter === "all" ? null : filter;
+    const split = D.homeSplit({ threads, goals, needs, map, appId });
+    const rows = (Array.isArray(today) ? today : []).filter((r) => appId == null || String(r.app_id) === appId);
+    const minute = Math.floor(Date.now() / 30000);
+    // The counts, the same number as every badge for Needs you.
+    for (const [k, n] of [["needs", split.needs.total], ["working", split.working.total], ["done", split.done.total]]) {
+      cts[k].textContent = n ? String(n) : "";
+      cts[k].classList.toggle("wait", k === "needs" && n > 0);
+    }
+    if (split.needs.total) needIcon.removeAttribute("hidden"); else needIcon.setAttribute("hidden", "");
+    tabs.el.querySelector('[data-tab="needs"]').setAttribute("aria-label", split.needs.total ? `Needs you, ${split.needs.total}` : "Needs you, nothing");
+    const prOf = (w) => prs.find((p) => p.thread_id === w.thread_id) ?? { thread_id: w.thread_id, app_id: w.app_id, title: threads.find((t) => t.id === w.thread_id)?.title, can_merge: w.why === "merge", open_comments: w.why === "comments" ? 1 : 0 };
+    const goalSig = (g) => [g.id, g.title, g.journey, g.state, D.appName(g.app_id)];
+    const workSig = (t) => [t.id, t.state, t.title, t.updated_at, t.check, t.github, t.road, lineOf(t), D.appName(t.app_id)];
+    const base = [D.offline, filter, D.pro, minute, apps.map((a) => [a.id, a.name, a.rules?.deploy_site])];
+    const needRows = rows.filter(D.todayNeeds), workRows = rows.filter((r) => !D.todayNeeds(r));
+    const pv = previews.map((s) => [s.id, s.app_id, s.thread_id]);
+
+    if (changed("needsApps", [base, needRows, pv])) {
+      keepFocus(() => boxes.needsApps.replaceChildren(...[D.todayList(needRows, { title: "Apps that need you", previews, onChanged: refresh, onPick: pickApp, picked: appId })].filter(Boolean)));
+    }
+    const signs = signIns.filter((x) => appId == null || x.app_id == null || String(x.app_id) === appId);
+    if (changed("needs", [base, signs.map((x) => [x.id, x.label, x.card, x.app_name, x.status, x.expires_at]), split.needs.goals.map(goalSig), split.needs.work.map((w) => [w.why, ...workSig(w.t)]), split.needs.prs.map((w) => [w.thread_id, w.why, prOf(w)]), showErr ? loadErr.message : ""])) {
+      keepFocus(() => {
+        const list = [
+          ...(showErr ? [loadNote()] : []),
+          // Website sign-ins that stopped working: not counted, like the phone's.
+          ...signs.map((x) => D.signInRow(x, { onChanged: refresh })),
+          ...split.needs.goals.map((g) => D.goalRow(g, { onChanged: refresh })),
+          ...split.needs.work.map(({ t, why }) => D.workRow(t, { onChanged: refresh, line: lineOf(t), why })),
+          ...split.needs.prs.map((w) => D.prRow(prOf(w), { onChanged: refresh })),
+        ];
+        if (!list.length && !needRows.length && !limits.length) {
+          const busyNow = split.working.total;
+          let go = null;
+          if (busyNow) { go = el("a", { className: "btn", href: "#home/working" }, `See what's working (${busyNow})`, icon("right")); }
+          list.push(emptyLine("done", "Nothing needs you right now.",
+            apps.length ? "When an agent or your project lead needs you, it shows up here." : "Add an app in Settings, then say what you want above.", go));
+        }
+        boxes.needs.replaceChildren(...list);
+      });
+    }
+    if (changed("workApps", [base, workRows, pv])) {
+      keepFocus(() => boxes.workApps.replaceChildren(...[D.todayList(workRows, { title: needRows.length ? "Other apps" : "Your apps", previews, onChanged: refresh, onPick: pickApp, picked: appId })].filter(Boolean)));
+    }
+    if (changed("working", [base, split.working.goals.map(goalSig), split.working.work.map(workSig)])) {
+      keepFocus(() => {
+        const list = [
+          ...split.working.goals.map((g) => D.goalRow(g, { onChanged: refresh })),
+          ...split.working.work.map((t) => D.workRow(t, { onChanged: refresh, line: lineOf(t) })),
+        ];
+        if (!list.length) list.push(emptyLine("pc", "Nothing is being worked on right now.", "Say what you want above. Your project lead plans it with you, or pick Just do it for a small change."));
+        boxes.working.replaceChildren(...list);
+      });
+    }
+    const goalLinks = (g) => {
+      const v = map?.viewOf.get(g.id);
+      return D.doneLinks((v?.pieces ?? []).map((p) => p.github), g.app_id, { live: v?.live === true });
+    };
+    if (changed("done", [base, split.done.goals.map((g) => [...goalSig(g), (map?.viewOf.get(g.id)?.pieces ?? []).map((p) => p.github), map?.viewOf.get(g.id)?.live]), split.done.work.map(workSig)])) {
+      keepFocus(() => {
+        const list = [
+          ...split.done.goals.map((g) => D.goalRow(g, { onChanged: refresh, links: goalLinks(g) })),
+          ...split.done.work.map((t) => D.workRow(t, { onChanged: refresh, links: D.doneLinks([t.github], t.app_id) })),
+        ];
+        if (!list.length) list.push(emptyLine("done", "Nothing finished yet today.", "Goals and work that finish today show here, with their pull request."));
+        // Older finished work and dismissed work, with or without Pro view.
+        list.push(D.allFinishedLink());
+        boxes.done.replaceChildren(...list);
+      });
+    }
+  }
+  function loadNote() {
+    const again = el("button", { type: "button", className: "btn sm" }, icon("retry"), "Try again");
+    again.onclick = async () => { again.disabled = true; await refresh(); again.disabled = false; };
+    return el("div", { className: "notice bad", role: "alert" }, icon("alert"),
+      el("div", { className: "grow" }, el("b", {}, "Couldn't load Home. "), "Your work is safe.", el("div", { className: "hint" }, loadErr?.message ?? "")), again);
   }
 
-  // ---------- Run it: an app as it is in its folder, on the PC ----------
-  // The hub's open runs of whole apps (GET /api/previews, read with the Today
-  // rows on the board's own refresh; `previews` is declared with the board's
-  // state). An app already running shows Open, which shows that run instead
-  // of starting it again. A run of one piece of work is opened from its
-  // panel, so it does not count here.
-  const runningFor = (appId) => (appId == null ? null : previews.find((s) => s.app_id === appId && s.thread_id == null) ?? null);
-  function runButton(appId, name, key) {
-    const s = runningFor(appId);
-    const b = el("button", { type: "button", className: "btn sm run-btn", dataset: { key },
-      "aria-label": s ? `Open ${name}, running on your PC` : `Run it: ${name}`,
-      title: s ? `${name} is running on your PC. Open it to try it.` : `Start ${name} on your PC and try it here` },
-      icon("start"), s ? "Open" : "Run it");
-    b.disabled = D.offline;
-    b.onclick = () => D.runApp({ id: appId, name }, { sid: s?.id }).then(loadToday);
-    return b;
+  // ---------- The board, by goal ----------
+  function renderLanes() {
+    if (!loaded) return;
+    lanes.setApp(filter === "all" ? null : filter);
+    lanes.update({ threads, goals, needs, helpers, map });
   }
 
   // ---------- Board ----------
   // Done is history, so it starts folded; Queued and Failed fold while empty.
-  const isFolded = (st, n) => (st in folds ? folds[st] : st === "done" || ((st === "queued" || st === "failed") && n === 0));
+  // All finished work never folds: its two lists are what it is for.
+  const isFolded = (st, n) => !finishedOnly && (st in folds ? folds[st] : st === "done" || ((st === "queued" || st === "failed") && n === 0));
+  const FINISHED = ["done", "failed"];
+  const colsNow = () => (finishedOnly ? FINISHED : COLS);
+  $("fin-head").append(
+    el("a", { className: "back-link", href: "#home/done" }, icon("left"), "Home"),
+    el("h2", {}, "All finished work"),
+    el("p", { className: "hint" }, "Everything that finished or failed, not just today's. Dismissed work is kept at the bottom of each list, where Bring back puts it back."));
   function saveFolds() { D.store.set("decurion.board.folds", JSON.stringify(folds)); }
   function toggleFold(st, n) { folds[st] = !isFolded(st, n); saveFolds(); keepFocusFold(st); }
   function keepFocusFold(st) {
@@ -807,7 +781,7 @@
     }
     if (prs.length) {
       out.push(el("p", { className: "col-also" }, icon("branch"),
-        el("span", { className: "grow" }, `${prs.length === 1 ? "A pull request waits" : `${prs.length} pull requests wait`} on you. Its app's row at the top has the button.`)));
+        el("span", { className: "grow" }, `${prs.length === 1 ? "A pull request waits" : `${prs.length} pull requests wait`} on you. Home's Needs you has its button.`)));
     }
     return out;
   }
@@ -841,7 +815,7 @@
     if (D.finished(t)) {
       const back = !!t.dismissed_at;
       const put = el("button", { type: "button", className: "btn quiet sm", dataset: { key: `dis-${t.id}` },
-        title: back ? "Show it on the board again" : "Hide it from the board. It's kept under Dismissed." },
+        title: back ? "Show it with your other work again" : "Hide it from Home. It's kept under Dismissed." },
         icon(back ? "retry" : "archive"), back ? "Bring back" : "Dismiss");
       put.disabled = D.offline;
       put.onclick = async (ev) => {
@@ -903,7 +877,7 @@
         const again = el("button", { type: "button", className: "btn sm" }, icon("retry"), "Try again");
         again.onclick = async () => { again.disabled = true; await refresh(); again.disabled = false; };
         note.replaceChildren(el("div", { className: "notice bad", role: "alert" }, icon("alert"),
-          el("div", { className: "grow" }, el("b", {}, "Couldn't load the board. "), "Your work is safe.", el("div", { className: "hint" }, loadErr.message)), again));
+          el("div", { className: "grow" }, el("b", {}, "Couldn't load your work. "), "Nothing was lost.", el("div", { className: "hint" }, loadErr.message)), again));
       }
     }
     if (!loaded) { if (changed("board", ["skeleton", !!loadErr])) { if (loadErr) $("board").replaceChildren(); else skeleton(); } return; }
@@ -912,7 +886,7 @@
     // Goals and pull requests that wait on you have no card here; the Needs
     // you column counts them and says where they are.
     const also = needs ? [...needs.goals, ...needs.prs].filter((x) => filter === "all" || String(x.app_id) === filter) : [];
-    const sig = ["board", filter, D.pro, D.offline, hasCloud, folds, [...ids], also, [...openDismissed], gone.map((t) => [t.id, t.state, t.dismissed_at, t.title, t.github, t.road]), Math.floor(Date.now() / 30000), apps.map((a) => [a.id, a.name, a.pay_per_use, a.profile]),
+    const sig = ["board", finishedOnly, filter, D.pro, D.offline, hasCloud, folds, [...ids], also, [...openDismissed], gone.map((t) => [t.id, t.state, t.dismissed_at, t.title, t.github, t.road]), Math.floor(Date.now() / 30000), apps.map((a) => [a.id, a.name, a.pay_per_use, a.profile]),
       shown.map((t) => [t.id, t.state, t.ai, t.place, t.updated_at, t.last_activity_at, t.check, t.title, t.branch, t.github, t.road, lineOf(t), D.treeLine(t)]),
       helpers.filter(inFilter), goals.map((g) => [g.id, g.title, g.journey])];
     if (!changed("board", sig)) return;
@@ -930,8 +904,9 @@
           btn));
         return;
       }
-      board.replaceChildren(...COLS.map((st) => {
-        const mine = shown.filter((t) => colOf(t, ids) === st);
+      board.replaceChildren(...colsNow().map((st) => {
+        // All finished work lists work by its own state, even work that also waits under Needs you.
+        const mine = shown.filter((t) => (finishedOnly ? t.state : colOf(t, ids)) === st);
         // Running and Queued also count the helper agents (checkers, project leads).
         const jobs = helpersIn(st);
         const extra = st === "needs_you" ? alsoLines(also) : [];
@@ -947,7 +922,7 @@
         if (st === "done" || st === "failed") {
           if (mine.length >= 2) {
             clear = el("button", { type: "button", className: "btn quiet sm col-clear", dataset: { key: `clear-${st}` },
-              title: `Hide all ${mine.length} from the board. They're kept under Dismissed.` }, icon("archive"), "Dismiss all");
+              title: `Hide all ${mine.length} from Home. They're kept under Dismissed.` }, icon("archive"), "Dismiss all");
             clear.disabled = D.offline;
             clear.onclick = async () => {
               clear.disabled = true;
@@ -969,7 +944,7 @@
         }
         const empty = st === "done" && kept.length ? "All cleared. Dismissed work is kept below." : EMPTY_COL[st];
         return el("section", { className: "col", dataset: { state: st }, "aria-label": `${D.STATES[st].col}, ${n}` },
-          el("header", { className: "col-h" }, el("h2", {}, pill), el("span", { className: "ct" }, String(n)), el("span", { className: "grow" }), fold),
+          el("header", { className: "col-h" }, el("h2", {}, pill), el("span", { className: "ct" }, String(n)), el("span", { className: "grow" }), finishedOnly ? null : fold),
           el("div", { className: "cards" }, clear && el("div", { className: "col-tools" }, clear), ...extra, ...(n ? [...mine.map(card), ...jobs.map(helperCard)] : [el("div", { className: "col-empty" }, empty)]), ...kept));
       }));
     });
@@ -1009,7 +984,11 @@
 
   // ---------- Offline and Pro ----------
   D.onOffline((off) => { $("offline-banner").hidden = !off; render(); });
-  D.onPro(() => { renderBoard(); renderToday(); });
+  // Pro view off: By status goes, so the board by goal shows instead.
+  D.onPro(() => {
+    if (!D.pro && mode === "state" && !finishedOnly) { D.homeView.set("board"); if (location.hash === "#board") route(); else location.hash = "#board"; return; }
+    if (loaded) renderHome();
+  });
 
   // ---------- Start ----------
   // A link to one piece of work (/#work-N, from a goal or the Roadmap)
