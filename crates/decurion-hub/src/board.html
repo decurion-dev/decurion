@@ -183,6 +183,9 @@
   .today .pill svg.i.spin { animation: none; }
   /* An app with a deploy card: a little wider, with the deploy part under a line. */
   .today-row:has(.deploy-box) { width: 336px; max-width: calc(100vw - 32px); }
+  /* The Decurion app's row while this PC runs an older Decurion (D.versionNote). */
+  .today-row:has(.ver-note) { width: 272px; max-width: calc(100vw - 32px); }
+  .today-row .ver-note { margin-top: 2px; }
   .today-row .deploy-box { margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
   .pill.t-merge { color: var(--accent-ink); background: var(--accent-soft); }
   @media (min-width: 900px) and (max-width: 1199px) { .today { margin: 0 -22px; padding: 2px 22px 6px; } }
@@ -701,6 +704,9 @@
         ? el("div", { className: "ln health" }, r.last_pr.health) : null;
       return el("article", { className: "today-row", dataset: { tone: r.tone } },
         hit, el("div", { className: "ln", title: r.line + when }, r.line + when), health,
+        // The Decurion app's row, while this PC runs an older Decurion than
+        // GitHub has (version.rs): what's waiting and how to update.
+        D.versionNote(r.decurion),
         // How much of the plan the app's agents used today (tokens.rs), once
         // any did: one plain word, the exact figures in Pro view.
         r.used_today ? el("div", { className: "use" }, `${D.usageWords(r.used_today)} today`) : null,
@@ -784,6 +790,10 @@
     // No Accept, Send back or Reject while the checker looks first (D.checking).
     const acts = (t.state === "needs_you" || t.state === "in_review") && !D.checking(t)
       ? D.moveButtons(t, { quiet: true, size: "sm", onMoved: refresh }) : [];
+    // Finished work with a step bar: the one tap its send needs (Open the
+    // pull request, or Try again), with the card's other buttons.
+    const gh = t.road && D.githubButton(t, refresh, { small: true });
+    if (gh) acts.unshift(gh);
     acts.forEach((b, i) => { b.dataset.key = `act-${t.id}-${i}`; b.disabled = D.offline; });
     // Finished work can be put out of the way; dismissed work can come back.
     if (D.finished(t)) {
@@ -811,7 +821,9 @@
       line && el("p", { className: "says" }, line),
       D.treeLine(t) && el("p", { className: "tree" }, D.treeLine(t)),
       D.pro && el("div", { className: "pro" }, icon("branch"), `${t.branch || "no branch yet"} · #${t.id}`),
-      t.state === "done" && D.github(t, refresh, { small: true }),
+      // Where finished work is, from Built to Live or On your PC (the hub's
+      // road), or on an older hub how its send went.
+      t.state === "done" && (t.road ? D.trail(t.road, { small: true, github: t.github }) : D.github(t, refresh, { small: true })),
       (acts.length || t.state === "running") && el("div", { className: "foot" },
         acts.length ? el("span", { className: "acts" }, ...acts) : null,
         t.state === "running" ? el("span", { className: "working" }, icon("running"), "Working") : null),
@@ -858,8 +870,8 @@
     // Goals and pull requests that wait on you have no card here; the Needs
     // you column counts them and says where they are.
     const also = needs ? [...needs.goals, ...needs.prs].filter((x) => filter === "all" || String(x.app_id) === filter) : [];
-    const sig = ["board", filter, D.pro, D.offline, hasCloud, folds, [...ids], also, [...openDismissed], gone.map((t) => [t.id, t.state, t.dismissed_at, t.title, t.github]), Math.floor(Date.now() / 30000), apps.map((a) => [a.id, a.name, a.pay_per_use, a.profile]),
-      shown.map((t) => [t.id, t.state, t.ai, t.place, t.updated_at, t.last_activity_at, t.check, t.title, t.branch, t.github, lineOf(t), D.treeLine(t)]),
+    const sig = ["board", filter, D.pro, D.offline, hasCloud, folds, [...ids], also, [...openDismissed], gone.map((t) => [t.id, t.state, t.dismissed_at, t.title, t.github, t.road]), Math.floor(Date.now() / 30000), apps.map((a) => [a.id, a.name, a.pay_per_use, a.profile]),
+      shown.map((t) => [t.id, t.state, t.ai, t.place, t.updated_at, t.last_activity_at, t.check, t.title, t.branch, t.github, t.road, lineOf(t), D.treeLine(t)]),
       helpers.filter(inFilter)];
     if (!changed("board", sig)) return;
 

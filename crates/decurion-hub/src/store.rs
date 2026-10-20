@@ -95,7 +95,11 @@ where
 pub(crate) const THREAD_COLS: &str =
     "id, app_id, title, prompt, state, ai, session_id, branch, place, updated_at, parent_id, background,
      gh_state, gh_branch, gh_url, gh_pr, gh_error, fix_of, research, dismissed_at, hold,
-     (SELECT w.state = 'open' AND w.clash FROM pr_watches w WHERE w.thread_id = threads.id) AS gh_clash";
+     (SELECT w.state = 'open' AND w.clash FROM pr_watches w WHERE w.thread_id = threads.id) AS gh_clash,
+     (SELECT w.state FROM pr_watches w
+      WHERE w.thread_id = CASE WHEN threads.fix_of IS NULL THEN threads.id WHEN threads.gh_state = 'sent' THEN threads.fix_of END) AS gh_pr_state,
+     (SELECT w.live_at IS NOT NULL FROM pr_watches w
+      WHERE w.thread_id = CASE WHEN threads.fix_of IS NULL THEN threads.id WHEN threads.gh_state = 'sent' THEN threads.fix_of END) AS gh_live";
 
 /// The actor recorded for the owner's own moves.
 pub const OWNER: &str = "owner";
@@ -133,6 +137,8 @@ pub(crate) fn thread_from(row: &SqliteRow) -> Result<Thread> {
         research: row.try_get("research")?,
         dismissed_at: row.try_get("dismissed_at")?,
         hold: row.try_get("hold")?,
+        // Filled for the screens only ([`Store::with_roads`]).
+        road: None,
     })
 }
 
