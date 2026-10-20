@@ -3205,11 +3205,15 @@ async fn auto_runs(h: &Hub) -> Vec<(i64, String)> {
     .expect("runs")
 }
 
-async fn tried(h: &Hub) -> Option<String> {
-    sqlx::query_scalar("SELECT auto_update_for FROM pr_watches")
-        .fetch_one(h.store.pool())
-        .await
-        .expect("watch")
+/// Whether the hub pinned this commit of main in its copy of the app,
+/// which it does only when it fetched main for a Bring up to date.
+fn pinned(h: &Hub, main: &str) -> bool {
+    let cache = h.dir.join("saved").join("repos").join("app-1.git");
+    !git(
+        &cache,
+        &["for-each-ref", &format!("refs/decurion/merge/{main}")],
+    )
+    .is_empty()
 }
 
 /// How many requests to GitHub were not reads.
@@ -3243,7 +3247,6 @@ async fn a_conflict_with_main_starts_one_update_by_itself_when_the_rule_is_on() 
     assert_eq!(runs.len(), 1, "{runs:?}");
     let (id, from) = &runs[0];
     assert_eq!(from, &main);
-    assert_eq!(tried(&h).await, Some(format!("{head}:{main}")));
     let t = thread_json(&h, *id).await;
     // The same run the owner's tap makes: on the same pull request, from
     // the commit Decurion pushed there, on the PC, queued like any work.
@@ -3277,7 +3280,6 @@ async fn nothing_starts_by_itself_while_the_rule_is_off() {
     decurion_hub::pr_watch::poll(&h.state).await;
     decurion_hub::pr_watch::poll(&h.state).await;
     assert_eq!(thread_count(&h).await, 1);
-    assert_eq!(tried(&h).await, None);
     let w = watched(&h).await;
     assert_eq!(w[0]["health"], "Conflicts with main", "{w}");
     // The owner turns it on: the next look starts it.
@@ -3295,7 +3297,6 @@ async fn nothing_starts_by_itself_when_the_pull_request_is_only_behind_main() {
     decurion_hub::pr_watch::poll(&h.state).await;
     decurion_hub::pr_watch::poll(&h.state).await;
     assert_eq!(thread_count(&h).await, 1);
-    assert_eq!(tried(&h).await, None);
     // GitHub says it about another commit than the one Decurion pushed:
     // nothing either.
     github_says(&h, "dirty", &"f".repeat(40));
@@ -3331,31 +3332,77 @@ async fn the_same_conflict_on_the_same_commits_is_not_tried_by_itself_twice() {
     assert_eq!(auto_runs(&h).await.len(), 1);
 }
 
+/// One automatic try per version of the pull request Decurion pushed.
+/// Main moving on alone never earns another: on a busy main, a conflict
+/// the agent cannot solve would otherwise spend once per main commit.
 #[tokio::test]
-async fn a_new_main_lets_it_try_once_more_by_itself() {
+async fn a_new_pushed_head_lets_it_try_once_more_but_a_new_main_alone_does_not() {
     let h = hub(Tok::Fixed).await;
-    let (_repo, bare, _thread, head, _branch, main) = main_moved_on(&h).await;
+    let (repo, bare, _thread, head, branch, main) = main_moved_on(&h).await;
     fix_conflicts_by_itself(&h, true).await;
     github_says(&h, "dirty", &head);
     decurion_hub::pr_watch::poll(&h.state).await;
     let first = auto_runs(&h).await;
     assert_eq!(first.len(), 1);
-    stop(&h, first[0].0).await;
-    decurion_hub::pr_watch::poll(&h.state).await;
-    assert_eq!(auto_runs(&h).await.len(), 1);
+    assert_eq!(first[0].1, main);
 
+    // The owner accepts it: Decurion pushes a new head to the pull request.
+    git(
+        &repo,
+        &[
+            "config",
+            "--unset",
+            &format!("url.{}.insteadOf", bare.to_string_lossy()),
+        ],
+    );
+    let pushed = run_update(&h, first[0].0, &main, Agent::Merges).await;
+    accept(&h, first[0].0, "accept-receipt-auto-1").await;
+    let t = settled(&h, first[0].0).await;
+    assert_eq!(t["github"]["state"], "sent", "{t}");
+    assert_eq!(branch_at(&bare, &branch).as_deref(), Some(pushed.as_str()));
+    fetch_from(&repo, &bare);
+
+    // Main moves on and the new head conflicts: one more try, on it.
     let newer = main_moves(&h, &bare, "README.md", "main moved on again\n");
-    assert_ne!(newer, main);
+    github_says(&h, "dirty", &pushed);
     decurion_hub::pr_watch::poll(&h.state).await;
     let runs = auto_runs(&h).await;
     assert_eq!(runs.len(), 2, "{runs:?}");
     assert_eq!(runs[1].1, newer);
-    assert_eq!(tried(&h).await, Some(format!("{head}:{newer}")));
-    // One more try only.
+
+    // The owner stops it. Main moves on again: that alone is no new try,
+    // and the look does not even fetch the new main.
     stop(&h, runs[1].0).await;
-    decurion_hub::pr_watch::poll(&h.state).await;
-    decurion_hub::pr_watch::poll(&h.state).await;
+    let newest = main_moves(&h, &bare, "README.md", "and again\n");
+    for _ in 0..3 {
+        decurion_hub::pr_watch::poll(&h.state).await;
+    }
     assert_eq!(auto_runs(&h).await.len(), 2);
+    assert!(
+        !pinned(&h, &newest),
+        "fetched main for a head already tried"
+    );
+    assert!(pinned(&h, &newer));
+}
+
+/// The owner's own Bring up to date counts as the try on that head: once
+/// they stopped or rejected it, Decurion does not try it again by itself.
+#[tokio::test]
+async fn an_update_the_owner_tapped_and_stopped_blocks_the_automatic_one_on_that_head() {
+    let h = hub(Tok::Fixed).await;
+    let (_repo, _bare, thread, head, _branch, _main) = main_moved_on(&h).await;
+    fix_conflicts_by_itself(&h, true).await;
+    github_says(&h, "behind", &head);
+    decurion_hub::pr_watch::poll(&h.state).await;
+    let (s, run) = bring_up(&h, thread, "update-owner-stopped-1").await;
+    assert!(s.is_success(), "{run}");
+    stop(&h, run["id"].as_i64().expect("id")).await;
+    github_says(&h, "dirty", &head);
+    for _ in 0..2 {
+        decurion_hub::pr_watch::poll(&h.state).await;
+    }
+    assert!(auto_runs(&h).await.is_empty());
+    assert_eq!(thread_count(&h).await, 2);
 }
 
 #[tokio::test]
@@ -3363,25 +3410,29 @@ async fn nothing_starts_by_itself_while_a_fix_is_under_way() {
     let h = hub(Tok::Fixed).await;
     let (_repo, _bare, thread, head, _branch, _main) = main_moved_on(&h).await;
     fix_conflicts_by_itself(&h, true).await;
+    // The owner is answering review comments on the pull request; then
+    // GitHub says it conflicts too.
+    param_comments(&h);
     github_says(&h, "behind", &head);
     decurion_hub::pr_watch::poll(&h.state).await;
-    // The owner tapped Bring up to date first; then GitHub says it
-    // conflicts too.
-    let (s, run) = bring_up(&h, thread, "update-before-auto-1").await;
-    assert!(s.is_success(), "{run}");
-    let owners = run["id"].as_i64().expect("id");
+    let fix = ok(
+        &h.r,
+        OWNER,
+        "POST",
+        &format!("/api/threads/{thread}/pr/fix"),
+        json!({"receipt": "fix-before-auto-1"}),
+    )
+    .await;
+    let fix = fix["id"].as_i64().expect("id");
     github_says(&h, "dirty", &head);
     decurion_hub::pr_watch::poll(&h.state).await;
     decurion_hub::pr_watch::poll(&h.state).await;
     assert_eq!(thread_count(&h).await, 2);
     assert!(auto_runs(&h).await.is_empty());
-    // Refused before anything was tried, so nothing is saved as tried.
-    assert_eq!(tried(&h).await, None);
     let w = watched(&h).await;
     assert_eq!(w[0]["fixing"], true, "{w}");
-    assert_eq!(w[0]["auto_fixing"], false, "{w}");
     // Once that work ends, the next look starts one.
-    stop(&h, owners).await;
+    stop(&h, fix).await;
     decurion_hub::pr_watch::poll(&h.state).await;
     assert_eq!(auto_runs(&h).await.len(), 1);
 }
