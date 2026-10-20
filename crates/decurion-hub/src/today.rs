@@ -133,6 +133,10 @@ pub struct TodayRow {
     /// Tokens the app's agents used today, once any did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used_today: Option<decurion_proto::tokens::TokenLine>,
+    /// On Decurion's own app only, and only while this PC runs an older
+    /// Decurion than GitHub has: what is waiting ([`crate::version`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decurion: Option<crate::version::Version>,
 }
 
 /// Everything only the owner can move on right now, in one list. The app
@@ -141,9 +145,10 @@ pub struct TodayRow {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct NeedsYou {
     /// Work that asks the owner something, is ready for them to check (in
-    /// review, and no checker is still coming), could not finish, or was
-    /// accepted but did not reach GitHub. Work the owner dismissed is left
-    /// out.
+    /// review, and no checker is still coming), could not finish, was
+    /// accepted but did not reach GitHub, or is on GitHub as a branch with
+    /// no pull request (so it can't be merged until the owner opens one).
+    /// Work the owner dismissed is left out.
     pub work: Vec<WorkWait>,
     /// Goals that wait on the owner.
     pub goals: Vec<GoalWait>,
@@ -161,7 +166,7 @@ pub struct NeedsYou {
 pub struct WorkWait {
     pub thread_id: i64,
     pub app_id: i64,
-    /// `answer`, `check`, `failed` or `not_sent`.
+    /// `answer`, `check`, `failed`, `not_sent` or `no_pull_request`.
     pub why: &'static str,
 }
 
@@ -213,6 +218,9 @@ struct Facts {
     work_failed: i64,
     /// Accepted work that did not reach GitHub, not dismissed.
     work_not_sent: i64,
+    /// Finished work on GitHub as a branch with no pull request, not
+    /// dismissed.
+    work_no_pr: i64,
     plans_ready: i64,
     goals_for_review: i64,
     goals_talking: i64,
@@ -301,6 +309,12 @@ fn words(f: &Facts) -> (Tone, &'static str, String) {
             plural(f.work_not_sent, "piece didn't reach", "pieces didn't reach")
         ));
     }
+    if f.work_no_pr > 0 {
+        asks.push(format!(
+            "{} on GitHub with no pull request",
+            plural(f.work_no_pr, "piece is", "pieces are")
+        ));
+    }
     if let Some(first) = asks.first() {
         let line = match asks.len() {
             1 => first.clone(),
@@ -369,11 +383,13 @@ impl Store {
         // A piece of a goal in review with its check still to come waits on
         // the checker, not the owner (the same rule as its work panel).
         for r in sqlx::query(
-            "SELECT t.id, t.app_id, t.state FROM threads t
+            "SELECT t.id, t.app_id, t.state, t.gh_state FROM threads t
              LEFT JOIN goal_pieces p ON p.thread_id = t.id
              WHERE t.dismissed_at IS NULL AND (
                  t.state IN ('needs_you', 'failed')
                  OR (t.state = 'done' AND t.gh_state = 'failed')
+                 OR (t.state = 'done' AND t.gh_state = 'sent' AND t.gh_pr = 0
+                     AND t.research = 0 AND t.gh_url LIKE 'https://github.com/%')
                  OR (t.state = 'in_review' AND NOT (p.thread_id IS NOT NULL AND t.research = 0
                      AND p.review IN ('building', 'reviewing', 'fixing'))))
              ORDER BY t.id",
@@ -388,6 +404,9 @@ impl Store {
                     "needs_you" => "answer",
                     "in_review" => "check",
                     "failed" => "failed",
+                    _ if r.try_get::<Option<String>, _>("gh_state")?.as_deref() == Some("sent") => {
+                        "no_pull_request"
+                    }
                     _ => "not_sent",
                 },
             });
@@ -468,6 +487,7 @@ impl Store {
                 "answer" => f.work_needs_you += 1,
                 "check" => f.work_in_review += 1,
                 "failed" => f.work_failed += 1,
+                "no_pull_request" => f.work_no_pr += 1,
                 _ => f.work_not_sent += 1,
             }
         }
@@ -652,19 +672,46 @@ impl Store {
                     status: status.to_owned(),
                     line,
                     used_today: used.remove(&a.id),
+                    decurion: None,
                 }
             })
             .collect();
-        rows.sort_by(|a, b| {
-            a.tone
-                .rank()
-                .cmp(&b.tone.rank())
-                .then(b.first_today.cmp(&a.first_today))
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-                .then(a.app_id.cmp(&b.app_id))
-        });
+        sort_rows(&mut rows);
         Ok(rows)
     }
+}
+
+/// Rows that need the owner first, then running ones, then by star and name.
+fn sort_rows(rows: &mut [TodayRow]) {
+    rows.sort_by(|a, b| {
+        a.tone
+            .rank()
+            .cmp(&b.tone.rank())
+            .then(b.first_today.cmp(&a.first_today))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then(a.app_id.cmp(&b.app_id))
+    });
+}
+
+/// Puts `v`, this PC's older Decurion, on Decurion's own row, which then
+/// needs the owner: updating is theirs to do. A row that already needs them
+/// keeps its words; a quiet or finished one says what is waiting instead.
+fn add_version(rows: &mut [TodayRow], v: crate::version::Version) {
+    let Some(row) = rows.iter_mut().find(|r| Some(r.app_id) == v.app_id) else {
+        return;
+    };
+    if row.tone != Tone::NeedsYou {
+        if matches!(row.tone, Tone::Quiet | Tone::Done) {
+            row.line = match v.behind {
+                1 => "Update Decurion · 1 change waiting".to_owned(),
+                n => format!("Update Decurion · {n} changes waiting"),
+            };
+        }
+        row.tone = Tone::NeedsYou;
+        row.status = "Needs you".to_owned();
+    }
+    row.decurion = Some(v);
+    sort_rows(rows);
 }
 
 /// `GET /api/needs-you`: owner only.
@@ -684,7 +731,12 @@ pub(crate) async fn list(State(st): State<AppState>, Extension(c): Extension<Cal
         return forbidden("seeing every app at a glance");
     }
     match st.store.today().await {
-        Ok(rows) => Json(rows).into_response(),
+        Ok(mut rows) => {
+            if let Some(v) = crate::version::for_today(&st).await {
+                add_version(&mut rows, v);
+            }
+            Json(rows).into_response()
+        }
         Err(e) => ApiError(e).into_response(),
     }
 }
@@ -730,5 +782,24 @@ mod tests {
         assert_eq!(tone, Tone::Merge);
         assert_eq!(status, "Your merge");
         assert_eq!(line, "PR #7 · yours to merge on GitHub");
+    }
+
+    #[test]
+    fn work_on_github_with_no_pull_request_needs_the_owner() {
+        let f = Facts {
+            work_no_pr: 2,
+            open_prs: 1,
+            newest_open: Some(7),
+            ..Facts::default()
+        };
+        let (tone, status, line) = words(&f);
+        assert_eq!(tone, Tone::NeedsYou);
+        assert_eq!(status, "Needs you");
+        assert_eq!(line, "2 pieces are on GitHub with no pull request");
+        let one = Facts {
+            work_no_pr: 1,
+            ..Facts::default()
+        };
+        assert_eq!(words(&one).2, "1 piece is on GitHub with no pull request");
     }
 }

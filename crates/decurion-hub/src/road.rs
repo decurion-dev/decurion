@@ -1,12 +1,15 @@
 //! One story from request to live.
 //!
-//! Every screen that says where a goal's work stands (the goal page, a
-//! piece's work panel, the plan and the box that approves it) reads it from
-//! here, so they all tell the same story, and the app's real rules decide
-//! it: whether checked work goes to GitHub by itself, whether the owner
-//! merges from Decurion, whether Decurion deploys the app, and whether the
-//! app is Decurion's own code. The steps are always named the same way:
-//! Built, Checked, On GitHub, Merged, Live. Rules that must stay true:
+//! Every screen that says where work stands (the goal page, a piece's work
+//! panel, the plan and the box that approves it, and the card of any
+//! finished work that went to GitHub) reads it from here, so they all tell
+//! the same story, and the app's real rules decide it: whether checked work
+//! goes to GitHub by itself, whether the owner merges from Decurion, whether
+//! Decurion deploys the app, and whether the app is Decurion's own code.
+//! The steps are always named the same way: Built, Checked, Pushed, Pull
+//! request, Merged, and Live (or "On your PC" for Decurion's own code).
+//! Work that is no piece of a goal has no checker, so no Checked step.
+//! Rules that must stay true:
 //!
 //! - **Words follow the rules.** A line that depends on a rule is built
 //!   from that rule here, never written as a fixed sentence on a page.
@@ -14,11 +17,14 @@
 //!   writes to an app's folder. The two things it asks of an app's clone
 //!   use read-only git (`cat-file -e`, `merge-base --is-ancestor`): never a
 //!   fetch, pull, checkout or anything that changes it.
+//! - **Pushed is not a pull request.** Work that went up as a branch with
+//!   no pull request waits on the owner to open one, with the hub's reason
+//!   why it could not; it never looks like work waiting to be merged.
 //! - **The running hub never changes itself.** For Decurion's own code the
-//!   step after Merged is "Update Decurion", and it is the owner's to do.
+//!   step after Merged is "On your PC", and updating is the owner's to do.
 //!   The hub only notices, after the owner updated and restarted it, that
 //!   the commit it was built from ([`crate::HUB_COMMIT`]) holds the merge,
-//!   and then says Live. Nothing here updates or restarts Decurion.
+//!   and then marks it done. Nothing here updates or restarts Decurion.
 
 use crate::checkpoints::git;
 use crate::push::Notice;
@@ -78,10 +84,13 @@ impl Rules {
     }
 }
 
-/// What the hub knows about one piece, for its road.
+/// What the hub knows about one piece of work, for its road.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Facts {
     pub thread: ThreadState,
+    /// A piece of a goal, so a checker agent tries it: its road has the
+    /// Checked step. Work added straight to the board has none.
+    pub checker: bool,
     pub review: ReviewState,
     /// Held for the owner because it changes protected parts: the files
     /// named, or empty when the hub could not tell which.
@@ -93,36 +102,55 @@ pub struct Facts {
     pub on_github: bool,
     pub branch: Option<String>,
     pub merged: bool,
+    /// Its pull request was closed on GitHub without merging.
+    pub closed: bool,
     pub live: bool,
+    /// The hub's saved plain reason (`gh_error`): why the push failed, or
+    /// why no pull request was opened.
+    pub error: Option<String>,
 }
 
-const STEPS: [Step; 5] = [
+const STEPS: [Step; 6] = [
     Step::Built,
     Step::Checked,
-    Step::OnGithub,
+    Step::Pushed,
+    Step::PullRequest,
     Step::Merged,
     Step::Live,
 ];
 
-fn label(step: Step, r: &Rules, live: bool) -> &'static str {
+fn label(step: Step, r: &Rules) -> &'static str {
     match step {
         Step::Built => "Built",
         Step::Checked => "Checked",
-        Step::OnGithub => "On GitHub",
+        Step::Pushed => "Pushed",
+        Step::PullRequest => "Pull request",
         Step::Merged => "Merged",
-        Step::Live if r.decurion && !live => "Update Decurion",
+        // The same name whether it is done or not: what the step is, never
+        // what the owner has to do for it.
+        Step::Live if r.decurion => "On your PC",
         Step::Live => "Live",
     }
 }
 
-/// The steps that apply to the app, all still to do.
+/// Whether `step` is on the road of work: Checked only for a goal's piece
+/// (`checker`), Live only for an app with a step after the merge.
+fn applies(step: Step, checker: bool, r: &Rules) -> bool {
+    match step {
+        Step::Checked => checker,
+        Step::Live => r.goes_live(),
+        _ => true,
+    }
+}
+
+/// The steps that apply to a goal's pieces in the app, all still to do.
 fn plain_steps(r: &Rules) -> Vec<RoadStep> {
     STEPS
         .iter()
-        .filter(|s| **s != Step::Live || r.goes_live())
+        .filter(|s| applies(**s, true, r))
         .map(|&step| RoadStep {
             step,
-            label: label(step, r, false).to_owned(),
+            label: label(step, r).to_owned(),
             mark: StepMark::Todo,
         })
         .collect()
@@ -133,7 +161,7 @@ pub fn update_lines() -> Vec<String> {
     vec![
         "Installed with the installer: install the new version of Decurion once it is released, then start Decurion again.".to_owned(),
         "Running from your code folder: get the new code (in GitHub Desktop, Fetch origin, then Pull origin), then rebuild and restart Decurion from that folder.".to_owned(),
-        "This says Live by itself once the Decurion you run has the change.".to_owned(),
+        "This says On your PC by itself once the Decurion you run has the change.".to_owned(),
     ]
 }
 
@@ -145,37 +173,46 @@ fn road(steps: Vec<RoadStep>, label: &str, next: String, you: bool, done: bool) 
         you,
         done,
         update: Vec::new(),
+        why: None,
     }
 }
 
-/// Where one piece that changes code is, and what happens next.
+/// Where one piece of work that changes code is, and what happens next. A
+/// goal's piece (`f.checker`) has the Checked step; other work does not.
 pub fn piece_road(f: &Facts, r: &Rules) -> Road {
     let sent = f.send == Some(SendState::Sent);
-    // Sent to a git server that is not GitHub: Decurion cannot see a merge
-    // there, so the road ends with the send.
+    // Sent to a git server that is not GitHub: Decurion cannot see a pull
+    // request or a merge there, so the road ends with the push.
     if sent && !f.on_github {
-        let steps = vec![
-            RoadStep {
-                step: Step::Built,
-                label: "Built".into(),
-                mark: StepMark::Done,
-            },
-            RoadStep {
+        let mut steps = vec![RoadStep {
+            step: Step::Built,
+            label: label(Step::Built, r).into(),
+            mark: StepMark::Done,
+        }];
+        if f.checker {
+            steps.push(RoadStep {
                 step: Step::Checked,
-                label: "Checked".into(),
+                label: label(Step::Checked, r).into(),
                 mark: checked_mark(f),
-            },
-            RoadStep {
-                step: Step::OnGithub,
-                label: "Sent".into(),
-                mark: StepMark::Done,
-            },
-        ];
+            });
+        }
+        steps.push(RoadStep {
+            step: Step::Pushed,
+            label: label(Step::Pushed, r).into(),
+            mark: StepMark::Done,
+        });
         let branch = f.branch.as_deref().unwrap_or("its own branch");
+        let close = if f.checker {
+            " Decurion cannot see that server, so close the goal yourself once it is merged."
+        } else {
+            " Decurion cannot see that server, so it can't tell when it is merged."
+        };
         return road(
             steps,
-            "Sent · merge it on your git server",
-            format!("It is on your app's git server as the branch {branch}. Merge it there. Decurion cannot see that server, so close the goal yourself once it is merged."),
+            "Pushed · merge it on your git server",
+            format!(
+                "It is on your app's git server as the branch {branch}. Merge it there.{close}"
+            ),
             true,
             true,
         );
@@ -183,20 +220,22 @@ pub fn piece_road(f: &Facts, r: &Rules) -> Road {
     // A later step done means every one before it is done too, whatever
     // the thread says now.
     let merged = f.merged || f.live;
-    let sent = sent || merged;
+    let pull_request = (sent && (f.pull_request || f.closed)) || merged;
+    let sent = sent || pull_request;
     let checked = f.review == ReviewState::Passed || f.held.is_some();
     let built = matches!(f.thread, ThreadState::InReview | ThreadState::Done) || sent || checked;
     let done = |s: Step| match s {
         Step::Built => built,
         Step::Checked => checked,
-        Step::OnGithub => sent,
+        Step::Pushed => sent,
+        Step::PullRequest => pull_request,
         Step::Merged => merged,
         Step::Live => f.live,
     };
     let mut at = None;
     let steps: Vec<RoadStep> = STEPS
         .iter()
-        .filter(|s| **s != Step::Live || r.goes_live())
+        .filter(|s| applies(**s, f.checker, r))
         .map(|&step| {
             let mark =
                 if step == Step::Checked && !checked && (f.thread == ThreadState::Done || sent) {
@@ -211,7 +250,7 @@ pub fn piece_road(f: &Facts, r: &Rules) -> Road {
                 };
             RoadStep {
                 step,
-                label: label(step, r, f.live).to_owned(),
+                label: label(step, r).to_owned(),
                 mark,
             }
         })
@@ -278,21 +317,26 @@ pub fn piece_road(f: &Facts, r: &Rules) -> Road {
                 )
             }
         },
-        Some(Step::OnGithub) => match f.send {
+        Some(Step::Pushed) => match f.send {
             Some(SendState::Waiting | SendState::Sending) => road(
                 steps,
-                "Sending to GitHub",
-                "Decurion is sending it to GitHub.".into(),
+                "Pushing to GitHub",
+                "Decurion is pushing it to GitHub as a branch. You don't need to do anything yet."
+                    .into(),
                 false,
                 false,
             ),
-            Some(SendState::Failed) => road(
-                steps,
-                "Needs you · not sent to GitHub",
-                "It did not reach GitHub. Open it on the board to see why, then tap Try again. The work is kept.".into(),
-                true,
-                false,
-            ),
+            Some(SendState::Failed) => Road {
+                why: f.error.clone(),
+                ..road(
+                    steps,
+                    "Needs you · not pushed",
+                    "It did not reach GitHub. See why below, then tap Try again. The work is kept."
+                        .into(),
+                    true,
+                    false,
+                )
+            },
             _ if f.held.is_some() => {
                 let files = f
                     .held
@@ -317,17 +361,27 @@ pub fn piece_road(f: &Facts, r: &Rules) -> Road {
             ),
             _ => road(
                 steps,
-                "Sending to GitHub",
+                "Pushing to GitHub",
                 "It passed its check and is on its way to GitHub.".into(),
                 false,
                 false,
             ),
         },
-        Some(Step::Merged) if !f.pull_request => road(
+        Some(Step::PullRequest) => Road {
+            why: f.error.clone(),
+            ..road(
+                steps,
+                "Needs you · open the pull request",
+                "It is on GitHub as a branch, but no pull request is open, so it can't be merged yet. Tap Open the pull request. Decurion then watches it and sees the merge by itself.".into(),
+                true,
+                false,
+            )
+        },
+        Some(Step::Merged) if f.closed => road(
             steps,
-            "Needs you · open the pull request",
-            "It is on GitHub as a branch, but no pull request is open yet. Tap Open a pull request, then Create pull request on GitHub. Decurion then watches it and sees the merge by itself.".into(),
-            true,
+            "Closed · not merged",
+            "Its pull request was closed on GitHub without merging, so this change is not in your app. Ask for it again if you still want it.".into(),
+            false,
             false,
         ),
         Some(Step::Merged) if r.merge => road(
@@ -346,9 +400,8 @@ pub fn piece_road(f: &Facts, r: &Rules) -> Road {
         ),
         Some(Step::Live) if r.decurion => road(
             steps,
-            "Needs you · update Decurion",
-            "Merged. This Decurion still runs the old version. Update it to use the change."
-                .into(),
+            "Merged · not on your PC yet",
+            "Merged on GitHub. Your PC still runs the older Decurion, so you won't see this change until Decurion is updated.".into(),
             true,
             false,
         ),
@@ -361,8 +414,8 @@ pub fn piece_road(f: &Facts, r: &Rules) -> Road {
         ),
         None if r.decurion => road(
             steps,
-            "Live",
-            "Live. The Decurion you run has the change.".into(),
+            "On your PC",
+            "Running on your PC. Nothing more to do.".into(),
             false,
             true,
         ),
@@ -461,6 +514,7 @@ pub fn goal_road(
         you,
         done: behind.done,
         update: lead.update.clone(),
+        why: lead.why.clone(),
     })
 }
 
@@ -568,21 +622,32 @@ fn sha(s: &str) -> bool {
     (40..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Reads one piece's facts from a row holding the thread's `state`, the
-/// piece's `review` and `review_summary`, the thread's `gh_*` columns, the
-/// piece's `merged_at` and its pull request's `live_at`.
+/// Reads one piece of work's facts from a row holding the thread's
+/// `state`, the piece's `review` and `review_summary` (null for work that
+/// is no piece of a goal), the thread's `gh_*` columns, the piece's
+/// `merged_at`, its pull request's `live_at`, and its pull request's state
+/// as `gh_pr_state`.
 pub(crate) fn facts_from(row: &sqlx::sqlite::SqliteRow) -> Result<Facts> {
     let state: String = row.try_get("state")?;
-    let review: String = row.try_get("review")?;
+    let review: Option<String> = row.try_get("review")?;
     let summary: Option<String> = row.try_get("review_summary")?;
     let send: Option<String> = row.try_get("gh_state")?;
     let url: Option<String> = row.try_get("gh_url")?;
+    let pr_state: Option<String> = row.try_get("gh_pr_state")?;
     Ok(Facts {
         thread: ThreadState::from_str(&state).map_err(|e| StoreError::Invalid(e.to_string()))?,
-        held: crate::protected::is_held(Some(&review), summary.as_deref())
+        checker: review.is_some(),
+        held: review
+            .as_deref()
+            .is_some_and(|r| crate::protected::is_held(Some(r), summary.as_deref()))
             .then(|| crate::protected::held_files(summary.as_deref().unwrap_or("")))
             .map(|f| f.unwrap_or_default()),
-        review: ReviewState::from_str(&review).map_err(|e| StoreError::Invalid(e.to_string()))?,
+        review: review
+            .as_deref()
+            .map(ReviewState::from_str)
+            .transpose()
+            .map_err(|e| StoreError::Invalid(e.to_string()))?
+            .unwrap_or(ReviewState::Building),
         send: send
             .map(|s| SendState::from_str(&s).map_err(StoreError::Invalid))
             .transpose()?,
@@ -591,15 +656,21 @@ pub(crate) fn facts_from(row: &sqlx::sqlite::SqliteRow) -> Result<Facts> {
             .as_deref()
             .is_some_and(|u| u.starts_with("https://github.com/")),
         branch: row.try_get("gh_branch")?,
-        merged: row.try_get::<Option<String>, _>("merged_at")?.is_some(),
+        merged: row.try_get::<Option<String>, _>("merged_at")?.is_some()
+            || pr_state.as_deref() == Some("merged"),
+        closed: pr_state.as_deref() == Some("closed"),
         live: row.try_get::<Option<String>, _>("live_at")?.is_some(),
+        error: row.try_get("gh_error")?,
     })
 }
 
-/// The columns [`facts_from`] reads, for a query over `goal_pieces p`
-/// joined to `threads t` and, left joined, `pr_watches w`.
+/// The columns [`facts_from`] reads, for a query over `threads t` joined
+/// (or left joined, for work that is no piece) to `goal_pieces p` and,
+/// left joined, its pull request's watch `pr_watches w` (on
+/// the work's own id, or for a fix once it was pushed, the pull request it
+/// answers: a fix not pushed yet never takes that pull request's merge).
 pub(crate) const FACT_COLS: &str = "t.state, p.review, p.review_summary, t.gh_state, t.gh_url,
-    t.gh_pr, t.gh_branch, p.merged_at, w.live_at";
+    t.gh_pr, t.gh_branch, t.gh_error, p.merged_at, w.live_at, w.state AS gh_pr_state";
 
 impl Store {
     /// The rules that decide app `app_id`'s story.
@@ -620,7 +691,8 @@ impl Store {
     pub async fn piece_road(&self, thread_id: i64, r: &Rules) -> Result<Option<Road>> {
         let row = sqlx::query(&format!(
             "SELECT t.research, {FACT_COLS} FROM goal_pieces p JOIN threads t ON t.id = p.thread_id
-             LEFT JOIN pr_watches w ON w.thread_id = p.thread_id WHERE p.thread_id = ?"
+             LEFT JOIN pr_watches w ON w.thread_id = CASE WHEN t.fix_of IS NULL THEN t.id WHEN t.gh_state = 'sent' THEN t.fix_of END
+             WHERE p.thread_id = ?"
         ))
         .bind(thread_id)
         .fetch_optional(self.pool())
@@ -630,6 +702,70 @@ impl Store {
             return Ok(None);
         }
         Ok(Some(piece_road(&facts_from(&row)?, r)))
+    }
+
+    /// The roads of finished work that went to GitHub (state done, not
+    /// research, with a send), by thread: `only` one thread, or all of
+    /// them. A goal's piece gets exactly its piece road; other work the
+    /// same road without the Checked step. One read for the facts, and the
+    /// rules asked once per app.
+    pub async fn work_roads(&self, only: Option<i64>) -> Result<HashMap<i64, Road>> {
+        let rows = sqlx::query(&format!(
+            "SELECT t.id, t.app_id, {FACT_COLS} FROM threads t
+             LEFT JOIN goal_pieces p ON p.thread_id = t.id
+             LEFT JOIN pr_watches w ON w.thread_id = CASE WHEN t.fix_of IS NULL THEN t.id WHEN t.gh_state = 'sent' THEN t.fix_of END
+             WHERE t.state = 'done' AND t.research = 0 AND t.gh_state IS NOT NULL
+               AND (?1 IS NULL OR t.id = ?1)"
+        ))
+        .bind(only)
+        .fetch_all(self.pool())
+        .await?;
+        let mut rules: HashMap<i64, Rules> = HashMap::new();
+        let mut out = HashMap::new();
+        for row in &rows {
+            let app: i64 = row.try_get("app_id")?;
+            let r = match rules.get(&app) {
+                Some(r) => *r,
+                None => {
+                    let r = self.road_rules(app).await?;
+                    rules.insert(app, r);
+                    r
+                }
+            };
+            out.insert(row.try_get("id")?, piece_road(&facts_from(row)?, &r));
+        }
+        Ok(out)
+    }
+
+    /// Fills in the road of each finished thread that went to GitHub, for
+    /// a screen ([`Store::work_roads`]).
+    pub async fn with_roads<'a, I>(&self, threads: I) -> Result<()>
+    where
+        I: IntoIterator<Item = &'a mut decurion_proto::Thread>,
+    {
+        let mut threads: Vec<&mut decurion_proto::Thread> = threads
+            .into_iter()
+            .filter(|t| t.state == ThreadState::Done && t.github.is_some() && !t.research)
+            .collect();
+        if threads.is_empty() {
+            return Ok(());
+        }
+        let only = match threads.as_slice() {
+            [one] => Some(one.id),
+            _ => None,
+        };
+        let mut roads = self.work_roads(only).await?;
+        for t in threads.iter_mut() {
+            t.road = roads.remove(&t.id);
+        }
+        Ok(())
+    }
+
+    /// One thread as a screen shows it, with its road when it has one.
+    pub async fn thread_with_road(&self, id: i64) -> Result<decurion_proto::Thread> {
+        let mut t = self.thread(id).await?;
+        self.with_roads([&mut t]).await?;
+        Ok(t)
     }
 
     /// For Decurion's own code: marks Live each merged pull request whose
@@ -707,6 +843,7 @@ mod tests {
     fn facts(thread: ThreadState, review: ReviewState) -> Facts {
         Facts {
             thread,
+            checker: true,
             review,
             held: None,
             send: None,
@@ -714,7 +851,9 @@ mod tests {
             on_github: false,
             branch: None,
             merged: false,
+            closed: false,
             live: false,
+            error: None,
         }
     }
 
@@ -725,6 +864,15 @@ mod tests {
             on_github: true,
             branch: Some("decurion/x".into()),
             ..facts(ThreadState::Done, ReviewState::Passed)
+        }
+    }
+
+    /// Work added straight to the board: no goal, so no checker.
+    fn board_work(f: Facts) -> Facts {
+        Facts {
+            checker: false,
+            review: ReviewState::Building,
+            ..f
         }
     }
 
@@ -739,13 +887,20 @@ mod tests {
         r.steps.iter().map(|s| s.label.as_str()).collect()
     }
 
+    fn me() -> Rules {
+        Rules {
+            decurion: true,
+            ..Rules::default()
+        }
+    }
+
     #[test]
     fn the_steps_are_the_same_words_and_live_only_where_it_applies() {
         let plain = Rules::default();
         let f = facts(ThreadState::Running, ReviewState::Building);
         assert_eq!(
             labels(&piece_road(&f, &plain)),
-            ["Built", "Checked", "On GitHub", "Merged"]
+            ["Built", "Checked", "Pushed", "Pull request", "Merged"]
         );
         let deploys = Rules {
             deploy: true,
@@ -753,17 +908,53 @@ mod tests {
         };
         assert_eq!(
             labels(&piece_road(&f, &deploys)),
-            ["Built", "Checked", "On GitHub", "Merged", "Live"]
+            [
+                "Built",
+                "Checked",
+                "Pushed",
+                "Pull request",
+                "Merged",
+                "Live"
+            ]
         );
-        let me = Rules {
-            decurion: true,
-            ..plain
-        };
+        // Decurion's own code: the last step is always "On your PC", never
+        // what the owner has to do.
         assert_eq!(
-            labels(&piece_road(&f, &me)),
-            ["Built", "Checked", "On GitHub", "Merged", "Update Decurion"]
+            labels(&piece_road(&f, &me())),
+            [
+                "Built",
+                "Checked",
+                "Pushed",
+                "Pull request",
+                "Merged",
+                "On your PC"
+            ]
         );
         assert_eq!(now(&piece_road(&f, &plain)), Some("Built"));
+        let steps: Vec<Step> = piece_road(&f, &plain)
+            .steps
+            .iter()
+            .map(|s| s.step)
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                Step::Built,
+                Step::Checked,
+                Step::Pushed,
+                Step::PullRequest,
+                Step::Merged
+            ]
+        );
+    }
+
+    #[test]
+    fn work_that_is_no_piece_of_a_goal_has_no_checked_step() {
+        let r = piece_road(&board_work(sent(true)), &Rules::default());
+        assert_eq!(labels(&r), ["Built", "Pushed", "Pull request", "Merged"]);
+        assert_eq!(now(&r), Some("Merged"));
+        assert_eq!(r.label, "Needs you · merge on GitHub");
+        assert!(r.steps.iter().all(|s| s.mark != StepMark::Skipped));
     }
 
     #[test]
@@ -795,7 +986,7 @@ mod tests {
             ..facts(ThreadState::InReview, ReviewState::NeedsALook)
         };
         let r = piece_road(&f, &Rules::default());
-        assert_eq!(now(&r), Some("On GitHub"));
+        assert_eq!(now(&r), Some("Pushed"));
         assert!(r.you);
         assert!(
             r.next.contains("protected parts of the app (src/spend.rs)"),
@@ -806,11 +997,72 @@ mod tests {
     }
 
     #[test]
+    fn a_push_on_its_way_or_failed_says_so_and_why() {
+        let going = Facts {
+            send: Some(SendState::Sending),
+            ..facts(ThreadState::Done, ReviewState::Passed)
+        };
+        let r = piece_road(&going, &Rules::default());
+        assert_eq!(now(&r), Some("Pushed"));
+        assert_eq!(r.label, "Pushing to GitHub");
+        assert!(!r.you && r.why.is_none());
+
+        let failed = Facts {
+            send: Some(SendState::Failed),
+            error: Some("This app's folder is not linked to GitHub.".into()),
+            ..board_work(facts(ThreadState::Done, ReviewState::Passed))
+        };
+        let r = piece_road(&failed, &Rules::default());
+        assert_eq!(now(&r), Some("Pushed"));
+        assert_eq!(r.label, "Needs you · not pushed");
+        assert!(r.you && !r.done);
+        assert_eq!(
+            r.why.as_deref(),
+            Some("This app's folder is not linked to GitHub.")
+        );
+    }
+
+    #[test]
+    fn pushed_with_no_pull_request_is_not_waiting_to_be_merged() {
+        let f = Facts {
+            error: Some("Your GitHub token can't open pull requests on this app.".into()),
+            ..sent(false)
+        };
+        let r = piece_road(&f, &Rules::default());
+        assert_eq!(now(&r), Some("Pull request"));
+        assert_eq!(r.label, "Needs you · open the pull request");
+        assert!(r.you && !r.done);
+        assert!(
+            r.next.starts_with("It is on GitHub as a branch, but no pull request is open, so it can't be merged yet. Tap Open the pull request."),
+            "{}",
+            r.next
+        );
+        assert_eq!(
+            r.why.as_deref(),
+            Some("Your GitHub token can't open pull requests on this app.")
+        );
+        let marks: Vec<StepMark> = r.steps.iter().map(|s| s.mark).collect();
+        assert_eq!(
+            marks,
+            [
+                StepMark::Done,
+                StepMark::Done,
+                StepMark::Done,
+                StepMark::Now,
+                StepMark::Todo
+            ]
+        );
+        // Without a saved reason, nothing is said to be stuck.
+        assert!(piece_road(&sent(false), &Rules::default()).why.is_none());
+    }
+
+    #[test]
     fn on_github_the_merge_is_told_by_the_merge_rule() {
         let r = piece_road(&sent(true), &Rules::default());
         assert_eq!(now(&r), Some("Merged"));
         assert_eq!(r.label, "Needs you · merge on GitHub");
         assert!(r.next.contains("You or your reviewer merge it there"));
+        assert!(r.why.is_none());
         let r = piece_road(
             &sent(true),
             &Rules {
@@ -818,9 +1070,30 @@ mod tests {
                 ..Rules::default()
             },
         );
+        assert_eq!(r.label, "Needs you · merge it");
         assert!(r.next.contains("Tap Merge"), "{}", r.next);
-        let r = piece_road(&sent(false), &Rules::default());
-        assert!(r.next.contains("no pull request is open yet"), "{}", r.next);
+    }
+
+    #[test]
+    fn a_pull_request_closed_without_merging_is_said_plainly() {
+        let f = Facts {
+            closed: true,
+            ..sent(true)
+        };
+        let r = piece_road(&f, &Rules::default());
+        assert_eq!(r.label, "Closed · not merged");
+        assert!(!r.you && !r.done);
+        assert_eq!(now(&r), Some("Merged"));
+        assert!(
+            r.next.contains("closed on GitHub without merging"),
+            "{}",
+            r.next
+        );
+        assert_eq!(
+            r.steps[3].mark,
+            StepMark::Done,
+            "the pull request was there"
+        );
     }
 
     #[test]
@@ -834,35 +1107,62 @@ mod tests {
         assert_eq!(r.label, "Merged");
         assert!(r.steps.iter().all(|s| s.mark == StepMark::Done));
 
-        let me = Rules {
-            decurion: true,
-            ..Rules::default()
-        };
-        let r = piece_road(&merged, &me);
+        let r = piece_road(&merged, &me());
         assert!(!r.done && r.you);
-        assert_eq!(now(&r), Some("Update Decurion"));
-        assert!(r.next.starts_with(
-            "Merged. This Decurion still runs the old version. Update it to use the change."
-        ));
+        assert_eq!(now(&r), Some("On your PC"));
+        assert_eq!(r.label, "Merged · not on your PC yet");
+        assert_eq!(
+            r.next,
+            "Merged on GitHub. Your PC still runs the older Decurion, so you won't see this change until Decurion is updated."
+        );
         assert_eq!(r.update.len(), 3);
         let live = piece_road(
             &Facts {
                 live: true,
                 ..merged.clone()
             },
-            &me,
+            &me(),
         );
-        assert!(live.done);
-        assert_eq!(live.steps.last().map(|s| s.label.as_str()), Some("Live"));
+        assert!(live.done && !live.you);
+        assert_eq!(live.label, "On your PC");
+        assert_eq!(live.next, "Running on your PC. Nothing more to do.");
+        assert_eq!(
+            live.steps.last().map(|s| s.label.as_str()),
+            Some("On your PC")
+        );
+        assert!(live.update.is_empty());
 
-        let r = piece_road(
-            &merged,
-            &Rules {
-                deploy: true,
-                ..Rules::default()
-            },
-        );
+        let deploys = Rules {
+            deploy: true,
+            ..Rules::default()
+        };
+        let r = piece_road(&merged, &deploys);
+        assert_eq!(r.label, "Needs you · deploy");
         assert!(r.next.contains("Tap Deploy"), "{}", r.next);
+        let r = piece_road(
+            &Facts {
+                live: true,
+                ..merged
+            },
+            &deploys,
+        );
+        assert!(r.done);
+        assert_eq!(r.label, "Live");
+    }
+
+    #[test]
+    fn work_pushed_to_another_git_server_ends_with_the_push() {
+        let f = Facts {
+            on_github: false,
+            ..sent(false)
+        };
+        let r = piece_road(&f, &Rules::default());
+        assert_eq!(labels(&r), ["Built", "Checked", "Pushed"]);
+        assert!(r.done);
+        assert!(r.next.contains("decurion/x"), "{}", r.next);
+        let r = piece_road(&board_work(f), &Rules::default());
+        assert_eq!(labels(&r), ["Built", "Pushed"]);
+        assert!(!r.next.contains("goal"), "{}", r.next);
     }
 
     #[test]
@@ -878,7 +1178,13 @@ mod tests {
     #[test]
     fn a_goal_is_where_its_slowest_piece_is_and_asks_what_waits_for_you() {
         let r = Rules::default();
-        let a = piece_road(&sent(true), &r);
+        let a = piece_road(
+            &Facts {
+                error: Some("No token.".into()),
+                ..sent(false)
+            },
+            &r,
+        );
         let b = piece_road(&facts(ThreadState::Running, ReviewState::Building), &r);
         let g = goal_road(
             GoalState::Working,
@@ -894,10 +1200,21 @@ mod tests {
             "{}",
             g.next
         );
+        assert_eq!(g.label, "Needs you · open the pull request");
+        assert_eq!(g.why.as_deref(), Some("No token."));
 
         let plan = goal_road(GoalState::PlanReady, &[], true, &r).expect("road");
         assert!(plan.steps.iter().all(|s| s.mark == StepMark::Todo));
         assert!(goal_road(GoalState::PlanReady, &[], false, &r).is_none());
+    }
+
+    #[test]
+    fn a_road_with_nothing_stuck_has_no_why_in_its_json() {
+        let r = piece_road(&sent(true), &Rules::default());
+        let v = serde_json::to_value(&r).expect("json");
+        assert!(v.get("why").is_none(), "{v}");
+        assert_eq!(v["steps"][3]["step"], "pull_request");
+        assert_eq!(v["steps"][2]["step"], "pushed");
     }
 
     #[test]

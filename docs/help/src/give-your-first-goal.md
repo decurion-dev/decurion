@@ -99,21 +99,31 @@ Accept** and names the protected files.
 
 ## Follow each piece to live
 
-The goal's page, and the panel of each of its pieces, show the same step bar:
+The goal's page, each piece's card and its panel, on the PC and the phone,
+show the same step bar:
 
-**Built**, **Checked**, **On GitHub**, **Merged**, **Live**
+**Built**, **Checked**, **Pushed**, **Pull request**, **Merged**, **Live**
 
-A tick marks each step that is done and a dot marks the one it is on. Under the
-bar, one line says what happens next and who does it, such as "It is on GitHub
-as a pull request. You or your reviewer merge it there. Decurion sees the
-merge by itself." Steps that do not apply are left out: **Live** shows only
-for an app that deploys from Decurion (see
-[Deploy your app in one tap](deploy-your-app.md)), or for Decurion itself
-(see [Update Decurion](improve-decurion-itself.md#update-decurion)). Before
-you approve the plan, every step is still to come.
+- **Pushed**: the change is on GitHub as its own branch. Nothing in your app
+  has changed yet.
+- **Pull request**: GitHub has a page asking to add it to your app. This is
+  what gets merged.
+- **Merged**: it is part of your app's main code on GitHub.
+- **Live**: for an app that deploys from Decurion, it is live (see
+  [Deploy your app in one tap](deploy-your-app.md)). For Decurion itself this
+  step is called **On your PC**: your PC is running the change (see
+  [Update Decurion](improve-decurion-itself.md#update-decurion)).
+
+A tick marks each step that is done and a dot marks the one it is on. A step
+that waits for you is amber, and one that failed is red, with the reason
+under it. Under the bar, one line says what happens next and who does it,
+such as "It is on GitHub as a pull request. You or your reviewer merge it
+there. Decurion sees the merge by itself." Steps that do not apply are left
+out. Work you start with **Just do it** has no **Checked** step. Before you
+approve the plan, every step is still to come.
 
 A finished piece never just says Done. Its label says the step it is on, such
-as **On GitHub** or **Merged**.
+as **Needs you · open the pull request** or **Merged**.
 
 You can stop the goal at any time with **Stop goal**, under the **•••** button.
 
@@ -131,7 +141,7 @@ Merge them on GitHub (or with **Merge**, if the app's rules allow it).
 When every piece is merged, the goal closes by itself. For an app that deploys
 from Decurion, and for Decurion itself, it closes once every piece is also
 live. This works for pull requests you opened yourself from Decurion's
-**Open pull request on GitHub** link too.
+**Open on GitHub** link too.
 
 To end a goal sooner, press **Close this goal**. It moves the goal to your
 finished goals. Nothing changes on GitHub or in your live app.

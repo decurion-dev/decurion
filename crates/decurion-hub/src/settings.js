@@ -215,6 +215,8 @@
     pairLabel();
     parts.qr = el("div", { className: "qr", id: "qr", hidden: true });
     parts.devices = el("ul", { className: "rows", id: "devices" }, loading());
+    // Which Decurion this PC runs
+    parts.version = el("div", { id: "decurion-version" }, loading("p"));
 
     const phones = el("section", { className: `scard live${phone() ? " wide" : ""}`, id: "set-phones", "aria-labelledby": "h-phones" },
       el("header", {}, el("span", { className: "ic" }, icon("phone", "l")), el("div", {}, el("h2", { id: "h-phones" }, "Phones"),
@@ -255,6 +257,9 @@
       addons: window.DAddons?.card({ onSignedOut: signedOut }) ?? null,
       phones,
       voice: voiceCard(),
+      decurion: card("decurion", "pc", "Decurion",
+        "Which Decurion your PC runs, and the changes merged on GitHub that it isn't running yet. Decurion never updates itself: you choose when.",
+        parts.version),
     };
     return tabs(cards);
   }
@@ -277,6 +282,7 @@
     { id: "addons", icon: "tool", name: "Add-ons", about: "Extra tools for your agents" },
     { id: "phones", icon: "phone", name: "Phones", about: "Pair a phone, see paired ones" },
     { id: "voice", icon: "mic", name: "Voice", about: "Talk and hear replies on this device" },
+    { id: "decurion", icon: "pc", name: "Decurion", about: "Which Decurion your PC runs" },
   ];
   // Older links used other names for some tabs.
   const OLD_NAMES = { spending: "accounts" };
@@ -1639,6 +1645,43 @@
     parts.github.replaceChildren(rows, form);
   }
 
+  // ---------- Which Decurion this PC runs ----------
+  // GET /api/decurion/version (version.rs): its version, the hub's words on
+  // whether it is the newest, the changes waiting and how to update, drawn
+  // as given. The hub keeps its answer for a few minutes, so opening this
+  // tab never waits on GitHub for long. The tab says "Update waiting" in
+  // amber while this PC is behind.
+  const VERSION_LOOK = { current: ["done", "done", "Newest"], behind: ["needs_you", "alert", "Update waiting"], unknown: ["queued", "queued", "Not known"] };
+  async function loadVersion() {
+    let v;
+    try { v = await D.api("/decurion/version"); } catch (e) {
+      if (e.signedOut) { signedOut(); return; }
+      if (changed("set-version", ["err", e.message])) {
+        parts.version.replaceChildren(el("p", { className: "field-error" }, `Couldn't check which Decurion runs here. ${e.message}`));
+      }
+      return;
+    }
+    if (!changed("set-version", [v, Math.floor(Date.now() / 60000)])) return;
+    const behind = v?.state === "behind";
+    const [cls, ic, word] = VERSION_LOOK[v?.state] ?? VERSION_LOOK.unknown;
+    tabNote("decurion", behind ? "Update waiting" : null, behind ? "warn" : null);
+    const how = Array.isArray(v?.how) ? v.how : [];
+    fill(parts.version,
+      el("ul", { className: "rows" }, el("li", {},
+        el("span", { className: "ic" }, icon("pc")),
+        el("div", { className: "who" }, el("b", {}, "This PC runs"),
+          el("span", { className: "hint" }, v?.short ? `Version ${v.short}` : "A version Decurion can't name",
+            v?.checked_at ? ` · checked ${D.ago(v.checked_at)}` : "")),
+        el("span", { className: `pill ${cls}` }, icon(ic), word))),
+      v?.words ? el("p", { className: "ver-words" }, v.words) : null,
+      v?.changes?.length ? el("h3", { className: "sub-h" }, "Waiting changes") : null,
+      D.versionChanges(v?.changes),
+      how.length ? el("h3", { className: "sub-h" }, "How to update") : null,
+      how.length ? el("ul", { className: "ver-how-list" }, ...how.map((l) => el("li", {}, l))) : null,
+      how.length || behind ? el("p", { className: "hint" },
+        el("a", { href: D.UPDATE_HELP(), target: "_blank", rel: "noopener noreferrer" }, "How to update Decurion")) : null);
+  }
+
   // ---------- Website sign-ins ----------
   // Drawn like test keys: when Settings opens and after each change, so a
   // half-typed address is never wiped.
@@ -1769,7 +1812,7 @@
       const was = shown;
       shown = true;
       const id = select(part, was);
-      if (was) return id;
+      if (was) { if (id === "decurion") loadVersion(); return id; }
       render();
       loadDevices();
       loadConnection();
@@ -1778,13 +1821,15 @@
       loadKeys();
       loadGitHub();
       loadSignIns();
+      loadVersion();
       window.DAddons?.load();
       return id;
     },
     hide() { shown = false; },
     get shown() { return shown; },
     // On the page's timer: phones paired from another screen show up.
-    tick() { if (shown) { loadDevices(); loadLights(); } },
+    // The open Decurion tab asks again too: the hub answers from its cache.
+    tick() { if (shown) { loadDevices(); loadLights(); if (current === "decurion") loadVersion(); } },
     render,
     usage,
     setFirst,

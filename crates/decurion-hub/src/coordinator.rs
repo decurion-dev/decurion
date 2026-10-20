@@ -1265,7 +1265,7 @@ impl Store {
              FROM goal_pieces p JOIN threads t ON t.id = p.thread_id
              LEFT JOIN pr_watches w ON w.thread_id = p.thread_id
              WHERE p.goal_id = ? ORDER BY p.thread_id",
-            crate::github::gh_clash("t")
+            crate::github::gh_watch("t")
         ))
         .bind(id)
         .fetch_all(&mut *tx)

@@ -46,7 +46,7 @@ A week before something with a known date runs out, your phone gets a notificati
   1. Open the token on GitHub and click **Edit**.
   2. Under **Repository access**, add the app's repo.
   3. Under **Permissions**, set **Pull requests** to **Read and write**, and save.
-  4. Back in Decurion, tap **Open a pull request** on the work that is waiting.
+  4. Back in Decurion, tap **Open the pull request** on the work that is waiting.
 
-  Until then, tap **Open a pull request** to open each one yourself. The light turns green again once Decurion opens a pull request on that app. If you save a new token, the light gives it a fresh chance.
+  Until then, tap **Open on GitHub** to open each one yourself. The light turns green again once Decurion opens a pull request on that app. If you save a new token, the light gives it a fresh chance.
 - **The cloud worker says "Offline."** Work placed there waits until it is back. See [Add the cloud worker](add-the-cloud-worker.md).
