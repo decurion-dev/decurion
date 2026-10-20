@@ -92,6 +92,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **One GitHub token for every app.** When the GitHub token can send work but can't open pull requests, Settings, Sign-ins now offers **Make a classic token**: GitHub opens a new token already named Decurion with **repo** ticked, you copy it and save it once. The old steps said to edit the token, which can't work when an app's repo belongs to an organization and the token was made for your own account. The help pages say the same.
 - **A to-do no longer shows twice on the Master plan.** When you tap **Make it a goal** or **Fix this**, the to-do leaves its old spot and only the new work item shows. If that work is stopped, the to-do comes back. The done and left numbers at the top count the job once.
 - **The checker shows while it works.** A piece's check could run for twenty minutes while the board said "No agents working right now". Checkers and project leads now count in **Running** and **Queued** and show there as cards, and the piece's card, panel and goal page say "Checker working · started 3:09 PM", "Waiting for a free agent to check it", or why it waits (such as the Max plan being out of usage for now).
 - **No Accept while the checker looks first.** A goal piece waiting for its check no longer offers **Accept**, **Send back** or **Reject** (or a typed yes) on the board, the panel or the phone, and leaves the phone's inbox until the check is done. It says "Nothing to do. The checker looks at it first." The buttons come back once the check has finished.

@@ -98,9 +98,14 @@ pub struct Link {
     pub label: &'static str,
 }
 
-/// GitHub's page for fine-grained tokens, where a token's repositories and
-/// permissions are changed.
-pub const GITHUB_TOKENS_PAGE: &str = "https://github.com/settings/personal-access-tokens";
+/// GitHub's page for a new classic token, already named Decurion with
+/// `repo` ticked. A fine-grained token reaches the repos of one owner only,
+/// so it can never cover apps that sit under the owner's own account and
+/// an organization at once; a classic one reaches every repo the owner can
+/// open. The hub uses it only to open, read and merge pull requests, and it
+/// is never handed to a run.
+pub const GITHUB_TOKENS_PAGE: &str =
+    "https://github.com/settings/tokens/new?scopes=repo&description=Decurion";
 
 impl Light {
     fn new(key: String, group: &'static str, label: String, light: Color, text: &str) -> Self {
@@ -502,25 +507,19 @@ fn pr_trouble_row(mut r: Light, trouble: &[crate::github::PrTrouble], saved: boo
     };
     r.expires_at = None;
     r.days_left = None;
-    r.steps = if saved && !refused {
-        vec![
-            "Open GitHub's token page with the button here, and sign in to GitHub if it asks.".to_owned(),
-            "Open the token you made for Decurion and tap Edit.".to_owned(),
-            format!("Under Repository access, make sure the repo for {apps} is picked."),
-            "Under Permissions, set Pull requests to Read and write. Tap Update.".to_owned(),
-            "Done. The next piece of work opens its pull request by itself. For work already sent, tap Open the pull request on it.".to_owned(),
-        ]
-    } else {
-        vec![
-            "Open GitHub's token page with the button here, sign in, and tap Generate new token.".to_owned(),
-            format!("Name it Decurion. Under Repository access, pick the repo for {apps}."),
-            "Under Permissions, set Pull requests to Read and write. Tap Generate token and copy it.".to_owned(),
-            "In Decurion, open Settings, GitHub, paste it in and tap Save.".to_owned(),
-        ]
-    };
+    // One way out for every case: a token that can't reach the repo, one
+    // GitHub stopped taking, or a gh sign-in without the right to open pull
+    // requests. A fine-grained token can't be edited to reach a repo of
+    // another owner, so "edit the token" would leave the owner stuck.
+    r.steps = vec![
+        "Tap Make a classic token here. GitHub opens a new token named Decurion with repo already ticked. Sign in if it asks.".to_owned(),
+        "Pick how long it lasts, tap Generate token at the bottom, and copy the token.".to_owned(),
+        "In Decurion, open Settings, GitHub, paste it in and tap Save token. It replaces the old one and reaches every app, even one whose repo belongs to an organization.".to_owned(),
+        "Done. The next piece of work opens its pull request by itself. For work already sent, tap Open the pull request on it.".to_owned(),
+    ];
     r.link = Some(Link {
         url: GITHUB_TOKENS_PAGE,
-        label: "Open GitHub's token page",
+        label: "Make a classic token",
     });
     r
 }

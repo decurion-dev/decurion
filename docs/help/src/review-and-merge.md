@@ -71,7 +71,7 @@ For an app you set to **Full control** (Settings, Apps, then the app), a pull re
 
 Decurion merges only when GitHub says the pull request is ready: its checks passed, any review it needs is in, and nothing conflicts. Otherwise it tells you what it waits for, and you can still merge on GitHub. It merges exactly the version Decurion sent: if someone else added to the pull request since, merge it on GitHub instead.
 
-To merge, your GitHub token (Settings, GitHub) needs **Contents: Read and write** for that repo, as well as **Pull requests: Read and write**.
+To merge, your GitHub token (Settings, GitHub) needs to be a classic token with **repo** ticked, or a fine-grained one with **Contents: Read and write** for that repo as well as **Pull requests: Read and write**.
 
 Apps set to **PR only**, which is how every app starts, have no Merge button: you or your reviewer merge on GitHub.
 
@@ -79,11 +79,13 @@ Apps set to **PR only**, which is how every app starts, have no Merge button: yo
 
 This is optional. Without it, you make each pull request yourself with one tap.
 
-1. On GitHub, open **Settings**, then **Developer settings**, then **Personal access tokens**, then **Fine-grained tokens**, and click **Generate new token**.
-2. Under **Repository access**, choose your apps' repos.
-3. Under **Permissions**, set **Pull requests** to **Read and write**. It needs nothing else. The same token lets Decurion ask your reviewer to look and watch for their comments.
-4. Click **Generate token** and copy it.
-5. In Decurion on your PC, open **Settings**, then **GitHub**. Paste it into **GitHub token** and click **Save token**.
+1. Open [GitHub's page for a new classic token](https://github.com/settings/tokens/new?scopes=repo&description=Decurion). It is already named Decurion with **repo** ticked. Sign in if it asks.
+2. Pick how long it lasts, click **Generate token** at the bottom, and copy it.
+3. In Decurion on your PC, open **Settings**, then **GitHub**. Paste it into **GitHub token** and click **Save token**.
+
+The same token lets Decurion ask your reviewer to look, watch for their comments, and merge for an app set to **Full control**.
+
+Why a classic token? A fine-grained token reaches the repos of one owner only: your own account, or one organization. If your apps sit under more than one, as when one is yours and another belongs to an organization, no fine-grained token can reach them all, and editing it cannot fix that. If every app sits under one owner and you prefer a fine-grained token, pick that owner under **Resource owner**, choose the repos, and set **Pull requests** (and **Contents**, to merge) to **Read and write**.
 
 Decurion keeps the token in this PC's password store and shows only its last four characters. It is never given to an agent. To stop using it, click **Remove** next to it.
 
