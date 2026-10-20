@@ -10,7 +10,7 @@ This page shows how to change an agent's direction, give it more to do, or tell 
 
 ## Send a message
 
-1. On the board, click the card for the work.
+1. Open the work: tap it on **Home**, or tap its piece on Home's **Board**.
 2. Find **Tell the agent something** on the panel's **Overview** tab, which opens first. On your phone, tap **Tell the agent something** on the card.
 3. Type your message.
 4. Click the button for what you want:
@@ -34,7 +34,7 @@ You cannot send messages to work that is done.
 
 A big task can have smaller tasks inside it.
 
-1. Open **What do you want?**: at the top of the board, or **New work** on your phone's Board tab.
+1. Open **What do you want?**: at the top of **Home**, or **New work** on **Home** on your phone.
 2. Write the task and choose **Just do it**.
 3. Under **Part of other work**, pick the bigger task this one belongs to.
 4. Click **Start work**.

@@ -261,10 +261,11 @@ impl Store {
         ))
         .fetch_one(&mut *tx)
         .await?;
-        let app_caps: Vec<(i64, Option<i64>)> =
-            sqlx::query_as("SELECT id, monthly_cap_micros FROM apps ORDER BY name")
-                .fetch_all(&mut *tx)
-                .await?;
+        let app_caps: Vec<(i64, Option<i64>)> = sqlx::query_as(
+            "SELECT id, monthly_cap_micros FROM apps WHERE removed_at IS NULL ORDER BY name",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
         let mut apps = Vec::with_capacity(app_caps.len());
         for (app_id, cap) in app_caps {
             apps.push(AppSpend {

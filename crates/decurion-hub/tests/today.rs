@@ -241,10 +241,25 @@ async fn a_ready_plan_needs_you_and_a_working_goal_counts_its_pieces() {
         atlas_row["pieces"],
         json!({"goal_id": goal, "done": 2, "total": 4})
     );
-    // Two pieces wait for the owner to check them, so Atlas needs them too.
-    assert_eq!(atlas_row["tone"], "needs_you");
-    assert_eq!(atlas_row["line"], "2 pieces are ready to check");
+    // Two pieces passed their check: by the app's rules they go to GitHub
+    // by themselves, so nothing waits on the owner yet.
+    assert_eq!(atlas_row["tone"], "working");
+    assert_eq!(atlas_row["line"], "2 of 4 pieces built");
+    assert_eq!(atlas_row["needs_you"], 0);
     assert_eq!(atlas_row["running"], 2);
+
+    // With checked work waiting for the owner's Accept, the goal waits on
+    // them, and counts once, as its goal, in the goal's own words.
+    sqlx::query("UPDATE apps SET send_checked = 0 WHERE id = ?")
+        .bind(atlas)
+        .execute(store.pool())
+        .await
+        .expect("rules");
+    let rows = today(&r).await;
+    let atlas_row = rows.iter().find(|x| x["app_id"] == atlas).expect("atlas");
+    assert_eq!(atlas_row["tone"], "needs_you");
+    assert_eq!(atlas_row["line"], "Tap Accept");
+    assert_eq!(atlas_row["needs_you"], 1);
 }
 
 #[tokio::test]
@@ -323,9 +338,17 @@ async fn review_comments_on_an_open_pull_request_ask_for_a_fix() {
         json!({
             "thread_id": t, "number": 88, "url": "https://github.com/me/app/pull/88",
             "state": "open", "event": "It is open", "event_at": "2026-10-18T08:00:00Z",
-            "can_merge": false,
+            "can_merge": false, "health": null, "can_update": false,
+            "auto_line": null,
         })
     );
+    // Bring up to date waits until a look at GitHub has said which branch
+    // the pull request merges into.
+    sqlx::query("UPDATE pr_watches SET base_ref = 'main'")
+        .execute(store.pool())
+        .await
+        .expect("looked");
+    assert_eq!(today(&r).await[0]["last_pr"]["can_update"], true);
 
     // Once the fix is started for all of them, the pull request waits on the reviewer.
     sqlx::query("UPDATE pr_comments SET fix_thread = ?")
@@ -520,10 +543,13 @@ async fn one_list_says_what_needs_you_and_the_app_rows_count_it() {
             (lost, "not_sent")
         ]
     );
-    assert_eq!(
-        n["goals"],
-        json!([{"goal_id": goal, "app_id": blog, "why": "plan"}])
-    );
+    let goals = n["goals"].as_array().expect("goals");
+    assert_eq!(goals.len(), 1);
+    assert_eq!(goals[0]["goal_id"], goal);
+    assert_eq!(goals[0]["app_id"], blog);
+    assert_eq!(goals[0]["why"], "plan");
+    assert_eq!(goals[0]["journey"]["label"], "Needs you · approve the plan");
+    assert_eq!(goals[0]["journey"]["you"], true);
     assert_eq!(
         n["prs"],
         json!([{"thread_id": pr, "app_id": blog, "why": "comments"}])
@@ -544,14 +570,232 @@ async fn one_list_says_what_needs_you_and_the_app_rows_count_it() {
     assert_eq!(row(shop)["line"], "1 piece needs you · 3 more");
     assert_eq!(row(blog)["needs_you"], 2);
 
-    // Its check done, the piece is the owner's to look at.
-    sqlx::query("UPDATE goal_pieces SET review = 'passed' WHERE thread_id = ?")
+    // Its check over with problems left, the piece is the owner's to look
+    // at, but it is a piece of a goal that already waits on the owner: the
+    // goal counts once.
+    sqlx::query("UPDATE goal_pieces SET review = 'needs_a_look' WHERE thread_id = ?")
         .bind(piece)
         .execute(store.pool())
         .await
-        .expect("passed");
-    assert_eq!(needs(&r).await["by_app"][blog.to_string()], 3);
+        .expect("looked");
+    let n = needs(&r).await;
+    assert_eq!(n["by_app"][blog.to_string()], 2);
+    assert!(n["work"]
+        .as_array()
+        .expect("work")
+        .iter()
+        .all(|w| w["thread_id"] != piece));
+
+    // Once the goal is working, the piece's look is what its goal waits on.
+    sqlx::query("UPDATE goals SET state = 'working' WHERE id = ?")
+        .bind(goal)
+        .execute(store.pool())
+        .await
+        .expect("working");
+    let n = needs(&r).await;
+    assert_eq!(n["by_app"][blog.to_string()], 2);
+    assert_eq!(n["goals"][0]["why"], "piece");
+    assert_eq!(n["goals"][0]["thread_id"], piece);
+    assert_eq!(n["goals"][0]["journey"]["label"], "Needs you · take a look");
+    assert_eq!(n["goals"][0]["journey"]["action"]["kind"], "review");
 
     let (s, _) = call(&r, "GET", "/api/needs-you", Some(RUNNER), Value::Null).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// A goal whose piece waits on the owner counts once, as its goal, with the
+/// goal's own words: its pull request's Merge tap and comments are not
+/// counted again, and work outside goals is counted beside it.
+#[tokio::test]
+async fn a_goals_piece_that_waits_on_you_counts_once_as_its_goal() {
+    let (r, store) = hub().await;
+    let shop = add_app(&r, "shop").await;
+    sqlx::query("UPDATE apps SET can_merge = 1 WHERE id = ?")
+        .bind(shop)
+        .execute(store.pool())
+        .await
+        .expect("rules");
+    let goal: i64 = sqlx::query_scalar(
+        "INSERT INTO goals (app_id, title, state, session_id) VALUES (?, 'Cart', 'working', 's1') RETURNING id",
+    )
+    .bind(shop)
+    .fetch_one(store.pool())
+    .await
+    .expect("goal");
+    let piece = add_work(&r, shop, "Cart button").await;
+    set_state(&store, piece, "done").await;
+    sqlx::query(
+        "UPDATE threads SET gh_state = 'sent', gh_pr = 1, gh_branch = 'decurion/cart',
+             gh_url = 'https://github.com/me/app/pull/9' WHERE id = ?",
+    )
+    .bind(piece)
+    .execute(store.pool())
+    .await
+    .expect("sent");
+    sqlx::query("INSERT INTO goal_pieces (thread_id, goal_id, title, done_when, review) VALUES (?, ?, 'Cart button', 'ok', 'passed')")
+        .bind(piece)
+        .bind(goal)
+        .execute(store.pool())
+        .await
+        .expect("piece");
+    watch(&store, piece, shop, 9, "open", "2026-10-18T08:00:00Z").await;
+    comment(&store, piece, 1, "param").await;
+    // Work added straight to the board that asks the owner something.
+    let asks = add_work(&r, shop, "Asks").await;
+    set_state(&store, asks, "needs_you").await;
+
+    let n = needs(&r).await;
+    assert_eq!(n["total"], 2, "{n}");
+    assert_eq!(n["prs"], json!([]));
+    assert_eq!(
+        n["work"],
+        json!([{"thread_id": asks, "app_id": shop, "why": "answer"}])
+    );
+    let g = &n["goals"][0];
+    assert_eq!(g["goal_id"], goal);
+    assert_eq!(g["why"], "piece");
+    assert_eq!(g["thread_id"], piece);
+    assert_eq!(g["journey"]["label"], "Needs you · merge it");
+    assert_eq!(
+        g["journey"]["action"],
+        json!({"kind": "merge", "label": "Merge"})
+    );
+    assert_eq!(g["journey"]["piece"], piece);
+
+    // The goals list says the same for the goal.
+    let (s, list) = call(&r, "GET", "/api/goals", Some(OWNER), Value::Null).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(list[0]["journey"], g["journey"]);
+    // The app row counts the same list.
+    let rows = today(&r).await;
+    assert_eq!(rows[0]["needs_you"], 2);
+}
+
+/// Work sent to GitHub as a pull request, as the hub records a send.
+async fn sent_as_pr(store: &Store, thread: i64, number: i64) {
+    sqlx::query(
+        "UPDATE threads SET state = 'done', gh_state = 'sent', gh_pr = 1, gh_branch = ?, gh_url = ?
+         WHERE id = ?",
+    )
+    .bind(format!("decurion/app-{thread}"))
+    .bind(format!("https://github.com/me/app/pull/{number}"))
+    .bind(thread)
+    .execute(store.pool())
+    .await
+    .expect("sent");
+}
+
+#[tokio::test]
+async fn a_conflicting_pull_request_says_bring_up_to_date_not_github() {
+    let (r, store) = hub().await;
+    let app = add_app(&r, "pv-medispa").await;
+    let t = add_work(&r, app, "New intake form").await;
+    sent_as_pr(&store, t, 61).await;
+    watch(&store, t, app, 61, "open", "2026-10-20T16:16:00Z").await;
+    let road = |v: &Value| v["road"].clone();
+
+    // Nothing said about conflicts yet: the usual merge words.
+    let (_, v) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{t}"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(road(&v)["label"], "Needs you · merge on GitHub", "{v}");
+    assert_eq!(road(&v)["catch_up"], Value::Null);
+
+    // GitHub said an older commit conflicted: not this one, so still nothing.
+    sqlx::query(
+        "UPDATE pr_watches SET health = 'dirty', health_head = 'old111', base_ref = 'main'",
+    )
+    .execute(store.pool())
+    .await
+    .expect("old look");
+    let (_, v) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{t}"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(road(&v)["catch_up"], Value::Null, "{v}");
+
+    // The commit Decurion pushed conflicts: the way out is Bring up to date.
+    sqlx::query("UPDATE pr_watches SET health_head = head")
+        .execute(store.pool())
+        .await
+        .expect("look");
+    let (_, v) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{t}"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(road(&v)["label"], "Needs you · bring it up to date", "{v}");
+    assert_eq!(road(&v)["you"], true);
+    assert_eq!(road(&v)["catch_up"], json!({ "pull": t }));
+    let next = road(&v)["next"].as_str().expect("next").to_owned();
+    assert!(
+        next.contains("conflicts with main") && next.contains("Tap Bring up to date"),
+        "{next}"
+    );
+    // The Today row leads with the same tap.
+    let rows = today(&r).await;
+    assert_eq!(rows[0]["last_pr"]["health"], "Conflicts with main");
+    assert_eq!(rows[0]["last_pr"]["can_update"], true);
+
+    // Once a Bring up to date runs from that commit, the road follows it.
+    let up: i64 = sqlx::query_scalar(
+        "INSERT INTO threads (app_id, title, prompt, place, ai, fix_of, base_commit, merge_from, merge_ref, state)
+         VALUES (?, 'Bring up to date: New intake form', 'merge', 'pc', 'claude', ?, 'abc123', 'def456', 'main', 'running')
+         RETURNING id",
+    )
+    .bind(app)
+    .bind(t)
+    .fetch_one(store.pool())
+    .await
+    .expect("update run");
+    let (_, v) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{t}"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(road(&v)["label"], "Bringing it up to date", "{v}");
+    assert_eq!(road(&v)["you"], false);
+    assert_eq!(road(&v)["catch_up"], json!({ "pull": t, "work": up }));
+    set_state(&store, up, "in_review").await;
+    let (_, v) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{t}"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(road(&v)["label"], "Needs you · look over the update", "{v}");
+    assert_eq!(road(&v)["catch_up"]["work"], up);
+
+    // Merged: the story ends as before, with no catch-up.
+    sqlx::query("UPDATE pr_watches SET state = 'merged'")
+        .execute(store.pool())
+        .await
+        .expect("merged");
+    let (_, v) = call(
+        &r,
+        "GET",
+        &format!("/api/threads/{t}"),
+        Some(OWNER),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(road(&v)["catch_up"], Value::Null, "{v}");
+    assert_ne!(road(&v)["label"], "Needs you · bring it up to date");
 }

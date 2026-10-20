@@ -1,6 +1,6 @@
-// Decurion service worker: shows phone notifications, opens the inbox, and
+// Decurion service worker: shows phone notifications, opens Home, and
 // makes the one tap a notice offers (Approve plan, Accept, Open pull
-// request). Those taps go through the same owner routes as the inbox, with
+// request). Those taps go through the same owner routes as Home, with
 // this phone's own sign-in cookie and the receipt the hub sent, so a tap on
 // two phones, or twice, still acts once. Nothing here holds a key.
 self.addEventListener("install", () => self.skipWaiting());

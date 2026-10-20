@@ -42,8 +42,9 @@ fn reply<T: serde::Serialize>(r: crate::store::Result<T>) -> Response {
     }
 }
 
+/// `GET /api/goals`: every goal, each with its journey ([`crate::journey`]).
 pub(crate) async fn list(State(st): State<AppState>) -> Response {
-    reply(st.store.goals().await)
+    reply(st.store.goal_items().await)
 }
 
 pub(crate) async fn add(

@@ -19,7 +19,7 @@
 
 - [Give your first goal](give-your-first-goal.md)
 - [Research, Ask why, and the checker's proof](research-and-ask-why.md)
-- [Follow your master plan](follow-your-master-plan.md)
+- [Your apps and their Roadmaps](follow-your-roadmap.md)
 - [Attach files for agents](attach-files.md)
 - [Answer requests](answer-requests.md)
 - [Talk to an agent while it works](talk-to-a-running-agent.md)

@@ -30,6 +30,7 @@ pub mod dismiss;
 pub mod folders;
 pub mod github;
 pub mod help;
+pub mod journey;
 pub mod limits;
 pub mod live;
 pub mod merge;
@@ -41,6 +42,7 @@ pub mod pr_watch;
 pub mod preview;
 pub mod protected;
 pub mod push;
+pub mod remove;
 pub mod research;
 pub mod road;
 pub mod secrets;
@@ -54,6 +56,7 @@ pub mod today;
 pub mod tokens;
 pub(crate) mod upstream;
 pub mod usage;
+pub mod version;
 pub mod why;
 pub mod workers;
 
@@ -154,6 +157,8 @@ pub struct AppState {
     pub(crate) github_check: sign_in_lights::GitHubCache,
     /// Lets one deploy, or one look for changes to deploy, run at a time.
     deploy_busy: deploy::Busy,
+    /// Which Decurion this PC runs, and whether GitHub has a newer one.
+    version: version::Checks,
 }
 
 impl AppState {
@@ -179,6 +184,7 @@ impl AppState {
             claude: claude_sign_in::SignIns::default(),
             github_check: sign_in_lights::GitHubCache::default(),
             deploy_busy: deploy::Busy::default(),
+            version: version::Checks::default(),
         }
     }
 
@@ -340,6 +346,7 @@ pub fn router(state: AppState) -> Router {
         .route("/apps/{id}/pay-per-use", post(set_pay_per_use))
         .route("/apps/{id}/sites", post(set_sites))
         .route("/apps/{id}/edit", post(edit_app))
+        .route("/apps/{id}/remove", post(remove::remove))
         .route("/apps/{id}/rules", post(set_rules))
         .route("/apps/{id}/first", post(set_first_today))
         .route("/sites/built-in", get(built_in_sites))
@@ -355,8 +362,15 @@ pub fn router(state: AppState) -> Router {
         .route("/push/subscribe", post(push_subscribe))
         .route("/threads/{id}/place", post(set_place))
         .route("/threads/{id}/github", post(github::retry))
+        // Open the pull request for pushed work: owner only, never cloud
+        // workers; it pushes and merges nothing (github.rs).
+        .route(
+            "/threads/{id}/github/pull-request",
+            post(github::open_pr_tap),
+        )
         .route("/threads/{id}/goal", get(goals::piece_of))
         .route("/threads/{id}/pr/fix", post(pr_watch::fix))
+        .route("/threads/{id}/pr/update", post(pr_watch::update))
         .route("/threads/{id}/pr/merge", post(merge::tap))
         .route("/prs", get(pr_watch::list))
         .route("/deploys", get(deploy::list))
@@ -386,6 +400,8 @@ pub fn router(state: AppState) -> Router {
         // Helper agents working or lined up, for the board: owner only (live.rs).
         .route("/helpers", get(live::list))
         .route("/needs-you", get(today::needs))
+        // Which Decurion this PC runs: owner only, never cloud workers (version.rs).
+        .route("/decurion/version", get(version::get))
         // A research piece's report page, escaped inside JSON (research.rs).
         .route(
             "/runner/threads/{id}/report",
@@ -476,7 +492,7 @@ pub fn router(state: AppState) -> Router {
             "/ui.css",
             get(|| async { asset("text/css; charset=utf-8", include_str!("ui.css")) }),
         )
-        // The PC menu's look, shared by the board, goals and the master plan.
+        // The PC menu's look, shared by the board, goals and the Roadmap.
         .route(
             "/menu.css",
             get(|| async { asset("text/css; charset=utf-8", include_str!("menu.css")) }),
@@ -800,7 +816,7 @@ async fn goals_page() -> Response {
     page(include_str!("goals.html"))
 }
 
-/// The master plan and the page library. Data comes from `/api/apps/{id}/plan`
+/// The Roadmap and the page library. Data comes from `/api/apps/{id}/plan`
 /// and `/api/library`.
 async fn plan_page() -> Response {
     page(include_str!("plan.html"))
@@ -1081,6 +1097,20 @@ async fn add_thread(
     }
 }
 
+/// Saves the protected-parts hold of a Bring up to date run about to go to
+/// review ([`protected::update_hold`]); nothing for other work. Without the
+/// hub's saved copies there is nothing to check, so the work is held.
+async fn decide_update_hold(st: &AppState, id: i64) -> Result<(), StoreError> {
+    if st.store.merge_from(id).await?.is_none() {
+        return Ok(());
+    }
+    let hold = match st.files.as_deref() {
+        Some(files) => protected::update_hold(&st.store, files, id).await,
+        None => protected::Hold::Unchecked("this hub keeps no saved copies".into()),
+    };
+    st.store.set_thread_hold(id, &hold).await
+}
+
 async fn move_thread(
     State(st): State<AppState>,
     axum::Extension(c): axum::Extension<Caller>,
@@ -1105,6 +1135,17 @@ async fn move_thread(
         Some(axum::Extension(r)) if c == Caller::Runner => r.actor(),
         _ => c.actor().to_owned(),
     };
+    // A Bring up to date run has no checker: its protected-parts hold is
+    // decided here, from its saved copy, before any move of it into review,
+    // whoever asks for the move, so the owner never sees it there without
+    // the reason. A hold that cannot be decided holds the work; a lookup
+    // that fails refuses the move.
+    if m.to == InReview {
+        if let Err(e) = decide_update_hold(&st, id).await {
+            tracing::error!(error = %e, thread = id, "could not decide the update's hold");
+            return ApiError(e).into_response();
+        }
+    }
     match st
         .store
         .request_move(
@@ -1758,11 +1799,24 @@ async fn runner_base(
         let t = st.store.thread(id).await?;
         let app = st.store.app(t.app_id).await?;
         let base = st.store.base_commit(id).await?;
+        let merge_from = st.store.merge_from(id).await?;
         let bundled = files
-            .base_bundle(app.id, &app.repo_path, base.as_deref())
+            .base_bundle_with(
+                app.id,
+                &app.repo_path,
+                base.as_deref(),
+                merge_from.as_deref(),
+            )
             .await?;
         files
-            .settle_base(&st.store, id, app.id, &app.repo_path, bundled)
+            .settle_base(
+                &st.store,
+                id,
+                app.id,
+                &app.repo_path,
+                bundled,
+                merge_from.as_deref(),
+            )
             .await
     }
     .await;
@@ -2261,8 +2315,9 @@ async fn edit_app(
 
 /// The owner changes an app's rules: whether Decurion may merge or deploy
 /// it (each still one tap), its deploy steps, whether checked work goes to
-/// GitHub by itself, and whether it holds patient data. Owner only, and not
-/// in `cloud_reach`.
+/// GitHub by itself, whether it holds patient data, and whether conflicts
+/// with main start Bring up to date by itself. Owner only, and not in
+/// `cloud_reach`.
 async fn set_rules(
     State(st): State<AppState>,
     axum::Extension(c): axum::Extension<Caller>,
@@ -2282,6 +2337,7 @@ async fn set_rules(
                     deploy = r.deploy,
                     send_checked = r.send_checked,
                     patient_data = r.patient_data,
+                    update_conflicts = r.update_conflicts,
                     "the owner changed an app's rules"
                 );
             }

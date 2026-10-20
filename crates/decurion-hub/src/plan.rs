@@ -1,4 +1,4 @@
-//! The master plan and the page library: what each app's goals have done,
+//! The Roadmap and the page library: what each app's goals have done,
 //! what is left, and every page agents drew, beside the goal and piece it
 //! belongs to. Shapes and rules are in [`decurion_proto::plan`].
 //!
@@ -96,7 +96,7 @@ impl Store {
     /// Pages agents drew, newest first, for one app, one goal, or all.
     pub async fn library(&self, app: Option<i64>, goal: Option<i64>) -> Result<Vec<LibraryPage>> {
         let rows = sqlx::query(&format!(
-            "{PAGE_SELECT} WHERE (?1 IS NULL OR g.app_id = ?1) AND (?2 IS NULL OR gp.goal_id = ?2)
+            "{PAGE_SELECT} WHERE a.removed_at IS NULL AND (?1 IS NULL OR g.app_id = ?1) AND (?2 IS NULL OR gp.goal_id = ?2)
              ORDER BY gp.id DESC"
         ))
         .bind(app)
@@ -352,6 +352,7 @@ fn todo_item(row: ItemRow, fix_goal: Option<GoalRef>) -> PlanItem {
         state: row.state,
         goal: fix_goal,
         steps: Vec::new(),
+        journey: None,
         found: Vec::new(),
         pages: Vec::new(),
         created_at: row.created_at,
@@ -383,10 +384,10 @@ fn live_goal(r: &SqliteRow) -> Result<LiveGoal> {
 /// A top-level row of the plan while it is put together.
 enum Top {
     Goal(ItemRow),
-    Todo(PlanItem),
+    Todo(Box<PlanItem>),
 }
 
-/// Puts a goal on its app's master plan, at the end of the top level.
+/// Puts a goal on its app's Roadmap, at the end of the top level.
 /// Called in the transaction that starts the goal. Returns the row's id.
 pub(crate) async fn add_goal_row(
     tx: &mut Transaction<'_, Sqlite>,
@@ -506,10 +507,11 @@ pub(crate) async fn tick_fixed(tx: &mut Transaction<'_, Sqlite>, goal_id: i64) -
 }
 
 async fn app_exists(tx: &mut Transaction<'_, Sqlite>, app_id: i64) -> Result<()> {
-    let found: Option<i64> = sqlx::query_scalar("SELECT id FROM apps WHERE id = ?")
-        .bind(app_id)
-        .fetch_optional(&mut **tx)
-        .await?;
+    let found: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM apps WHERE id = ? AND removed_at IS NULL")
+            .bind(app_id)
+            .fetch_optional(&mut **tx)
+            .await?;
     found.map(|_| ()).ok_or(StoreError::NotFound)
 }
 
@@ -522,7 +524,7 @@ fn fix_text(
 ) -> String {
     let mut s = match found_in {
         Some(g) => format!("Please fix these, found while working on \"{g}\":\n"),
-        None => "Please take care of these, from this app's master plan:\n".to_owned(),
+        None => "Please take care of these, from this app's Roadmap:\n".to_owned(),
     };
     for (title, detail) in items {
         match detail {
@@ -550,12 +552,21 @@ fn fix_title(items: &[(String, Option<String>)]) -> String {
 }
 
 impl Store {
-    /// An app's master plan: top-level rows in the owner's order, each goal
+    /// An app's Roadmap: top-level rows in the owner's order, each goal
     /// with its steps, what it found and its pages.
     pub async fn plan_view(&self, app_id: i64) -> Result<PlanView> {
         let app = self.app(app_id).await?;
         // Read before the transaction, which holds this task's one connection.
         let live = self.goals_live(Some(app_id)).await?;
+        // Each goal row's state words are its journey's, the same ones the
+        // goals list, the board and the phone show.
+        let app_goals: Vec<Goal> = self
+            .goals()
+            .await?
+            .into_iter()
+            .filter(|g| g.app_id == app_id)
+            .collect();
+        let mut journeys = self.journeys(&app_goals).await?;
         let mut tx = self.pool().begin().await?; // read-only: a reader never waits on writers
         let rows = sqlx::query(&format!(
             "SELECT {ITEM_COLS} FROM plan_items WHERE app_id = ? ORDER BY position, id"
@@ -632,16 +643,20 @@ impl Store {
         for row in rows {
             match row.kind {
                 ItemKind::Todo => {
-                    count(row.state);
                     let fix = row
                         .fix_goal_id
                         .and_then(|id| goals.get(&id))
                         .map(|g| g.goal.clone());
+                    // A to-do handed to a goal that is not stopped is carried by
+                    // that goal's own row, so it is counted once, there.
+                    if fix.as_ref().is_none_or(|g| g.state == GoalState::Stopped) {
+                        count(row.state);
+                    }
                     let parent = row.parent_id;
                     let item = todo_item(row, fix);
                     match parent {
                         Some(p) => children.entry(p).or_default().push(item),
-                        None => top.push(Top::Todo(item)),
+                        None => top.push(Top::Todo(Box::new(item))),
                     }
                 }
                 ItemKind::Goal => {
@@ -656,7 +671,7 @@ impl Store {
         for entry in top {
             let row = match entry {
                 Top::Todo(item) => {
-                    items.push(item);
+                    items.push(*item);
                     continue;
                 }
                 Top::Goal(row) => row,
@@ -683,6 +698,7 @@ impl Store {
                     can_deploy,
                     live.get(&id).copied(),
                 ),
+                journey: journeys.remove(&id),
                 found: children.remove(&row.id).unwrap_or_default(),
                 pages: pages.remove(&id).unwrap_or_default(),
                 created_at: row.created_at,
@@ -729,6 +745,8 @@ impl Store {
                         created_at: row.created_at,
                         done_at: (g.goal.state == GoalState::Done).then(|| g.updated_at.clone()),
                         deleted_at: row.deleted_at,
+                        // The Deleted tab shows only Done or Stopped.
+                        journey: None,
                     });
                 }
             }
@@ -1194,7 +1212,7 @@ async fn fix_checks(
     })
 }
 
-/// `GET /api/apps/{id}/plan`: the app's master plan.
+/// `GET /api/apps/{id}/plan`: the app's Roadmap.
 pub(crate) async fn view(
     State(st): State<AppState>,
     Extension(c): Extension<Caller>,

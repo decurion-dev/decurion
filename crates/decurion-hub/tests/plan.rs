@@ -1,4 +1,4 @@
-//! The master plan: each app's goals with their steps, what they found, and
+//! The Roadmap: each app's goals with their steps, what they found, and
 //! the owner's own to-do items, with the runner's side played by the test.
 
 use axum::body::Body;
@@ -670,6 +670,8 @@ async fn fixing_to_dos_starts_a_linked_goal_and_closing_it_ticks_them() {
     assert_eq!(row["found"][0]["goal"]["id"], fix);
     assert_eq!(row["found"][1]["goal"]["id"], fix);
     assert!(row["found"][2].get("goal").is_none());
+    // The job counts once: the audit and 3 findings left, plus the fix goal.
+    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(0), Some(5)));
     assert_eq!(
         titles(&p["items"]),
         [
@@ -756,8 +758,9 @@ async fn fixing_to_dos_starts_a_linked_goal_and_closing_it_ticks_them() {
     assert!(row["found"][0]["done_at"].is_string());
     assert_eq!(row["found"][1]["state"], "done");
     assert_eq!(row["found"][2]["state"], "open");
-    // Audit open + 3 findings left; fix goal and 2 findings done.
-    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(3), Some(4)));
+    // Audit open + 3 findings left; only the fix goal is done, the two ticked
+    // findings are carried by it and not counted again.
+    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(1), Some(4)));
 
     // A ticked item cannot be fixed again until it is reopened.
     let (s, _) = call(
@@ -788,8 +791,11 @@ async fn fixing_to_dos_starts_a_linked_goal_and_closing_it_ticks_them() {
         json!({}),
     )
     .await;
-    let row = goal_row(&plan(&r, app).await, audit);
+    let p = plan(&r, app).await;
+    let row = goal_row(&p, audit);
     assert_eq!(row["found"][2]["state"], "open");
+    // Stopped: the to-do is open and counted again; the stopped goal is not.
+    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(1), Some(4)));
     let again = ok(
         &r,
         "POST",
@@ -799,8 +805,11 @@ async fn fixing_to_dos_starts_a_linked_goal_and_closing_it_ticks_them() {
     )
     .await;
     assert_ne!(again["id"], g["id"]);
-    let row = goal_row(&plan(&r, app).await, audit);
+    let p = plan(&r, app).await;
+    let row = goal_row(&p, audit);
     assert_eq!(row["found"][2]["goal"]["id"], again["id"]);
+    // Handed off again: the new goal row stands in for the to-do.
+    assert_eq!((p["done"].as_i64(), p["left"].as_i64()), (Some(1), Some(4)));
 }
 
 #[tokio::test]

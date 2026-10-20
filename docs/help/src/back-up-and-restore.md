@@ -70,6 +70,6 @@ To keep the data in a different folder, set `DECURION_DATA` to that folder's ful
 
 ## If something goes wrong
 
-- **The board is empty after a restore.** Decurion may be reading a different folder. Check whether `DECURION_DATA` is set.
+- **Home is empty after a restore.** Decurion may be reading a different folder. Check whether `DECURION_DATA` is set.
 - **Your browser says "Not signed in."** Close Decurion and open it again, then click **Sign in** on the page that opens.
 - **Website sign-ins don't work after a move to a new PC.** The key that unlocks them stayed on the old PC. Sign in to each website again.

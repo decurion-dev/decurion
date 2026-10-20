@@ -155,6 +155,13 @@ impl Store {
     /// its runner notices and hands it over with a saved copy; anything else
     /// is simply picked up by the other computer next time it runs.
     pub async fn set_place(&self, id: i64, place: Place, actor: &str) -> Result<Thread> {
+        // Bring up to date runs get the base branch in their starting copy
+        // from this PC's hub; they stay here.
+        if place == Place::Cloud && self.merge_from(id).await?.is_some() {
+            return Err(StoreError::Refused(
+                "Bringing a pull request up to date runs on this PC only, so it stays here.".into(),
+            ));
+        }
         if place == Place::Cloud && !self.has_cloud_worker().await? {
             return Err(StoreError::Refused(NO_CLOUD_WORKER.into()));
         }

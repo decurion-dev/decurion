@@ -8,7 +8,7 @@ If your code is on GitHub and not yet on your PC, download it first. You can use
 
 ## Add the app
 
-1. Open the board at <http://decurion.localhost:7420>.
+1. Open Decurion at <http://decurion.localhost:7420>.
 2. Click the **+** (**Add an app**) next to **Apps** in the list on the left. Or click **Settings**, then **Apps**. The **Add an app** form is under the list of apps.
 3. In **Name**, type a short name, such as `portal`. Use only letters, numbers, `-` or `_`. Spaces are not allowed.
 4. In **Repo path**, type the full path to the app's folder, such as `C:\Users\you\code\portal`. On a Mac or Linux, the path starts with `/`.
@@ -37,7 +37,13 @@ Tap **Apps** at the top of the page to go back to the list.
 
 - Each piece of work gets a fresh copy of the folder. Your own folder is never changed by an agent.
 - The copy starts from the latest saved change (commit) on the branch your folder is on now. Changes that you have not committed are not included.
-- You cannot remove an app from Decurion yet.
+
+## Remove an app
+
+Open **Settings**, **Apps**, tap the app, open its **Name and folder** tab and tap **Remove app**. Decurion asks once, then hides the app from the board, the lists and the menus. Your folder on this PC and your GitHub copy are not touched, and the app's past work and what it cost stay saved.
+
+- An app with work still going cannot be removed. Finish or stop that work first, then try again.
+- You can add the same name and folder again later. It starts as a new app.
 
 ## If something goes wrong
 

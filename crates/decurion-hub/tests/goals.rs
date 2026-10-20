@@ -232,6 +232,45 @@ async fn a_goal_becomes_reviewed_work() {
     let v = view(&r, goal).await;
     assert_eq!(v["goal"]["state"], "plan_ready");
     assert_eq!(v["drawing"], true);
+    // One road for the goal, the same on its page and in the goals list.
+    let journey = &v["journey"];
+    assert_eq!(journey["label"], "Needs you · approve the plan");
+    assert_eq!(journey["you"], true);
+    assert_eq!(journey["action"]["kind"], "approve");
+    assert_eq!(
+        journey["next"],
+        "Approve the plan to start its one piece. It is built, then checked by a second agent, and if it passes it goes to GitHub by itself."
+    );
+    let stages: Vec<(&str, &str)> = journey["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .map(|s| {
+            (
+                s["label"].as_str().unwrap_or(""),
+                s["mark"].as_str().unwrap_or(""),
+            )
+        })
+        .collect();
+    assert_eq!(
+        stages,
+        [
+            ("Ask", "done"),
+            ("Plan", "you"),
+            ("Build", "todo"),
+            ("Check", "todo"),
+            ("Merge", "todo")
+        ]
+    );
+    let list = ok(&r, "GET", "/api/goals", OWNER, json!({})).await;
+    let item = list
+        .as_array()
+        .expect("goals")
+        .iter()
+        .find(|g| g["id"] == goal)
+        .expect("listed");
+    assert_eq!(item["state"], "plan_ready");
+    assert_eq!(&item["journey"], journey);
     let plan_id = last_message(&v)["id"].as_i64().expect("plan id");
     let notes = ok(
         &r,
@@ -378,6 +417,14 @@ async fn a_goal_becomes_reviewed_work() {
     .await;
     let thread = work["thread"]["id"].as_i64().expect("thread");
     assert_eq!(work["thread"]["title"], "Reset link");
+    let journey = &view(&r, goal).await["journey"];
+    assert_eq!(journey["label"], "Working");
+    assert_eq!(journey["you"], false);
+    assert_eq!(journey["steps"][2]["mark"], "now");
+    assert_eq!(
+        journey["next"],
+        "1 piece is being built. Nothing needs you right now."
+    );
     let task = work["thread"]["prompt"].as_str().expect("prompt");
     // Exactly the approved brief: app notes the owner never saw stay out.
     assert!(

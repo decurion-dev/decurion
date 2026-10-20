@@ -2,8 +2,8 @@
 // with a light for every account (and "Sign in on this PC" for Claude), apps
 // (a short list, then one page per app with its rules, plan and money,
 // websites, files, name and folder), computers, accounts and caps, test keys,
-// the GitHub token, website sign-ins and paired phones, plus the usage
-// summary the board shows in its sidebar.
+// the GitHub token, website sign-ins and paired phones, a Help link out to
+// the help pages, plus the usage summary the board shows in its sidebar.
 //
 // What must stay true:
 // - Everything is built with D.el, so names, paths and hub text go in as
@@ -215,6 +215,8 @@
     pairLabel();
     parts.qr = el("div", { className: "qr", id: "qr", hidden: true });
     parts.devices = el("ul", { className: "rows", id: "devices" }, loading());
+    // Which Decurion this PC runs
+    parts.version = el("div", { id: "decurion-version" }, loading("p"));
 
     const phones = el("section", { className: `scard live${phone() ? " wide" : ""}`, id: "set-phones", "aria-labelledby": "h-phones" },
       el("header", {}, el("span", { className: "ic" }, icon("phone", "l")), el("div", {}, el("h2", { id: "h-phones" }, "Phones"),
@@ -255,6 +257,9 @@
       addons: window.DAddons?.card({ onSignedOut: signedOut }) ?? null,
       phones,
       voice: voiceCard(),
+      decurion: card("decurion", "pc", "Decurion",
+        "Which Decurion your PC runs, and the changes merged on GitHub that it isn't running yet. Decurion never updates itself: you choose when.",
+        parts.version),
     };
     return tabs(cards);
   }
@@ -277,6 +282,7 @@
     { id: "addons", icon: "tool", name: "Add-ons", about: "Extra tools for your agents" },
     { id: "phones", icon: "phone", name: "Phones", about: "Pair a phone, see paired ones" },
     { id: "voice", icon: "mic", name: "Voice", about: "Talk and hear replies on this device" },
+    { id: "decurion", icon: "pc", name: "Decurion", about: "Which Decurion your PC runs" },
   ];
   // Older links used other names for some tabs.
   const OLD_NAMES = { spending: "accounts" };
@@ -304,8 +310,15 @@
       parts.links[t.id] = a;
       return el("li", {}, a);
     });
+    // Help is the last row: a link out to the help pages in a new browser
+    // tab, never a settings page of its own, and never the open tab. It is
+    // here because the phone has no Help tab of its own.
+    const help = el("li", {}, el("a", { className: "set-tab set-help", href: D.HELP_URL, target: "_blank", rel: "noopener noreferrer", dataset: { key: "tab-help" } },
+      el("span", { className: "ic" }, icon("help")),
+      el("span", { className: "nm" }, el("b", {}, "Help"), el("span", { className: "note" }, "How Decurion works, in a new tab")),
+      icon("open")));
     parts.index = el("div", { className: "set-index" }, phone() ? opts.top : null,
-      el("nav", { "aria-label": "Settings" }, el("ul", { className: "set-tabs" }, ...links)));
+      el("nav", { "aria-label": "Settings" }, el("ul", { className: "set-tabs" }, ...links, help)));
     // The phone's way back to the list. Coming from the list, it steps back
     // in history, so the back button and this link agree.
     // Inside an app's page it leads back to the list of apps instead.
@@ -577,6 +590,33 @@
     return form;
   }
 
+  // "Remove app": hides the app and keeps its history. The hub refuses while
+  // work is still going, and its words are shown as they come.
+  function removeBlock(a) {
+    const b = el("button", { type: "button", className: "btn quiet danger-text", dataset: { key: `app-remove-${a.id}` } }, icon("trash"), "Remove app");
+    b.onclick = async () => {
+      if (D.offline) { D.toast("Your PC isn't answering. Try again when it's back.", "alert"); return; }
+      const ok = await D.confirm([`Remove ${a.name} from Decurion?`,
+        "Your folder on this PC and your GitHub copy stay exactly as they are. Its past work stays saved.", "Remove app", "Keep it"]);
+      if (!ok) return;
+      b.disabled = true;
+      try {
+        await D.send(`/apps/${a.id}/remove`, {});
+        D.toast(`Removed ${a.name}. You can add it again any time.`);
+        location.hash = "#settings/apps";
+        await opts.refresh();
+      } catch (e) {
+        if (e.signedOut) { signedOut(); return; }
+        D.toast(`Couldn't remove ${a.name}. ${e.message}`, "alert");
+        b.disabled = false;
+      }
+    };
+    return el("div", { className: "remove-app" },
+      el("h3", {}, "Remove app"),
+      el("p", { className: "hint" }, "Hides this app from Decurion. Your folder on this PC and your GitHub copy are not touched, and its past work stays saved. You can add the same name and folder again later. It can't be removed while it has work going."),
+      b);
+  }
+
   // The hub answers a change with the whole app: show it straight away,
   // before the next load.
   function keepSaved(a, saved) {
@@ -630,7 +670,7 @@
   // nothing more. Full control adds a Merge button on its pull requests and
   // a Deploy button after a merge, each one tap at a time. The hub checks
   // every change again; Deploy needs saved steps it accepts.
-  const RULES_START = { merge: false, deploy: false, deploy_steps: "", deploy_site: null, send_checked: true, patient_data: true };
+  const RULES_START = { merge: false, deploy: false, deploy_steps: "", deploy_site: null, send_checked: true, patient_data: true, update_conflicts: false };
   const rulesOf = (a) => ({ ...RULES_START, ...(a.rules ?? {}) });
   const modeOf = (r) => (r.merge && r.deploy ? "full" : !r.merge && !r.deploy ? "pr" : "mix");
   const MODE = { pr: ["branch", "PR only"], full: ["done", "Full control"], mix: ["settings", "Your own mix"] };
@@ -795,6 +835,11 @@
       () => setRules(a, { send_checked: !r.send_checked }, () => (r.send_checked
         ? `Checked pieces of ${a.name}'s goals wait for your Accept now.`
         : `Checked pieces of ${a.name}'s goals go to GitHub by themselves now.`)));
+    const conflicts = ruleSwitch(a, "conflicts", "Fix conflicts with main by itself",
+      "When one of its pull requests conflicts with main, Decurion starts Bring up to date by itself, and the result still waits for your Accept.", r.update_conflicts, busy,
+      () => setRules(a, { update_conflicts: !r.update_conflicts }, () => (r.update_conflicts
+        ? `${a.name}'s conflicts with main wait for your Bring up to date tap now.`
+        : `Decurion fixes ${a.name}'s conflicts with main by itself now. You still accept each fix.`)));
     const data = ruleSwitch(a, "data", "Its live version holds patient data",
       "Agents are told to use made-up data only and never real records. Decurion never sees patient data either way.", r.patient_data, busy,
       () => setRules(a, { patient_data: !r.patient_data }, () => (r.patient_data
@@ -802,7 +847,7 @@
         : `${a.name}'s agents are told to use made-up data only.`)));
 
     return tabCard("What Decurion may do for this app. Agents can never change these.",
-      top, merge, deploy, steps, sent, data, reviewerField(a), alwaysOn());
+      top, merge, deploy, steps, sent, conflicts, data, reviewerField(a), alwaysOn());
   }
 
   // Who reviews the app's pull requests: asked to review each one.
@@ -1019,7 +1064,7 @@
       saving.has(`profile-${id}`)], () => moneyCard(a, sp));
     draw("websites", [a.name, a.sites, siteErr[id], siteBusy[id]], () => websitesCard(a));
     draw("files", [!!window.DFiles], () => filesCard(a));
-    draw("name", [a.name, a.repo_path, !!editing[id], editErr[id], editBusy[id]], () => tabCard(null, editForm(a)));
+    draw("name", [a.name, a.repo_path, !!editing[id], editErr[id], editBusy[id]], () => tabCard(null, editForm(a), removeBlock(a)));
   }
 
   // ---------- Drawing from the page's data ----------
@@ -1639,6 +1684,43 @@
     parts.github.replaceChildren(rows, form);
   }
 
+  // ---------- Which Decurion this PC runs ----------
+  // GET /api/decurion/version (version.rs): its version, the hub's words on
+  // whether it is the newest, the changes waiting and how to update, drawn
+  // as given. The hub keeps its answer for a few minutes, so opening this
+  // tab never waits on GitHub for long. The tab says "Update waiting" in
+  // amber while this PC is behind.
+  const VERSION_LOOK = { current: ["done", "done", "Newest"], behind: ["needs_you", "alert", "Update waiting"], unknown: ["queued", "queued", "Not known"] };
+  async function loadVersion() {
+    let v;
+    try { v = await D.api("/decurion/version"); } catch (e) {
+      if (e.signedOut) { signedOut(); return; }
+      if (changed("set-version", ["err", e.message])) {
+        parts.version.replaceChildren(el("p", { className: "field-error" }, `Couldn't check which Decurion runs here. ${e.message}`));
+      }
+      return;
+    }
+    if (!changed("set-version", [v, Math.floor(Date.now() / 60000)])) return;
+    const behind = v?.state === "behind";
+    const [cls, ic, word] = VERSION_LOOK[v?.state] ?? VERSION_LOOK.unknown;
+    tabNote("decurion", behind ? "Update waiting" : null, behind ? "warn" : null);
+    const how = Array.isArray(v?.how) ? v.how : [];
+    fill(parts.version,
+      el("ul", { className: "rows" }, el("li", {},
+        el("span", { className: "ic" }, icon("pc")),
+        el("div", { className: "who" }, el("b", {}, "This PC runs"),
+          el("span", { className: "hint" }, v?.short ? `Version ${v.short}` : "A version Decurion can't name",
+            v?.checked_at ? ` · checked ${D.ago(v.checked_at)}` : "")),
+        el("span", { className: `pill ${cls}` }, icon(ic), word))),
+      v?.words ? el("p", { className: "ver-words" }, v.words) : null,
+      v?.changes?.length ? el("h3", { className: "sub-h" }, "Waiting changes") : null,
+      D.versionChanges(v?.changes),
+      how.length ? el("h3", { className: "sub-h" }, "How to update") : null,
+      how.length ? el("ul", { className: "ver-how-list" }, ...how.map((l) => el("li", {}, l))) : null,
+      how.length || behind ? el("p", { className: "hint" },
+        el("a", { href: D.UPDATE_HELP(), target: "_blank", rel: "noopener noreferrer" }, "How to update Decurion")) : null);
+  }
+
   // ---------- Website sign-ins ----------
   // Drawn like test keys: when Settings opens and after each change, so a
   // half-typed address is never wiped.
@@ -1769,7 +1851,7 @@
       const was = shown;
       shown = true;
       const id = select(part, was);
-      if (was) return id;
+      if (was) { if (id === "decurion") loadVersion(); return id; }
       render();
       loadDevices();
       loadConnection();
@@ -1778,13 +1860,15 @@
       loadKeys();
       loadGitHub();
       loadSignIns();
+      loadVersion();
       window.DAddons?.load();
       return id;
     },
     hide() { shown = false; },
     get shown() { return shown; },
     // On the page's timer: phones paired from another screen show up.
-    tick() { if (shown) { loadDevices(); loadLights(); } },
+    // The open Decurion tab asks again too: the hub answers from its cache.
+    tick() { if (shown) { loadDevices(); loadLights(); if (current === "decurion") loadVersion(); } },
     render,
     usage,
     setFirst,

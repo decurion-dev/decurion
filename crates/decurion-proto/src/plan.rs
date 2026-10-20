@@ -1,6 +1,6 @@
-//! The master plan, the page library and questions inside pages.
+//! The Roadmap, the page library and questions inside pages.
 //!
-//! Each app has one master plan: an ordered checklist of its goals and the
+//! Each app has one Roadmap: an ordered checklist of its goals and the
 //! to-do items found along the way, so the owner always sees what is done and
 //! what is left. Goal rows are never edited by hand: their title, steps and
 //! state are read from the goal each time, so the plan cannot fall behind the
@@ -117,7 +117,7 @@ pub struct LibraryPage {
     pub created_at: String,
 }
 
-/// One row of the master plan.
+/// One row of the Roadmap.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlanItem {
     pub id: i64,
@@ -131,9 +131,14 @@ pub struct PlanItem {
     /// A goal row: its goal. A to-do: the goal started to do it, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<GoalRef>,
-    /// A goal row's steps, in order.
+    /// A goal row's steps, in order: one chip per piece, so each links to
+    /// its piece.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<PlanStep>,
+    /// A goal row's journey: its state words (`label`) are the ones every
+    /// other screen shows for the goal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journey: Option<crate::goal::Journey>,
     /// A goal row's to-do items: what it found, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub found: Vec<PlanItem>,
@@ -148,7 +153,7 @@ pub struct PlanItem {
     pub deleted_at: Option<String>,
 }
 
-/// An app's master plan, top-level rows in the owner's order.
+/// An app's Roadmap, top-level rows in the owner's order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlanView {
     pub app_id: i64,

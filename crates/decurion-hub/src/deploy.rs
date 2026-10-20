@@ -504,7 +504,7 @@ struct Job {
 impl Store {
     /// App `app_id`'s deploy rule, if deploys are on and its steps read.
     pub(crate) async fn deploy_rule(&self, app_id: i64) -> Result<Option<Rule>> {
-        let row = sqlx::query("SELECT repo_path, can_deploy, deploy_steps FROM apps WHERE id = ?")
+        let row = sqlx::query("SELECT repo_path, can_deploy, deploy_steps FROM apps WHERE id = ? AND removed_at IS NULL")
             .bind(app_id)
             .fetch_optional(self.pool())
             .await?
@@ -514,11 +514,11 @@ impl Store {
 
     /// Apps whose rules allow deploys.
     async fn deploying_apps(&self) -> Result<Vec<i64>> {
-        Ok(
-            sqlx::query_scalar("SELECT id FROM apps WHERE can_deploy = 1 ORDER BY id")
-                .fetch_all(self.pool())
-                .await?,
+        Ok(sqlx::query_scalar(
+            "SELECT id FROM apps WHERE can_deploy = 1 AND removed_at IS NULL ORDER BY id",
         )
+        .fetch_all(self.pool())
+        .await?)
     }
 
     /// The commit of app `app_id`'s last release from Decurion.

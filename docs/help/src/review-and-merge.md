@@ -6,7 +6,7 @@ Work moves to **In review** only when the agent has finished and saved its chang
 
 ## Review the work
 
-1. On the board, click the card under **In review**. Or open it from the inbox on your phone.
+1. On **Home**, tap the work under **Needs you**, on your PC or your phone. A piece of a goal also shows on Home's **Board**, under **Waiting on you**.
 2. Read the **Overview**. For a piece of a goal, it starts with your project lead's plain report once every piece is checked; the builder's own notes (commits, commands, file names) are behind **Show details**. **Details** shows what you asked, in your own words, and the brief your project lead wrote for the builder. **Activity** shows every step. A very long summary is kept in full, or cut at the end of a line with a note that the end is missing, never in the middle of a word.
 3. Choose one:
    - **Accept** if you are happy with it. The work moves to **Done**, and Decurion sends it to GitHub for you. See the next part. Typing "yes", "push" or "do it" in the message box does the same, as long as the agent did not ask you a question.
@@ -26,11 +26,11 @@ Decurion only ever adds a new branch. It never changes your app's main branch, n
 1. Wait a moment. The card says **Sending to GitHub…** while it works.
 2. When it is done, you get a notice on your phone, and the card shows a button:
    - **Open pull request** if Decurion opened the pull request for you. Look it over on GitHub, wait for the checks to pass, then click **Merge pull request** there.
-   - **Open pull request on GitHub** if it did not. Tap it, and GitHub opens a page with the pull request filled in. Click **Create pull request**, then merge it there when you are ready. With a saved GitHub token, Decurion finds that pull request by itself within a few minutes and keeps watch on it like one it opened, so the goal still moves on to **Merged** and closes by itself.
+   - **Open the pull request** if it did not. The card sits under **Needs you**, says why no pull request was opened, and the tap asks Decurion to open it now. If GitHub still won't let it, **Open on GitHub** opens a page with the pull request filled in: click **Create pull request** there. With a saved GitHub token, Decurion finds that pull request by itself within a few minutes and keeps watch on it like one it opened, so the goal still moves on to **Merged** and closes by itself.
 
 The pull request says what was done, what the checker ran and found (each finding marked checked or guessed), and any protected parts that were held for you. It also says that Decurion made it.
 
-A **research** piece changes no code, so it has no Accept. Tap **Fix what it found** to open the app's master plan, where its findings wait as to-dos: tap the **trash can** next to any you don't want (**Delete**), then **Fix all that are left** (or **Fix this** when only one is left). **Mark done** closes it. Nothing goes to GitHub. See [Research, Ask why, and the checker's proof](research-and-ask-why.md).
+A **research** piece changes no code, so it has no Accept. Tap **Fix what it found** to open the app's Roadmap, where its findings wait as to-dos: tap the **trash can** next to any you don't want (**Delete**), then **Fix all that are left** (or **Fix this** when only one is left). **Mark done** closes it. Nothing goes to GitHub. See [Research, Ask why, and the checker's proof](research-and-ask-why.md).
 
 ## Someone else reviews: Decurion keeps watch
 
@@ -38,16 +38,36 @@ If someone reviews an app's work for you, put their GitHub name in the app's set
 
 After a pull request is open, Decurion looks at it about every five minutes until it is merged or closed. It needs a saved GitHub token for this (see below); without one it does not watch.
 
-- **When it is merged or closed,** you get a notice, and the app's line on the board says so. Decurion stops looking at it then.
-- **When someone leaves comments,** you get a notice and an inbox card like "param left 3 comments · Answer the comments". Your own comments do not count.
+- **When it is merged or closed,** you get a notice, and the app's line on Home says so. Decurion stops looking at it then.
+- **When someone leaves comments,** you get a notice and a card under **Needs you** like "param left 3 comments · Answer the comments". Your own comments do not count.
 - **Tap Answer the comments** to start new work that answers those comments. The agent gets the comments as notes from other people to weigh, never as orders. It starts from the work already in the pull request.
 - **Review the fix like any other work.** When you accept it, Decurion adds it to the same pull request, on the same branch, and asks the reviewer to look again. It only ever adds on top of what is there: it never rewrites the branch, never opens a second pull request and never merges.
 
 Only one fix per pull request runs at a time. New comments that arrive while it runs wait for the next **Answer the comments**.
 
+## Bring a pull request up to date with main
+
+While you wait for a review, other work may be merged into main. Then the pull request can fall behind main, or conflict with it, and GitHub will not merge it until that is fixed. Decurion reads this from GitHub when it looks at the pull request. The app's line on Home, on your PC and your phone, says **Conflicts with main** or **Behind main** and moves to the top of **Needs you**, and the goal page and the work's own panel say **Needs you · bring it up to date**, with **Bring up to date** as their button. You never need GitHub to fix it.
+
+- **Tap Bring up to date** to start new work on that pull request. Decurion gets the newest main from GitHub, and the agent merges it into the pull request's work, fixes any conflicts (keeping what main does now and adding this work on top), and runs the app's own checks and fixes what fails. If Decurion cannot reach GitHub for the newest main, nothing starts and it says so.
+- **Follow it from the goal.** While the agent works, the goal says **Bringing it up to date**. When it is ready, it says **Needs you · look over the update**, and its button opens that work.
+- **Review it like any other work.** When you accept it, Decurion adds it to the same pull request, on the same branch. It only ever adds on top of what is there: it never rewrites the branch, never changes main and never merges.
+- **Protected parts.** If the result changes a part of the app you protect, compared with main, the work says **Held for you** and names the files. Look it over before you tap Accept.
+
+The button shows on any open pull request Decurion opened, whenever no other fix or update is running on it, so you can bring it up to date whenever you like. If it already has the newest main, Decurion says **Already up to date** and starts nothing. This work always runs on your PC.
+
+### Fix conflicts with main by itself
+
+You can have Decurion start **Bring up to date** for you when a pull request conflicts with main. Turn on **Fix conflicts with main by itself** in the app's rules (Settings, Apps, then the app). It is off for every app until you turn it on.
+
+- **Only for conflicts.** It starts when GitHub says the pull request conflicts with main. A pull request that is only behind main waits for your tap.
+- **Once for each version it sends.** Decurion tries once for each new version of the pull request it sends to GitHub. If that try fails or you reject it, Decurion waits for you: it does not try again by itself, even when main changes, until it sends a new version. A **Bring up to date** you tapped yourself on that version counts as the try. You can still tap **Bring up to date** yourself at any time.
+- **You still accept it.** While the work runs, Home says "Decurion is fixing the conflicts with main by itself". When it is ready, it waits for your review like any other work and says it was started by Decurion. Nothing goes to GitHub until you tap **Accept**.
+- **Same rules as your tap.** It starts only when no other fix or update is running on the pull request, and only when the pull request does not already have the newest main. It uses the same plan and spending limits as work you start.
+
 ## Merge from Decurion
 
-For an app you set to **Full control** (Settings, Apps, then the app), a pull request Decurion opened shows a **Merge** button on the board's Today row and on your phone. One tap merges it on GitHub. Nothing merges by itself, and no agent can tap it.
+For an app you set to **Full control** (Settings, Apps, then the app), a pull request Decurion opened shows a **Merge** button on the app's line on Home and on the pull request's card under **Needs you**, on your PC and your phone. One tap merges it on GitHub. Nothing merges by itself, and no agent can tap it.
 
 Decurion merges only when GitHub says the pull request is ready: its checks passed, any review it needs is in, and nothing conflicts. Otherwise it tells you what it waits for, and you can still merge on GitHub. It merges exactly the version Decurion sent: if someone else added to the pull request since, merge it on GitHub instead.
 
@@ -63,7 +83,7 @@ This is optional. Without it, you make each pull request yourself with one tap.
 2. Under **Repository access**, choose your apps' repos.
 3. Under **Permissions**, set **Pull requests** to **Read and write**. It needs nothing else. The same token lets Decurion ask your reviewer to look and watch for their comments.
 4. Click **Generate token** and copy it.
-5. On the board, open **Settings**, then **GitHub**. Paste it into **GitHub token** and click **Save token**.
+5. In Decurion on your PC, open **Settings**, then **GitHub**. Paste it into **GitHub token** and click **Save token**.
 
 Decurion keeps the token in this PC's password store and shows only its last four characters. It is never given to an agent. To stop using it, click **Remove** next to it.
 
@@ -77,8 +97,8 @@ Your work is still accepted, and nothing is lost. The card says **Not sent to Gi
 - **A branch with that name is already on GitHub with other changes.** Decurion did not overwrite it. Delete or rename that branch on GitHub, then tap **Try again**.
 - **Could not reach GitHub.** Check this PC's internet connection, then tap **Try again**.
 - **This app's folder is not linked to GitHub.** It has no remote named `origin`. Get the work by hand instead, as shown below.
-- **The pull request was not opened, but the work was sent.** The card still shows **Open pull request on GitHub**, and the goal page and the piece's panel say why beside it. Tap it to make the pull request yourself. If it says the token was not accepted, save a new one in **Settings**, **GitHub**. If it says your token can't open pull requests on this app, **Settings**, **Sign-ins** shows GitHub amber with the steps to fix it. See [Check your sign-ins](check-your-sign-ins.md).
-- **"Can't automatically merge."** GitHub shows this when the work changes the same lines as something merged into the main branch since the work started. You can still open the pull request; it just can't be merged with one click yet. Once it is open, GitHub's **Resolve conflicts** button lets you pick which lines to keep, or ask someone who knows the code. When a pull request Decurion opened clashes like this, the goal page and the piece's panel say so.
+- **The pull request was not opened, but the work was sent.** The card moves to **Needs you**, its step bar stops at **Pull request**, and it says why under it. Fix what it says, then tap **Open the pull request**, or tap **Open on GitHub** to make it yourself. If it says the token was not accepted, save a new one in **Settings**, **GitHub**. If it says your token can't open pull requests on this app, **Settings**, **Sign-ins** shows GitHub amber with the steps to fix it. See [Check your sign-ins](check-your-sign-ins.md).
+- **"Can't automatically merge."** GitHub shows this when the work changes the same lines as something merged into the main branch since the work started. You can still open the pull request; it just can't be merged with one click yet. Once it is open, tap **Bring up to date** in Decurion: an agent merges the newest main in and fixes the clash on the same pull request. See [Bring a pull request up to date with main](#bring-a-pull-request-up-to-date-with-main).
 
 ## Get the changes by hand
 

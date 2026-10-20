@@ -173,10 +173,11 @@ impl Store {
         let stale = close_stale(&mut tx).await?;
         let (app_id, thread_id) = match target {
             PreviewTarget::App(app) => {
-                let found: Option<i64> = sqlx::query_scalar("SELECT id FROM apps WHERE id = ?")
-                    .bind(app)
-                    .fetch_optional(&mut *tx)
-                    .await?;
+                let found: Option<i64> =
+                    sqlx::query_scalar("SELECT id FROM apps WHERE id = ? AND removed_at IS NULL")
+                        .bind(app)
+                        .fetch_optional(&mut *tx)
+                        .await?;
                 (found.ok_or(StoreError::NotFound)?, None)
             }
             PreviewTarget::Thread(thread) => {
@@ -271,11 +272,13 @@ impl Store {
                     Err(e) => return Err(e),
                 },
             };
-            let app = sqlx::query(&format!("SELECT {APP_COLS} FROM apps WHERE id = ?"))
-                .bind(app_id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .ok_or(StoreError::NotFound)?;
+            let app = sqlx::query(&format!(
+                "SELECT {APP_COLS} FROM apps WHERE id = ? AND removed_at IS NULL"
+            ))
+            .bind(app_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(StoreError::NotFound)?;
             let app = app_from(&app)?;
             let test_keys: Vec<String> =
                 sqlx::query_scalar("SELECT name FROM test_keys WHERE app_id = ? ORDER BY name")
