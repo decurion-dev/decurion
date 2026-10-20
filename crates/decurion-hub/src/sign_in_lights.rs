@@ -514,7 +514,7 @@ fn pr_trouble_row(mut r: Light, trouble: &[crate::github::PrTrouble], saved: boo
     r.steps = vec![
         "Tap Make a classic token here. GitHub opens a new token named Decurion with repo already ticked. Sign in if it asks.".to_owned(),
         "Pick how long it lasts, tap Generate token at the bottom, and copy the token.".to_owned(),
-        format!("In Decurion, open Settings, GitHub, paste it in and tap Save token. It replaces the old one and reaches every app, even one whose repo belongs to an organization."),
+        "In Decurion, open Settings, GitHub, paste it in and tap Save token. It replaces the old one and reaches every app, even one whose repo belongs to an organization.".to_owned(),
         "Done. The next piece of work opens its pull request by itself. For work already sent, tap Open the pull request on it.".to_owned(),
     ];
     r.link = Some(Link {
