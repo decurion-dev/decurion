@@ -148,6 +148,9 @@ pub struct PlanItem {
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done_at: Option<String>,
+    /// Set only on the rows of [`PlanView::deleted`]: when the owner deleted it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
 }
 
 /// An app's Roadmap, top-level rows in the owner's order.
@@ -157,9 +160,14 @@ pub struct PlanView {
     pub app_name: String,
     pub items: Vec<PlanItem>,
     /// Rows done and rows left, counting goals and to-dos, findings included,
-    /// but not dropped ones.
+    /// but not dropped or deleted ones.
     pub done: usize,
     pub left: usize,
+    /// Rows the owner deleted, newest first. They are not in `items` and do
+    /// not count in `done` or `left`. A to-do deleted together with its goal
+    /// is not listed; it comes back with the goal.
+    #[serde(default)]
+    pub deleted: Vec<PlanItem>,
 }
 
 /// A to-do the owner adds. With `parent_id` it goes under that goal's row;
