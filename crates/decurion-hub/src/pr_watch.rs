@@ -843,8 +843,8 @@ impl Store {
         Ok(done)
     }
 
-    /// What Bring up to date needs to know about a watched pull request,
-    /// with the plain refusal when it cannot start. A pure read.
+    /// What Bring up to date needs to know about a watched pull request.
+    /// A pure read; [`UpdateTarget::check`] says whether it may start.
     async fn update_target(&self, thread_id: i64) -> Result<UpdateTarget> {
         // read-only
         let row = sqlx::query(&format!(
@@ -857,7 +857,7 @@ impl Store {
         .fetch_optional(self.pool())
         .await?
         .ok_or(StoreError::NotFound)?;
-        let target = UpdateTarget {
+        Ok(UpdateTarget {
             open: row.try_get::<String, _>("state")? == "open",
             head: row.try_get("head")?,
             url: row.try_get("url")?,
@@ -867,29 +867,27 @@ impl Store {
             title: row.try_get("title")?,
             ai: row.try_get("ai")?,
             fixing: row.try_get("fixing")?,
-        };
-        target.check()?;
-        Ok(target)
+        })
     }
 
-    /// Whether a look should start a Bring up to date by itself on this
-    /// pull request: its app's rule is on, it is open, GitHub said the
-    /// commit Decurion last pushed conflicts with its base branch (never
-    /// for behind), and no update was tried on that commit yet. A pure
-    /// read, so a pull request that does not qualify, or was already tried,
-    /// fetches nothing and takes no git lock. A column GitHub has said
-    /// nothing about yet (NULL) counts as no.
-    async fn wants_auto_update(&self, thread_id: i64) -> Result<bool> {
+    /// What a look needs to decide whether to start a Bring up to date by
+    /// itself on this pull request ([`CONFLICTS_ON_HEAD`], [`TRIED_ON_HEAD`]).
+    /// A pure read, so a pull request that does not qualify, or was already
+    /// tried, fetches nothing and takes no git lock.
+    async fn auto_look(&self, thread_id: i64) -> Result<Option<AutoLook>> {
         // read-only
-        let wants: Option<bool> = sqlx::query_scalar(&format!(
-            "SELECT COALESCE(a.update_conflicts AND w.state = 'open' AND w.health = 'dirty'
-                    AND w.health_head = w.head AND NOT {TRIED_ON_HEAD}, 0)
+        let row: Option<(bool, bool, String)> = sqlx::query_as(&format!(
+            "SELECT {CONFLICTS_ON_HEAD}, {TRIED_ON_HEAD}, w.head
              FROM pr_watches w JOIN apps a ON a.id = w.app_id WHERE w.thread_id = ?"
         ))
         .bind(thread_id)
         .fetch_optional(self.pool())
         .await?;
-        Ok(wants.unwrap_or(false))
+        Ok(row.map(|(conflicts, tried, head)| AutoLook {
+            conflicts,
+            tried,
+            head,
+        }))
     }
 
     /// Creates the Bring up to date run, in one write transaction that
@@ -897,17 +895,17 @@ impl Store {
     /// fetched before it opened. The run starts from the last commit
     /// Decurion pushed to the pull request and stays on the PC.
     ///
-    /// Started by the watcher, it also checks again that the app's rule is
-    /// on, GitHub says that commit conflicts, and no update was tried on it
-    /// yet ([`TRIED_ON_HEAD`]). The run it creates is that try, in the same
-    /// transaction, so each pushed head is tried once.
+    /// Started by the watcher, it also checks again that the pushed head
+    /// still conflicts under the app's rule ([`CONFLICTS_ON_HEAD`]) and no
+    /// update was tried on it yet ([`TRIED_ON_HEAD`]). The run it creates is
+    /// that try, in the same transaction, so each pushed head is tried once.
     async fn create_update(
         &self,
         thread_id: i64,
         seen: &UpdateTarget,
         merge_from: &str,
         by: Starter<'_>,
-    ) -> Result<(i64, bool)> {
+    ) -> std::result::Result<(i64, bool), NotStarted> {
         let receipt = match by {
             Starter::Owner(r) => r,
             Starter::Watcher => None,
@@ -919,7 +917,7 @@ impl Store {
         }
         let row = sqlx::query(&format!(
             "SELECT w.state, w.head, w.base_ref, {FIX_UNDER_WAY} AS fixing,
-                    a.update_conflicts, w.health, w.health_head, {TRIED_ON_HEAD} AS tried
+                    {CONFLICTS_ON_HEAD} AS conflicts, {TRIED_ON_HEAD} AS tried
              FROM pr_watches w JOIN apps a ON a.id = w.app_id WHERE w.thread_id = ?"
         ))
         .bind(thread_id)
@@ -935,25 +933,18 @@ impl Store {
         };
         now.check()?;
         if now.head != seen.head || now.base_ref != seen.base_ref {
-            return Err(StoreError::Refused(
+            return Err(NotStarted::Refused(
                 "This pull request changed while Decurion was getting ready. Tap Bring up to date again."
                     .into(),
             ));
         }
         let auto = matches!(by, Starter::Watcher);
         if auto {
-            let dirty = row.try_get::<bool, _>("update_conflicts")?
-                && row.try_get::<Option<String>, _>("health")?.as_deref() == Some("dirty")
-                && row.try_get::<Option<String>, _>("health_head")?.as_deref()
-                    == Some(seen.head.as_str());
-            if !dirty {
-                return Err(StoreError::Refused(
-                    "The rule is off now, or GitHub no longer says this pull request conflicts."
-                        .into(),
-                ));
+            if !row.try_get::<bool, _>("conflicts")? {
+                return Err(NotStarted::NotConflicting);
             }
             if row.try_get::<bool, _>("tried")? {
-                return Err(StoreError::Refused(ALREADY_TRIED.into()));
+                return Err(NotStarted::Tried);
             }
         }
         let base = seen.base_ref.as_deref().unwrap_or("main");
@@ -988,8 +979,64 @@ enum Starter<'a> {
     Watcher,
 }
 
-/// Why the watcher did not start a run: one was tried on this head.
-const ALREADY_TRIED: &str = "An update was already tried on this version of the pull request.";
+/// Why a Bring up to date did not start.
+#[derive(Debug)]
+enum NotStarted {
+    /// One of the plain refusals both starts share, in the words the
+    /// owner's tap shows: merged or closed, work under way, not read from
+    /// GitHub yet, or already up to date.
+    Refused(String),
+    /// Watcher only: the app's rule is off, or GitHub no longer says the
+    /// pushed head conflicts.
+    NotConflicting,
+    /// Watcher only: an update was already tried on this pushed head.
+    Tried,
+    /// Something went wrong: the base branch could not be fetched, or the
+    /// database.
+    Failed(StoreError),
+}
+
+impl From<StoreError> for NotStarted {
+    fn from(e: StoreError) -> Self {
+        Self::Failed(e)
+    }
+}
+
+impl From<sqlx::Error> for NotStarted {
+    fn from(e: sqlx::Error) -> Self {
+        Self::Failed(e.into())
+    }
+}
+
+impl From<NotStarted> for StoreError {
+    fn from(n: NotStarted) -> Self {
+        match n {
+            NotStarted::Refused(words) => StoreError::Refused(words),
+            NotStarted::NotConflicting | NotStarted::Tried => StoreError::Refused(
+                "Decurion did not bring this pull request up to date by itself.".into(),
+            ),
+            NotStarted::Failed(e) => e,
+        }
+    }
+}
+
+/// The app's rule is on, the pull request is open, and GitHub said the
+/// commit Decurion last pushed conflicts with its base branch (never for
+/// behind). The one place this is decided: read before anything is
+/// fetched, and again in the transaction that creates the run. A column
+/// GitHub has said nothing about yet (NULL) counts as no.
+const CONFLICTS_ON_HEAD: &str =
+    "COALESCE(a.update_conflicts AND w.state = 'open' AND w.health = 'dirty'
+              AND w.health_head = w.head, 0)";
+
+/// What [`Store::auto_look`] read.
+#[derive(Debug)]
+struct AutoLook {
+    conflicts: bool,
+    tried: bool,
+    /// The commit Decurion last pushed there.
+    head: String,
+}
 
 /// A watched pull request, as Bring up to date sees it.
 #[derive(Debug, Clone)]
@@ -1007,21 +1054,21 @@ struct UpdateTarget {
 }
 
 impl UpdateTarget {
-    fn check(&self) -> Result<()> {
+    fn check(&self) -> std::result::Result<(), NotStarted> {
         if !self.open {
-            return Err(StoreError::Refused(
+            return Err(NotStarted::Refused(
                 "This pull request was merged or closed, so there is nothing to bring up to date."
                     .into(),
             ));
         }
         if self.fixing {
-            return Err(StoreError::Refused(
+            return Err(NotStarted::Refused(
                 "Work on this pull request is already under way. Wait for it to finish, then try again."
                     .into(),
             ));
         }
         if self.base_ref.is_none() {
-            return Err(StoreError::Refused(
+            return Err(NotStarted::Refused(
                 "Decurion has not read this pull request from GitHub yet. Try again in a few minutes."
                     .into(),
             ));
@@ -1069,6 +1116,11 @@ pub async fn start_update(
     if let Some(id) = store.update_receipt(receipt).await? {
         return Ok((store.thread(id).await?, false));
     }
+    let files = files.ok_or_else(|| {
+        StoreError::Refused(
+            "This hub keeps no saved work, so it cannot bring pull requests up to date.".into(),
+        )
+    })?;
     let (id, fresh) = begin_update(store, files, thread_id, Starter::Owner(receipt)).await?;
     Ok((store.thread(id).await?, fresh))
 }
@@ -1079,16 +1131,12 @@ pub async fn start_update(
 /// request that already holds it is refused, and the run is created.
 async fn begin_update(
     store: &Store,
-    files: Option<&crate::checkpoints::Files>,
+    files: &crate::checkpoints::Files,
     thread_id: i64,
     by: Starter<'_>,
-) -> Result<(i64, bool)> {
+) -> std::result::Result<(i64, bool), NotStarted> {
     let target = store.update_target(thread_id).await?;
-    let files = files.ok_or_else(|| {
-        StoreError::Refused(
-            "This hub keeps no saved work, so it cannot bring pull requests up to date.".into(),
-        )
-    })?;
+    target.check()?;
     let base = target.base_ref.clone().unwrap_or_else(|| "main".into());
     let merge_from =
         crate::upstream::branch_tip(files, target.app_id, &target.repo_path, &base).await?;
@@ -1104,7 +1152,7 @@ async fn begin_update(
     // Already holding that commit, a run could only fail its merge check,
     // whatever GitHub last said.
     if has_it {
-        return Err(StoreError::Refused(format!(
+        return Err(NotStarted::Refused(format!(
             "Already up to date with {base}. Nothing was started."
         )));
     }
@@ -1113,43 +1161,83 @@ async fn begin_update(
         .await
 }
 
+/// What the watcher last logged about each pull request it did not fix by
+/// itself, so one reason on one pushed head is logged once, not on every
+/// look.
+#[derive(Debug, Default)]
+struct Said(std::sync::Mutex<std::collections::HashMap<i64, String>>);
+
+impl Said {
+    /// True the first time `why` is given for pull request `thread` at
+    /// `head`; false while the same reason on the same head repeats.
+    fn first(&self, thread: i64, head: &str, why: &str) -> bool {
+        let key = format!("{head}:{why}");
+        let mut seen = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if seen.get(&thread) == Some(&key) {
+            return false;
+        }
+        seen.insert(thread, key);
+        true
+    }
+}
+
+static SAID: std::sync::OnceLock<Said> = std::sync::OnceLock::new();
+
+fn said() -> &'static Said {
+    SAID.get_or_init(Said::default)
+}
+
 /// After a look: when the app's rule is on and GitHub says the commit
 /// Decurion last pushed conflicts with its base branch, starts a Bring up
 /// to date run by itself, through the same checks as the owner's tap, minus
 /// the receipt. Each pushed head is tried once ([`TRIED_ON_HEAD`]), checked
-/// before anything is fetched. A refusal says nothing to the owner, only a log
-/// line. Starting is all it does: the run's result waits in review for the
-/// owner's Accept, and nothing here sends, pushes or merges.
-pub(crate) async fn auto_update(
-    store: &Store,
-    files: Option<&crate::checkpoints::Files>,
-    thread_id: i64,
-) {
-    match store.wants_auto_update(thread_id).await {
-        Ok(true) => {}
-        Ok(false) => return,
+/// before anything is fetched. A refusal says nothing to the owner, only a
+/// log line, once per reason and pushed head. Starting is all it does: the
+/// run's result waits in review for the owner's Accept, and nothing here
+/// sends, pushes or merges.
+pub(crate) async fn auto_update(store: &Store, files: &crate::checkpoints::Files, thread_id: i64) {
+    let look = match store.auto_look(thread_id).await {
+        Ok(Some(l)) if l.conflicts => l,
+        Ok(_) => return,
         Err(e) => {
             tracing::error!(error = %e, thread = thread_id, "could not read whether to fix conflicts by itself");
             return;
         }
+    };
+    let quiet = |why: &str| {
+        if said().first(thread_id, &look.head, why) {
+            tracing::debug!(
+                thread = thread_id,
+                reason = why,
+                "did not start fixing the conflicts by itself"
+            );
+        }
+    };
+    if look.tried {
+        quiet("an update was already tried on this version");
+        return;
     }
     match begin_update(store, files, thread_id, Starter::Watcher).await {
         Ok((id, _)) => tracing::info!(
             thread = thread_id,
             update = id,
-            "Decurion started fixing the conflicts with main by itself"
+            "Decurion started fixing the conflicts by itself"
         ),
-        Err(StoreError::Refused(why)) if why == ALREADY_TRIED => {
-            tracing::debug!(
-                thread = thread_id,
-                "this conflict was already tried by itself"
-            )
+        Err(NotStarted::Refused(words)) => quiet(&words),
+        Err(NotStarted::NotConflicting) => quiet("it no longer conflicts, or the rule is off"),
+        Err(NotStarted::Tried) => quiet("an update was already tried on this version"),
+        Err(NotStarted::Failed(e)) => {
+            if said().first(thread_id, &look.head, "failed") {
+                tracing::warn!(
+                    thread = thread_id,
+                    error = %e,
+                    "could not start fixing the conflicts by itself"
+                );
+            }
         }
-        Err(e) => tracing::info!(
-            thread = thread_id,
-            reason = %e,
-            "did not start fixing the conflicts with main by itself"
-        ),
     }
 }
 
@@ -1285,8 +1373,8 @@ pub async fn poll(state: &AppState) -> usize {
         if let (Some(p), Some(n)) = (&s.push, notice) {
             p.send(&s.store, &n).await;
         }
-        if l.state == PrState::Open && l.health.health == Some("dirty") {
-            auto_update(&s.store, Some(&s.files), w.thread_id).await;
+        if l.state == PrState::Open {
+            auto_update(&s.store, &s.files, w.thread_id).await;
         }
     }
     looked
@@ -1401,12 +1489,30 @@ mod tests {
         ] {
             sqlx::query(q).execute(store.pool()).await.expect("seed");
         }
-        assert!(!store.wants_auto_update(1).await.expect("read"));
+        let look = |s: &Store| {
+            let s = s.clone();
+            async move { s.auto_look(1).await.expect("read").expect("watched") }
+        };
+        assert!(!look(&store).await.conflicts);
         sqlx::query("UPDATE pr_watches SET health_head = head")
             .execute(store.pool())
             .await
             .expect("said");
-        assert!(store.wants_auto_update(1).await.expect("read"));
+        let l = look(&store).await;
+        assert!(l.conflicts && !l.tried, "{l:?}");
+    }
+
+    #[test]
+    fn a_refusal_is_logged_once_per_pull_request_head_and_reason() {
+        let said = Said::default();
+        let (a, b) = ("a".repeat(40), "b".repeat(40));
+        assert!(said.first(1, &a, "under way"));
+        assert!(!said.first(1, &a, "under way"));
+        assert!(!said.first(1, &a, "under way"));
+        assert!(said.first(2, &a, "under way"), "another pull request");
+        assert!(said.first(1, &a, "failed"), "another reason");
+        assert!(said.first(1, &b, "failed"), "a new pushed head");
+        assert!(!said.first(1, &b, "failed"));
     }
 
     #[test]
