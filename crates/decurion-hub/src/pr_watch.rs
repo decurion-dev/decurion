@@ -877,12 +877,13 @@ impl Store {
     /// commit Decurion last pushed conflicts with its base branch (never
     /// for behind), and no update was tried on that commit yet. A pure
     /// read, so a pull request that does not qualify, or was already tried,
-    /// fetches nothing and takes no git lock.
+    /// fetches nothing and takes no git lock. A column GitHub has said
+    /// nothing about yet (NULL) counts as no.
     async fn wants_auto_update(&self, thread_id: i64) -> Result<bool> {
         // read-only
         let wants: Option<bool> = sqlx::query_scalar(&format!(
-            "SELECT a.update_conflicts AND w.state = 'open' AND w.health = 'dirty'
-                    AND w.health_head = w.head AND NOT {TRIED_ON_HEAD}
+            "SELECT COALESCE(a.update_conflicts AND w.state = 'open' AND w.health = 'dirty'
+                    AND w.health_head = w.head AND NOT {TRIED_ON_HEAD}, 0)
              FROM pr_watches w JOIN apps a ON a.id = w.app_id WHERE w.thread_id = ?"
         ))
         .bind(thread_id)
@@ -1385,6 +1386,28 @@ pub(crate) async fn update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GitHub said it conflicts but not about which commit (no head in its
+    /// answer): the read says no, rather than failing on the empty answer.
+    #[tokio::test]
+    async fn a_conflict_github_tied_to_no_commit_is_not_fixed_by_itself() {
+        let store = Store::open("sqlite::memory:").await.expect("store");
+        for q in [
+            "INSERT INTO apps (name, repo_path, profile, update_conflicts) VALUES ('demo', 'demo', 'A', 1)",
+            "INSERT INTO threads (app_id, title, prompt) VALUES (1, 'Fix the login page', 'p')",
+            "INSERT INTO pr_watches (thread_id, app_id, owner, repo, number, url, branch, head, health)
+             VALUES (1, 1, 'acme', 'demo', 1, 'https://github.com/acme/demo/pull/1',
+                     'decurion/demo-1', '0123456789abcdef0123456789abcdef01234567', 'dirty')",
+        ] {
+            sqlx::query(q).execute(store.pool()).await.expect("seed");
+        }
+        assert!(!store.wants_auto_update(1).await.expect("read"));
+        sqlx::query("UPDATE pr_watches SET health_head = head")
+            .execute(store.pool())
+            .await
+            .expect("said");
+        assert!(store.wants_auto_update(1).await.expect("read"));
+    }
 
     #[test]
     fn comments_go_to_a_fix_as_data_that_cannot_close_its_block() {
